@@ -16,15 +16,19 @@ cd "$FWF_REPO"
 mkdir -p "$FWF_RUN"
 gh auth status >/dev/null 2>&1 || log "WARNING: gh is not authenticated. Run 'gh auth login'."
 
-# Ensure the staging + integration branches exist locally + on origin.
-ensure_branch() { # $1=branch
+# Ensure the staging + integration branches exist locally + on origin. The ladder
+# must be continuous: integration branches from main, and staging from the CURRENT
+# integration tip (NOT main) — otherwise staging diverges from any work already on
+# integration and the conductor's ff-only promote fails.
+git fetch origin -q
+ensure_branch() { # $1=branch  $2=base-branch (created from origin/$2 if missing)
   git show-ref --verify --quiet "refs/heads/$1" \
-    || { log "creating $1 from $DEFAULT_BRANCH"; git branch "$1" "$DEFAULT_BRANCH"; }
+    || { log "creating $1 from origin/$2"; git branch "$1" "origin/$2"; }
   git ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1 \
     || { log "pushing $1 to origin"; git push -u origin "$1"; }
 }
-ensure_branch "$INTEGRATION_BRANCH"
-ensure_branch "$STAGING_BRANCH"
+ensure_branch "$INTEGRATION_BRANCH" "$DEFAULT_BRANCH"
+ensure_branch "$STAGING_BRANCH"     "$INTEGRATION_BRANCH"
 
 # Ensure the PM draft label exists (implementers skip issues that carry it).
 gh label create "$WIP_LABEL" --description "PM draft / product WIP — not ready; implementers skip until this label is removed" --color FBCA04 --force >/dev/null 2>&1 \

@@ -18,6 +18,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "tmux session '$SESSION' already exists — run fwf-down.sh first." >&2; exit 1
 fi
 mkdir -p "$FWF_RUN"
+rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
 
 # --- 4-column x 2-row grid, addressed by stable pane ids ---------------------
 declare -a TP BP   # TP[1..3]=impl, TP[4]=pm ; BP[1..3]=qa, BP[4]=conductor
