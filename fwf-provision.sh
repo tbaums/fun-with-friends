@@ -26,6 +26,10 @@ ensure_branch() { # $1=branch
 ensure_branch "$INTEGRATION_BRANCH"
 ensure_branch "$STAGING_BRANCH"
 
+# Ensure the PM draft label exists (implementers skip issues that carry it).
+gh label create "$WIP_LABEL" --description "PM draft / product WIP — not ready; implementers skip until this label is removed" --color FBCA04 --force >/dev/null 2>&1 \
+  && log "ensured label '$WIP_LABEL'" || log "label '$WIP_LABEL' ensure skipped (gh not ready?)"
+
 add_branch_wt() { # $1=tag  $2=branch
   local d; d="$(wt_dir "$1")"
   [ -d "$d" ] && { log "exists: $d"; return; }

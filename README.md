@@ -17,11 +17,17 @@ The **active pane** is highlighted hard: bright white bold border + an inverted
 
 ## The pipeline
 
-- **PM** (interactive, you talk to it): turns your rough ideas into crisp, small,
-  independent GitHub issues via back-and-forth, then `gh issue create`.
-- **IMPL1–3** (generalists): each surveys open issues + in-flight PRs, picks the
-  **lowest-collision** unclaimed issue, and **immediately opens a draft PR**
-  (`Closes #N`) as a public claim before coding. One issue = one branch = one PR.
+- **PM** (interactive + `/loop`): turns your rough ideas into **draft** GitHub
+  issues labeled `product-wip` (hidden from implementers) via back-and-forth, and
+  on a loop reviews those drafts for your new comments and refines the issue body.
+  When you're happy, **you remove the label** and the issue enters the implementer
+  queue automatically.
+- **IMPL1–3** (generalists): each surveys open issues + in-flight PRs, skips PM
+  drafts (`product-wip`) and any issue **already resolved on `integration`**
+  (`git log origin/integration --grep "(#N)"`), and picks the **lowest-collision**
+  eligible issue — **oldest first** to break ties — then **immediately opens a
+  draft PR** (`Closes #N`) as a public claim before coding. One issue = one branch
+  = one PR. They act autonomously (never pausing to ask "shall I proceed").
 - **QA1–3** (1-minute `/loop`, paired by branch prefix): review only `implN/*`
   PRs, run the fast gate, and **squash-merge green ones into `staging`**
   (preserving `Closes #N`). No e2e here — kept fast and parallel-safe.
@@ -47,7 +53,10 @@ FWF_PROFILE=transom ~/fun-with-friends/fwf-provision.sh --build
 FWF_PROFILE=transom ~/fun-with-friends/fwf-up.sh
 tmux attach -t friends
 
-FWF_PROFILE=transom ~/fun-with-friends/fwf-down.sh           # stop (keep worktrees)
+FWF_PROFILE=transom ~/fun-with-friends/fwf-respawn.sh conductor  # hot-swap one role's pane (after editing a prompt)
+FWF_PROFILE=transom ~/fun-with-friends/fwf-stop.sh          # graceful: every agent commits WIP + cancels its loop, then idles
+FWF_PROFILE=transom ~/fun-with-friends/fwf-resume.sh        # clear the stop sentinel (then fwf-respawn roles to re-arm)
+FWF_PROFILE=transom ~/fun-with-friends/fwf-down.sh           # stop the tmux session (keep worktrees)
 FWF_PROFILE=transom ~/fun-with-friends/fwf-down.sh --purge   # also remove worktrees + dev-data
 ```
 
@@ -72,9 +81,12 @@ set the path + commands, and launch with `FWF_PROFILE=<name>`:
 
 Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`,
 `FWF_QA_INTERVAL` (default `1m`), `FWF_CONDUCTOR_INTERVAL` (default `2m`),
-`FWF_CLAUDE_CMD`, colors. Prompts are templates in `prompts/` — the source of
-truth; placeholders (`__ID__`, `__STAGING__`, `__INTEGRATION__`, `__DEFAULT__`, `__GATE__`, `__E2E__`,
-`__LOCK__`, `__REPO__`, `__DEVUI__`) are substituted at launch.
+`FWF_PM_INTERVAL` (default `5m`), `FWF_WIP_LABEL` (default `product-wip`),
+`FWF_BOOT_TIMEOUT` (default `45`s — how long launch/respawn waits for claude to
+boot before sending a prompt), `FWF_CLAUDE_CMD`, colors. Prompts are templates in
+`prompts/` — the source of truth; placeholders (`__ID__`, `__STAGING__`,
+`__INTEGRATION__`, `__DEFAULT__`, `__GATE__`, `__E2E__`, `__LOCK__`, `__REPO__`,
+`__DEVUI__`, `__WIP_LABEL__`, `__PM_INTERVAL__`) are substituted at launch.
 
 ## Notes & caveats
 
@@ -90,3 +102,10 @@ truth; placeholders (`__ID__`, `__STAGING__`, `__INTEGRATION__`, `__DEFAULT__`, 
   the squash commit, so it closes when you promote `integration → main`.
 - The swarm **never touches `main`** — `staging` and `integration` are its only
   shared branches; you alone promote `integration → main` and cut releases.
+- **Graceful stop:** `fwf-stop.sh` broadcasts a commit-WIP-and-halt instruction to
+  every pane and drops a `STOP` sentinel that looping agents also self-check, so
+  nothing keeps working mid-flight. `fwf-resume.sh` clears it; re-arm with
+  `fwf-respawn.sh`.
+- **No duplicate-claim conflicts:** implementers skip issues already resolved on
+  `integration` (the lesson from #93/#101) and prefer the oldest, lowest-collision
+  ticket.

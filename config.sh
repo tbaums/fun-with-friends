@@ -12,12 +12,19 @@ PAIRS=(1 2 3)
 SESSION="${FWF_SESSION:-friends}"
 QA_LOOP_INTERVAL="${FWF_QA_INTERVAL:-1m}"          # how often each QA loop re-checks
 CONDUCTOR_INTERVAL="${FWF_CONDUCTOR_INTERVAL:-2m}" # how often the conductor e2e+promotes
+PM_INTERVAL="${FWF_PM_INTERVAL:-5m}"               # how often the PM loop reviews its draft issues
 CLAUDE_CMD="${FWF_CLAUDE_CMD:-claude --dangerously-skip-permissions}"
+
+# PM drafts wear this label; implementers skip any issue carrying it until you remove it.
+WIP_LABEL="${FWF_WIP_LABEL:-product-wip}"
+# How long fwf-up / fwf-respawn wait for claude to boot in a pane before sending a prompt.
+FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
 # Where worktrees live, and run-state (the e2e lock).
 WT_BASE="${FWF_WT_BASE:-$HOME}"
 FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
+STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it commit WIP, cancel their loop, and idle
 
 # Colors. ONE hue per implementer/QA pair (the implementer matches its QA, by request).
 # PM and conductor get their own distinct colors.

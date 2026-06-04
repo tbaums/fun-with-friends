@@ -23,10 +23,30 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   text="${text//__STAGING__/$STAGING_BRANCH}"
   text="${text//__INTEGRATION__/$INTEGRATION_BRANCH}"
   text="${text//__DEFAULT__/$DEFAULT_BRANCH}"
+  text="${text//__WIP_LABEL__/$WIP_LABEL}"
+  text="${text//__PM_INTERVAL__/$PM_INTERVAL}"
+  text="${text//__STOPFILE__/$STOP_FILE}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"
   text="${text//__GATE__/$GATE_CMD}"
   text="${text//__E2E__/$E2E_CMD}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
   printf '%s' "$text" | tr '\n' ' ' | tr -s ' '
+}
+
+# Wait until claude has actually booted in each given pane (its current command
+# is no longer a shell), so a prompt is never typed into the shell by mistake.
+# Returns 0 when all panes are ready, 1 on timeout (FWF_BOOT_TIMEOUT seconds).
+fwf_wait_ready() { # $@ = pane ids
+  local elapsed=0 p cmd notready
+  while [ "$elapsed" -lt "$FWF_BOOT_TIMEOUT" ]; do
+    notready=0
+    for p in "$@"; do
+      cmd="$(tmux display -p -t "$p" '#{pane_current_command}' 2>/dev/null)"
+      case "$cmd" in zsh|-zsh|bash|-bash|sh|-sh|fish|"") notready=1;; esac
+    done
+    [ "$notready" -eq 0 ] && return 0
+    sleep 1; elapsed=$((elapsed + 1))
+  done
+  return 1
 }

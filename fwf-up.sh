@@ -51,24 +51,25 @@ for id in "${PAIRS[@]}"; do
   label "${TP[$id]}" "$c" "IMPL$id · any issue → instant draft PR · impl$id/*"
   label "${BP[$id]}" "$c" "QA$id · reviews+merges impl$id/* · loop $QA_LOOP_INTERVAL"
 done
-label "${TP[4]}" "$PM_COLOR"        "PM · ideas → specs → issues · talk to me"
+label "${TP[4]}" "$PM_COLOR"        "PM · ideas → $WIP_LABEL draft issues · refine loop $PM_INTERVAL"
 label "${BP[4]}" "$CONDUCTOR_COLOR" "CONDUCTOR · e2e on $STAGING_BRANCH → $INTEGRATION_BRANCH (never $DEFAULT_BRANCH)"
 
 # --- launch claude (perms bypassed) in all 8 panes ---------------------------
 for p in "${TP[@]}" "${BP[@]}"; do
   tmux send-keys -t "$p" -l "$CLAUDE_CMD"; tmux send-keys -t "$p" Enter
 done
-echo "launched claude in 8 panes; waiting for boot…"
-sleep 8
-for p in "${TP[@]}" "${BP[@]}"; do tmux send-keys -t "$p" Enter; done   # clear one-time bypass screen
-sleep 3
+echo "launched claude in 8 panes; waiting for them to boot…"
+fwf_wait_ready "${TP[@]}" "${BP[@]}" || echo "warning: some panes not ready after ${FWF_BOOT_TIMEOUT}s; continuing"
+sleep 2
+for p in "${TP[@]}" "${BP[@]}"; do tmux send-keys -t "$p" Enter; done   # clear one-time bypass-accept screen
+sleep 2
 
 # --- deliver prompts ---------------------------------------------------------
 for id in "${PAIRS[@]}"; do
   send "${TP[$id]}" "$(fwf_render "$PROMPTS/implementer.tmpl" "$id")"
   send "${BP[$id]}" "/loop $QA_LOOP_INTERVAL $(fwf_render "$PROMPTS/qa.tmpl" "$id")"
 done
-send "${TP[4]}" "$(fwf_render "$PROMPTS/pm.tmpl" "")"
+send "${TP[4]}" "/loop $PM_INTERVAL $(fwf_render "$PROMPTS/pm.tmpl" "")"
 send "${BP[4]}" "/loop $CONDUCTOR_INTERVAL $(fwf_render "$PROMPTS/conductor.tmpl" "")"
 
 echo
