@@ -32,8 +32,7 @@ done
 echo "respawning $role in pane $CP"
 
 tmux respawn-pane -k -t "$CP" -c "$(wt_dir "$role")"
-tmux send-keys -t "$CP" -l "$CLAUDE_CMD"; tmux send-keys -t "$CP" Enter
-fwf_wait_ready "$CP" || echo "warning: $role pane not ready after ${FWF_BOOT_TIMEOUT}s; continuing"
+fwf_ensure_claude "$CP" || echo "warning: claude did not come up in $role pane $CP"
 sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2

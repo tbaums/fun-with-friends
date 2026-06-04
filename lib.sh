@@ -34,19 +34,28 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   printf '%s' "$text" | tr '\n' ' ' | tr -s ' '
 }
 
-# Wait until claude has actually booted in each given pane (its current command
-# is no longer a shell), so a prompt is never typed into the shell by mistake.
-# Returns 0 when all panes are ready, 1 on timeout (FWF_BOOT_TIMEOUT seconds).
-fwf_wait_ready() { # $@ = pane ids
-  local elapsed=0 p cmd notready
-  while [ "$elapsed" -lt "$FWF_BOOT_TIMEOUT" ]; do
-    notready=0
-    for p in "$@"; do
-      cmd="$(tmux display -p -t "$p" '#{pane_current_command}' 2>/dev/null)"
-      case "$cmd" in zsh|-zsh|bash|-bash|sh|-sh|fish|"") notready=1;; esac
+# True while the pane is still sitting at a shell (claude has not taken over).
+_fwf_pane_is_shell() { # $1=pane
+  case "$(tmux display -p -t "$1" '#{pane_current_command}' 2>/dev/null)" in
+    zsh|-zsh|bash|-bash|sh|-sh|fish|-fish|"") return 0;; *) return 1;;
+  esac
+}
+
+# Ensure claude is actually RUNNING in a pane. A freshly-respawned/just-split
+# shell often isn't ready when we first type, so the keystrokes are lost and the
+# pane stays at the shell. So: (re)send the launch command, wait for claude to
+# take over, and retry a few times. Returns 0 once claude is up, 1 if it never
+# came up. Safe to call on a pane that already has claude (returns immediately).
+fwf_ensure_claude() { # $1=pane
+  local p="$1" try w
+  for try in 1 2 3 4 5; do
+    _fwf_pane_is_shell "$p" || return 0          # claude already running
+    tmux send-keys -t "$p" C-c 2>/dev/null; sleep 0.4   # clear any half-typed/lost line
+    tmux send-keys -t "$p" -l "$CLAUDE_CMD"; tmux send-keys -t "$p" Enter
+    for w in $(seq 1 15); do
+      sleep 1
+      _fwf_pane_is_shell "$p" || return 0
     done
-    [ "$notready" -eq 0 ] && return 0
-    sleep 1; elapsed=$((elapsed + 1))
   done
   return 1
 }

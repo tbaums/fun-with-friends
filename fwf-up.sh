@@ -59,8 +59,10 @@ label "${BP[4]}" "$CONDUCTOR_COLOR" "CONDUCTOR · e2e on $STAGING_BRANCH → $IN
 for p in "${TP[@]}" "${BP[@]}"; do
   tmux send-keys -t "$p" -l "$CLAUDE_CMD"; tmux send-keys -t "$p" Enter
 done
-echo "launched claude in 8 panes; waiting for them to boot…"
-fwf_wait_ready "${TP[@]}" "${BP[@]}" || echo "warning: some panes not ready after ${FWF_BOOT_TIMEOUT}s; continuing"
+echo "launched claude in 8 panes; verifying each actually booted (re-sending to laggards)…"
+for p in "${TP[@]}" "${BP[@]}"; do
+  fwf_ensure_claude "$p" || echo "warning: claude did not come up in pane $p"
+done
 sleep 2
 for p in "${TP[@]}" "${BP[@]}"; do tmux send-keys -t "$p" Enter; done   # clear one-time bypass-accept screen
 sleep 2
