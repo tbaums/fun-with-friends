@@ -27,7 +27,10 @@ The **active pane** is highlighted hard: bright white bold border + an inverted
   (`git log origin/integration --grep "(#N)"`), and picks the **lowest-collision**
   eligible issue — **oldest first** to break ties — then **immediately opens a
   draft PR** (`Closes #N`) as a public claim before coding. One issue = one branch
-  = one PR. They act autonomously (never pausing to ask "shall I proceed").
+  = one PR. They act autonomously (never pausing to ask "shall I proceed"). They
+  also run on a **loop**: each cycle they address review feedback, wait while a PR
+  is in review, or — once it merges — claim the next issue, so an implementer
+  never stalls idle "awaiting review".
 - **QA1–3** (1-minute `/loop`, paired by branch prefix): review only `implN/*`
   PRs, run the fast gate, and **squash-merge green ones into `staging`**
   (preserving `Closes #N`). No e2e here — kept fast and parallel-safe.

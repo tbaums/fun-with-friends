@@ -13,7 +13,7 @@ PROMPTS="$DIR/prompts"
 
 role="${1:-}"
 case "$role" in
-  impl[123]) tmpl=implementer.tmpl; id="${role#impl}"; loop="";;
+  impl[123]) tmpl=implementer.tmpl; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";;
   qa[123])   tmpl=qa.tmpl;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL ";;
   pm)        tmpl=pm.tmpl;          id="";             loop="/loop $PM_INTERVAL ";;
   conductor) tmpl=conductor.tmpl;   id="";             loop="/loop $CONDUCTOR_INTERVAL ";;

@@ -69,7 +69,7 @@ sleep 2
 
 # --- deliver prompts ---------------------------------------------------------
 for id in "${PAIRS[@]}"; do
-  send "${TP[$id]}" "$(fwf_render "$PROMPTS/implementer.tmpl" "$id")"
+  send "${TP[$id]}" "/loop $IMPL_INTERVAL $(fwf_render "$PROMPTS/implementer.tmpl" "$id")"
   send "${BP[$id]}" "/loop $QA_LOOP_INTERVAL $(fwf_render "$PROMPTS/qa.tmpl" "$id")"
 done
 send "${TP[4]}" "/loop $PM_INTERVAL $(fwf_render "$PROMPTS/pm.tmpl" "")"
