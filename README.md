@@ -110,9 +110,11 @@ boot before sending a prompt), `FWF_CLAUDE_CMD`, colors. Prompts are templates i
   every pane and drops a `STOP` sentinel that looping agents also self-check, so
   nothing keeps working mid-flight. `fwf-resume.sh` clears it; re-arm with
   `fwf-respawn.sh`.
-- **No duplicate-claim conflicts:** implementers skip issues already resolved on
-  `integration` (the lesson from #93/#101) and prefer the oldest, lowest-collision
-  ticket.
+- **No duplicate-claim conflicts:** implementers skip issues already built on a
+  shared branch — checking BOTH `staging` and `integration` logs plus merged PRs,
+  not just `integration` (an issue stays open through the whole
+  staging→integration→`main` window, so a `staging`-only merge would otherwise be
+  re-claimed) — and prefer the oldest, lowest-collision ticket.
 - **Release freeze (drain before a release):** ask the PM to "freeze for release"
   and it proposes a cutoff, then labels the tickets that should wait with
   `release-hold` — implementers skip those (like `product-wip`), so in-flight work
