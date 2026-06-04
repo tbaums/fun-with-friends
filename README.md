@@ -23,12 +23,15 @@ The **active pane** is highlighted hard: bright white bold border + an inverted
   **lowest-collision** unclaimed issue, and **immediately opens a draft PR**
   (`Closes #N`) as a public claim before coding. One issue = one branch = one PR.
 - **QA1–3** (1-minute `/loop`, paired by branch prefix): review only `implN/*`
-  PRs, run the fast gate, and **squash-merge green ones into `integration`**
+  PRs, run the fast gate, and **squash-merge green ones into `staging`**
   (preserving `Closes #N`). No e2e here — kept fast and parallel-safe.
-- **CONDUCTOR** (loop, sole owner of `main` and of e2e): when `integration` is
-  ahead of `main`, acquires the e2e lock, runs the **full e2e suite** on
-  `integration`, and on green **promotes `integration → main`** — which lands the
-  `Closes #N` commits on the default branch and **auto-closes the issues**.
+- **CONDUCTOR** (loop, owns e2e and the gate into `integration`): when `staging`
+  is ahead of `integration`, acquires the e2e lock, runs the **full e2e suite**
+  on `staging`, and on green ff-merges **`staging → integration`**, making
+  `integration` a clean, e2e-passed release source. It **never touches `main`**.
+- **You** (a separate session): release `integration → main` when you choose —
+  which lands the `Closes #N` commits on the default branch and **auto-closes the
+  issues**. Features never reach `main` while you're cutting a release.
 
 The e2e lock (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`) serializes e2e so
 its single-port suite never collides. The conductor is the only e2e runner by
@@ -57,7 +60,9 @@ set the path + commands, and launch with `FWF_PROFILE=<name>`:
 |---|---|
 | `FWF_REPO` | path to the application repo |
 | `WT_PREFIX` | worktree name prefix (`tx` → `tx-impl1`, `tx-qa1`, …) |
-| `BASE_BRANCH` / `DEFAULT_BRANCH` | integration target / promotion target (`integration` / `main`) |
+| `STAGING_BRANCH` | impl PR target; QA fast-gates + merges here (`staging`) |
+| `INTEGRATION_BRANCH` | conductor e2e-promotes here; your release source (`integration`) |
+| `DEFAULT_BRANCH` | released by you in a separate session; swarm never touches it (`main`) |
 | `GATE_CMD` | fast gate QA runs (tests + typecheck) |
 | `E2E_CMD` | full e2e the conductor runs |
 | `BUILD_CMD` | warm-build command per worktree |
@@ -68,7 +73,7 @@ set the path + commands, and launch with `FWF_PROFILE=<name>`:
 Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`,
 `FWF_QA_INTERVAL` (default `1m`), `FWF_CONDUCTOR_INTERVAL` (default `2m`),
 `FWF_CLAUDE_CMD`, colors. Prompts are templates in `prompts/` — the source of
-truth; placeholders (`__ID__`, `__BASE__`, `__DEFAULT__`, `__GATE__`, `__E2E__`,
+truth; placeholders (`__ID__`, `__STAGING__`, `__INTEGRATION__`, `__DEFAULT__`, `__GATE__`, `__E2E__`,
 `__LOCK__`, `__REPO__`, `__DEVUI__`) are substituted at launch.
 
 ## Notes & caveats
@@ -82,6 +87,6 @@ truth; placeholders (`__ID__`, `__BASE__`, `__DEFAULT__`, `__GATE__`, `__E2E__`,
   as a single pass — re-send it to re-check.
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
-  the squash commit, so the conductor's promotion closes it.
-- Nothing here touches production data, scheduled agents, or `main` except the
-  conductor's reviewed promotion.
+  the squash commit, so it closes when you promote `integration → main`.
+- The swarm **never touches `main`** — `staging` and `integration` are its only
+  shared branches; you alone promote `integration → main` and cut releases.

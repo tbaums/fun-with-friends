@@ -5,8 +5,9 @@
 
 FWF_REPO="${FWF_REPO:-$HOME/transom}"   # the application repo (source of truth)
 WT_PREFIX="${FWF_WT_PREFIX:-tx}"        # worktrees named ${WT_PREFIX}-impl1, -qa1, -pm, -conductor
-BASE_BRANCH="${FWF_BASE_BRANCH:-integration}"   # PRs target this; QA merges here
-DEFAULT_BRANCH="${FWF_DEFAULT_BRANCH:-main}"    # conductor promotes integration -> here
+STAGING_BRANCH="${FWF_STAGING_BRANCH:-staging}"               # impl PRs target this; QA fast-gates + merges here
+INTEGRATION_BRANCH="${FWF_INTEGRATION_BRANCH:-integration}"   # conductor e2e-gates staging -> here (your release source)
+DEFAULT_BRANCH="${FWF_DEFAULT_BRANCH:-main}"                  # released by a SEPARATE human session; the swarm never touches it
 
 # Commands run inside a worktree ---------------------------------------------
 GATE_CMD='cargo test --workspace && cargo check -p frontend --target wasm32-unknown-unknown'

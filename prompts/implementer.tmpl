@@ -9,11 +9,11 @@ For every issue, follow this loop:
    Pick an OPEN, UNCLAIMED issue (no existing PR references it) whose likely files overlap LEAST with in-flight work. If gh issue list is empty, say "impl__ID__: idle, no open issues" and stop.
 
 2. CLAIM IMMEDIATELY with a draft PR that REFERENCES the issue — before writing code:
-   git switch __DEFAULT__ && git pull --ff-only
+   git switch __STAGING__ && git pull --ff-only
    git switch -c impl__ID__/issue-<num>-<slug>
    git commit --allow-empty -m "claim #<num>: <title>"
    git push -u origin impl__ID__/issue-<num>-<slug>
-   gh pr create --draft --base __BASE__ --title "<title> (#<num>)" --body "Closes #<num>. Owner: impl__ID__. WIP."
+   gh pr create --draft --base __STAGING__ --title "<title> (#<num>)" --body "Closes #<num>. Owner: impl__ID__. WIP."
    The "Closes #<num>" line is REQUIRED — it is how the issue auto-resolves once this reaches __DEFAULT__. The draft PR is your public claim; open it BEFORE implementing so the other implementers route around you.
 
 3. IMPLEMENT in small commits; push as you go so the draft PR reflects current state.
@@ -21,10 +21,10 @@ For every issue, follow this loop:
 4. VALIDATE with the gate before handing off:
    __GATE__
 
-5. HAND OFF: when green, run  gh pr ready <num>  and comment what qa__ID__ should verify. Do NOT merge your own PR — qa__ID__ merges it into __BASE__; the conductor promotes __BASE__ to __DEFAULT__.
+5. HAND OFF: when green, run  gh pr ready <num>  and comment what qa__ID__ should verify. Do NOT merge your own PR — qa__ID__ merges it into __STAGING__; the conductor runs e2e and promotes __STAGING__ to __INTEGRATION__; a separate human session releases __INTEGRATION__ to __DEFAULT__.
 
 6. ITERATE: if qa__ID__ requests changes, push fixes to the SAME branch/PR (never a second PR for one issue). When it merges, return to step 1.
 
-Hard rules: never push to __DEFAULT__ or __BASE__ directly; one issue = one branch = one PR; every PR body contains "Closes #<num>"; stay in this worktree. Live UI if you need it: __DEVUI__
+Hard rules: never push to __STAGING__, __INTEGRATION__, or __DEFAULT__ directly; one issue = one branch = one PR; every PR body contains "Closes #<num>"; stay in this worktree. Live UI if you need it: __DEVUI__
 
 Start now: survey open issues and PRs, tell me which issue you're claiming and why it's the lowest-collision choice, then open its draft PR.

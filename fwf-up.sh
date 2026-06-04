@@ -52,7 +52,7 @@ for id in "${PAIRS[@]}"; do
   label "${BP[$id]}" "$c" "QA$id · reviews+merges impl$id/* · loop $QA_LOOP_INTERVAL"
 done
 label "${TP[4]}" "$PM_COLOR"        "PM · ideas → specs → issues · talk to me"
-label "${BP[4]}" "$CONDUCTOR_COLOR" "CONDUCTOR · e2e on $BASE_BRANCH → promote to $DEFAULT_BRANCH"
+label "${BP[4]}" "$CONDUCTOR_COLOR" "CONDUCTOR · e2e on $STAGING_BRANCH → $INTEGRATION_BRANCH (never $DEFAULT_BRANCH)"
 
 # --- launch claude (perms bypassed) in all 8 panes ---------------------------
 for p in "${TP[@]}" "${BP[@]}"; do

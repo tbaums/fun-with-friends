@@ -16,11 +16,15 @@ cd "$FWF_REPO"
 mkdir -p "$FWF_RUN"
 gh auth status >/dev/null 2>&1 || log "WARNING: gh is not authenticated. Run 'gh auth login'."
 
-# Ensure the integration target exists locally + on origin.
-git show-ref --verify --quiet "refs/heads/$BASE_BRANCH" \
-  || { log "creating $BASE_BRANCH from $DEFAULT_BRANCH"; git branch "$BASE_BRANCH" "$DEFAULT_BRANCH"; }
-git ls-remote --exit-code --heads origin "$BASE_BRANCH" >/dev/null 2>&1 \
-  || { log "pushing $BASE_BRANCH to origin"; git push -u origin "$BASE_BRANCH"; }
+# Ensure the staging + integration branches exist locally + on origin.
+ensure_branch() { # $1=branch
+  git show-ref --verify --quiet "refs/heads/$1" \
+    || { log "creating $1 from $DEFAULT_BRANCH"; git branch "$1" "$DEFAULT_BRANCH"; }
+  git ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1 \
+    || { log "pushing $1 to origin"; git push -u origin "$1"; }
+}
+ensure_branch "$INTEGRATION_BRANCH"
+ensure_branch "$STAGING_BRANCH"
 
 add_branch_wt() { # $1=tag  $2=branch
   local d; d="$(wt_dir "$1")"
