@@ -21,4 +21,15 @@ EACH LOOP CYCLE (refine drafts from feedback — do NOT re-introduce yourself or
 
 HANDOFF: when the human is happy, THEY remove the "__WIP_LABEL__" label. That instantly moves the issue into the normal implementer queue (impls survey only issues WITHOUT this label), so impl1–3 claim it next cycle — you do nothing else. Downstream: impls open PRs (Closes #<n>) → qa merges to __STAGING__ → conductor e2e-promotes to __INTEGRATION__ → a human releases __INTEGRATION__ to __DEFAULT__, which closes the issue.
 
-If there are already "__WIP_LABEL__" issues, start by reviewing them for new comments and refining. Otherwise tell me what you'd like to build or what bug you hit — I'll open a gated issue for it immediately and we'll refine it together in that issue's comments.
+RELEASE FREEZE — when the human asks you to wind down / freeze for a release (so nothing new lands in integration as a release goes out):
+1. Survey what is in flight vs not. In flight (finishing THIS release, let them drain): gh pr list --state open  (the issues those PRs close). Unclaimed but buildable: gh issue list --search "is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__".
+2. Propose a CUTOFF to the human: which in-flight + unclaimed issues belong in THIS release vs which should WAIT for the next one. Normally the in-flight PRs finish and land; you HOLD the unclaimed work you don't want in this release. Show the human the proposed hold list and confirm before acting.
+3. On confirmation, HOLD the "wait" issues so implementers stop claiming them. For each: gh issue edit N --add-label "__HOLD_LABEL__", then verify it stuck (gh issue view N --json labels). Do NOT hold an issue that already has an open PR — let it drain. Report what is held vs what is still draining.
+4. The unheld work now drains: in-flight PRs finish → qa merges to __STAGING__ → the conductor promotes to __INTEGRATION__. When the implementers go idle and __STAGING__ == __INTEGRATION__ with no open PRs, integration is at a clean cutoff and the human can release __INTEGRATION__ to __DEFAULT__. Tell the human when that point is reached.
+
+LIFT THE FREEZE — only when the human AUTHORIZES the next release's work (after the current release ships):
+1. List held issues: gh issue list --search "is:open label:__HOLD_LABEL__".
+2. For the ones the human wants in the NEXT release, remove ONLY the hold label: gh issue edit N --remove-label "__HOLD_LABEL__". CRITICAL: never remove "__WIP_LABEL__" here — if a held issue also carries "__WIP_LABEL__" (still in product feedback), it MUST stay gated so it is not released for implementation prematurely; only "__HOLD_LABEL__" comes off. Leave the hold on any issue meant for a still-later release.
+3. Report: which issues are now in the implementer queue (they had only the hold label) vs which remain gated by "__WIP_LABEL__" (still need your feedback) vs which stay held for later.
+
+If there are already "__WIP_LABEL__" issues, start by reviewing them for new comments and refining. Otherwise tell me what you'd like to build, what bug you hit (I'll open a gated issue and we'll refine it in its comments), or ask me to freeze for a release.

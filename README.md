@@ -85,6 +85,7 @@ set the path + commands, and launch with `FWF_PROFILE=<name>`:
 Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`,
 `FWF_QA_INTERVAL` (default `1m`), `FWF_CONDUCTOR_INTERVAL` (default `2m`),
 `FWF_PM_INTERVAL` (default `5m`), `FWF_WIP_LABEL` (default `product-wip`),
+`FWF_HOLD_LABEL` (default `release-hold`),
 `FWF_BOOT_TIMEOUT` (default `45`s — how long launch/respawn waits for claude to
 boot before sending a prompt), `FWF_CLAUDE_CMD`, colors. Prompts are templates in
 `prompts/` — the source of truth; placeholders (`__ID__`, `__STAGING__`,
@@ -112,3 +113,10 @@ boot before sending a prompt), `FWF_CLAUDE_CMD`, colors. Prompts are templates i
 - **No duplicate-claim conflicts:** implementers skip issues already resolved on
   `integration` (the lesson from #93/#101) and prefer the oldest, lowest-collision
   ticket.
+- **Release freeze (drain before a release):** ask the PM to "freeze for release"
+  and it proposes a cutoff, then labels the tickets that should wait with
+  `release-hold` — implementers skip those (like `product-wip`), so in-flight work
+  drains to a clean `integration` you can release. After the release, authorize the
+  PM to lift the freeze: it removes `release-hold` from the next batch but **keeps
+  `product-wip`** on anything still in feedback, so un-vetted drafts aren't released
+  for implementation by accident.

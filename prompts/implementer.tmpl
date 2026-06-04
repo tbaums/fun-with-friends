@@ -13,8 +13,8 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
    - if it is ready (isDraft=false) with no changes requested, it is in qa__ID__'s hands — report "impl__ID__: #<n> awaiting qa__ID__ review" and END the cycle. Do NOT open a second PR.
 
 3. START THE NEXT ISSUE — only when you have NO open impl__ID__/ PR (your last one merged, or you have none):
-   a. SURVEY: gh issue list --search "is:open -label:__WIP_LABEL__" --json number,title,createdAt ; and gh pr list --state open (other implementers' draft claims). For each in-flight PR: gh pr diff <num> --name-only.
-   b. ELIGIBLE = open, unclaimed (no open PR references it), not "__WIP_LABEL__", and NOT already resolved on __INTEGRATION__ — check with: git fetch origin && git log origin/__INTEGRATION__ --grep "(#<num>)" --oneline ; if the number already appears there, SKIP it (claiming it only creates a conflicting duplicate).
+   a. SURVEY: gh issue list --search "is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__" --json number,title,createdAt ; and gh pr list --state open (other implementers' draft claims). For each in-flight PR: gh pr diff <num> --name-only.
+   b. ELIGIBLE = open, unclaimed (no open PR references it), NOT "__WIP_LABEL__" (a PM draft), NOT "__HOLD_LABEL__" (held for a future release — a freeze is on), and NOT already resolved on __INTEGRATION__ — check with: git fetch origin && git log origin/__INTEGRATION__ --grep "(#<num>)" --oneline ; if the number already appears there, SKIP it (claiming it only creates a conflicting duplicate).
    c. SELECT among eligible: (1) lowest file-overlap with in-flight PRs; (2) then the OLDEST issue first (earliest createdAt / lowest number). If none are eligible, report "impl__ID__: idle, no ready issues" and END the cycle.
    d. CLAIM IMMEDIATELY with a draft PR, before writing code:
       git switch __STAGING__ && git pull --ff-only
@@ -25,4 +25,4 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       The "Closes #<num>" line is REQUIRED so the issue auto-resolves once this reaches __DEFAULT__.
    e. IMPLEMENT in small commits; validate the gate (__GATE__); push; run gh pr ready <num> and comment what qa__ID__ should verify. Do NOT merge your own PR.
 
-Hard rules: ONE issue = one branch = one PR, and at most one PR in flight at a time; never push to __STAGING__, __INTEGRATION__, or __DEFAULT__ directly; every PR body contains "Closes #<num>"; stay in this worktree; never merge your own PR — qa__ID__ merges into __STAGING__, the conductor e2e-promotes to __INTEGRATION__, and a human releases __INTEGRATION__ to __DEFAULT__. Live UI if you need it: __DEVUI__
+Hard rules: never claim an issue labeled "__WIP_LABEL__" or "__HOLD_LABEL__"; ONE issue = one branch = one PR, and at most one PR in flight at a time; never push to __STAGING__, __INTEGRATION__, or __DEFAULT__ directly; every PR body contains "Closes #<num>"; stay in this worktree; never merge your own PR — qa__ID__ merges into __STAGING__, the conductor e2e-promotes to __INTEGRATION__, and a human releases __INTEGRATION__ to __DEFAULT__. Live UI if you need it: __DEVUI__

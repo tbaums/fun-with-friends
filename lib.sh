@@ -24,6 +24,7 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   text="${text//__INTEGRATION__/$INTEGRATION_BRANCH}"
   text="${text//__DEFAULT__/$DEFAULT_BRANCH}"
   text="${text//__WIP_LABEL__/$WIP_LABEL}"
+  text="${text//__HOLD_LABEL__/$HOLD_LABEL}"
   text="${text//__PM_INTERVAL__/$PM_INTERVAL}"
   text="${text//__STOPFILE__/$STOP_FILE}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"

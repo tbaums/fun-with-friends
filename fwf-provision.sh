@@ -33,6 +33,9 @@ ensure_branch "$STAGING_BRANCH"     "$INTEGRATION_BRANCH"
 # Ensure the PM draft label exists (implementers skip issues that carry it).
 gh label create "$WIP_LABEL" --description "PM draft / product WIP — not ready; implementers skip until this label is removed" --color FBCA04 --force >/dev/null 2>&1 \
   && log "ensured label '$WIP_LABEL'" || log "label '$WIP_LABEL' ensure skipped (gh not ready?)"
+# Ensure the release-freeze hold label exists (implementers skip held issues until the PM lifts it post-release).
+gh label create "$HOLD_LABEL" --description "Held for a future release — implementers skip until the PM lifts it after the current release" --color 0052CC --force >/dev/null 2>&1 \
+  && log "ensured label '$HOLD_LABEL'" || log "label '$HOLD_LABEL' ensure skipped (gh not ready?)"
 
 add_branch_wt() { # $1=tag  $2=branch
   local d; d="$(wt_dir "$1")"

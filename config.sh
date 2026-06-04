@@ -18,6 +18,9 @@ CLAUDE_CMD="${FWF_CLAUDE_CMD:-claude --dangerously-skip-permissions}"
 
 # PM drafts wear this label; implementers skip any issue carrying it until you remove it.
 WIP_LABEL="${FWF_WIP_LABEL:-product-wip}"
+# Release-freeze hold: the PM applies this to tickets that should wait for a future release,
+# so the queue drains to a clean integration cutoff before you release. Implementers skip it too.
+HOLD_LABEL="${FWF_HOLD_LABEL:-release-hold}"
 # How long fwf-up / fwf-respawn wait for claude to boot in a pane before sending a prompt.
 FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
