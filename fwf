@@ -49,6 +49,8 @@ RUN THE GRID  (use --profile NAME, or it picks the only profile present)
   provision [--build]    Create worktrees + dev data (one-time per repo).
   up                     Launch the 8-pane tmux grid and deliver prompts.
   attach                 tmux attach to the running grid.
+  lead [--print]         Copy the TEAM LEAD prompt to the clipboard (or --print
+                         it) to start your interactive orchestrator session.
   respawn <role>         Hot-swap one pane: impl1..3 | qa1..3 | pm | conductor.
   stop                   Graceful halt: agents commit WIP and idle.
   resume                 Clear the stop sentinel (then respawn to re-arm).
@@ -249,5 +251,31 @@ case "$cmd" in
     FWF_PROFILE="$(resolve_profile)"
     source "$FWF_DIR/lib.sh"
     exec tmux attach -t "$SESSION";;
+  lead)
+    print_only=0
+    for a in "$@"; do
+      case "$a" in --print) print_only=1;; *) die "lead: unknown flag '$a'";; esac
+    done
+    FWF_PROFILE="$(resolve_profile)"
+    source "$FWF_DIR/lib.sh"
+    rendered="$(fwf_render "$FWF_DIR/prompts/lead.tmpl" "")"
+    if [ "$print_only" = 1 ]; then
+      printf '%s\n' "$rendered"
+    else
+      copier=""
+      if   command -v pbcopy  >/dev/null 2>&1; then copier="pbcopy"
+      elif command -v wl-copy >/dev/null 2>&1; then copier="wl-copy"
+      elif command -v xclip   >/dev/null 2>&1; then copier="xclip -selection clipboard"
+      fi
+      if [ -n "$copier" ]; then
+        printf '%s' "$rendered" | $copier
+        echo "fwf: TEAM LEAD prompt copied to clipboard."
+      else
+        echo "fwf: no clipboard tool (pbcopy/wl-copy/xclip) found — printing instead." >&2
+        printf '%s\n' "$rendered"
+      fi
+      echo "Next: start Claude in the repo it leads, then paste it as the first message:"
+      echo "  cd $FWF_REPO && $CLAUDE_CMD"
+    fi;;
   *) die "unknown command '$cmd' (try 'fwf help')";;
 esac

@@ -157,6 +157,7 @@ fwf init  <url|path> [--name N] [--yes]             clone → detect → scaffol
 fwf provision [--build]                             create worktrees + dev data
 fwf up                                              launch the grid
 fwf attach                                          tmux attach to the grid
+fwf lead [--print]                                  copy/print the TEAM LEAD prompt for your orchestrator session
 fwf respawn <role>                                  hot-swap one pane (impl1..3|qa1..3|pm|conductor)
 fwf stop | resume                                   graceful halt / clear the stop sentinel
 fwf down [--purge]                                  kill the session (--purge also removes worktrees)

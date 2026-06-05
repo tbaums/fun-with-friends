@@ -134,6 +134,10 @@ DOC="$("$ROOT/fwf" doctor 2>&1 || true)"
 assert_contains "doctor runs" "$DOC" "workspace :"
 # profiles lists at least the example template shipped in the repo
 assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
+# lead --print renders the TEAM LEAD prompt with placeholders resolved
+LEAD="$("$ROOT/fwf" --profile example lead --print 2>&1)"
+assert_contains "lead --print renders prompt" "$LEAD" "TEAM LEAD"
+assert_contains "lead resolves placeholders"  "$LEAD" "staging"
 
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"

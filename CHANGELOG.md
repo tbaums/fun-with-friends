@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-05
+
+### Added
+- `fwf lead` — copies the TEAM LEAD prompt (rendered for the active profile) to
+  the clipboard, or prints it with `--print`, and tells you where to start the
+  orchestrator session. The lead is a separate interactive session, not a grid
+  pane, so this is how you stand it up.
+
 ## [0.1.3] - 2026-06-05
 
 ### Fixed
@@ -56,7 +64,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/tbaums/fun-with-friends/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/tbaums/fun-with-friends/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/tbaums/fun-with-friends/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tbaums/fun-with-friends/compare/v0.1.0...v0.1.1
