@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-05
+
+### Changed
+- PM prompt: draft a first-pass spec for unspecced gated drafts — issues the
+  human files directly on GitHub (empty or stub body) that never went through the
+  pane-entry path — every cycle, independent of comment-newness.
+
 ## [0.1.5] - 2026-06-05
 
 ### Changed
@@ -74,7 +81,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/tbaums/fun-with-friends/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/tbaums/fun-with-friends/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/tbaums/fun-with-friends/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/tbaums/fun-with-friends/compare/v0.1.2...v0.1.3
