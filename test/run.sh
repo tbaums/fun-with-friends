@@ -128,7 +128,10 @@ assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 section "dispatcher: read-only commands"
 assert_eq "version" "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
 assert_contains "help mentions start" "$("$ROOT/fwf" help)" "start <url|path>"
-"$ROOT/fwf" doctor >/dev/null 2>&1 && ok "doctor runs" || bad "doctor runs"
+# doctor reports tool status and exits non-zero if any are missing (correct on a
+# bare runner with no tmux/gh/claude) — assert it RAN, not that it returned 0.
+DOC="$("$ROOT/fwf" doctor 2>&1 || true)"
+assert_contains "doctor runs" "$DOC" "workspace :"
 # profiles lists at least the example template shipped in the repo
 assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
 
