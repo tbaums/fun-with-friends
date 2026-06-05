@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-05
+
+### Changed
+- TEAM LEAD prompt (`prompts/lead.tmpl`): always lead reports with a factory
+  status table — in progress / queued / done in the last 24h — with Started,
+  Completed, and Duration columns, plus how to source the timestamps.
+
 ## [0.1.1] - 2026-06-05
 
 ### Changed
@@ -38,6 +45,7 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/tbaums/fun-with-friends/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/tbaums/fun-with-friends/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tbaums/fun-with-friends/releases/tag/v0.1.0
