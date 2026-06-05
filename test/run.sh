@@ -145,8 +145,10 @@ if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
   # `cmd && ok || bad` idiom, intentional word-splitting). SC2034 is annotated
   # at the top of config/profile files (vars consumed in other sourced scripts).
+  # Lint only the repo's shipped scripts — not user-local/generated profiles,
+  # which live in profiles/ but aren't part of the repo.
   if shellcheck -s bash -S warning \
-       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT"/profiles/*.sh "$ROOT/test/run.sh"; then
+       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" "$ROOT/test/run.sh"; then
     ok "shellcheck clean"
   else
     bad "shellcheck reported issues"

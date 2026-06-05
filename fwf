@@ -11,7 +11,17 @@
 # Run `fwf help` for the full subcommand list.
 set -euo pipefail
 
-FWF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real install dir, following symlinks — `install.sh` symlinks `fwf`
+# into a bin dir, so BASH_SOURCE is the symlink, not the repo file. (Portable;
+# macOS readlink lacks a reliable -f.)
+_src="${BASH_SOURCE[0]}"
+while [ -h "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src";; esac
+done
+FWF_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+unset _src _dir
 
 # Base config (workspace paths, run dir) + detection, without requiring a
 # profile to exist yet — `fwf init` runs before any profile is written.
