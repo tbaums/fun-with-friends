@@ -24,5 +24,11 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       gh pr create --draft --base __STAGING__ --title "<title> (#<num>)" --body "Closes #<num>. Owner: impl__ID__. WIP."
       The "Closes #<num>" line is REQUIRED so the issue auto-resolves once this reaches __DEFAULT__.
    e. IMPLEMENT in small commits; validate the gate (__GATE__); push; run gh pr ready <num> and comment what qa__ID__ should verify. Do NOT merge your own PR.
+   f. UI / LAYOUT / MOBILE WORK — verify what the USER SEES, not a proxy (hard lesson from the v0.6.x UI rounds where tests were green while the app was visibly broken on a real phone):
+      - Seed REAL, LONG content (long titles, long URLs, multi-paragraph notes). The stub writes SHORT text, so overflow/wrap/clipping bugs are invisible with default data — they only appear with realistic content.
+      - Assert the CONTAINER fits the viewport: `element.getBoundingClientRect().right <= viewport.width` for the actual wrapper (e.g. `.reader`/`.pane`/the view root), NOT just inner markdown/text. The v0.6.1 reader-overflow bug passed because only inner elements were checked, never the container vs the screen.
+      - Run mobile specs on the REAL mobile-safari/WebKit lane (filename must match `mobile*.spec.ts`), not chromium-emulated.
+      - iOS gotcha: any focusable input/textarea/select must be font-size >= 16px on mobile, or iOS auto-zooms (and stays zoomed) on focus.
+      - A test only counts if it goes RED when the thing is visibly broken — prove it (break it locally → red → fix → green; note it in the PR). Prefer also capturing a screenshot and confirming it looks right.
 
 Hard rules: never claim an issue labeled "__WIP_LABEL__" or "__HOLD_LABEL__"; ONE issue = one branch = one PR, and at most one PR in flight at a time; never push to __STAGING__, __INTEGRATION__, or __DEFAULT__ directly; every PR body contains "Closes #<num>"; stay in this worktree; never merge your own PR — qa__ID__ merges into __STAGING__, the conductor e2e-promotes to __INTEGRATION__, and a human releases __INTEGRATION__ to __DEFAULT__. Live UI if you need it: __DEVUI__
