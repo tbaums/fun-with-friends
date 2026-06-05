@@ -3,7 +3,7 @@
 # additive). Creates: impl1-3 (+ paired qa1-3), pm, conductor. Optionally warms
 # each worktree's build.
 #
-# Usage: [FWF_PROFILE=transom] fwf-provision.sh [--build]
+# Usage: [FWF_PROFILE=example] fwf-provision.sh [--build]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"

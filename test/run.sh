@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# fun-with-friends functional test suite. Self-contained (no bats), 3.2-clean.
+# Exercises detection, name derivation, profile generation (incl. fail-closed),
+# the generated profile loading through lib.sh + prompt rendering, and the fwf
+# dispatcher's read-only commands. Builds throwaway git fixtures in a tmpdir;
+# never touches the real profiles/ dir, the network, tmux, gh, or claude.
+#
+# Usage: test/run.sh   (exits non-zero on any failure)
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PASS=0; FAIL=0
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
+ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '         %s\n' "$2"; }
+# assert_eq <label> <expected> <actual>
+assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got [$3]"; fi; }
+# assert_contains <label> <haystack> <needle>
+assert_contains() { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "[$2] did not contain [$3]";; esac; }
+section() { printf '\n# %s\n' "$1"; }
+
+# Build a git fixture repo: mkfix <name> then drop files into $FIX.
+mkfix() { FIX="$TMP/$1"; mkdir -p "$FIX"; ( cd "$FIX" && git init -q && git config user.email t@t.co && git config user.name t ); }
+commitfix() { ( cd "$FIX" && git add -A && git commit -qm init ); }
+
+source "$ROOT/lib/detect.sh"
+source "$ROOT/lib/profile.sh"
+
+# --------------------------------------------------------------------------
+section "name derivation"
+assert_eq "https .git URL"      "bar"      "$(derive_name https://github.com/foo/bar.git)"
+assert_eq "trailing slash"      "bar"      "$(derive_name https://github.com/foo/bar/)"
+assert_eq "ssh URL"             "repo"     "$(derive_name git@github.com:foo/repo.git)"
+assert_eq "local path"          "myproj"   "$(derive_name /home/me/myproj)"
+assert_eq "lowercase + dashes"  "my-cool-repo" "$(derive_name My_Cool.Repo)"
+
+section "url recognition"
+is_url https://github.com/a/b.git && ok "https is url"   || bad "https is url"
+is_url git@github.com:a/b.git     && ok "ssh is url"     || bad "ssh is url"
+is_url /tmp/local                 && bad "path not url"  || ok "path not url"
+
+# --------------------------------------------------------------------------
+section "detection: rust workspace"
+mkfix rust; printf '[workspace]\nmembers=["a"]\n' > "$FIX/Cargo.toml"
+fwf_detect "$FIX"
+assert_eq "kind"  "Rust" "$DETECT_KIND"
+assert_eq "gate"  "cargo test --workspace" "$DETECT_GATE"
+assert_eq "build" "cargo build --workspace" "$DETECT_BUILD"
+assert_eq "e2e"   "" "$DETECT_E2E"
+
+section "detection: rust single crate"
+mkfix rust1; printf '[package]\nname="a"\n' > "$FIX/Cargo.toml"
+fwf_detect "$FIX"
+assert_eq "gate (no --workspace)" "cargo test" "$DETECT_GATE"
+
+section "detection: node + pnpm + playwright + typecheck"
+mkfix node; printf '{"scripts":{"test":"jest","build":"tsc","dev":"vite","typecheck":"tsc --noEmit"},"devDependencies":{"@playwright/test":"^1"}}\n' > "$FIX/package.json"
+printf 'lock\n' > "$FIX/pnpm-lock.yaml"
+fwf_detect "$FIX"
+assert_eq "kind"  "Node (pnpm)" "$DETECT_KIND"
+assert_eq "gate"  "pnpm test && pnpm typecheck" "$DETECT_GATE"
+assert_eq "build" "pnpm build" "$DETECT_BUILD"
+assert_eq "e2e"   "pnpm exec playwright test" "$DETECT_E2E"
+assert_eq "dev"   "pnpm dev" "$DETECT_DEV"
+
+section "detection: node yarn, explicit e2e script wins"
+mkfix node2; printf '{"scripts":{"test":"vitest","test:e2e":"playwright test"}}\n' > "$FIX/package.json"
+printf 'lock\n' > "$FIX/yarn.lock"
+fwf_detect "$FIX"
+assert_eq "kind" "Node (yarn)" "$DETECT_KIND"
+assert_eq "e2e (explicit script)" "yarn test:e2e" "$DETECT_E2E"
+
+section "detection: go"
+mkfix go; printf 'module x\n' > "$FIX/go.mod"
+fwf_detect "$FIX"
+assert_eq "kind"  "Go" "$DETECT_KIND"
+assert_eq "gate"  "go test ./..." "$DETECT_GATE"
+assert_eq "build" "go build ./..." "$DETECT_BUILD"
+
+section "detection: python poetry"
+mkfix py; printf '[tool.poetry]\nname="x"\n' > "$FIX/pyproject.toml"
+fwf_detect "$FIX"
+assert_eq "kind" "Python (poetry)" "$DETECT_KIND"
+assert_eq "gate" "poetry run pytest" "$DETECT_GATE"
+
+section "detection: unknown"
+mkfix blank; echo hi > "$FIX/README"
+fwf_detect "$FIX"
+assert_eq "kind" "unknown" "$DETECT_KIND"
+assert_eq "gate" "" "$DETECT_GATE"
+
+# --------------------------------------------------------------------------
+section "profile generation: detected node repo"
+mkfix gennode; printf '{"scripts":{"test":"jest","build":"tsc"},"devDependencies":{"@playwright/test":"^1"}}\n' > "$FIX/package.json"
+commitfix
+fwf_detect "$FIX"
+OUT="$TMP/gennode.sh"
+fwf_write_profile "$OUT" "gennode" "$FIX" "$TMP/ws" "main"
+bash -n "$OUT" && ok "generated profile is valid bash" || bad "generated profile is valid bash"
+PROF="$(cat "$OUT")"
+assert_contains "has FWF_REPO"  "$PROF" "FWF_REPO=\"\${FWF_REPO:-$FIX}\""
+assert_contains "playwright e2e setup added" "$PROF" "E2E_SETUP_CMD='npx playwright install'"
+
+section "profile generation: unknown repo is FAIL-CLOSED"
+mkfix genblank; echo x > "$FIX/README"
+fwf_detect "$FIX"
+OUT="$TMP/genblank.sh"
+fwf_write_profile "$OUT" "genblank" "$FIX" "$TMP/ws" "master"
+GATE_LINE="$(grep '^GATE_CMD=' "$OUT")"
+assert_contains "gate fails closed (false)" "$GATE_LINE" "false"
+assert_contains "e2e defaults to true"      "$(grep '^E2E_CMD=' "$OUT")" "E2E_CMD='true'"
+assert_contains "default branch baked in"   "$(grep '^DEFAULT_BRANCH=' "$OUT")" "master"
+
+section "generated profile loads via lib.sh and renders a prompt"
+# Put the generated profile where lib.sh looks, in an isolated FWF_DIR copy.
+RUN="$(FWF_PROFILE="" bash -c '
+  set -e
+  cp "'"$OUT"'" "'"$ROOT"'/profiles/.__test_genblank.sh"
+  trap "rm -f '"$ROOT"'/profiles/.__test_genblank.sh" EXIT
+  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/prompts/qa.tmpl 1 | cut -c1-12)\""
+')"
+assert_eq "lib.sh sees baked default branch" "master" "${RUN%%|*}"
+assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
+
+# --------------------------------------------------------------------------
+section "dispatcher: read-only commands"
+assert_eq "version" "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
+assert_contains "help mentions start" "$("$ROOT/fwf" help)" "start <url|path>"
+"$ROOT/fwf" doctor >/dev/null 2>&1 && ok "doctor runs" || bad "doctor runs"
+# profiles lists at least the example template shipped in the repo
+assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
+
+section "dispatcher: bad input is rejected"
+"$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
+"$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
+
+# --------------------------------------------------------------------------
+section "shellcheck (if available)"
+if command -v shellcheck >/dev/null 2>&1; then
+  # Policy: fail on warnings + errors; allow info-level style nits (the
+  # `cmd && ok || bad` idiom, intentional word-splitting). SC2034 is annotated
+  # at the top of config/profile files (vars consumed in other sourced scripts).
+  if shellcheck -s bash -S warning \
+       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT"/profiles/*.sh "$ROOT/test/run.sh"; then
+    ok "shellcheck clean"
+  else
+    bad "shellcheck reported issues"
+  fi
+else
+  printf '  skip shellcheck (not installed)\n'
+fi
+
+# --------------------------------------------------------------------------
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

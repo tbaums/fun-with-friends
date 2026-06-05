@@ -2,7 +2,7 @@
 # Clear the STOP sentinel so the swarm can run again. fwf-stop cancelled each
 # agent's loop, so re-arm the roles you want looping again with fwf-respawn.sh.
 #
-# Usage: [FWF_PROFILE=transom] fwf-resume.sh
+# Usage: [FWF_PROFILE=example] fwf-resume.sh
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"

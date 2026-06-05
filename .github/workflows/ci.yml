@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - name: bash -n (syntax)
+        run: |
+          for f in fwf *.sh lib/*.sh profiles/*.sh test/*.sh; do
+            bash -n "$f" && echo "ok  $f"
+          done
+      - name: shellcheck (fail on warnings + errors)
+        run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/*.sh test/run.sh
+
+  test:
+    name: functional suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]   # macOS exercises the bash 3.2 floor path
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show bash version
+        run: bash --version | head -1
+      - name: Run functional tests
+        run: bash test/run.sh

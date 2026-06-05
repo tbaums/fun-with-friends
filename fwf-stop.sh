@@ -4,7 +4,7 @@
 # self-check (prompts/*.tmpl), so a loop that fires before it sees the broadcast
 # still halts. Use before pausing or shutting the swarm down.
 #
-# Usage: [FWF_PROFILE=transom] fwf-stop.sh
+# Usage: [FWF_PROFILE=example] fwf-stop.sh
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"

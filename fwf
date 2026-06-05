@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# fwf — fun-with-friends: a repo-agnostic multi-agent Claude Code dev swarm.
+#
+# Point it at a git repo and it stands up an 8-pane tmux factory (3
+# implementer/QA pairs + a PM + a conductor) that runs an ideas -> ship pipeline.
+#
+#   fwf start https://github.com/you/repo     # clone, detect, scaffold, launch
+#   fwf attach                                # watch the grid
+#   fwf stop                                  # graceful halt
+#
+# Run `fwf help` for the full subcommand list.
+set -euo pipefail
+
+FWF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Base config (workspace paths, run dir) + detection, without requiring a
+# profile to exist yet — `fwf init` runs before any profile is written.
+source "$FWF_DIR/config.sh"
+source "$FWF_DIR/lib/detect.sh"
+source "$FWF_DIR/lib/profile.sh"
+
+usage() {
+  cat <<'EOF'
+fwf — fun-with-friends multi-agent dev swarm
+
+USAGE
+  fwf [--profile NAME] <command> [args]
+
+GETTING STARTED
+  start <url|path> [--name N] [--yes] [--build]
+                         Clone (or use a local path), detect the toolchain,
+                         scaffold a profile, provision worktrees, and launch.
+                         Pauses to show the detected commands unless --yes.
+  init  <url|path> [--name N] [--yes]
+                         Same, but stop after scaffolding the profile
+                         (clone + detect + write profiles/<name>.sh).
+
+RUN THE GRID  (use --profile NAME, or it picks the only profile present)
+  provision [--build]    Create worktrees + dev data (one-time per repo).
+  up                     Launch the 8-pane tmux grid and deliver prompts.
+  attach                 tmux attach to the running grid.
+  respawn <role>         Hot-swap one pane: impl1..3 | qa1..3 | pm | conductor.
+  stop                   Graceful halt: agents commit WIP and idle.
+  resume                 Clear the stop sentinel (then respawn to re-arm).
+  down [--purge]         Kill the tmux session (--purge also removes worktrees).
+
+UTILITIES
+  doctor                 Check tmux / git / gh / claude and report versions.
+  profiles               List available profiles.
+  version                Print the fwf version.
+  help                   Show this help.
+
+ENVIRONMENT
+  FWF_PROFILE            Profile to use (same as --profile).
+  FWF_WORKSPACE_BASE     Where repos are cloned (default: ~/.fun-with-friends/workspaces).
+  See config.sh for the full set of FWF_* knobs.
+EOF
+}
+
+die() { echo "fwf: $*" >&2; exit 1; }
+
+# --- profile helpers --------------------------------------------------------
+profiles_dir() { echo "$FWF_DIR/profiles"; }
+
+list_profiles() { # bare names, one per line
+  local f
+  for f in "$(profiles_dir)"/*.sh; do
+    [ -e "$f" ] || continue
+    basename "$f" .sh
+  done
+}
+
+# Resolve which profile to use: explicit FWF_PROFILE wins; else if exactly one
+# profile exists, use it; else error and list the choices.
+resolve_profile() {
+  if [ -n "${FWF_PROFILE:-}" ]; then echo "$FWF_PROFILE"; return; fi
+  local names count
+  names="$(list_profiles)"
+  count="$(printf '%s\n' "$names" | grep -c . || true)"
+  if [ "$count" = "1" ]; then echo "$names"; return; fi
+  if [ "$count" = "0" ]; then
+    die "no profiles yet — run 'fwf init <git-url>' or 'fwf start <git-url>' first."
+  fi
+  echo "fwf: multiple profiles exist — pass --profile NAME:" >&2
+  printf '  %s\n' $names >&2
+  exit 1
+}
+
+# Run an engine script with the resolved profile exported.
+engine() { # $1 = script basename, rest = args
+  local script="$1"; shift
+  FWF_PROFILE="$(resolve_profile)" exec "$FWF_DIR/$script" "$@"
+}
+
+# --- doctor -----------------------------------------------------------------
+doctor() {
+  local ok=0
+  echo "fwf doctor"
+  printf '  bash      : %s\n' "$BASH_VERSION"
+  _doctor_one tmux   "tmux is required for the grid"            || ok=1
+  _doctor_one git    "git is required (worktrees)"              || ok=1
+  _doctor_one gh     "GitHub CLI is required (issues + PRs)"    || ok=1
+  # claude may be the first token of a custom FWF_CLAUDE_CMD
+  local claude_bin; claude_bin="${CLAUDE_CMD%% *}"
+  _doctor_one "$claude_bin" "Claude Code CLI is required in each pane" || ok=1
+
+  if command -v gh >/dev/null 2>&1; then
+    if gh auth status >/dev/null 2>&1; then echo "  gh auth   : authenticated"; else
+      echo "  gh auth   : NOT authenticated — run 'gh auth login'"; ok=1; fi
+  fi
+  printf '  workspace : %s\n' "$FWF_WORKSPACE_BASE"
+  printf '  run dir   : %s\n' "$FWF_RUN"
+  [ "$ok" = 0 ] && echo "  -> all good." || echo "  -> fix the items above before launching."
+  return "$ok"
+}
+_doctor_one() { # $1 = binary  $2 = why
+  if command -v "$1" >/dev/null 2>&1; then
+    local v; v="$("$1" --version 2>/dev/null | head -1)"
+    [ -n "$v" ] || v="$("$1" -V 2>/dev/null | head -1)"   # tmux only knows -V
+    printf '  %-9s : %s\n' "$1" "$v"
+    return 0
+  fi
+  printf '  %-9s : MISSING — %s\n' "$1" "$2"
+  return 1
+}
+
+# --- init / start -----------------------------------------------------------
+# Clone (or adopt a local path), detect, and scaffold a profile. Echoes the
+# resolved profile name on the last line via the global PROFILE_NAME.
+PROFILE_NAME=""
+do_init() {
+  local src="" name="" assume_yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2;;
+      --name=*) name="${1#*=}"; shift;;
+      --yes|-y) assume_yes=1; shift;;
+      -*) die "init: unknown flag '$1'";;
+      *) if [ -z "$src" ]; then src="$1"; else die "init: unexpected argument '$1'"; fi; shift;;
+    esac
+  done
+  [ -n "$src" ] || die "init: need a git URL or local path"
+  [ -n "$name" ] || name="$(derive_name "$src")"
+  [ -n "$name" ] || die "init: could not derive a name; pass --name"
+
+  local existing; existing="$(profiles_dir)/$name.sh"
+  if [ -e "$existing" ]; then
+    die "profile '$name' already exists ($existing) — pass --name to use a different one, or edit it directly."
+  fi
+
+  local workspace repo defbr
+  workspace="$FWF_WORKSPACE_BASE/$name"
+  mkdir -p "$workspace"
+
+  if is_url "$src"; then
+    repo="$workspace/repo"
+    if [ -d "$repo/.git" ]; then
+      echo "fwf: repo already cloned at $repo — reusing it."
+    else
+      echo "fwf: cloning $src -> $repo"
+      git clone "$src" "$repo"
+    fi
+  else
+    repo="$(cd "$src" 2>/dev/null && pwd)" || die "init: local path not found: $src"
+    [ -d "$repo/.git" ] || die "init: '$repo' is not a git repository"
+    echo "fwf: using local repo $repo (worktrees under $workspace)"
+  fi
+
+  defbr="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo main)"
+
+  echo "fwf: detecting toolchain in $repo ..."
+  fwf_detect "$repo"
+  echo
+  echo "Detected for profile '$name' (default branch: $defbr):"
+  fwf_detect_summary
+  echo
+
+  local out="$existing"
+  if [ "$assume_yes" != 1 ] && [ -t 0 ]; then
+    printf "Write profile and continue? [Y]es / [e]dit after writing / [a]bort: "
+    local ans; read -r ans || ans=""
+    case "$ans" in
+      a|A|n|N) die "aborted by user (nothing written).";;
+    esac
+    fwf_write_profile "$out" "$name" "$repo" "$workspace" "$defbr"
+    echo "fwf: wrote $out"
+    case "$ans" in
+      e|E) "${EDITOR:-vi}" "$out";;
+    esac
+  else
+    fwf_write_profile "$out" "$name" "$repo" "$workspace" "$defbr"
+    if [ "$assume_yes" = 1 ]; then echo "fwf: wrote $out"
+    else echo "fwf: wrote $out (review it, then 'fwf --profile $name up')"; fi
+  fi
+  PROFILE_NAME="$name"
+}
+
+# --- dispatch ---------------------------------------------------------------
+# Global --profile flag may precede the subcommand.
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --profile) export FWF_PROFILE="$2"; shift 2;;
+    --profile=*) export FWF_PROFILE="${1#*=}"; shift;;
+    -h|--help|help) usage; exit 0;;
+    --) shift; break;;
+    -*) die "unknown global flag '$1' (did you mean a subcommand?)";;
+    *) break;;
+  esac
+done
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift || true
+case "$cmd" in
+  ""|help)   usage;;
+  version)   cat "$FWF_DIR/VERSION" 2>/dev/null || echo "unknown";;
+  doctor)    doctor;;
+  profiles)  list_profiles;;
+  init)      do_init "$@";;
+  start)
+    # peel off init-only vs run flags: --build belongs to provision
+    build_flag=""; init_args=()
+    for a in "$@"; do
+      if [ "$a" = "--build" ]; then build_flag="--build"; else init_args+=("$a"); fi
+    done
+    # bash 3.2 + set -u: expanding an empty array errors, so guard it.
+    do_init ${init_args[@]+"${init_args[@]}"}
+    echo
+    echo "fwf: provisioning worktrees for '$PROFILE_NAME' ..."
+    FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-provision.sh" $build_flag
+    echo "fwf: launching the grid ..."
+    FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-up.sh"
+    ;;
+  provision) engine fwf-provision.sh "$@";;
+  up)        engine fwf-up.sh "$@";;
+  respawn)   engine fwf-respawn.sh "$@";;
+  stop)      engine fwf-stop.sh "$@";;
+  resume)    engine fwf-resume.sh "$@";;
+  down)      engine fwf-down.sh "$@";;
+  attach)
+    FWF_PROFILE="$(resolve_profile)"
+    source "$FWF_DIR/lib.sh"
+    exec tmux attach -t "$SESSION";;
+  *) die "unknown command '$cmd' (try 'fwf help')";;
+esac

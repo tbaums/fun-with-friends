@@ -2,12 +2,24 @@
 # Shared helpers. Sources config.sh + the selected profile, then exposes
 # wt_dir() and fwf_render(). Source this from every fwf-*.sh entrypoint.
 
+# --- bash floor -------------------------------------------------------------
+# macOS ships bash 3.2 (2007) as /bin/bash; Linux ships 4/5. This codebase is
+# deliberately 3.2-clean (no associative arrays, no ${var^^}, no mapfile), so
+# 3.2 is the floor. We only reject a non-bash shell or something older than 3.2.
+if [ -z "${BASH_VERSINFO:-}" ]; then
+  echo "fwf: must run under bash (got a non-bash shell). Try: bash $0" >&2; exit 1
+fi
+if [ "${BASH_VERSINFO[0]}" -lt 3 ] || { [ "${BASH_VERSINFO[0]}" -eq 3 ] && [ "${BASH_VERSINFO[1]}" -lt 2 ]; }; then
+  echo "fwf: bash >= 3.2 required (found $BASH_VERSION). On macOS the stock 3.2 is fine; otherwise upgrade bash." >&2; exit 1
+fi
+
 FWF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$FWF_LIB_DIR/config.sh"
 
-PROFILE="${FWF_PROFILE:-transom}"
+PROFILE="${FWF_PROFILE:-example}"
 PROFILE_FILE="$FWF_LIB_DIR/profiles/$PROFILE.sh"
 [ -f "$PROFILE_FILE" ] || { echo "fwf: unknown profile '$PROFILE' (missing $PROFILE_FILE)" >&2; exit 1; }
+# shellcheck source=/dev/null  # profile path is resolved at runtime
 source "$PROFILE_FILE"
 
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
@@ -48,12 +60,12 @@ _fwf_pane_is_shell() { # $1=pane
 # take over, and retry a few times. Returns 0 once claude is up, 1 if it never
 # came up. Safe to call on a pane that already has claude (returns immediately).
 fwf_ensure_claude() { # $1=pane
-  local p="$1" try w
-  for try in 1 2 3 4 5; do
+  local p="$1"
+  for _ in 1 2 3 4 5; do                          # retry attempts (counter unused)
     _fwf_pane_is_shell "$p" || return 0          # claude already running
     tmux send-keys -t "$p" C-c 2>/dev/null; sleep 0.4   # clear any half-typed/lost line
     tmux send-keys -t "$p" -l "$CLAUDE_CMD"; tmux send-keys -t "$p" Enter
-    for w in $(seq 1 15); do
+    for _ in $(seq 1 15); do                       # wait up to 15s for claude to take over
       sleep 1
       _fwf_pane_is_shell "$p" || return 0
     done

@@ -2,7 +2,7 @@
 # Tear down the swarm tmux session and release the e2e lock. With --purge, also
 # remove the worktrees and impl dev-data dirs (destructive — retiring the swarm).
 #
-# Usage: [FWF_PROFILE=transom] fwf-down.sh [--purge]
+# Usage: [FWF_PROFILE=example] fwf-down.sh [--purge]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"

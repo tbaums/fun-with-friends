@@ -4,7 +4,7 @@
 # into the shell by mistake. Use this to hot-swap one agent (e.g. after editing a
 # prompt template) without relaunching the whole grid.
 #
-# Usage: [FWF_PROFILE=transom] fwf-respawn.sh <role>
+# Usage: [FWF_PROFILE=example] fwf-respawn.sh <role>
 #   role = impl1 | impl2 | impl3 | qa1 | qa2 | qa3 | pm | conductor
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -4,7 +4,7 @@
 # Each implementer/QA pair shares one color; the active pane is highlighted hard.
 # Assumes fwf-provision.sh has created the worktrees.
 #
-# Usage: [FWF_PROFILE=transom] fwf-up.sh
+# Usage: [FWF_PROFILE=example] fwf-up.sh
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"

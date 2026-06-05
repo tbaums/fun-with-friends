@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Verify tag matches VERSION
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          file="$(cat VERSION)"
+          if [ "$tag" != "$file" ]; then
+            echo "::error::tag v$tag does not match VERSION ($file) — bump VERSION before tagging"
+            exit 1
+          fi
+          echo "tag and VERSION agree: $file"
+
+      - name: Lint
+        run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/*.sh test/run.sh
+
+      - name: Functional tests
+        run: bash test/run.sh
+
+      - name: Build tarball
+        id: pkg
+        run: echo "path=$(scripts/package.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.pkg.outputs.path }}" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # vars here are consumed by other sourced scripts
 # fun-with-friends — a generic, repo-agnostic multi-agent dev swarm.
 # Generic defaults only. Repo-specific commands live in profiles/<name>.sh.
 # Every value is overridable by the matching FWF_* env var.
@@ -25,10 +26,23 @@ HOLD_LABEL="${FWF_HOLD_LABEL:-release-hold}"
 FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
 # Where worktrees live, and run-state (the e2e lock).
+# WT_BASE defaults to $HOME for backward-compat, but a generated profile (from
+# `fwf init <url>`) overrides it to that repo's workspace dir so eight worktrees
+# don't pile up in your home directory.
 WT_BASE="${FWF_WT_BASE:-$HOME}"
 FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
+# Per-repo workspaces live here: each `fwf init/start <url>` clones into
+# $FWF_WORKSPACE_BASE/<name>/repo and puts that profile's worktrees alongside.
+FWF_WORKSPACE_BASE="${FWF_WORKSPACE_BASE:-$FWF_RUN/workspaces}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
 STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it commit WIP, cancel their loop, and idle
+
+# Per-worktree dev data. Default to no-ops so a profile for a repo with no dev
+# data can omit them entirely; a profile may override these to seed an
+# isolated data dir per tree. data_dir echoes nothing by default (so a
+# __DATA__ placeholder in DEV_UI_HINT collapses to empty).
+data_dir()  { :; }          # $1 = role tag; echo a path if the repo needs isolated dev data
+seed_data() { :; }          # $1 = data dir; seed it if the repo needs it
 
 # Colors. ONE hue per implementer/QA pair (the implementer matches its QA, by request).
 # PM and conductor get their own distinct colors.

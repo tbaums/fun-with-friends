@@ -1,0 +1,11 @@
+# Release artifacts
+/dist/
+
+# User-generated profiles (written by `fwf init`); only the example template is tracked.
+profiles/*.sh
+!profiles/example.sh
+
+# macOS / editor cruft
+.DS_Store
+*.swp
+*~
