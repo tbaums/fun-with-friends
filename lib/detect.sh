@@ -88,7 +88,9 @@ _d_x() { # $1=pm  -> the "run a bin from node_modules" prefix
 }
 
 _detect_node() {
-  local pm gate build e2e dev x
+  # Initialise all to empty: build/e2e/dev are only assigned when a matching
+  # script/dep exists, and bash 4+ `set -u` aborts on a declared-but-unset local.
+  local pm="" gate="" build="" e2e="" dev="" x=""
   pm="$(_d_node_pm)"; x="$(_d_x "$pm")"
   DETECT_KIND="Node ($pm)"
 
