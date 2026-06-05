@@ -93,9 +93,16 @@ fwf --profile your-repo up                      # launch
   ahead, acquires the e2e lock, runs the **full e2e suite** on `staging`, and on
   green ff-merges **`staging → integration`**. It **never touches the default
   branch**.
-- **You** (a separate session): release `integration → main` when you choose —
-  landing the `Closes #N` commits on the default branch and **auto-closing the
-  issues**. Features never reach `main` while you're cutting a release.
+- **You / the TEAM LEAD** (a separate interactive session): the swarm's
+  orchestrator and your technical co-pilot. Plans and scopes work into ready
+  issues, shepherds the swarm (respawns wedged agents, deconflicts duplicate
+  claims, briefs the PM via issue comments, approves drafts), does the hard or
+  deadline-critical work directly, runs a prod-health caretaker heartbeat, and
+  **releases `integration → main`** when you choose — landing the `Closes #N`
+  commits on the default branch and **auto-closing the issues**. Features never
+  reach `main` while you're cutting a release. Load
+  [`prompts/lead.tmpl`](prompts/lead.tmpl) into that session to get the role,
+  workflows, and hard-won quality lessons out of the box.
 
 The e2e lock (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`) serializes e2e so
 its single-port suite never collides.
