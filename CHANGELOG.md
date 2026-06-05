@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-05
+
+### Changed
+- All swarm prompts now require a `Co-Authored-By: Claude <noreply@anthropic.com>`
+  trailer on every commit (lead, implementer, qa, and the stop checkpoint),
+  reversing the prior rule that forbade Claude attribution. The conductor
+  (ff-only merges) and pm (issues/comments) author no commits and are unchanged.
+
 ## [0.1.6] - 2026-06-05
 
 ### Changed
