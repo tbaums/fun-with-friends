@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-05
+
+### Changed
+- CI/release workflows: bump `actions/checkout` from v4 to v5 (v4 runs on the
+  deprecated Node 20 runtime).
+
 ## [0.1.0] - 2026-06-05
 
 First tagged release.
@@ -32,5 +38,6 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/tbaums/fun-with-friends/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/tbaums/fun-with-friends/releases/tag/v0.1.0

@@ -14,7 +14,7 @@ jobs:
     name: shellcheck + syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
       - name: bash -n (syntax)
@@ -33,7 +33,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]   # macOS exercises the bash 3.2 floor path
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Show bash version
         run: bash --version | head -1
       - name: Run functional tests
