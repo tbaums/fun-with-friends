@@ -10,9 +10,10 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 PROMPTS="$DIR/prompts"
 
-# Type a prompt into a pane's claude composer and submit. The first Enter after
-# a long literal paste is frequently absorbed by the TUI, so we send two.
-send() { tmux send-keys -t "$1" -l "$2"; sleep 1; tmux send-keys -t "$1" Enter; sleep 1; tmux send-keys -t "$1" Enter; }
+# Type a prompt into a pane's claude composer and submit. Clear any stale buffer
+# first, then type. The first Enter after a long literal paste is frequently
+# absorbed by the TUI, so we send two.
+send() { fwf_clear_composer "$1"; tmux send-keys -t "$1" -l "$2"; sleep 1; tmux send-keys -t "$1" Enter; sleep 1; tmux send-keys -t "$1" Enter; }
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "tmux session '$SESSION' already exists — run fwf-down.sh first." >&2; exit 1

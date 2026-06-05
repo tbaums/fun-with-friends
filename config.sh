@@ -16,6 +16,12 @@ CONDUCTOR_INTERVAL="${FWF_CONDUCTOR_INTERVAL:-2m}" # how often the conductor e2e
 PM_INTERVAL="${FWF_PM_INTERVAL:-5m}"               # how often the PM loop reviews its draft issues
 IMPL_INTERVAL="${FWF_IMPL_INTERVAL:-2m}"           # implementers loop too, so they advance after each handoff (no idle-waiting)
 CLAUDE_CMD="${FWF_CLAUDE_CMD:-claude --dangerously-skip-permissions}"
+# Environment prepended to each claude launch. CLAUDE_CODE_FORCE_SYNC_OUTPUT=1
+# makes terminal redraws atomic (helps avoid dropped/garbled input under tmux).
+# Add CLAUDE_CODE_NO_FLICKER=1 for alt-screen isolation (changes scrollback), or
+# set FWF_CLAUDE_ENV="" to disable.
+FWF_CLAUDE_ENV="${FWF_CLAUDE_ENV:-CLAUDE_CODE_FORCE_SYNC_OUTPUT=1}"
+[ -n "$FWF_CLAUDE_ENV" ] && CLAUDE_CMD="env $FWF_CLAUDE_ENV $CLAUDE_CMD"
 
 # PM drafts wear this label; implementers skip any issue carrying it until you remove it.
 WIP_LABEL="${FWF_WIP_LABEL:-product-wip}"

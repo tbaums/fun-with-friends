@@ -47,6 +47,17 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   printf '%s' "$text" | tr '\n' ' ' | tr -s ' '
 }
 
+# Clear whatever is sitting in the pane's Claude composer before we type into it,
+# so a stale/half-typed buffer doesn't garble the next prompt (the "wedged buffer"
+# problem). Ctrl+U is the TUI's reliable line-clear; we repeat it to drain
+# multi-line drafts. Deliberately NOT Ctrl+C (a second Ctrl+C exits the session)
+# and NOT Ctrl+A/Ctrl+K (readline, which this TUI does not honor).
+fwf_clear_composer() { # $1=pane
+  local p="$1"
+  for _ in 1 2 3; do tmux send-keys -t "$p" C-u 2>/dev/null; done
+  sleep 0.3
+}
+
 # True while the pane is still sitting at a shell (claude has not taken over).
 _fwf_pane_is_shell() { # $1=pane
   case "$(tmux display -p -t "$1" '#{pane_current_command}' 2>/dev/null)" in

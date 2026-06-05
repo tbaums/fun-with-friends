@@ -38,6 +38,7 @@ tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
 text="$loop$(fwf_render "$PROMPTS/$tmpl" "$id")"
+fwf_clear_composer "$CP"
 tmux send-keys -t "$CP" -l "$text"; sleep 1
 tmux send-keys -t "$CP" Enter; sleep 1
 tmux send-keys -t "$CP" Enter

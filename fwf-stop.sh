@@ -16,7 +16,7 @@ mkdir -p "$FWF_RUN"
 
 MSG="$(tr '\n' ' ' < "$DIR/prompts/stop.txt" | tr -s ' ')"
 for p in $(tmux list-panes -t "$SESSION" -F '#{pane_id}'); do
-  tmux send-keys -t "$p" C-a C-k; sleep 0.3      # clear whatever is in the composer
+  fwf_clear_composer "$p"                        # clear whatever is in the composer (Ctrl+U)
   tmux send-keys -t "$p" -l "$MSG"; sleep 0.5
   tmux send-keys -t "$p" Enter;    sleep 0.5
   tmux send-keys -t "$p" Enter

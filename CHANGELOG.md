@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-05
+
+### Changed
+- Harden tmux prompt delivery against wedged/garbled input buffers: clear each
+  pane's composer with `Ctrl+U` before typing (launch, respawn, stop), and
+  replace `fwf-stop`'s ineffective `Ctrl+A`/`Ctrl+K` clear (readline keys this
+  TUI ignores). Launch claude with `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1` for atomic
+  redraws — configurable via `FWF_CLAUDE_ENV` (e.g. add `CLAUDE_CODE_NO_FLICKER=1`,
+  or set it empty to disable).
+
 ## [0.1.4] - 2026-06-05
 
 ### Added
@@ -64,7 +74,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/tbaums/fun-with-friends/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/tbaums/fun-with-friends/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/tbaums/fun-with-friends/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/tbaums/fun-with-friends/compare/v0.1.1...v0.1.2
