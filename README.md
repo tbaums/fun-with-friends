@@ -191,9 +191,9 @@ bash test/run.sh        # functional suite: detection, profile generation, dispa
 shellcheck -S warning fwf *.sh lib/*.sh profiles/*.sh test/run.sh
 ```
 
-CI runs both on every push/PR (Linux + macOS). Tagging `vX.Y.Z` (matching
-`VERSION`) builds a release tarball via `scripts/package.sh` and publishes a
-GitHub Release.
+CI runs both on every push to `main` and on PRs (Linux + macOS). Cutting a
+release is documented in [`RELEASING.md`](RELEASING.md); see
+[`CHANGELOG.md`](CHANGELOG.md) for what shipped in each version.
 
 ## License
 

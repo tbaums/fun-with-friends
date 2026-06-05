@@ -14,7 +14,7 @@ DEST="$STAGE/$NAME"
 trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts"
-cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md "$DEST/"
+cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
 cp fwf-provision.sh fwf-up.sh fwf-respawn.sh fwf-stop.sh fwf-resume.sh fwf-down.sh "$DEST/"
 cp lib/detect.sh lib/profile.sh "$DEST/lib/"
 cp profiles/example.sh "$DEST/profiles/"        # generic template only
