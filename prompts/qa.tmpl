@@ -13,8 +13,8 @@ Each cycle:
    b. Run the fast gate: __GATE__
    c. If GREEN: read the issue number from the PR (gh pr view <num> --json title,body — it contains "Closes #<n>"). Then:
         gh pr review <num> --approve --body "gate green at <sha>"
-        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "Closes #<n>"
-      The "Closes #<n>" MUST be in the squash commit so the issue resolves when it eventually reaches __DEFAULT__. This merges into __STAGING__.
+        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Closes #<n>\n\nCo-Authored-By: Claude <noreply@anthropic.com>')"
+      The "Closes #<n>" MUST be in the squash commit so the issue resolves when it eventually reaches __DEFAULT__. The `Co-Authored-By: Claude <noreply@anthropic.com>` trailer (at column 0, after a blank line) acknowledges Claude's co-authorship on the merge commit (best practice). This merges into __STAGING__.
    d. If RED: gh pr review <num> --request-changes --body "<the EXACT failing output — do not paraphrase>". Then write the smallest failing test that reproduces it, commit it on branch qa__ID__/repro-<num>, push it, and point impl__ID__ at that test plus a fix direction. Do NOT merge and do NOT edit their feature code.
    e. UI/LAYOUT/MOBILE PRs — before merging, confirm the test verifies APPEARANCE, not a proxy (the v0.6.x lesson: green tests shipped a visibly-broken UI). It must seed REAL/LONG content, assert the CONTAINER fits the viewport (not just inner elements), floor mobile inputs to >=16px where relevant, and run on the real mobile lane. If the test would stay green while the view is visibly broken (overflow/clipping/collapse/wrong-affordance), request changes and tell impl__ID__ to add a real-content container-vs-viewport assertion before you merge.
 
