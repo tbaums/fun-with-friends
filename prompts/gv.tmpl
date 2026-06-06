@@ -25,6 +25,7 @@ A critic can always find something — so converge. Per work product, run AT MOS
 
 1. REVIEW GATED PM DRAFTS (your hard-gate duty). List them:
    gh issue list --state open --label "__WIP_LABEL__" --json number,title
+   SKIP any issue also labeled `idea` — it's a parked idea the human recorded for later, not a draft to harden. Never review, comment on, or sign off an `idea` issue; leave it untouched until the human removes the `idea` label.
    For each draft, decide whether it needs your attention THIS cycle:
    - It has a real, buildable spec (Problem / Proposed behavior / Acceptance criteria) AND you have NOT yet signed off on the current version → REVIEW it now.
    - The PM has revised it since your last "GV-CHANGES" (new edits/comments) → RE-REVIEW the changes.
