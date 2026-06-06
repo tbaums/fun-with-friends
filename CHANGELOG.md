@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-05
+
+### Changed
+- The CAPTAIN now surfaces pending human decisions on EVERY loop tick: a numbered
+  "⛔ NEEDS YOU" list (unanswered PM questions, GV escalations, GV-signed-off
+  drafts awaiting a go-ahead, and its own blocked calls) printed under the status
+  table — so a question parked in a GitHub thread never stays hidden from you.
+  Its loop tick is now 2m (was 10m) to keep this timely.
+- `fwf resume` now re-arms every role's loop for the active profile (respawns all
+  panes) after clearing the STOP sentinel — no more hand-running a respawn loop.
+  Pass `--clear-only` to clear the sentinel without touching panes; if the
+  sessions aren't running it clears and points you at `fwf up`. The canonical
+  role list now lives in one place (`fwf_all_roles`).
+
 ## [0.2.0] - 2026-06-05
 
 ### Added

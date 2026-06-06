@@ -54,7 +54,7 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   respawn <role>         Hot-swap one pane:
                          impl1..3 | qa1..3 | conductor | pm | gv | captain.
   stop                   Graceful halt: agents commit WIP and idle.
-  resume                 Clear the stop sentinel (then respawn to re-arm).
+  resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
   down [--purge]         Kill both tmux sessions (--purge also removes worktrees).
 
 UTILITIES

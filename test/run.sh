@@ -141,6 +141,12 @@ CAPTAIN="$("$ROOT/fwf" --profile example captain --print 2>&1)"
 assert_contains "captain --print renders prompt" "$CAPTAIN" "CAPTAIN"
 assert_contains "captain resolves placeholders"  "$CAPTAIN" "staging"
 
+section "dispatcher: resume --clear-only clears the sentinel"
+RUNDIR="$TMP/run"; mkdir -p "$RUNDIR"; : > "$RUNDIR/STOP"
+RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf" --profile example resume --clear-only 2>&1)"
+[ -e "$RUNDIR/STOP" ] && bad "resume --clear-only removes sentinel" || ok "resume --clear-only removes sentinel"
+assert_contains "resume --clear-only message" "$RES" "cleared STOP sentinel"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

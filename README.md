@@ -182,7 +182,7 @@ fwf up                                              launch both sessions (10 pan
 fwf attach [coord|build]                            attach to coordination (default) or implementation
 fwf captain [--print]                               copy/print the CAPTAIN prompt
 fwf respawn <role>                                  hot-swap one pane (impl1..3|qa1..3|conductor|pm|gv|captain)
-fwf stop | resume                                   graceful halt / clear the stop sentinel
+fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
 fwf down [--purge]                                  kill both sessions (--purge also removes worktrees)
 fwf doctor | profiles | version | help              (version also: -v, --version)
 ```

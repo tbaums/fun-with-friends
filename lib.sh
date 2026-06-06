@@ -25,6 +25,15 @@ source "$PROFILE_FILE"
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
 wt_dir() { echo "$WT_BASE/${WT_PREFIX}-$1"; }
 
+# The canonical set of looped roles, one per line, in launch/arm order. Single
+# source of truth — fwf-up delivers prompts to these and fwf-resume re-arms them.
+fwf_all_roles() {
+  local id
+  for id in "${PAIRS[@]}"; do echo "impl$id"; done
+  for id in "${PAIRS[@]}"; do echo "qa$id"; done
+  echo conductor; echo pm; echo gv; echo captain
+}
+
 # Render a prompt template into a single line, substituting placeholders.
 # Uses bash substitution (not sed) so command strings with && / are safe.
 fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
