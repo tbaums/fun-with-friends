@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision worktrees + isolated dev-data for the selected profile (idempotent,
-# additive). Creates: impl1-3 (+ paired qa1-3), pm, conductor. Optionally warms
-# each worktree's build.
+# additive). Creates: impl1-3 (+ paired qa1-3), pm, gv, captain, conductor.
+# Optionally warms each worktree's build.
 #
 # Usage: [FWF_PROFILE=example] fwf-provision.sh [--build]
 set -euo pipefail
@@ -62,6 +62,9 @@ for id in "${PAIRS[@]}"; do
   warm "impl$id"; warm "qa$id"
 done
 add_detached_wt "pm"
+add_detached_wt "gv"          # Grand Vizier — read-mostly critic (no build, no dev data)
+add_detached_wt "captain"    # Captain — releases + direct deep work
+warm "captain"
 add_detached_wt "conductor"
 warm "conductor"
 

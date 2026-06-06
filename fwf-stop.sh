@@ -9,18 +9,23 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 
-tmux has-session -t "$SESSION" 2>/dev/null || { echo "no tmux session '$SESSION'" >&2; exit 1; }
+any=0
+for s in "$COORD_SESSION" "$BUILD_SESSION"; do tmux has-session -t "$s" 2>/dev/null && any=1; done
+[ "$any" = 1 ] || { echo "no fwf tmux sessions ('$COORD_SESSION' / '$BUILD_SESSION')" >&2; exit 1; }
 
 mkdir -p "$FWF_RUN"
 : > "$STOP_FILE"   # sentinel: looping agents that check __STOPFILE__ will self-halt
 
 MSG="$(tr '\n' ' ' < "$DIR/prompts/stop.txt" | tr -s ' ')"
-for p in $(tmux list-panes -t "$SESSION" -F '#{pane_id}'); do
-  fwf_clear_composer "$p"                        # clear whatever is in the composer (Ctrl+U)
-  tmux send-keys -t "$p" -l "$MSG"; sleep 0.5
-  tmux send-keys -t "$p" Enter;    sleep 0.5
-  tmux send-keys -t "$p" Enter
+for s in "$COORD_SESSION" "$BUILD_SESSION"; do
+  tmux has-session -t "$s" 2>/dev/null || continue
+  for p in $(tmux list-panes -t "$s" -F '#{pane_id}'); do
+    fwf_clear_composer "$p"                        # clear whatever is in the composer (Ctrl+U)
+    tmux send-keys -t "$p" -l "$MSG"; sleep 0.5
+    tmux send-keys -t "$p" Enter;    sleep 0.5
+    tmux send-keys -t "$p" Enter
+  done
 done
 
-echo "STOP broadcast to all panes of '$SESSION'; sentinel created at $STOP_FILE"
+echo "STOP broadcast to all panes of '$COORD_SESSION' + '$BUILD_SESSION'; sentinel created at $STOP_FILE"
 echo "Resume later with: fwf-resume.sh   (clears the sentinel; re-arm loops via fwf-respawn.sh <role>)"

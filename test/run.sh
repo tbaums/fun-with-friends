@@ -126,7 +126,9 @@ assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
-assert_eq "version" "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
+assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
+assert_eq "-v alias"       "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" -v)"
+assert_eq "--version alias" "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" --version)"
 assert_contains "help mentions start" "$("$ROOT/fwf" help)" "start <url|path>"
 # doctor reports tool status and exits non-zero if any are missing (correct on a
 # bare runner with no tmux/gh/claude) — assert it RAN, not that it returned 0.
@@ -134,10 +136,10 @@ DOC="$("$ROOT/fwf" doctor 2>&1 || true)"
 assert_contains "doctor runs" "$DOC" "workspace :"
 # profiles lists at least the example template shipped in the repo
 assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
-# lead --print renders the TEAM LEAD prompt with placeholders resolved
-LEAD="$("$ROOT/fwf" --profile example lead --print 2>&1)"
-assert_contains "lead --print renders prompt" "$LEAD" "TEAM LEAD"
-assert_contains "lead resolves placeholders"  "$LEAD" "staging"
+# captain --print renders the CAPTAIN prompt with placeholders resolved
+CAPTAIN="$("$ROOT/fwf" --profile example captain --print 2>&1)"
+assert_contains "captain --print renders prompt" "$CAPTAIN" "CAPTAIN"
+assert_contains "captain resolves placeholders"  "$CAPTAIN" "staging"
 
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"

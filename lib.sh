@@ -39,6 +39,8 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   text="${text//__HOLD_LABEL__/$HOLD_LABEL}"
   text="${text//__PM_INTERVAL__/$PM_INTERVAL}"
   text="${text//__STOPFILE__/$STOP_FILE}"
+  text="${text//__COORD_SESSION__/$COORD_SESSION}"
+  text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"
   text="${text//__GATE__/$GATE_CMD}"
   text="${text//__E2E__/$E2E_CMD}"

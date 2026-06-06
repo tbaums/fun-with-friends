@@ -1,9 +1,10 @@
 # fun-with-friends
 
 Point it at a git repo and it stands up a **multi-agent Claude Code dev factory**
-for that repo: eight interactive Claude sessions in a tmux grid driving a full
-**ideas → ship** pipeline — a product manager, three implementers, three QA
-reviewers, and a conductor that gates end-to-end tests.
+for that repo: ten Claude sessions across two tmux sessions driving a full
+**ideas → ship** pipeline — a **captain** you talk to, a **grand vizier** that
+hardens the work, a product manager, three implementers, three QA reviewers, and
+a conductor that gates end-to-end tests.
 
 ```bash
 fwf start https://github.com/you/your-repo
@@ -11,13 +12,23 @@ fwf start https://github.com/you/your-repo
 
 That one command clones the repo, detects its toolchain (Rust / Node / Go /
 Python), shows you the test/build/e2e commands it inferred, scaffolds a profile,
-provisions git worktrees, and launches the grid.
+provisions git worktrees, and launches the factory.
+
+It runs as **two tmux sessions**. You attach to **coordination** and talk to the
+captain; the **implementation** floor builds. They coordinate only through the
+issue tracker and git — never across panes.
 
 ```
+coordination  (you talk to the captain)
+┌──────────────┬──────────────┬───────────────┐
+│ PM (pink)    │ GV (purple)  │ CAPTAIN (blue) │
+└──────────────┴──────────────┴───────────────┘
+
+implementation  (the build floor)
 ┌──────────────┬──────────────┬──────────────┬────────────────────┐
-│ IMPL1 (red)  │ IMPL2 (green)│ IMPL3 (teal) │ PM (pink)          │  ← top row
-├──────────────┼──────────────┼──────────────┼────────────────────┤
-│ QA1  (red)   │ QA2  (green) │ QA3  (teal)  │ CONDUCTOR (gold)   │  ← bottom row
+│ IMPL1 (red)  │ IMPL2 (green)│ IMPL3 (teal) │                    │
+├──────────────┼──────────────┼──────────────┤  CONDUCTOR (gold)  │
+│ QA1  (red)   │ QA2  (green) │ QA3  (teal)  │                    │
 └──────────────┴──────────────┴──────────────┴────────────────────┘
 ```
 
@@ -31,7 +42,7 @@ macOS or Linux (the UX is a tmux grid; Windows needs WSL). You need:
 
 | Tool | Why |
 |---|---|
-| [`tmux`](https://github.com/tmux/tmux) | the 8-pane grid |
+| [`tmux`](https://github.com/tmux/tmux) | the 10-pane factory (two sessions) |
 | `git` (≥ 2.x) | worktrees, one per agent |
 | [`gh`](https://cli.github.com/) (authenticated) | issues + pull requests |
 | [`claude`](https://www.anthropic.com/claude-code) | a Claude Code session in every pane |
@@ -58,9 +69,10 @@ Or just run `./fwf` directly from the clone — `install.sh` only puts it on you
 
 ```bash
 fwf start https://github.com/you/your-repo   # clone, detect, confirm, provision, launch
-fwf attach                                    # watch the grid
+fwf attach                                    # watch coordination (talk to the captain)
+fwf attach build                              # watch the implementation floor
 fwf stop                                      # graceful halt: agents commit WIP and idle
-fwf down                                       # tear down the tmux session (keep worktrees)
+fwf down                                       # tear down both tmux sessions (keep worktrees)
 ```
 
 `fwf start` pauses to show the detected commands so you can review or edit the
@@ -76,10 +88,18 @@ fwf --profile your-repo up                      # launch
 
 ## The pipeline
 
-- **PM** (interactive + loop): turns your rough ideas into **draft** GitHub
-  issues labeled `product-wip` (hidden from implementers) via back-and-forth,
-  and on a loop refines those drafts from your new comments. When you're happy,
-  **you remove the label** and the issue enters the implementer queue.
+- **PM** (loop): turns rough ideas into **draft** GitHub issues labeled
+  `product-wip` (hidden from implementers) via back-and-forth, and on a loop
+  refines those drafts from new comments. A draft isn't *ready* until the **grand
+  vizier signs off** on it; then an explicit go-ahead removes the label and the
+  issue enters the implementer queue.
+- **GV — the grand vizier** (loop): the factory's strategic critic and
+  idea-honer. It **hardens every PM spec** for real-user value, maintainability,
+  and execution risk — posting concrete `GV-CHANGES` until it's top-notch, then a
+  `GV-SIGNOFF` (a hard gate on the PM). It also **advises the captain** on plans
+  and big calls — is now the right time, is this the right shape, is the swarm
+  even the right tool for a cross-cutting refactor — advisory there, not a gate.
+  It writes no code: it thinks, it doesn't authorize.
 - **IMPL1–3** (generalists): each surveys open issues + in-flight PRs, skips PM
   drafts and any issue already resolved on a shared branch, picks the
   **lowest-collision, oldest** eligible issue, and **immediately opens a draft
@@ -93,16 +113,18 @@ fwf --profile your-repo up                      # launch
   ahead, acquires the e2e lock, runs the **full e2e suite** on `staging`, and on
   green ff-merges **`staging → integration`**. It **never touches the default
   branch**.
-- **You / the TEAM LEAD** (a separate interactive session): the swarm's
-  orchestrator and your technical co-pilot. Plans and scopes work into ready
-  issues, shepherds the swarm (respawns wedged agents, deconflicts duplicate
-  claims, briefs the PM via issue comments, approves drafts), does the hard or
-  deadline-critical work directly, runs a prod-health caretaker heartbeat, and
+- **CAPTAIN — you talk to it** (interactive + loop, in the coordination
+  session): the factory's orchestrator and your technical co-pilot. Drop an idea
+  or a feature and it drives it to shipped. Plans and scopes work into ready
+  issues (**honing the plan with the grand vizier first**), shepherds both
+  sessions (respawns wedged agents, deconflicts duplicate claims, briefs the PM
+  via issue comments, approves drafts once the GV has signed off), does the hard
+  or deadline-critical work directly, runs a prod-health caretaker heartbeat, and
   **releases `integration → main`** when you choose — landing the `Closes #N`
-  commits on the default branch and **auto-closing the issues**. Features never
-  reach `main` while you're cutting a release. Load
-  [`prompts/lead.tmpl`](prompts/lead.tmpl) into that session to get the role,
-  workflows, and hard-won quality lessons out of the box.
+  commits on the default branch and **auto-closing the issues**. It hones its own
+  work with the GV but still confirms irreversible actions (deploys, releases)
+  with you. The role, workflows, and hard-won quality lessons live in
+  [`prompts/captain.tmpl`](prompts/captain.tmpl).
 
 The e2e lock (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`) serializes e2e so
 its single-port suite never collides.
@@ -143,11 +165,12 @@ launch with `fwf --profile <name>`:
 | `DEV_UI_HINT` | live-UI command shown to implementers (`__DATA__` → tree's data dir) |
 | `data_dir()` / `seed_data()` | isolated per-tree dev data (no-ops by default) |
 
-Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`,
-`FWF_QA_INTERVAL`, `FWF_CONDUCTOR_INTERVAL`, `FWF_PM_INTERVAL`,
-`FWF_IMPL_INTERVAL`, `FWF_WIP_LABEL`, `FWF_HOLD_LABEL`, `FWF_BOOT_TIMEOUT`,
-`FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors. Prompts are templates in
-`prompts/` — the source of truth.
+Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
+(base name; `FWF_COORD_SESSION`/`FWF_BUILD_SESSION` derive from it),
+`FWF_QA_INTERVAL`, `FWF_CONDUCTOR_INTERVAL`, `FWF_PM_INTERVAL`, `FWF_GV_INTERVAL`,
+`FWF_CAPTAIN_INTERVAL`, `FWF_IMPL_INTERVAL`, `FWF_WIP_LABEL`, `FWF_HOLD_LABEL`,
+`FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors. Prompts are
+templates in `prompts/` — the source of truth.
 
 ## Commands
 
@@ -155,13 +178,13 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`,
 fwf start <url|path> [--name N] [--yes] [--build]   clone → detect → confirm → provision → up
 fwf init  <url|path> [--name N] [--yes]             clone → detect → scaffold profile
 fwf provision [--build]                             create worktrees + dev data
-fwf up                                              launch the grid
-fwf attach                                          tmux attach to the grid
-fwf lead [--print]                                  copy/print the TEAM LEAD prompt for your orchestrator session
-fwf respawn <role>                                  hot-swap one pane (impl1..3|qa1..3|pm|conductor)
+fwf up                                              launch both sessions (10 panes)
+fwf attach [coord|build]                            attach to coordination (default) or implementation
+fwf captain [--print]                               copy/print the CAPTAIN prompt
+fwf respawn <role>                                  hot-swap one pane (impl1..3|qa1..3|conductor|pm|gv|captain)
 fwf stop | resume                                   graceful halt / clear the stop sentinel
-fwf down [--purge]                                  kill the session (--purge also removes worktrees)
-fwf doctor | profiles | version | help
+fwf down [--purge]                                  kill both sessions (--purge also removes worktrees)
+fwf doctor | profiles | version | help              (version also: -v, --version)
 ```
 
 Use `--profile NAME` (or `FWF_PROFILE=NAME`) to pick among profiles; with only
@@ -175,8 +198,8 @@ one profile present it's selected automatically.
   only on repos and machines where that is acceptable.
 - **The swarm never touches the default branch** — `staging` and `integration`
   are its only shared branches; you alone promote `integration → main`.
-- **Per-tree build dirs can be large** (eight worktrees). Don't `--purge`
-  between runs unless retiring the swarm; keep builds warm.
+- **Per-tree build dirs can be large** (ten worktrees). Don't `--purge`
+  between runs unless retiring the factory; keep builds warm.
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.

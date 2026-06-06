@@ -8,4 +8,4 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 
 if [ -e "$STOP_FILE" ]; then rm -f "$STOP_FILE"; echo "cleared STOP sentinel ($STOP_FILE)"; else echo "no STOP sentinel present"; fi
-echo "re-arm agents with, e.g.:  for r in impl1 impl2 impl3 qa1 qa2 qa3 pm conductor; do FWF_PROFILE=$PROFILE $DIR/fwf-respawn.sh \$r; done"
+echo "re-arm agents with, e.g.:  for r in impl1 impl2 impl3 qa1 qa2 qa3 conductor pm gv captain; do FWF_PROFILE=$PROFILE $DIR/fwf-respawn.sh \$r; done"

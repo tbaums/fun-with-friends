@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-05
+
+### Added
+- **Grand Vizier (GV)** — a new strategic critic / idea-honer role. It hardens
+  every PM spec for real-user value, maintainability, and execution risk via
+  concrete `GV-CHANGES` comments until top-notch, then posts a `GV-SIGNOFF` — a
+  HARD GATE: a PM draft is not "ready" until the GV signs off. It also ADVISES
+  the captain on plans and big calls (is now the right time, the right shape, is
+  the swarm even the right tool for a cross-cutting refactor) — advisory there,
+  not a gate. Bounded iteration (~3 rounds, then escalate one question). Runs
+  read-mostly; critiques only via GitHub comments; writes no code and never
+  authorizes — it thinks, the human authorizes.
+- `fwf -v` / `fwf --version` as aliases for `fwf version`.
+
+### Changed
+- **Two-session architecture.** The factory now runs as a COORDINATION session
+  (`PM · GV · CAPTAIN` — you attach here and talk to the captain) and an
+  IMPLEMENTATION session (`impl1-3 · qa1-3 · conductor`, with the conductor a
+  full-height 4th column). The two coordinate through the issue tracker + git,
+  never across panes. `FWF_SESSION` is now a base name; `FWF_COORD_SESSION` /
+  `FWF_BUILD_SESSION` derive from it. Added `FWF_GV_INTERVAL` / `FWF_CAPTAIN_INTERVAL`.
+- **TEAM LEAD → CAPTAIN** (breaking). The orchestrator is renamed and now runs as
+  a looped pane in the coordination session (previously a separate standalone
+  session you ran by hand). It hones its plans and decisions with the GV before
+  committing to them, but still confirms irreversible actions (deploys, releases)
+  with the human. CLI: `fwf lead` → `fwf captain`; prompt: `prompts/lead.tmpl` →
+  `prompts/captain.tmpl`.
+- **PM** now treats a draft as ready only after the GV's `GV-SIGNOFF`, and folds
+  `GV-CHANGES` into the spec like reviewer feedback — same single `product-wip`
+  gate, no new label.
+- `fwf attach` takes an optional target: `coord` (default) or `build`.
+- Provisioning adds two worktrees: `captain` (warmed — it does releases + deep
+  work) and `gv` (read-mostly).
+
 ## [0.1.7] - 2026-06-05
 
 ### Changed

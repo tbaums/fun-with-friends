@@ -5,7 +5,8 @@
 # prompt template) without relaunching the whole grid.
 #
 # Usage: [FWF_PROFILE=example] fwf-respawn.sh <role>
-#   role = impl1 | impl2 | impl3 | qa1 | qa2 | qa3 | pm | conductor
+#   role = impl1 | impl2 | impl3 | qa1 | qa2 | qa3 | conductor   (implementation session)
+#        | pm | gv | captain                                     (coordination session)
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
@@ -13,22 +14,25 @@ PROMPTS="$DIR/prompts"
 
 role="${1:-}"
 case "$role" in
-  impl[123]) tmpl=implementer.tmpl; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";;
-  qa[123])   tmpl=qa.tmpl;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL ";;
-  pm)        tmpl=pm.tmpl;          id="";             loop="/loop $PM_INTERVAL ";;
-  conductor) tmpl=conductor.tmpl;   id="";             loop="/loop $CONDUCTOR_INTERVAL ";;
-  *) echo "usage: fwf-respawn.sh <impl1|impl2|impl3|qa1|qa2|qa3|pm|conductor>" >&2; exit 1;;
+  impl[123]) tmpl=implementer.tmpl; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";      sess="$BUILD_SESSION";;
+  qa[123])   tmpl=qa.tmpl;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL ";   sess="$BUILD_SESSION";;
+  conductor) tmpl=conductor.tmpl;   id="";             loop="/loop $CONDUCTOR_INTERVAL "; sess="$BUILD_SESSION";;
+  pm)        tmpl=pm.tmpl;          id="";             loop="/loop $PM_INTERVAL ";        sess="$COORD_SESSION";;
+  gv)        tmpl=gv.tmpl;          id="";             loop="/loop $GV_INTERVAL ";        sess="$COORD_SESSION";;
+  captain)   tmpl=captain.tmpl;     id="";             loop="/loop $CAPTAIN_INTERVAL ";   sess="$COORD_SESSION";;
+  *) echo "usage: fwf-respawn.sh <impl1|impl2|impl3|qa1|qa2|qa3|conductor|pm|gv|captain>" >&2; exit 1;;
 esac
 
-tmux has-session -t "$SESSION" 2>/dev/null || { echo "no tmux session '$SESSION'" >&2; exit 1; }
+tmux has-session -t "$sess" 2>/dev/null || { echo "no tmux session '$sess'" >&2; exit 1; }
 
-# Find the pane by its label token (IMPL1 / QA1 / PM / CONDUCTOR).
+# Find the pane by its label token (IMPL1 / QA1 / CONDUCTOR / PM / GV / CAPTAIN),
+# searching only the session that role lives in.
 token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
 CP=""
-for p in $(tmux list-panes -t "$SESSION" -F '#{pane_id}'); do
+for p in $(tmux list-panes -t "$sess" -F '#{pane_id}'); do
   case "$(tmux show -p -t "$p" @l 2>/dev/null)" in *"$token"*) CP="$p"; break;; esac
 done
-[ -n "$CP" ] || { echo "could not find a pane labeled '$token' in session '$SESSION'" >&2; exit 1; }
+[ -n "$CP" ] || { echo "could not find a pane labeled '$token' in session '$sess'" >&2; exit 1; }
 echo "respawning $role in pane $CP"
 
 tmux respawn-pane -k -t "$CP" -c "$(wt_dir "$role")"

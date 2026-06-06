@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # fwf — fun-with-friends: a repo-agnostic multi-agent Claude Code dev swarm.
 #
-# Point it at a git repo and it stands up an 8-pane tmux factory (3
-# implementer/QA pairs + a PM + a conductor) that runs an ideas -> ship pipeline.
+# Point it at a git repo and it stands up a 10-pane tmux factory across two
+# sessions — coordination (PM · GV · CAPTAIN) and implementation (3 impl/QA
+# pairs + a conductor) — that runs an ideas -> ship pipeline.
 #
 #   fwf start https://github.com/you/repo     # clone, detect, scaffold, launch
-#   fwf attach                                # watch the grid
+#   fwf attach                                # watch coordination (talk to the captain)
 #   fwf stop                                  # graceful halt
 #
 # Run `fwf help` for the full subcommand list.
@@ -45,21 +46,21 @@ GETTING STARTED
                          Same, but stop after scaffolding the profile
                          (clone + detect + write profiles/<name>.sh).
 
-RUN THE GRID  (use --profile NAME, or it picks the only profile present)
+RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   provision [--build]    Create worktrees + dev data (one-time per repo).
-  up                     Launch the 8-pane tmux grid and deliver prompts.
-  attach                 tmux attach to the running grid.
-  lead [--print]         Copy the TEAM LEAD prompt to the clipboard (or --print
-                         it) to start your interactive orchestrator session.
-  respawn <role>         Hot-swap one pane: impl1..3 | qa1..3 | pm | conductor.
+  up                     Launch both tmux sessions (10 panes) and deliver prompts.
+  attach [coord|build]   tmux attach to coordination (default) or implementation.
+  captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
+  respawn <role>         Hot-swap one pane:
+                         impl1..3 | qa1..3 | conductor | pm | gv | captain.
   stop                   Graceful halt: agents commit WIP and idle.
   resume                 Clear the stop sentinel (then respawn to re-arm).
-  down [--purge]         Kill the tmux session (--purge also removes worktrees).
+  down [--purge]         Kill both tmux sessions (--purge also removes worktrees).
 
 UTILITIES
   doctor                 Check tmux / git / gh / claude and report versions.
   profiles               List available profiles.
-  version                Print the fwf version.
+  version                Print the fwf version (aliases: -v, --version).
   help                   Show this help.
 
 ENVIRONMENT
@@ -214,6 +215,7 @@ while [ $# -gt 0 ]; do
     --profile) export FWF_PROFILE="$2"; shift 2;;
     --profile=*) export FWF_PROFILE="${1#*=}"; shift;;
     -h|--help|help) usage; exit 0;;
+    -v|--version) cat "$FWF_DIR/VERSION" 2>/dev/null || echo "unknown"; exit 0;;
     --) shift; break;;
     -*) die "unknown global flag '$1' (did you mean a subcommand?)";;
     *) break;;
@@ -250,15 +252,20 @@ case "$cmd" in
   attach)
     FWF_PROFILE="$(resolve_profile)"
     source "$FWF_DIR/lib.sh"
-    exec tmux attach -t "$SESSION";;
-  lead)
+    case "${1:-coord}" in
+      coord|coordination) target="$COORD_SESSION";;
+      build|impl|implementation) target="$BUILD_SESSION";;
+      *) die "attach: unknown target '${1:-}' (use 'coord' or 'build')";;
+    esac
+    exec tmux attach -t "$target";;
+  captain)
     print_only=0
     for a in "$@"; do
-      case "$a" in --print) print_only=1;; *) die "lead: unknown flag '$a'";; esac
+      case "$a" in --print) print_only=1;; *) die "captain: unknown flag '$a'";; esac
     done
     FWF_PROFILE="$(resolve_profile)"
     source "$FWF_DIR/lib.sh"
-    rendered="$(fwf_render "$FWF_DIR/prompts/lead.tmpl" "")"
+    rendered="$(fwf_render "$FWF_DIR/prompts/captain.tmpl" "")"
     if [ "$print_only" = 1 ]; then
       printf '%s\n' "$rendered"
     else
@@ -269,12 +276,13 @@ case "$cmd" in
       fi
       if [ -n "$copier" ]; then
         printf '%s' "$rendered" | $copier
-        echo "fwf: TEAM LEAD prompt copied to clipboard."
+        echo "fwf: CAPTAIN prompt copied to clipboard."
       else
         echo "fwf: no clipboard tool (pbcopy/wl-copy/xclip) found — printing instead." >&2
         printf '%s\n' "$rendered"
       fi
-      echo "Next: start Claude in the repo it leads, then paste it as the first message:"
+      echo "The captain normally runs as a pane (fwf up → coordination session)."
+      echo "To drive it as a standalone session instead, start Claude in the repo and paste this:"
       echo "  cd $FWF_REPO && $CLAUDE_CMD"
     fi;;
   *) die "unknown command '$cmd' (try 'fwf help')";;
