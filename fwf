@@ -58,6 +58,9 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   down [--purge]         Kill both tmux sessions (--purge also removes worktrees).
 
 UTILITIES
+  shell [--rebuild]      Build the fwf toolchain container image and drop into
+                         it with this repo + your host claude/gh auth mounted
+                         (a reproducible Linux sandbox — see docs/containers.md).
   doctor                 Check tmux / git / gh / claude and report versions.
   profiles               List available profiles.
   version                Print the fwf version (aliases: -v, --version).
@@ -243,6 +246,47 @@ case "$cmd" in
     echo "fwf: launching the grid ..."
     FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-up.sh"
     ;;
+  shell)
+    # First containerization slice (#3): one image with the whole pane
+    # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never
+    # baked in. Proves claude+tmux+auth work contained; later slices (floor
+    # containers, e2e isolation) reuse this image. See docs/containers.md.
+    command -v docker >/dev/null 2>&1 || die "shell: docker is required (install Docker Desktop or colima)"
+    docker info >/dev/null 2>&1 || die "shell: the docker daemon is not running"
+    build_args=()
+    [ "${1:-}" = "--rebuild" ] && build_args=(--no-cache)
+    docker build ${build_args[@]+"${build_args[@]}"} -t fwf-toolchain "$FWF_DIR/containers" \
+      || die "shell: image build failed"
+    vols=(-v "$FWF_DIR:/opt/fwf")
+    [ -f "$HOME/.gitconfig" ] && vols+=(-v "$HOME/.gitconfig:/home/friend/.gitconfig:ro")
+    envs=()
+    # gh on macOS keeps its token in the Keychain, so mounting ~/.config/gh
+    # carries no auth — inject the token itself (gh honors GH_TOKEN anywhere).
+    ghtok="$(gh auth token 2>/dev/null || true)"
+    [ -n "$ghtok" ] && envs+=(-e "GH_TOKEN=$ghtok")
+    # claude auth: COPIES of the two credential files go into a throwaway 0700
+    # dir, mounted file-by-file (Docker Desktop cannot nest a file mount inside
+    # a bind-mounted dir, so we never mount ~/.claude itself; token refreshes
+    # inside the sandbox are deliberately discarded). Source of the OAuth blob:
+    # ~/.claude/.credentials.json on Linux hosts, the Keychain on macOS.
+    mkdir -p "$FWF_RUN"
+    authdir="$(mktemp -d "$FWF_RUN/shell-auth.XXXXXX")"
+    chmod 700 "$authdir"
+    if [ -f "$HOME/.claude/.credentials.json" ]; then
+      cp "$HOME/.claude/.credentials.json" "$authdir/credentials.json"
+    elif command -v security >/dev/null 2>&1; then
+      blob="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)"
+      [ -n "$blob" ] && ( umask 077; printf '%s' "$blob" > "$authdir/credentials.json" )
+    fi
+    [ -f "$authdir/credentials.json" ] \
+      && vols+=(-v "$authdir/credentials.json:/home/friend/.claude/.credentials.json") \
+      || echo "fwf: no claude credentials found on the host — run 'claude /login' inside the shell." >&2
+    [ -f "$HOME/.claude.json" ] && cp "$HOME/.claude.json" "$authdir/claude.json" \
+      && vols+=(-v "$authdir/claude.json:/home/friend/.claude.json")
+    rc=0
+    docker run --rm -it "${vols[@]}" ${envs[@]+"${envs[@]}"} -w /opt/fwf fwf-toolchain bash || rc=$?
+    rm -rf "$authdir"
+    exit "$rc";;
   provision) engine fwf-provision.sh "$@";;
   up)        engine fwf-up.sh "$@";;
   respawn)   engine fwf-respawn.sh "$@";;
