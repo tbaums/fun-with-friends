@@ -27,9 +27,16 @@ fi
 
 if [ "$floor_only" = 1 ]; then
   if tmux kill-session -t "$BUILD_SESSION" 2>/dev/null; then echo "killed tmux session '$BUILD_SESSION'"; else echo "no tmux session '$BUILD_SESSION'"; fi
-  for token in "PM ·" "GRAND VIZIER"; do
-    p="$(fwf_find_pane "$COORD_SESSION" "$token" || true)"
-    if [ -n "$p" ]; then tmux kill-pane -t "$p"; echo "killed pane '$token' in '$COORD_SESSION'"; else echo "no pane '$token' in '$COORD_SESSION'"; fi
+  # Everything in coordination EXCEPT the captain is floor — PM, GV, and any
+  # template-declared extra role (e.g. dev-sre's SRE). Matching on "not the
+  # captain" (rather than a token list) means a floor-down works even when
+  # invoked without the template that declared the extras.
+  for p in $(tmux list-panes -t "$COORD_SESSION" -F '#{pane_id}' 2>/dev/null); do
+    l="$(tmux show -p -t "$p" @l 2>/dev/null)"
+    case "$l" in
+      *CAPTAIN*) ;;   # the one survivor
+      *) tmux kill-pane -t "$p" 2>/dev/null && echo "killed pane '${l:-unlabeled}' in '$COORD_SESSION'";;
+    esac
   done
   rmdir "$E2E_LOCK" 2>/dev/null || true
   echo "floor is down; the captain pane (if any) is untouched in '$COORD_SESSION'. Bring the floor back with: fwf up --floor-only"
@@ -48,7 +55,7 @@ if [ "$purge" = 1 ]; then
     git -C "$FWF_REPO" worktree remove --force "$(wt_dir "qa$id")"   2>/dev/null || true
     rm -rf "$(data_dir "impl$id")"
   done
-  for tag in pm gv captain conductor; do
+  for tag in pm gv captain conductor $(fwf_extra_names); do
     git -C "$FWF_REPO" worktree remove --force "$(wt_dir "$tag")" 2>/dev/null || true
   done
   git -C "$FWF_REPO" worktree prune

@@ -10,17 +10,25 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
-PROMPTS="$FWF_TEMPLATE_DIR"   # role prompts come from the selected factory template
+# Role prompts resolve via fwf_tmpl_path (template, falling back to its base).
 
 role="${1:-}"
 case "$role" in
-  impl[1-9]|impl[1-9][0-9]) tmpl=implementer.tmpl; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";    sess="$BUILD_SESSION";;
-  qa[1-9]|qa[1-9][0-9])     tmpl=qa.tmpl;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL "; sess="$BUILD_SESSION";;
-  conductor) tmpl=conductor.tmpl;   id="";             loop="/loop $CONDUCTOR_INTERVAL "; sess="$BUILD_SESSION";;
-  pm)        tmpl=pm.tmpl;          id="";             loop="/loop $PM_INTERVAL ";        sess="$COORD_SESSION";;
-  gv)        tmpl=gv.tmpl;          id="";             loop="/loop $GV_INTERVAL ";        sess="$COORD_SESSION";;
-  captain)   tmpl=captain.tmpl;     id="";             loop="/loop $CAPTAIN_INTERVAL ";   sess="$COORD_SESSION";;
-  *) echo "usage: fwf-respawn.sh <implN|qaN|conductor|pm|gv|captain>  (N = 1..$FWF_PAIRS)" >&2; exit 1;;
+  impl[1-9]|impl[1-9][0-9]) tmpl=implementer; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";    sess="$BUILD_SESSION";;
+  qa[1-9]|qa[1-9][0-9])     tmpl=qa;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL "; sess="$BUILD_SESSION";;
+  conductor) tmpl=conductor;   id="";             loop="/loop $CONDUCTOR_INTERVAL "; sess="$BUILD_SESSION";;
+  pm)        tmpl=pm;          id="";             loop="/loop $PM_INTERVAL ";        sess="$COORD_SESSION";;
+  gv)        tmpl=gv;          id="";             loop="/loop $GV_INTERVAL ";        sess="$COORD_SESSION";;
+  captain)   tmpl=captain;     id="";             loop="/loop $CAPTAIN_INTERVAL ";   sess="$COORD_SESSION";;
+  *)
+    if fwf_extra_entry "$role" >/dev/null 2>&1; then   # template-declared extra role (e.g. sre)
+      tmpl="$role"; id=""; loop="/loop $(fwf_extra_interval "$role") "
+      case "$(fwf_extra_session "$role")" in
+        build) sess="$BUILD_SESSION";; *) sess="$COORD_SESSION";;
+      esac
+    else
+      echo "usage: fwf-respawn.sh <implN|qaN|conductor|pm|gv|captain|extra-role>  (N = 1..$FWF_PAIRS)" >&2; exit 1
+    fi;;
 esac
 if [ -n "$id" ] && [ "$id" -gt "$FWF_PAIRS" ]; then
   echo "fwf-respawn: $role is beyond the configured floor (FWF_PAIRS=$FWF_PAIRS)" >&2; exit 1
@@ -32,7 +40,8 @@ tmux has-session -t "$sess" 2>/dev/null || { echo "no tmux session '$sess'" >&2;
 # searching only the session that role lives in. Numbered roles match with their
 # trailing "·" separator so IMPL1 can never match IMPL10's label.
 token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
-[ -n "$id" ] && token="$token ·"
+case "$role" in impl*|qa*) token="$token ·";; esac   # numbered roles: IMPL1 must not match IMPL10
+fwf_extra_entry "$role" >/dev/null 2>&1 && token="$token ·"   # extra roles are labeled "NAME · …"
 CP="$(fwf_find_pane "$sess" "$token" || true)"
 [ -n "$CP" ] || { echo "could not find a pane labeled '$token' in session '$sess'" >&2; exit 1; }
 echo "respawning $role in pane $CP"
@@ -43,9 +52,6 @@ sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
-text="$loop$(fwf_render "$PROMPTS/$tmpl" "$id")"
-fwf_clear_composer "$CP"
-tmux send-keys -t "$CP" -l "$text"; sleep 1
-tmux send-keys -t "$CP" Enter; sleep 1
-tmux send-keys -t "$CP" Enter
+text="$loop$(fwf_render "$(fwf_tmpl_path "$tmpl")" "$id")"
+fwf_send_prompt "$CP" "$text"
 echo "$role respawned and prompt delivered in $CP"

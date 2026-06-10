@@ -67,6 +67,7 @@ add_detached_wt "captain"    # Captain — releases + direct deep work
 warm "captain"
 add_detached_wt "conductor"
 warm "conductor"
+for er in $(fwf_extra_names); do add_detached_wt "$er"; done   # template-declared extra roles
 
 # e2e deps for the conductor (it owns e2e).
 if [ -n "${E2E_SETUP_CMD:-}" ]; then

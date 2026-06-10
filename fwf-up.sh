@@ -19,7 +19,8 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
-PROMPTS="$FWF_TEMPLATE_DIR"   # role prompts come from the selected factory template
+# Role prompts resolve via fwf_tmpl_path (selected template, falling back to
+# its FWF_TEMPLATE_BASE for files the template doesn't override).
 
 FLOOR_ONLY=0
 case "${1:-}" in
@@ -28,10 +29,8 @@ case "${1:-}" in
   *) echo "usage: fwf-up.sh [--floor-only]" >&2; exit 1;;
 esac
 
-# Type a prompt into a pane's claude composer and submit. Clear any stale buffer
-# first, then type. The first Enter after a long literal paste is frequently
-# absorbed by the TUI, so we send two.
-send() { fwf_clear_composer "$1"; tmux send-keys -t "$1" -l "$2"; sleep 1; tmux send-keys -t "$1" Enter; sleep 1; tmux send-keys -t "$1" Enter; }
+# Deliver a prompt to a pane (chunked typing + submit — see fwf_send_prompt).
+send() { fwf_send_prompt "$@"; }
 
 # Per-pane label (@l) and color (@c).
 label() { tmux set -p -t "$1" @c "$2"; tmux set -p -t "$1" @l "$3"; }
@@ -128,6 +127,27 @@ fi
 [ "$GV_CREATED" = 1 ] && label "$GV_PANE" "$GV_COLOR" "GRAND VIZIER (GV) · hardens PM specs · advises captain · loop $GV_INTERVAL"
 [ "$CAPTAIN_CREATED" = 1 ] && label "$CAPTAIN_PANE" "$CAPTAIN_COLOR" "CAPTAIN · you talk here · scopes+ships, hones via GV · loop $CAPTAIN_INTERVAL"
 
+# --- extra roles declared by the template (e.g. dev-sre's SRE pane) -----------
+# Idempotent like everything else: create only the panes that are missing;
+# only those get launched + armed below.
+EXTRA_PANES=(); EXTRA_NAMES=()
+for er in $(fwf_extra_names); do
+  case "$(fwf_extra_session "$er")" in
+    coord) er_sess="$COORD_SESSION";;
+    build) er_sess="$BUILD_SESSION";;
+    *) echo "fwf-up: extra role '$er' declares unknown session '$(fwf_extra_session "$er")' (use coord|build)" >&2; exit 1;;
+  esac
+  er_tok="$(printf '%s' "$er" | tr '[:lower:]' '[:upper:]')"
+  er_pane="$(fwf_find_pane "$er_sess" "$er_tok ·" || true)"
+  if [ -z "$er_pane" ]; then
+    er_anchor="$(tmux list-panes -t "$er_sess" -F '#{pane_id}' | tail -1)"
+    er_pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$er_anchor" -c "$(wt_dir "$er")")
+    tmux select-layout -t "$er_sess" even-horizontal
+    label "$er_pane" "$(fwf_extra_color "$er")" "$er_tok · template role · loop $(fwf_extra_interval "$er")"
+    EXTRA_PANES+=( "$er_pane" ); EXTRA_NAMES+=( "$er" )
+  fi
+done
+
 # --- launch claude (perms bypassed) in the panes THIS run created -------------
 # NEW_PANES/NEW_ROLES are parallel arrays so each pane launches with its role's
 # model override (fwf_claude_cmd).
@@ -142,6 +162,9 @@ fi
 [ "$PM_CREATED" = 1 ]      && { NEW_PANES+=( "$PM_PANE" );      NEW_ROLES+=( pm ); }
 [ "$GV_CREATED" = 1 ]      && { NEW_PANES+=( "$GV_PANE" );      NEW_ROLES+=( gv ); }
 [ "$CAPTAIN_CREATED" = 1 ] && { NEW_PANES+=( "$CAPTAIN_PANE" ); NEW_ROLES+=( captain ); }
+if [ "${#EXTRA_PANES[@]}" -gt 0 ]; then
+  NEW_PANES+=( "${EXTRA_PANES[@]}" ); NEW_ROLES+=( "${EXTRA_NAMES[@]}" )
+fi
 if [ "${#NEW_PANES[@]}" = 0 ]; then
   echo "fwf is already fully up — nothing to do."
   exit 0
@@ -165,14 +188,19 @@ sleep 2
 # --- deliver prompts to the panes THIS run created -----------------------------
 if [ "$BUILD_CREATED" = 1 ]; then
   for id in "${PAIRS[@]}"; do
-    send "${TP[$id]}" "/loop $IMPL_INTERVAL $(fwf_render "$PROMPTS/implementer.tmpl" "$id")"
-    send "${BP[$id]}" "/loop $QA_LOOP_INTERVAL $(fwf_render "$PROMPTS/qa.tmpl" "$id")"
+    send "${TP[$id]}" "/loop $IMPL_INTERVAL $(fwf_render "$(fwf_tmpl_path implementer)" "$id")"
+    send "${BP[$id]}" "/loop $QA_LOOP_INTERVAL $(fwf_render "$(fwf_tmpl_path qa)" "$id")"
   done
-  send "$CONDUCTOR_PANE" "/loop $CONDUCTOR_INTERVAL $(fwf_render "$PROMPTS/conductor.tmpl" "")"
+  send "$CONDUCTOR_PANE" "/loop $CONDUCTOR_INTERVAL $(fwf_render "$(fwf_tmpl_path conductor)" "")"
 fi
-[ "$PM_CREATED" = 1 ]      && send "$PM_PANE"      "/loop $PM_INTERVAL $(fwf_render "$PROMPTS/pm.tmpl" "")"
-[ "$GV_CREATED" = 1 ]      && send "$GV_PANE"      "/loop $GV_INTERVAL $(fwf_render "$PROMPTS/gv.tmpl" "")"
-[ "$CAPTAIN_CREATED" = 1 ] && send "$CAPTAIN_PANE" "/loop $CAPTAIN_INTERVAL $(fwf_render "$PROMPTS/captain.tmpl" "")"
+[ "$PM_CREATED" = 1 ]      && send "$PM_PANE"      "/loop $PM_INTERVAL $(fwf_render "$(fwf_tmpl_path pm)" "")"
+[ "$GV_CREATED" = 1 ]      && send "$GV_PANE"      "/loop $GV_INTERVAL $(fwf_render "$(fwf_tmpl_path gv)" "")"
+[ "$CAPTAIN_CREATED" = 1 ] && send "$CAPTAIN_PANE" "/loop $CAPTAIN_INTERVAL $(fwf_render "$(fwf_tmpl_path captain)" "")"
+i=0
+while [ "$i" -lt "${#EXTRA_PANES[@]}" ]; do
+  send "${EXTRA_PANES[$i]}" "/loop $(fwf_extra_interval "${EXTRA_NAMES[$i]}") $(fwf_render "$(fwf_tmpl_path "${EXTRA_NAMES[$i]}")" "")"
+  i=$((i+1))
+done
 
 echo
 if [ "$FLOOR_ONLY" = 1 ]; then

@@ -374,7 +374,7 @@ case "$cmd" in
     done
     FWF_PROFILE="$(resolve_profile)"
     source "$FWF_DIR/lib.sh"
-    rendered="$(fwf_render "$FWF_TEMPLATE_DIR/captain.tmpl" "")"
+    rendered="$(fwf_render "$(fwf_tmpl_path captain)" "")"
     if [ "$print_only" = 1 ]; then
       printf '%s\n' "$rendered"
     else

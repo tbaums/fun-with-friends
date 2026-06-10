@@ -68,16 +68,19 @@ the recurrence evidence (continuing the root-cause discipline), and incident
 escalation to the captain. What it never does: write feature code, touch the
 pipeline, talk to the human first.
 
-## Implementation path
+## Implementation (shipped)
 
-Roles are currently hardcoded across fwf-up/respawn/lib (pane layout, prompt
-delivery, intervals). Bolting a conditional 4th coordination pane onto that
-would be rework the moment #10's factory templates land, since templates make
-the role roster data. So:
-
-- **#7** (pairs/models at runtime) starts turning the role roster into data.
-- **#10** (factory templates) ships the template mechanism — and with it
-  `prompts/sre.tmpl` + a `dev-sre` template variant implementing the contract
-  above, selectable per profile/CLI flag.
-- This doc is the contract that template implements; the trigger ladder is
-  the guidance for when a profile should select it.
+- **#7** made the roster sizable at runtime; **#10** made role prompts
+  templated; **#17** made the roster itself template-declarable
+  (`FWF_EXTRA_ROLES="name:session:interval[:color]"` + base-template prompt
+  inheritance via `FWF_TEMPLATE_BASE`).
+- **`fwf up --template dev-sre`** is the variant this doc specified: the dev
+  factory + a 4th coordination pane running `templates/dev-sre/sre.tmpl`,
+  with an overridden captain enforcing the one-writer contract (captain does
+  ZERO ops actions while the SRE is up; release decision + human go stay with
+  the captain, deploy mechanics + live verification move to the SRE).
+- The floor lifecycle treats the SRE as floor: `fwf down --floor-only`
+  removes it with PM/GV (anything that isn't the captain), `fwf up
+  --template dev-sre --floor-only` brings it back armed.
+- The trigger ladder above remains the guidance for when a profile should
+  select this variant; it ships dormant, opt-in.
