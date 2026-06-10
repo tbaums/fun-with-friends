@@ -6,6 +6,61 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Factory design templates** (`--template NAME`, `FWF_TEMPLATE`, `fwf
+  templates`): a template is `templates/<name>/` — six role prompts plus an
+  optional `template.sh` of config defaults. The classic factory moved to
+  `templates/dev/` and stays the default. Templates can inherit prompt files
+  from a base (`FWF_TEMPLATE_BASE`) and declare **extra roles/panes**
+  (`FWF_EXTRA_ROLES="name:session:interval[:color]"`) honored by
+  up/respawn/resume/provision/purge and the floor lifecycle. (#10, #17)
+- **`refactor` template** — a behavior-preserving refactoring factory:
+  planner ranks debt by churn×complexity evidence, refactorers characterize
+  first and transform in gate-green mechanical steps (never editing test
+  expectations, never fixing bugs in-band), verifiers run diff-first
+  behavior-contract review, the captain sequences releases with pre-assignment
+  as the norm. Research basis in `docs/refactor-factory.md`. (#10)
+- **`ideation` template** — an idea-portfolio factory: stance-diverse
+  generators (user-pain / analogy / constraint-inversion) diverge before
+  reading the portfolio, critics harden feasibility while protecting novelty,
+  a synthesizer clusters/cross-pollinates/ranks pairwise into
+  `ideas/PORTFOLIO.md`, and the captain owns the diverge/converge cadence.
+  Research basis in `docs/ideation-factory.md`. (#9)
+- **`dev-sre` template** — dev + a dedicated prod-ops (SRE) pane implementing
+  the captain-split contract (`docs/captain-split.md`): total ops ownership,
+  upward-only reporting, deploy mechanics + live verification on the captain's
+  instruction; the overridden captain does ZERO ops actions while it runs. (#4, #17)
+- **Runtime sizing + models**: `--pairs N` and `--model M` /
+  `--impl-model` / `--qa-model` / `--pm-model` / `--gv-model` /
+  `--captain-model` / `--conductor-model` on
+  start/provision/up/respawn/resume/down (persistable as `FWF_PAIRS`,
+  `FWF_MODEL`, `FWF_MODEL_<ROLE>`; precedence CLI/env → profile → template →
+  stock). (#7)
+- **Floor lifecycle**: `fwf down --floor-only` idles everything except the
+  captain pane (its session/context untouched); `fwf up --floor-only`
+  recreates and re-arms only what's missing around the live captain. Both
+  idempotent — the captain can now cycle the floor autonomously for token
+  conservation. (#6)
+- **Eval harness** (`fwf eval`): role-level model evals — the role's
+  production prompt × a scenario fixture × candidate models, scored by an LLM
+  judge against per-scenario rubrics; 6 scenarios shipped across the three
+  template families; hermetic stub mode for CI. `docs/eval-harness.md`. (#8)
+- **Atomic claim protocol**: implementers take a CLAIM-comment mutex
+  (first-in-thread wins, stale claims expire) before branching, killing the
+  duplicate-claim race; the captain pre-assigns (`ASSIGNED implN`) at
+  high-contention moments like batch releases. (#2)
+- **`fwf shell`** + `containers/Dockerfile`: a reproducible Linux toolchain
+  sandbox (bash/tmux/git/gh/claude) with host auth injected at run time —
+  including the macOS-Keychain extraction both gh and claude need.
+  Containerization design doc in `docs/containers.md`. (#3)
+
+### Fixed
+- Prompt delivery now types in 1KB chunks with `--` option-parsing guards:
+  role prompts past ~10KB hit tmux's `send-keys` argument limit ("command too
+  long"), and a chunk boundary starting with `-` was parsed as a tmux flag. (#17)
+- A profile's own `${FWF_PAIRS:-N}` default can actually fire now — the
+  stock default moved behind profile/template loading. (#10)
+
 ## [0.2.1] - 2026-06-05
 
 ### Changed
