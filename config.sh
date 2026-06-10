@@ -6,8 +6,22 @@
 
 FWF_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Implementer/QA pair ids (each id = one implementer + its paired QA reviewer).
-PAIRS=(1 2 3)
+# How many implementer/QA pairs the floor runs (each id = one implementer +
+# its paired QA reviewer). A profile may set its own default; the PAIRS id
+# array itself is derived in lib.sh AFTER the profile loads. CLI: fwf up --pairs N.
+FWF_PAIRS="${FWF_PAIRS:-3}"
+
+# Per-role model overrides (claude CLI --model). Empty = the CLI's default.
+# FWF_MODEL is the floor-wide default; FWF_MODEL_<ROLE> beats it for that role.
+# CLI: fwf up --model M --impl-model M --qa-model M --pm-model M --gv-model M
+#      --captain-model M --conductor-model M
+FWF_MODEL="${FWF_MODEL:-}"
+FWF_MODEL_IMPL="${FWF_MODEL_IMPL:-}"
+FWF_MODEL_QA="${FWF_MODEL_QA:-}"
+FWF_MODEL_PM="${FWF_MODEL_PM:-}"
+FWF_MODEL_GV="${FWF_MODEL_GV:-}"
+FWF_MODEL_CAPTAIN="${FWF_MODEL_CAPTAIN:-}"
+FWF_MODEL_CONDUCTOR="${FWF_MODEL_CONDUCTOR:-}"
 
 # tmux sessions + cadence. The factory runs as TWO sessions: a COORDINATION
 # session (pm · gv · captain) the human attaches to and talks to the captain in,
@@ -58,9 +72,10 @@ STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it co
 data_dir()  { :; }          # $1 = role tag; echo a path if the repo needs isolated dev data
 seed_data() { :; }          # $1 = data dir; seed it if the repo needs it
 
-# Colors. ONE hue per implementer/QA pair (the implementer matches its QA, by request).
-# PM and conductor get their own distinct colors.
-pair_color() { case "$1" in 1) echo colour203;; 2) echo colour78;; 3) echo colour45;; esac; }
+# Colors. ONE hue per implementer/QA pair (the implementer matches its QA, by
+# request); the palette cycles so any --pairs count gets a color. PM and
+# conductor get their own distinct colors.
+pair_color() { case "$(( ($1 - 1) % 6 + 1 ))" in 1) echo colour203;; 2) echo colour78;; 3) echo colour45;; 4) echo colour214;; 5) echo colour135;; 6) echo colour87;; esac; }
 PM_COLOR="${FWF_PM_COLOR:-colour213}"
 CONDUCTOR_COLOR="${FWF_CONDUCTOR_COLOR:-colour220}"
 GV_COLOR="${FWF_GV_COLOR:-colour129}"            # Grand Vizier — distinct purple

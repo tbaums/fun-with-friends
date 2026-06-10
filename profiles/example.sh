@@ -30,6 +30,13 @@ E2E_SETUP_CMD=''                  # one-time e2e dep install in the conductor tr
 # (only meaningful if you define data_dir() below).
 DEV_UI_HINT='make dev'
 
+# Optional: floor sizing + per-role models. CLI flags (fwf up --pairs N
+# --impl-model M …) and env vars beat these profile defaults.
+# FWF_PAIRS="${FWF_PAIRS:-2}"                  # implementer/QA pairs (default 3)
+# FWF_MODEL="${FWF_MODEL:-}"                   # model for EVERY agent (claude --model)
+# FWF_MODEL_IMPL="${FWF_MODEL_IMPL:-sonnet}"   # per-role override; also FWF_MODEL_QA,
+#                                              # _PM, _GV, _CAPTAIN, _CONDUCTOR
+
 # Optional: isolated per-worktree dev data. The no-op defaults in config.sh apply
 # unless you override these. Define them if each worktree needs its own seeded
 # data so parallel implementers don't collide on shared state.

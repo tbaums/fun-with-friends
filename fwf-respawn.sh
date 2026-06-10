@@ -14,26 +14,31 @@ PROMPTS="$DIR/prompts"
 
 role="${1:-}"
 case "$role" in
-  impl[123]) tmpl=implementer.tmpl; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";      sess="$BUILD_SESSION";;
-  qa[123])   tmpl=qa.tmpl;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL ";   sess="$BUILD_SESSION";;
+  impl[1-9]|impl[1-9][0-9]) tmpl=implementer.tmpl; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";    sess="$BUILD_SESSION";;
+  qa[1-9]|qa[1-9][0-9])     tmpl=qa.tmpl;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL "; sess="$BUILD_SESSION";;
   conductor) tmpl=conductor.tmpl;   id="";             loop="/loop $CONDUCTOR_INTERVAL "; sess="$BUILD_SESSION";;
   pm)        tmpl=pm.tmpl;          id="";             loop="/loop $PM_INTERVAL ";        sess="$COORD_SESSION";;
   gv)        tmpl=gv.tmpl;          id="";             loop="/loop $GV_INTERVAL ";        sess="$COORD_SESSION";;
   captain)   tmpl=captain.tmpl;     id="";             loop="/loop $CAPTAIN_INTERVAL ";   sess="$COORD_SESSION";;
-  *) echo "usage: fwf-respawn.sh <impl1|impl2|impl3|qa1|qa2|qa3|conductor|pm|gv|captain>" >&2; exit 1;;
+  *) echo "usage: fwf-respawn.sh <implN|qaN|conductor|pm|gv|captain>  (N = 1..$FWF_PAIRS)" >&2; exit 1;;
 esac
+if [ -n "$id" ] && [ "$id" -gt "$FWF_PAIRS" ]; then
+  echo "fwf-respawn: $role is beyond the configured floor (FWF_PAIRS=$FWF_PAIRS)" >&2; exit 1
+fi
 
 tmux has-session -t "$sess" 2>/dev/null || { echo "no tmux session '$sess'" >&2; exit 1; }
 
 # Find the pane by its label token (IMPL1 / QA1 / CONDUCTOR / PM / GV / CAPTAIN),
-# searching only the session that role lives in.
+# searching only the session that role lives in. Numbered roles match with their
+# trailing "·" separator so IMPL1 can never match IMPL10's label.
 token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
+[ -n "$id" ] && token="$token ·"
 CP="$(fwf_find_pane "$sess" "$token" || true)"
 [ -n "$CP" ] || { echo "could not find a pane labeled '$token' in session '$sess'" >&2; exit 1; }
 echo "respawning $role in pane $CP"
 
 tmux respawn-pane -k -t "$CP" -c "$(wt_dir "$role")"
-fwf_ensure_claude "$CP" || echo "warning: claude did not come up in $role pane $CP"
+fwf_ensure_claude "$CP" "$(fwf_claude_cmd "$role")" || echo "warning: claude did not come up in $role pane $CP"
 sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
