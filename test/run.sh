@@ -153,6 +153,22 @@ RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf" --profile example resume --clear-only 2
 [ -e "$RUNDIR/STOP" ] && bad "resume --clear-only removes sentinel" || ok "resume --clear-only removes sentinel"
 assert_contains "resume --clear-only message" "$RES" "cleared STOP sentinel"
 
+section "floor lifecycle flags (issue #6) — no live tmux needed"
+# Isolated session names guarantee we never touch a real factory.
+FU_ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$"
+# up: unknown flag rejected before any tmux work
+env $FU_ENV "$ROOT/fwf-up.sh" --bogus >/dev/null 2>&1 && bad "up rejects unknown flag" || ok "up rejects unknown flag"
+# up --floor-only without a live coord session points at the full launch path
+UPOUT="$(env $FU_ENV "$ROOT/fwf-up.sh" --floor-only 2>&1)" && bad "floor-only up needs coord session" || ok "floor-only up needs coord session"
+assert_contains "floor-only up suggests full up" "$UPOUT" "run a full 'fwf up' instead"
+# down: --floor-only + --purge don't combine
+env $FU_ENV "$ROOT/fwf-down.sh" --floor-only --purge >/dev/null 2>&1 && bad "down rejects floor-only+purge" || ok "down rejects floor-only+purge"
+# down --floor-only with nothing up reports cleanly and leaves captain advice
+DOWNOUT="$(env $FU_ENV "$ROOT/fwf-down.sh" --floor-only 2>&1)" && ok "floor-only down is safe when nothing is up" || bad "floor-only down is safe when nothing is up"
+assert_contains "floor-only down names the comeback" "$DOWNOUT" "fwf up --floor-only"
+# help advertises the floor lifecycle
+assert_contains "help mentions --floor-only" "$("$ROOT/fwf" help)" "--floor-only"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

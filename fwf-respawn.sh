@@ -28,10 +28,7 @@ tmux has-session -t "$sess" 2>/dev/null || { echo "no tmux session '$sess'" >&2;
 # Find the pane by its label token (IMPL1 / QA1 / CONDUCTOR / PM / GV / CAPTAIN),
 # searching only the session that role lives in.
 token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
-CP=""
-for p in $(tmux list-panes -t "$sess" -F '#{pane_id}'); do
-  case "$(tmux show -p -t "$p" @l 2>/dev/null)" in *"$token"*) CP="$p"; break;; esac
-done
+CP="$(fwf_find_pane "$sess" "$token" || true)"
 [ -n "$CP" ] || { echo "could not find a pane labeled '$token' in session '$sess'" >&2; exit 1; }
 echo "respawning $role in pane $CP"
 
