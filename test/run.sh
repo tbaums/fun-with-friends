@@ -210,7 +210,7 @@ FWF_TEMPLATE=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/nul
 # an incomplete template (missing role tmpls) is rejected with the role named
 mkdir -p "$ROOT/templates/.__broken"; : > "$ROOT/templates/.__broken/implementer.tmpl"
 BROKEN="$(FWF_TEMPLATE=.__broken FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" 2>&1)" && bad "incomplete template rejected" || ok "incomplete template rejected"
-assert_contains "missing role named" "$BROKEN" "missing qa.tmpl"
+assert_contains "missing role named" "$BROKEN" "has no qa.tmpl"
 rm -rf "$ROOT/templates/.__broken"
 # refactor template: prompts render with the behavior-preservation spine intact
 RIMPL="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 1")"
@@ -239,6 +239,29 @@ ISYN="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'
 assert_contains "synthesizer owns the portfolio" "$ISYN" "PORTFOLIO.md"
 assert_contains "synthesizer ranks pairwise"     "$ISYN" "PAIRWISE"
 assert_eq "ideation keeps 3 pairs" "10" "$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
+
+section "extra roles + template inheritance (issue #17)"
+assert_contains "templates lists dev-sre" "$("$ROOT/fwf" templates)" "dev-sre"
+# dev-sre adds the sre role to the roster (11 = 10 stock + sre)
+SRE_ROLES="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles")"
+assert_eq "dev-sre roster is 11 roles" "11" "$(printf '%s\n' "$SRE_ROLES" | grep -c .)"
+assert_contains "sre in roster" "$SRE_ROLES" "sre"
+# extra-role metadata parses
+assert_eq "sre session"  "coord" "$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_extra_session sre")"
+assert_eq "sre interval" "2m"    "$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_extra_interval sre")"
+# prompt inheritance: implementer falls back to the dev base; captain is overridden
+SRE_IMPL="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 1")"
+assert_contains "implementer inherited from dev" "$SRE_IMPL" "You are implementer impl1"
+SRE_CAP="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+assert_contains "captain override: one-writer contract" "$SRE_CAP" "ZERO ops actions"
+SRE_TMPL="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path sre)\" ''")"
+assert_contains "sre prompt: not human-facing" "$SRE_TMPL" "NOT human-facing"
+assert_contains "sre prompt: root-cause directive" "$SRE_TMPL" "ESCALATE TO ROOT CAUSE"
+# a declared extra role without a resolvable tmpl is rejected at source time
+FWF_EXTRA_ROLES="ghost:coord:1m" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "missing extra tmpl rejected" || ok "missing extra tmpl rejected"
+# respawn recognizes the extra role (fails on the absent session, not usage)
+SRER="$(FWF_TEMPLATE=dev-sre FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/fwf-respawn.sh" sre 2>&1)" && bad "respawn sre recognized" || ok "respawn sre recognized"
+assert_contains "respawn sre fails on session, not usage" "$SRER" "no tmux session"
 
 section "eval harness (issue #8) — hermetic, stubbed claude"
 STUB="$TMP/claude-stub.sh"

@@ -25,19 +25,47 @@ source "$PROFILE_FILE"
 # Resolve the factory template: the directory of role prompts the panes run.
 # A template may ship a template.sh of config DEFAULTS (e.g. the refactor
 # factory defaults to fewer pairs) — sourced after the profile so profile/env/
-# CLI still win wherever they used the ${VAR:-default} pattern.
+# CLI still win wherever they used the ${VAR:-default} pattern. template.sh
+# may also set FWF_TEMPLATE_BASE (inherit prompt files from another template,
+# overriding only some) and FWF_EXTRA_ROLES (additional panes — see below), so
+# it loads BEFORE the role-prompt validation.
 FWF_TEMPLATE_DIR="$FWF_LIB_DIR/templates/$FWF_TEMPLATE"
 if [ ! -d "$FWF_TEMPLATE_DIR" ]; then
   echo "fwf: unknown template '$FWF_TEMPLATE' (missing $FWF_TEMPLATE_DIR) — see 'fwf templates'" >&2; exit 1
 fi
-for _fwf_t in implementer qa conductor pm gv captain; do
-  if [ ! -f "$FWF_TEMPLATE_DIR/$_fwf_t.tmpl" ]; then
-    echo "fwf: template '$FWF_TEMPLATE' is missing $_fwf_t.tmpl" >&2; exit 1
-  fi
-done
-unset _fwf_t
+FWF_TEMPLATE_BASE=""
 # shellcheck source=/dev/null  # template path is resolved at runtime
 [ -f "$FWF_TEMPLATE_DIR/template.sh" ] && source "$FWF_TEMPLATE_DIR/template.sh"
+
+# Extra roles a template (or profile/env) declares beyond the stock roster:
+# space-separated "name:session:interval[:color]" entries, session = coord|build.
+# e.g. the dev-sre template declares "sre:coord:2m:colour208".
+FWF_EXTRA_ROLES="${FWF_EXTRA_ROLES:-}"
+fwf_extra_names() { local e; for e in $FWF_EXTRA_ROLES; do echo "${e%%:*}"; done; }
+fwf_extra_entry() { # $1=name → echo the entry; rc 1 if not declared
+  local e; for e in $FWF_EXTRA_ROLES; do [ "${e%%:*}" = "$1" ] && { echo "$e"; return 0; }; done; return 1
+}
+fwf_extra_session()  { local e; e="$(fwf_extra_entry "$1")" || return 1; e="${e#*:}"; echo "${e%%:*}"; }
+fwf_extra_interval() { local e; e="$(fwf_extra_entry "$1")" || return 1; e="${e#*:}"; e="${e#*:}"; echo "${e%%:*}"; }
+fwf_extra_color()    { local e rest; e="$(fwf_extra_entry "$1")" || return 1
+  rest="${e#*:*:*:}"; if [ "$rest" = "$e" ]; then echo "colour208"; else echo "$rest"; fi; }
+
+# Resolve a role's prompt file: the template's own copy wins; otherwise fall
+# back to its FWF_TEMPLATE_BASE. Echoes the path; rc 1 (with a message) if
+# neither has it.
+fwf_tmpl_path() { # $1=role file base name (implementer / qa / sre / …)
+  if [ -f "$FWF_TEMPLATE_DIR/$1.tmpl" ]; then echo "$FWF_TEMPLATE_DIR/$1.tmpl"; return 0; fi
+  if [ -n "$FWF_TEMPLATE_BASE" ] && [ -f "$FWF_LIB_DIR/templates/$FWF_TEMPLATE_BASE/$1.tmpl" ]; then
+    echo "$FWF_LIB_DIR/templates/$FWF_TEMPLATE_BASE/$1.tmpl"; return 0
+  fi
+  echo "fwf: template '$FWF_TEMPLATE' has no $1.tmpl (base: ${FWF_TEMPLATE_BASE:-none})" >&2; return 1
+}
+
+# Every stock role and every declared extra role must resolve to a prompt.
+for _fwf_t in implementer qa conductor pm gv captain $(fwf_extra_names); do
+  fwf_tmpl_path "$_fwf_t" >/dev/null || exit 1
+done
+unset _fwf_t
 
 # Derive the implementer/QA pair id array AFTER profile + template load, so
 # either can set its own FWF_PAIRS default (env/CLI win — they arrive pre-set).
@@ -62,6 +90,7 @@ fwf_claude_cmd() { # $1=role
     pm)        m="${FWF_MODEL_PM:-$FWF_MODEL}";;
     gv)        m="${FWF_MODEL_GV:-$FWF_MODEL}";;
     captain)   m="${FWF_MODEL_CAPTAIN:-$FWF_MODEL}";;
+    *)         m="$FWF_MODEL";;   # extra roles ride the floor-wide default
   esac
   if [ -n "$m" ]; then printf '%s --model %s' "$CLAUDE_CMD" "$m"; else printf '%s' "$CLAUDE_CMD"; fi
 }
@@ -76,6 +105,7 @@ fwf_all_roles() {
   for id in "${PAIRS[@]}"; do echo "impl$id"; done
   for id in "${PAIRS[@]}"; do echo "qa$id"; done
   echo conductor; echo pm; echo gv; echo captain
+  fwf_extra_names
 }
 
 # Render a prompt template into a single line, substituting placeholders.
@@ -123,6 +153,23 @@ fwf_clear_composer() { # $1=pane
   local p="$1"
   for _ in 1 2 3; do tmux send-keys -t "$p" C-u 2>/dev/null; done
   sleep 0.3
+}
+
+# Type a prompt into a pane's claude composer and submit. Clears any stale
+# buffer first (the "wedged buffer" problem). The text is sent in 1KB CHUNKS:
+# tmux rejects a send-keys argument past ~10KB with "command too long", and
+# the bigger role prompts (e.g. the dev-sre captain) are over that. The first
+# Enter after a long paste is frequently absorbed by the TUI, so send two.
+fwf_send_prompt() { # $1=pane  $2=text
+  local p="$1" s="$2" off=0
+  fwf_clear_composer "$p"
+  while [ "$off" -lt "${#s}" ]; do
+    # "--" ends option parsing: a chunk boundary can land on a "-…" word,
+    # which tmux would otherwise read as a flag ("unknown flag -v").
+    tmux send-keys -t "$p" -l -- "${s:$off:1024}"
+    off=$((off+1024)); sleep 0.1
+  done
+  sleep 1; tmux send-keys -t "$p" Enter; sleep 1; tmux send-keys -t "$p" Enter
 }
 
 # True while the pane is still sitting at a shell (claude has not taken over).
