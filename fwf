@@ -48,14 +48,18 @@ GETTING STARTED
 
 RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   provision [--build]    Create worktrees + dev data (one-time per repo).
-  up                     Launch both tmux sessions (10 panes) and deliver prompts.
+  up [--floor-only]      Launch both tmux sessions (10 panes) and deliver prompts.
+                         --floor-only: (re)create just the floor (build session
+                         + PM/GV panes) around a LIVE captain pane, untouched.
   attach [coord|build]   tmux attach to coordination (default) or implementation.
   captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
   respawn <role>         Hot-swap one pane:
                          impl1..3 | qa1..3 | conductor | pm | gv | captain.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
-  down [--purge]         Kill both tmux sessions (--purge also removes worktrees).
+  down [--purge|--floor-only]
+                         Kill both tmux sessions (--purge also removes worktrees;
+                         --floor-only kills only the floor, captain left running).
 
 UTILITIES
   shell [--rebuild]      Build the fwf toolchain container image and drop into

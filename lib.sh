@@ -58,6 +58,18 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   printf '%s' "$text" | tr '\n' ' ' | tr -s ' '
 }
 
+# Find the pane in a session whose @l label contains a token (PM ·, GRAND
+# VIZIER, CAPTAIN, IMPL1, …). Echoes the pane id; returns 1 if the session is
+# down or no pane matches. Sessions are single-window, so list-panes suffices.
+fwf_find_pane() { # $1=session  $2=label-token
+  local p
+  tmux has-session -t "$1" 2>/dev/null || return 1
+  for p in $(tmux list-panes -t "$1" -F '#{pane_id}'); do
+    case "$(tmux show -p -t "$p" @l 2>/dev/null)" in *"$2"*) echo "$p"; return 0;; esac
+  done
+  return 1
+}
+
 # Clear whatever is sitting in the pane's Claude composer before we type into it,
 # so a stale/half-typed buffer doesn't garble the next prompt (the "wedged buffer"
 # problem). Ctrl+U is the TUI's reliable line-clear; we repeat it to drain
