@@ -48,13 +48,22 @@ GETTING STARTED
 
 RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   provision [--build]    Create worktrees + dev data (one-time per repo).
-  up [--floor-only]      Launch both tmux sessions (10 panes) and deliver prompts.
+  up [--floor-only]      Launch both tmux sessions and deliver prompts.
                          --floor-only: (re)create just the floor (build session
                          + PM/GV panes) around a LIVE captain pane, untouched.
   attach [coord|build]   tmux attach to coordination (default) or implementation.
   captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
   respawn <role>         Hot-swap one pane:
-                         impl1..3 | qa1..3 | conductor | pm | gv | captain.
+                         implN | qaN | conductor | pm | gv | captain.
+
+SIZING + MODELS  (accepted by start/provision/up/respawn/resume/down)
+  --pairs N              Number of implementer/QA pairs (default 3).
+  --model M              Model for every agent (claude --model M).
+  --impl-model M | --qa-model M | --pm-model M | --gv-model M
+  --captain-model M | --conductor-model M
+                         Per-role model override (beats --model for that role).
+                         Persist any of these in a profile via FWF_PAIRS /
+                         FWF_MODEL / FWF_MODEL_<ROLE>.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
   down [--purge|--floor-only]
@@ -110,6 +119,32 @@ resolve_profile() {
 engine() { # $1 = script basename, rest = args
   local script="$1"; shift
   FWF_PROFILE="$(resolve_profile)" exec "$FWF_DIR/$script" "$@"
+}
+
+# Pull the runtime sizing/model flags out of an arg list, exporting the
+# matching FWF_* vars; everything else lands in RUNTIME_ARGS for the engine
+# script. Lets `fwf up --pairs 2 --impl-model sonnet` work with the flags in
+# any position (issue #7).
+RUNTIME_ARGS=()
+parse_runtime_flags() {
+  RUNTIME_ARGS=()
+  local roleflag
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pairs)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_PAIRS="$2"; shift 2;;
+      --pairs=*) export FWF_PAIRS="${1#*=}"; shift;;
+      --model)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_MODEL="$2"; shift 2;;
+      --model=*) export FWF_MODEL="${1#*=}"; shift;;
+      --impl-model|--qa-model|--pm-model|--gv-model|--captain-model|--conductor-model)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        roleflag="${1#--}"; roleflag="$(printf '%s' "${roleflag%-model}" | tr '[:lower:]' '[:upper:]')"
+        export "FWF_MODEL_$roleflag=$2"; shift 2;;
+      --impl-model=*|--qa-model=*|--pm-model=*|--gv-model=*|--captain-model=*|--conductor-model=*)
+        roleflag="${1%%=*}"; roleflag="${roleflag#--}"; roleflag="$(printf '%s' "${roleflag%-model}" | tr '[:lower:]' '[:upper:]')"
+        export "FWF_MODEL_$roleflag=${1#*=}"; shift;;
+      *) RUNTIME_ARGS+=("$1"); shift;;
+    esac
+  done
 }
 
 # --- doctor -----------------------------------------------------------------
@@ -230,6 +265,13 @@ while [ $# -gt 0 ]; do
 done
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
+# Runtime sizing/model flags are honored on the commands that launch or re-arm
+# agents (and provision, which sizes the worktree set).
+case "$cmd" in
+  start|provision|up|respawn|resume|down)
+    parse_runtime_flags "$@"
+    set -- ${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"};;
+esac
 case "$cmd" in
   ""|help)   usage;;
   version)   cat "$FWF_DIR/VERSION" 2>/dev/null || echo "unknown";;

@@ -169,6 +169,37 @@ assert_contains "floor-only down names the comeback" "$DOWNOUT" "fwf up --floor-
 # help advertises the floor lifecycle
 assert_contains "help mentions --floor-only" "$("$ROOT/fwf" help)" "--floor-only"
 
+section "runtime sizing + models (issue #7)"
+# PAIRS derives from FWF_PAIRS after the profile loads
+ROLES5="$(FWF_PAIRS=5 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" )"
+assert_eq "FWF_PAIRS=5 -> 14 roles" "14" "$(printf '%s\n' "$ROLES5" | grep -c .)"
+assert_contains "impl5 exists" "$ROLES5" "impl5"
+assert_contains "qa5 exists"   "$ROLES5" "qa5"
+# bogus pair counts are rejected at source time
+FWF_PAIRS=banana FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_PAIRS=banana rejected" || ok "FWF_PAIRS=banana rejected"
+FWF_PAIRS=0      FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_PAIRS=0 rejected"      || ok "FWF_PAIRS=0 rejected"
+# per-role model overrides layer correctly: role beats floor-wide beats none
+CMDS="$(FWF_MODEL=haiku FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl2; echo; fwf_claude_cmd qa1; echo; fwf_claude_cmd pm")"
+assert_contains "impl override wins"        "$(printf '%s' "$CMDS" | sed -n 1p)" "--model sonnet"
+assert_contains "floor default reaches qa"  "$(printf '%s' "$CMDS" | sed -n 2p)" "--model haiku"
+assert_contains "floor default reaches pm"  "$(printf '%s' "$CMDS" | sed -n 3p)" "--model haiku"
+NOMODEL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+case "$NOMODEL" in *--model*) bad "no override -> no --model flag";; *) ok "no override -> no --model flag";; esac
+# pair colors cycle for any pair count
+C4="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 4")"
+C7="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 7")"
+C1="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 1")"
+[ -n "$C4" ] && ok "pair_color 4 defined" || bad "pair_color 4 defined"
+assert_eq "palette cycles (7 wraps to 1)" "$C1" "$C7"
+# respawn refuses a role beyond the configured floor (before any tmux work)
+RSP="$(FWF_PAIRS=2 FWF_PROFILE=example "$ROOT/fwf-respawn.sh" impl3 2>&1)" && bad "respawn beyond floor rejected" || ok "respawn beyond floor rejected"
+assert_contains "respawn names the bound" "$RSP" "FWF_PAIRS=2"
+# dispatcher accepts the flags after the subcommand and validates them
+UPFLAG="$(FWF_PROFILE=example "$ROOT/fwf" up --pairs banana 2>&1)" && bad "fwf up --pairs banana rejected" || ok "fwf up --pairs banana rejected"
+assert_contains "rejection is the lib.sh guard" "$UPFLAG" "positive integer"
+assert_contains "help mentions --pairs"      "$("$ROOT/fwf" help)" "--pairs N"
+assert_contains "help mentions --impl-model" "$("$ROOT/fwf" help)" "--impl-model"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

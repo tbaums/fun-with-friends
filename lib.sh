@@ -22,6 +22,32 @@ PROFILE_FILE="$FWF_LIB_DIR/profiles/$PROFILE.sh"
 # shellcheck source=/dev/null  # profile path is resolved at runtime
 source "$PROFILE_FILE"
 
+# Derive the implementer/QA pair id array AFTER the profile loads, so a profile
+# can set its own FWF_PAIRS default (env/CLI still wins via the := in config.sh).
+case "$FWF_PAIRS" in
+  ''|*[!0-9]*|0) echo "fwf: FWF_PAIRS must be a positive integer (got '$FWF_PAIRS')" >&2; exit 1;;
+esac
+PAIRS=()
+_fwf_i=1
+while [ "$_fwf_i" -le "$FWF_PAIRS" ]; do PAIRS+=("$_fwf_i"); _fwf_i=$((_fwf_i+1)); done
+unset _fwf_i
+
+# The claude launch command for a role, honoring the per-role model overrides
+# (FWF_MODEL_<ROLE>, falling back to FWF_MODEL, falling back to the CLI default).
+# $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
+fwf_claude_cmd() { # $1=role
+  local m=""
+  case "$1" in
+    impl*)     m="${FWF_MODEL_IMPL:-$FWF_MODEL}";;
+    qa*)       m="${FWF_MODEL_QA:-$FWF_MODEL}";;
+    conductor) m="${FWF_MODEL_CONDUCTOR:-$FWF_MODEL}";;
+    pm)        m="${FWF_MODEL_PM:-$FWF_MODEL}";;
+    gv)        m="${FWF_MODEL_GV:-$FWF_MODEL}";;
+    captain)   m="${FWF_MODEL_CAPTAIN:-$FWF_MODEL}";;
+  esac
+  if [ -n "$m" ]; then printf '%s --model %s' "$CLAUDE_CMD" "$m"; else printf '%s' "$CLAUDE_CMD"; fi
+}
+
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
 wt_dir() { echo "$WT_BASE/${WT_PREFIX}-$1"; }
 
@@ -93,12 +119,12 @@ _fwf_pane_is_shell() { # $1=pane
 # pane stays at the shell. So: (re)send the launch command, wait for claude to
 # take over, and retry a few times. Returns 0 once claude is up, 1 if it never
 # came up. Safe to call on a pane that already has claude (returns immediately).
-fwf_ensure_claude() { # $1=pane
-  local p="$1"
+fwf_ensure_claude() { # $1=pane  $2=launch command (default: $CLAUDE_CMD)
+  local p="$1" cmd="${2:-$CLAUDE_CMD}"
   for _ in 1 2 3 4 5; do                          # retry attempts (counter unused)
     _fwf_pane_is_shell "$p" || return 0          # claude already running
     tmux send-keys -t "$p" C-c 2>/dev/null; sleep 0.4   # clear any half-typed/lost line
-    tmux send-keys -t "$p" -l "$CLAUDE_CMD"; tmux send-keys -t "$p" Enter
+    tmux send-keys -t "$p" -l "$cmd"; tmux send-keys -t "$p" Enter
     for _ in $(seq 1 15); do                       # wait up to 15s for claude to take over
       sleep 1
       _fwf_pane_is_shell "$p" || return 0

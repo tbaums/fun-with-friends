@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Bring up the fun-with-friends factory as TWO tmux sessions:
 #   COORDINATION  ($COORD_SESSION): PM · GV · CAPTAIN  (3 columns; you talk to the captain)
-#   IMPLEMENTATION ($BUILD_SESSION): IMPL1/QA1 · IMPL2/QA2 · IMPL3/QA3 · CONDUCTOR
+#   IMPLEMENTATION ($BUILD_SESSION): IMPL1/QA1 … IMPLn/QAn · CONDUCTOR
+#                                    (n = FWF_PAIRS / --pairs, default 3)
+# Per-role model overrides (FWF_MODEL / FWF_MODEL_<ROLE>, --model/--impl-model…)
+# are applied to each pane's claude launch via fwf_claude_cmd.
 # The two halves coordinate through the issue tracker + git, never across panes.
 # Each implementer/QA pair shares one color; the active pane is highlighted hard.
 # Assumes fwf-provision.sh has created the worktrees.
@@ -69,21 +72,25 @@ rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP senti
 # Track what THIS run creates; only those panes get launched + armed.
 BUILD_CREATED=0; PM_CREATED=0; GV_CREATED=0; CAPTAIN_CREATED=0
 
-# --- IMPLEMENTATION session: 3 impl/qa columns + a full-height conductor ------
-declare -a TP BP   # TP[1..3]=impl ; BP[1..3]=qa
+# --- IMPLEMENTATION session: N impl/qa columns + a full-height conductor ------
+declare -a TP BP   # TP[id]=impl pane ; BP[id]=qa pane (id = 1..FWF_PAIRS)
 if tmux has-session -t "$BUILD_SESSION" 2>/dev/null; then
   echo "build session '$BUILD_SESSION' already up — leaving it untouched."
 else
   BUILD_CREATED=1
   tmux new-session -d -s "$BUILD_SESSION" -c "$(wt_dir impl1)"
   TP[1]=$(tmux display -p -t "$BUILD_SESSION" '#{pane_id}')
-  TP[2]=$(tmux split-window -h -P -F '#{pane_id}' -t "${TP[1]}" -c "$(wt_dir impl2)")
-  TP[3]=$(tmux split-window -h -P -F '#{pane_id}' -t "${TP[2]}" -c "$(wt_dir impl3)")
-  CONDUCTOR_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "${TP[3]}" -c "$(wt_dir conductor)")
+  prev="${TP[1]}"
+  for id in "${PAIRS[@]}"; do
+    [ "$id" = 1 ] && continue
+    TP[$id]=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(wt_dir "impl$id")")
+    prev="${TP[$id]}"
+  done
+  CONDUCTOR_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(wt_dir conductor)")
   tmux select-layout -t "$BUILD_SESSION" even-horizontal
-  BP[1]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[1]}" -c "$(wt_dir qa1)")
-  BP[2]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[2]}" -c "$(wt_dir qa2)")
-  BP[3]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[3]}" -c "$(wt_dir qa3)")
+  for id in "${PAIRS[@]}"; do
+    BP[$id]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[$id]}" -c "$(wt_dir "qa$id")")
+  done
   for id in "${PAIRS[@]}"; do
     c="$(pair_color "$id")"
     label "${TP[$id]}" "$c" "IMPL$id · any issue → instant draft PR · impl$id/*"
@@ -122,22 +129,34 @@ fi
 [ "$CAPTAIN_CREATED" = 1 ] && label "$CAPTAIN_PANE" "$CAPTAIN_COLOR" "CAPTAIN · you talk here · scopes+ships, hones via GV · loop $CAPTAIN_INTERVAL"
 
 # --- launch claude (perms bypassed) in the panes THIS run created -------------
-NEW_PANES=()
-[ "$BUILD_CREATED" = 1 ]   && NEW_PANES+=( "${TP[1]}" "${TP[2]}" "${TP[3]}" "${BP[1]}" "${BP[2]}" "${BP[3]}" "$CONDUCTOR_PANE" )
-[ "$PM_CREATED" = 1 ]      && NEW_PANES+=( "$PM_PANE" )
-[ "$GV_CREATED" = 1 ]      && NEW_PANES+=( "$GV_PANE" )
-[ "$CAPTAIN_CREATED" = 1 ] && NEW_PANES+=( "$CAPTAIN_PANE" )
+# NEW_PANES/NEW_ROLES are parallel arrays so each pane launches with its role's
+# model override (fwf_claude_cmd).
+NEW_PANES=(); NEW_ROLES=()
+if [ "$BUILD_CREATED" = 1 ]; then
+  for id in "${PAIRS[@]}"; do
+    NEW_PANES+=( "${TP[$id]}" ); NEW_ROLES+=( "impl$id" )
+    NEW_PANES+=( "${BP[$id]}" ); NEW_ROLES+=( "qa$id" )
+  done
+  NEW_PANES+=( "$CONDUCTOR_PANE" ); NEW_ROLES+=( conductor )
+fi
+[ "$PM_CREATED" = 1 ]      && { NEW_PANES+=( "$PM_PANE" );      NEW_ROLES+=( pm ); }
+[ "$GV_CREATED" = 1 ]      && { NEW_PANES+=( "$GV_PANE" );      NEW_ROLES+=( gv ); }
+[ "$CAPTAIN_CREATED" = 1 ] && { NEW_PANES+=( "$CAPTAIN_PANE" ); NEW_ROLES+=( captain ); }
 if [ "${#NEW_PANES[@]}" = 0 ]; then
   echo "fwf is already fully up — nothing to do."
   exit 0
 fi
 
-for p in "${NEW_PANES[@]}"; do
-  tmux send-keys -t "$p" -l "$CLAUDE_CMD"; tmux send-keys -t "$p" Enter
+i=0
+while [ "$i" -lt "${#NEW_PANES[@]}" ]; do
+  tmux send-keys -t "${NEW_PANES[$i]}" -l "$(fwf_claude_cmd "${NEW_ROLES[$i]}")"; tmux send-keys -t "${NEW_PANES[$i]}" Enter
+  i=$((i+1))
 done
 echo "launched claude in ${#NEW_PANES[@]} pane(s); verifying each actually booted (re-sending to laggards)…"
-for p in "${NEW_PANES[@]}"; do
-  fwf_ensure_claude "$p" || echo "warning: claude did not come up in pane $p"
+i=0
+while [ "$i" -lt "${#NEW_PANES[@]}" ]; do
+  fwf_ensure_claude "${NEW_PANES[$i]}" "$(fwf_claude_cmd "${NEW_ROLES[$i]}")" || echo "warning: claude did not come up in pane ${NEW_PANES[$i]}"
+  i=$((i+1))
 done
 sleep 2
 for p in "${NEW_PANES[@]}"; do tmux send-keys -t "$p" Enter; done   # clear one-time bypass-accept screen
@@ -162,5 +181,5 @@ else
   echo "fwf is up (two sessions):"
 fi
 echo "  coordination  : tmux attach -t $COORD_SESSION   (PM · GV · CAPTAIN — talk to the captain)"
-echo "  implementation: tmux attach -t $BUILD_SESSION   (IMPL1/QA1 · IMPL2/QA2 · IMPL3/QA3 · CONDUCTOR)"
+echo "  implementation: tmux attach -t $BUILD_SESSION   ($FWF_PAIRS impl/qa pair(s) + CONDUCTOR)"
 echo "  QA loops every $QA_LOOP_INTERVAL; conductor e2e+promotes every $CONDUCTOR_INTERVAL; GV reviews every $GV_INTERVAL"
