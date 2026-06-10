@@ -6,10 +6,16 @@
 
 FWF_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# How many implementer/QA pairs the floor runs (each id = one implementer +
-# its paired QA reviewer). A profile may set its own default; the PAIRS id
-# array itself is derived in lib.sh AFTER the profile loads. CLI: fwf up --pairs N.
-FWF_PAIRS="${FWF_PAIRS:-3}"
+# Which factory template the agents run — a directory under templates/ holding
+# the six role prompts (and an optional template.sh of config defaults).
+# Shipped: dev (the classic feature factory), refactor (behavior-preserving
+# refactoring factory). CLI: fwf up --template NAME. Resolved+validated in lib.sh.
+FWF_TEMPLATE="${FWF_TEMPLATE:-dev}"
+
+# How many implementer/QA pairs the floor runs (each id = one implementer + its
+# paired QA reviewer). DELIBERATELY not defaulted here: profiles and templates
+# get to set their own default, so lib.sh applies the final fallback (3) only
+# after both load. CLI: fwf up --pairs N.
 
 # Per-role model overrides (claude CLI --model). Empty = the CLI's default.
 # FWF_MODEL is the floor-wide default; FWF_MODEL_<ROLE> beats it for that role.

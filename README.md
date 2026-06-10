@@ -178,17 +178,39 @@ templates in `prompts/` — the source of truth.
 fwf start <url|path> [--name N] [--yes] [--build]   clone → detect → confirm → provision → up
 fwf init  <url|path> [--name N] [--yes]             clone → detect → scaffold profile
 fwf provision [--build]                             create worktrees + dev data
-fwf up                                              launch both sessions (10 panes)
+fwf up [--floor-only]                               launch both sessions (--floor-only: rebuild just the
+                                                    floor around a live captain)
 fwf attach [coord|build]                            attach to coordination (default) or implementation
 fwf captain [--print]                               copy/print the CAPTAIN prompt
-fwf respawn <role>                                  hot-swap one pane (impl1..3|qa1..3|conductor|pm|gv|captain)
+fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain)
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
-fwf down [--purge]                                  kill both sessions (--purge also removes worktrees)
-fwf doctor | profiles | version | help              (version also: -v, --version)
+fwf down [--purge|--floor-only]                     kill both sessions (--purge: remove worktrees too;
+                                                    --floor-only: keep the captain running)
+fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
+fwf doctor | profiles | templates | version | help  (version also: -v, --version)
 ```
 
 Use `--profile NAME` (or `FWF_PROFILE=NAME`) to pick among profiles; with only
 one profile present it's selected automatically.
+
+### Sizing, models, and factory templates
+
+`start` / `provision` / `up` / `respawn` / `resume` / `down` also take:
+
+```
+--template NAME      factory design template: the role-prompt set the agents run.
+                     Shipped: dev (default — the feature factory described above),
+                     refactor (behavior-preserving refactoring factory; see
+                     docs/refactor-factory.md). List them: fwf templates
+--pairs N            number of implementer/QA pairs (default 3; refactor: 2)
+--model M            model for every agent (claude --model M)
+--impl-model M       per-role override; likewise --qa-model, --pm-model,
+                     --gv-model, --captain-model, --conductor-model
+```
+
+All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
+`FWF_MODEL_<ROLE>`. A template may ship its own defaults (`template.sh`);
+precedence is CLI/env → profile → template → stock.
 
 ## Notes & caveats
 
