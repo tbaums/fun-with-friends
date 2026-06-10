@@ -19,11 +19,11 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
       - name: bash -n (syntax)
         run: |
-          for f in fwf *.sh lib/*.sh profiles/*.sh templates/*/template.sh test/*.sh; do
+          for f in fwf *.sh lib/*.sh profiles/*.sh templates/*/template.sh eval/run.sh test/*.sh; do
             bash -n "$f" && echo "ok  $f"
           done
       - name: shellcheck (fail on warnings + errors)
-        run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/example.sh templates/*/template.sh test/run.sh
+        run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/example.sh templates/*/template.sh eval/run.sh test/run.sh
 
   test:
     name: functional suite

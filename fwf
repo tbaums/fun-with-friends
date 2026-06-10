@@ -73,6 +73,11 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          --floor-only kills only the floor, captain left running).
 
 UTILITIES
+  eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
+                         Role-level model eval: render the role's production
+                         prompt, run scenario fixtures through each model, and
+                         LLM-judge the responses against per-scenario rubrics
+                         (see docs/eval-harness.md).
   shell [--rebuild]      Build the fwf toolchain container image and drop into
                          it with this repo + your host claude/gh auth mounted
                          (a reproducible Linux sandbox — see docs/containers.md).
@@ -291,6 +296,7 @@ case "$cmd" in
       printf '%-12s %s\n' "$name" "$desc"
     done;;
   init)      do_init "$@";;
+  eval)      exec "$FWF_DIR/eval/run.sh" "$@";;
   start)
     # peel off init-only vs run flags: --build belongs to provision
     build_flag=""; init_args=()
