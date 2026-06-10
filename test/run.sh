@@ -124,6 +124,12 @@ RUN="$(FWF_PROFILE="" bash -c '
 assert_eq "lib.sh sees baked default branch" "master" "${RUN%%|*}"
 assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 
+section "implementer prompt carries the atomic-claim protocol"
+IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/prompts/implementer.tmpl' 2")"
+assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
+assert_contains "claim is verified after post" "$IMPL_RUN" "RE-CHECK you won"
+assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
+
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
 assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
