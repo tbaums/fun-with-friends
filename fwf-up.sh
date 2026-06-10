@@ -19,7 +19,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
-PROMPTS="$DIR/prompts"
+PROMPTS="$FWF_TEMPLATE_DIR"   # role prompts come from the selected factory template
 
 FLOOR_ONLY=0
 case "${1:-}" in

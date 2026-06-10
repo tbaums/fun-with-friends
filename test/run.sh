@@ -119,13 +119,13 @@ RUN="$(FWF_PROFILE="" bash -c '
   set -e
   cp "'"$OUT"'" "'"$ROOT"'/profiles/.__test_genblank.sh"
   trap "rm -f '"$ROOT"'/profiles/.__test_genblank.sh" EXIT
-  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/prompts/qa.tmpl 1 | cut -c1-12)\""
+  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/templates/dev/qa.tmpl 1 | cut -c1-12)\""
 ')"
 assert_eq "lib.sh sees baked default branch" "master" "${RUN%%|*}"
 assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 
 section "implementer prompt carries the atomic-claim protocol"
-IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/prompts/implementer.tmpl' 2")"
+IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
 assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
 assert_contains "claim is verified after post" "$IMPL_RUN" "RE-CHECK you won"
 assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
@@ -200,6 +200,32 @@ assert_contains "rejection is the lib.sh guard" "$UPFLAG" "positive integer"
 assert_contains "help mentions --pairs"      "$("$ROOT/fwf" help)" "--pairs N"
 assert_contains "help mentions --impl-model" "$("$ROOT/fwf" help)" "--impl-model"
 
+section "factory templates (issue #10)"
+TLIST="$("$ROOT/fwf" templates)"
+assert_contains "templates lists dev"      "$TLIST" "dev"
+assert_contains "templates lists refactor" "$TLIST" "refactor"
+assert_contains "help mentions --template" "$("$ROOT/fwf" help)" "--template NAME"
+# unknown template rejected at source time
+FWF_TEMPLATE=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "unknown template rejected" || ok "unknown template rejected"
+# an incomplete template (missing role tmpls) is rejected with the role named
+mkdir -p "$ROOT/templates/.__broken"; : > "$ROOT/templates/.__broken/implementer.tmpl"
+BROKEN="$(FWF_TEMPLATE=.__broken FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" 2>&1)" && bad "incomplete template rejected" || ok "incomplete template rejected"
+assert_contains "missing role named" "$BROKEN" "missing qa.tmpl"
+rm -rf "$ROOT/templates/.__broken"
+# refactor template: prompts render with the behavior-preservation spine intact
+RIMPL="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 1")"
+assert_contains "refactorer characterizes first"   "$RIMPL" "CHARACTERIZE FIRST"
+assert_contains "refactorer keeps claim protocol"  "$RIMPL" "CLAIM impl1"
+assert_contains "refactorer never edits expectations" "$RIMPL" "NEVER EDIT EXISTING TEST EXPECTATIONS"
+RQA="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/qa.tmpl\" 1")"
+assert_contains "verifier checks behavior contract" "$RQA" "BEHAVIOR-CONTRACT CHECK"
+# template.sh defaults apply (refactor => 2 pairs) and env still wins
+assert_eq "refactor defaults to 2 pairs" "8"  "$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
+assert_eq "env FWF_PAIRS beats template" "10" "$(FWF_PAIRS=3 FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
+# captain --print honors --template
+RCAP="$("$ROOT/fwf" --profile example captain --print --template refactor 2>&1)"
+assert_contains "captain --print honors --template" "$RCAP" "REFACTORING FACTORY"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
@@ -213,7 +239,8 @@ if command -v shellcheck >/dev/null 2>&1; then
   # Lint only the repo's shipped scripts — not user-local/generated profiles,
   # which live in profiles/ but aren't part of the repo.
   if shellcheck -s bash -S warning \
-       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" "$ROOT/test/run.sh"; then
+       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
+       "$ROOT"/templates/*/template.sh "$ROOT/test/run.sh"; then
     ok "shellcheck clean"
   else
     bad "shellcheck reported issues"

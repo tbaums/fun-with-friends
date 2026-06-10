@@ -22,8 +22,26 @@ PROFILE_FILE="$FWF_LIB_DIR/profiles/$PROFILE.sh"
 # shellcheck source=/dev/null  # profile path is resolved at runtime
 source "$PROFILE_FILE"
 
-# Derive the implementer/QA pair id array AFTER the profile loads, so a profile
-# can set its own FWF_PAIRS default (env/CLI still wins via the := in config.sh).
+# Resolve the factory template: the directory of role prompts the panes run.
+# A template may ship a template.sh of config DEFAULTS (e.g. the refactor
+# factory defaults to fewer pairs) — sourced after the profile so profile/env/
+# CLI still win wherever they used the ${VAR:-default} pattern.
+FWF_TEMPLATE_DIR="$FWF_LIB_DIR/templates/$FWF_TEMPLATE"
+if [ ! -d "$FWF_TEMPLATE_DIR" ]; then
+  echo "fwf: unknown template '$FWF_TEMPLATE' (missing $FWF_TEMPLATE_DIR) — see 'fwf templates'" >&2; exit 1
+fi
+for _fwf_t in implementer qa conductor pm gv captain; do
+  if [ ! -f "$FWF_TEMPLATE_DIR/$_fwf_t.tmpl" ]; then
+    echo "fwf: template '$FWF_TEMPLATE' is missing $_fwf_t.tmpl" >&2; exit 1
+  fi
+done
+unset _fwf_t
+# shellcheck source=/dev/null  # template path is resolved at runtime
+[ -f "$FWF_TEMPLATE_DIR/template.sh" ] && source "$FWF_TEMPLATE_DIR/template.sh"
+
+# Derive the implementer/QA pair id array AFTER profile + template load, so
+# either can set its own FWF_PAIRS default (env/CLI win — they arrive pre-set).
+FWF_PAIRS="${FWF_PAIRS:-3}"
 case "$FWF_PAIRS" in
   ''|*[!0-9]*|0) echo "fwf: FWF_PAIRS must be a positive integer (got '$FWF_PAIRS')" >&2; exit 1;;
 esac

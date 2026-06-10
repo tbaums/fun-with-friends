@@ -56,7 +56,9 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   respawn <role>         Hot-swap one pane:
                          implN | qaN | conductor | pm | gv | captain.
 
-SIZING + MODELS  (accepted by start/provision/up/respawn/resume/down)
+SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
+  --template NAME        Factory design template — the role-prompt set the
+                         agents run (see 'fwf templates'; default: dev).
   --pairs N              Number of implementer/QA pairs (default 3).
   --model M              Model for every agent (claude --model M).
   --impl-model M | --qa-model M | --pm-model M | --gv-model M
@@ -76,6 +78,7 @@ UTILITIES
                          (a reproducible Linux sandbox — see docs/containers.md).
   doctor                 Check tmux / git / gh / claude and report versions.
   profiles               List available profiles.
+  templates              List available factory design templates.
   version                Print the fwf version (aliases: -v, --version).
   help                   Show this help.
 
@@ -135,6 +138,8 @@ parse_runtime_flags() {
       --pairs=*) export FWF_PAIRS="${1#*=}"; shift;;
       --model)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_MODEL="$2"; shift 2;;
       --model=*) export FWF_MODEL="${1#*=}"; shift;;
+      --template)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_TEMPLATE="$2"; shift 2;;
+      --template=*) export FWF_TEMPLATE="${1#*=}"; shift;;
       --impl-model|--qa-model|--pm-model|--gv-model|--captain-model|--conductor-model)
         [ $# -ge 2 ] || die "$1 needs a value"
         roleflag="${1#--}"; roleflag="$(printf '%s' "${roleflag%-model}" | tr '[:lower:]' '[:upper:]')"
@@ -268,7 +273,7 @@ cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 # Runtime sizing/model flags are honored on the commands that launch or re-arm
 # agents (and provision, which sizes the worktree set).
 case "$cmd" in
-  start|provision|up|respawn|resume|down)
+  start|provision|up|respawn|resume|down|captain)
     parse_runtime_flags "$@"
     set -- ${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"};;
 esac
@@ -277,6 +282,14 @@ case "$cmd" in
   version)   cat "$FWF_DIR/VERSION" 2>/dev/null || echo "unknown";;
   doctor)    doctor;;
   profiles)  list_profiles;;
+  templates)
+    for d in "$FWF_DIR"/templates/*/; do
+      [ -d "$d" ] || continue
+      name="$(basename "$d")"
+      desc=""
+      [ -f "$d/template.sh" ] && desc="$(sed -n 's/^# fwf template: //p' "$d/template.sh" | head -1)"
+      printf '%-12s %s\n' "$name" "$desc"
+    done;;
   init)      do_init "$@";;
   start)
     # peel off init-only vs run flags: --build belongs to provision
@@ -355,7 +368,7 @@ case "$cmd" in
     done
     FWF_PROFILE="$(resolve_profile)"
     source "$FWF_DIR/lib.sh"
-    rendered="$(fwf_render "$FWF_DIR/prompts/captain.tmpl" "")"
+    rendered="$(fwf_render "$FWF_TEMPLATE_DIR/captain.tmpl" "")"
     if [ "$print_only" = 1 ]; then
       printf '%s\n' "$rendered"
     else
