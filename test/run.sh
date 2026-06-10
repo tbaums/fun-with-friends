@@ -240,6 +240,39 @@ assert_contains "synthesizer owns the portfolio" "$ISYN" "PORTFOLIO.md"
 assert_contains "synthesizer ranks pairwise"     "$ISYN" "PAIRWISE"
 assert_eq "ideation keeps 3 pairs" "10" "$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
 
+section "eval harness (issue #8) — hermetic, stubbed claude"
+STUB="$TMP/claude-stub.sh"
+cat > "$STUB" <<'EOS'
+#!/usr/bin/env bash
+cat >/dev/null
+echo '{"score": 7.5, "pass": true, "violations": [], "rationale": "stub"}'
+EOS
+chmod +x "$STUB"
+EVOUT="$TMP/eval-results"
+EVRUN="$(FWF_EVAL_CLAUDE_CMD="$STUB" FWF_EVAL_RESULTS_DIR="$EVOUT" "$ROOT/eval/run.sh" \
+  --role implementer --template dev --scenario claim-race --models alpha,beta --trials 2 2>&1)" \
+  && ok "eval run exits 0" || bad "eval run exits 0" "$EVRUN"
+EVREPORT="$(ls "$EVOUT"/*/report.md 2>/dev/null | head -1)"
+[ -n "$EVREPORT" ] && ok "report written" || bad "report written"
+assert_contains "both models in report"   "$(cat "$EVREPORT")" "| claim-race | beta | 2 | 7.5 | true |"
+assert_contains "mean table present"      "$(cat "$EVREPORT")" "Mean score per model"
+assert_contains "mean computed"           "$(cat "$EVREPORT")" "| alpha | 7.50 | 2 |"
+TRANSCRIPTS="$(find "$EVOUT" -name '*.response.txt' | grep -c .)"
+assert_eq "4 candidate transcripts saved" "4" "$TRANSCRIPTS"
+assert_contains "prompt embeds the real role prompt" "$(cat "$EVOUT"/*/claim-race-alpha-t1.prompt.txt)" "You are implementer impl1"
+assert_contains "prompt embeds the scenario"         "$(cat "$EVOUT"/*/claim-race-alpha-t1.prompt.txt)" "CLAIM impl3"
+# guard rails
+"$ROOT/eval/run.sh" --role bogus --models x >/dev/null 2>&1 && bad "unknown role rejected" || ok "unknown role rejected"
+"$ROOT/eval/run.sh" --role qa >/dev/null 2>&1 && bad "missing --models rejected" || ok "missing --models rejected"
+FWF_EVAL_CLAUDE_CMD="$STUB" FWF_EVAL_RESULTS_DIR="$EVOUT" "$ROOT/eval/run.sh" --role qa --template dev --scenario nope --models a >/dev/null 2>&1 && bad "unknown scenario rejected" || ok "unknown scenario rejected"
+# every shipped scenario dir is complete (scenario.md + rubric.md)
+SCEN_OK=1
+for d in "$ROOT"/eval/scenarios/*/*/*/; do
+  [ -f "$d/scenario.md" ] && [ -f "$d/rubric.md" ] || { SCEN_OK=0; bad "scenario complete: $d"; }
+done
+[ "$SCEN_OK" = 1 ] && ok "all shipped scenarios complete"
+assert_contains "help mentions eval" "$("$ROOT/fwf" help)" "eval --role"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
@@ -254,7 +287,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # which live in profiles/ but aren't part of the repo.
   if shellcheck -s bash -S warning \
        "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
-       "$ROOT"/templates/*/template.sh "$ROOT/test/run.sh"; then
+       "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"; then
     ok "shellcheck clean"
   else
     bad "shellcheck reported issues"
