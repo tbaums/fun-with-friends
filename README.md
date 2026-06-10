@@ -201,7 +201,8 @@ one profile present it's selected automatically.
 --template NAME      factory design template: the role-prompt set the agents run.
                      Shipped: dev (default — the feature factory described above),
                      refactor (behavior-preserving refactoring factory; see
-                     docs/refactor-factory.md). List them: fwf templates
+                     docs/refactor-factory.md), ideation (idea-portfolio factory;
+                     see docs/ideation-factory.md). List them: fwf templates
 --pairs N            number of implementer/QA pairs (default 3; refactor: 2)
 --model M            model for every agent (claude --model M)
 --impl-model M       per-role override; likewise --qa-model, --pm-model,
