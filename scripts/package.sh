@@ -13,13 +13,17 @@ STAGE="$(mktemp -d)"
 DEST="$STAGE/$NAME"
 trap 'rm -rf "$STAGE"' EXIT
 
-mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts"
+mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/docs" "$DEST/eval" "$DEST/containers"
 cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
 cp fwf-provision.sh fwf-up.sh fwf-respawn.sh fwf-stop.sh fwf-resume.sh fwf-down.sh "$DEST/"
 cp lib/detect.sh lib/profile.sh "$DEST/lib/"
 cp profiles/example.sh "$DEST/profiles/"        # generic template only
-cp prompts/*.tmpl prompts/*.txt "$DEST/prompts/"
-chmod +x "$DEST/fwf" "$DEST"/*.sh "$DEST/install.sh"
+cp prompts/*.txt "$DEST/prompts/"               # shared assets (role prompts live in templates/)
+cp -R templates "$DEST/templates"               # factory design templates (dev/refactor/ideation/dev-sre)
+cp -R docs "$DEST/docs"
+cp containers/Dockerfile "$DEST/containers/"
+cp -R eval/run.sh eval/scenarios "$DEST/eval/"  # harness + shipped scenarios (not results/)
+chmod +x "$DEST/fwf" "$DEST"/*.sh "$DEST/install.sh" "$DEST/eval/run.sh"
 
 mkdir -p "$ROOT/dist"
 tar -C "$STAGE" -czf "$ROOT/dist/$NAME.tar.gz" "$NAME"

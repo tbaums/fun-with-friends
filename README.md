@@ -10,6 +10,14 @@ a conductor that gates end-to-end tests.
 fwf start https://github.com/you/your-repo
 ```
 
+The same machinery runs other **factory designs** too: a behavior-preserving
+**refactoring** factory, an **ideation** factory that produces ranked idea
+portfolios instead of code, and a **dev-sre** variant with a dedicated prod-ops
+pane — pick one with `fwf up --template <name>`. The floor is sized and modeled
+at runtime (`--pairs`, `--model`, per-role overrides), and a built-in **eval
+harness** (`fwf eval`) tells you which model is good enough for which role.
+New here? Start with the **[tutorial](docs/tutorial.md)**.
+
 That one command clones the repo, detects its toolchain (Rust / Node / Go /
 Python), shows you the test/build/e2e commands it inferred, scaffolds a profile,
 provisions git worktrees, and launches the factory.
@@ -101,11 +109,15 @@ fwf --profile your-repo up                      # launch
   even the right tool for a cross-cutting refactor — advisory there, not a gate.
   It writes no code: it thinks, it doesn't authorize.
 - **IMPL1–3** (generalists): each surveys open issues + in-flight PRs, skips PM
-  drafts and any issue already resolved on a shared branch, picks the
-  **lowest-collision, oldest** eligible issue, and **immediately opens a draft
-  PR** (`Closes #N`) as a public claim before coding. One issue = one branch =
-  one PR. They loop: address review feedback, wait while a PR is in review, or
-  claim the next issue once one merges — never stalling idle.
+  drafts and any issue already resolved on a shared branch, and picks the
+  **lowest-collision, oldest** eligible issue. Claiming is **atomic**: the
+  implementer posts a `CLAIM implN` comment, re-checks that the first claim in
+  the thread is its own (losers yield with zero wasted work; stale claims
+  expire after 15 minutes), and only then branches and opens a draft PR
+  (`Closes #N`). One issue = one branch = one PR. They loop: address review
+  feedback, wait while a PR is in review, or claim the next issue once one
+  merges — never stalling idle. The captain can pre-assign with `ASSIGNED
+  implN` comments when releasing a batch.
 - **QA1–3** (paired by branch prefix): review only `implN/*` PRs, run the fast
   gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`).
   No e2e here — kept fast and parallel-safe.
@@ -123,11 +135,39 @@ fwf --profile your-repo up                      # launch
   **releases `integration → main`** when you choose — landing the `Closes #N`
   commits on the default branch and **auto-closing the issues**. It hones its own
   work with the GV but still confirms irreversible actions (deploys, releases)
-  with you. The role, workflows, and hard-won quality lessons live in
-  [`prompts/captain.tmpl`](prompts/captain.tmpl).
+  with you. It also manages cost autonomously: when the queue is empty it can
+  **idle the whole floor** (`fwf down --floor-only`) without losing its own
+  session, and bring it back (`fwf up --floor-only`) when work arrives. The
+  role, workflows, and hard-won quality lessons live in
+  [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
 The e2e lock (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`) serializes e2e so
 its single-port suite never collides.
+
+## Factory templates
+
+The pipeline above is the **dev** template — one of four shipped factory
+designs. A template re-aims every role's prompt (and optionally the topology)
+while reusing all the machinery: tmux grid, branch ladder, labels, floor
+lifecycle, stop/resume.
+
+| Template | The factory's product | Doc |
+|---|---|---|
+| `dev` (default) | shipped features (the pipeline above) | this README |
+| `refactor` | behavior-preserving structural improvement — characterize-first refactorers, behavior-contract verifiers, a planner that ranks debt by churn×complexity, a captain that sequences instead of parallelizing | [docs/refactor-factory.md](docs/refactor-factory.md) |
+| `ideation` | ranked idea portfolios under `ideas/` — stance-diverse generators, feasibility-hardening critics, a synthesizer that clusters and ranks pairwise into `PORTFOLIO.md` | [docs/ideation-factory.md](docs/ideation-factory.md) |
+| `dev-sre` | dev + a dedicated prod-ops (SRE) pane; the captain does zero ops while it runs | [docs/captain-split.md](docs/captain-split.md) |
+
+```bash
+fwf templates                       # list what's shipped
+fwf up --template refactor          # or FWF_TEMPLATE=refactor, or set it in a profile
+```
+
+A template is just `templates/<name>/` — six role prompts plus an optional
+`template.sh` of defaults. Templates can **inherit** prompts from a base
+(`FWF_TEMPLATE_BASE="dev"` — override one file, not six) and **declare extra
+panes** (`FWF_EXTRA_ROLES="sre:coord:2m:colour208"`). Authoring your own is
+covered in the [tutorial](docs/tutorial.md#7-build-your-own-template).
 
 ## Auto-detection
 
@@ -169,8 +209,10 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
 (base name; `FWF_COORD_SESSION`/`FWF_BUILD_SESSION` derive from it),
 `FWF_QA_INTERVAL`, `FWF_CONDUCTOR_INTERVAL`, `FWF_PM_INTERVAL`, `FWF_GV_INTERVAL`,
 `FWF_CAPTAIN_INTERVAL`, `FWF_IMPL_INTERVAL`, `FWF_WIP_LABEL`, `FWF_HOLD_LABEL`,
-`FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors. Prompts are
-templates in `prompts/` — the source of truth.
+`FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors — plus the
+sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
+`FWF_TEMPLATE`) from the next section. Role prompts are the source of truth and
+live in `templates/<name>/` (one directory per factory design).
 
 ## Commands
 
@@ -186,6 +228,8 @@ fwf respawn <role>                                  hot-swap one pane (implN|qaN
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
 fwf down [--purge|--floor-only]                     kill both sessions (--purge: remove worktrees too;
                                                     --floor-only: keep the captain running)
+fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
+                                                    (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
 fwf doctor | profiles | templates | version | help  (version also: -v, --version)
 ```
@@ -234,11 +278,28 @@ precedence is CLI/env → profile → template → stock.
   `product-wip`), so in-flight work drains to a clean `integration` you can
   release. Authorize the PM to "lift the freeze" afterward.
 
+## Learn more
+
+- **[Tutorial](docs/tutorial.md)** — hands-on walkthrough of everything: first
+  factory, day-to-day driving, floor lifecycle, sizing/models, all four
+  templates, authoring your own template, evals, the container sandbox.
+- [docs/refactor-factory.md](docs/refactor-factory.md) — the refactoring
+  factory's design and research basis.
+- [docs/ideation-factory.md](docs/ideation-factory.md) — the ideation factory's
+  design and research basis.
+- [docs/captain-split.md](docs/captain-split.md) — when (and when not) to run
+  the `dev-sre` variant.
+- [docs/eval-harness.md](docs/eval-harness.md) — how `fwf eval` works and how
+  to add scenarios.
+- [docs/containers.md](docs/containers.md) — the containerization design and
+  `fwf shell`.
+
 ## Development
 
 ```bash
-bash test/run.sh        # functional suite: detection, profile generation, dispatcher
-shellcheck -S warning fwf *.sh lib/*.sh profiles/*.sh test/run.sh
+bash test/run.sh        # functional suite (122 tests): detection, profiles, dispatcher,
+                        # floor lifecycle, sizing/models, templates, eval harness
+shellcheck -S warning fwf *.sh lib/*.sh profiles/example.sh templates/*/template.sh eval/run.sh test/run.sh
 ```
 
 CI runs both on every push to `main` and on PRs (Linux + macOS). Cutting a
