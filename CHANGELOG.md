@@ -6,7 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-10
+
 ### Added
+- **Comprehensive docs**: a hands-on **[tutorial](docs/tutorial.md)** covering
+  the whole surface (driving the factory, floor lifecycle, sizing/models, all
+  four templates, authoring custom templates, evals, the container sandbox),
+  per-feature design docs under `docs/`, and a README overhaul (factory
+  templates section, docs index, atomic-claim + floor-lifecycle pipeline
+  updates).
 - **Factory design templates** (`--template NAME`, `FWF_TEMPLATE`, `fwf
   templates`): a template is `templates/<name>/` — six role prompts plus an
   optional `template.sh` of config defaults. The classic factory moved to
@@ -60,6 +68,9 @@ adheres to [Semantic Versioning](https://semver.org/).
   long"), and a chunk boundary starting with `-` was parsed as a tmux flag. (#17)
 - A profile's own `${FWF_PAIRS:-N}` default can actually fire now — the
   stock default moved behind profile/template loading. (#10)
+- `scripts/package.sh` was broken by the `prompts/` → `templates/` move; the
+  release tarball now ships `templates/`, `docs/`, the eval harness +
+  scenarios, and `containers/Dockerfile`.
 
 ## [0.2.1] - 2026-06-05
 
@@ -192,7 +203,10 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tbaums/fun-with-friends/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/tbaums/fun-with-friends/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/tbaums/fun-with-friends/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/tbaums/fun-with-friends/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/tbaums/fun-with-friends/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/tbaums/fun-with-friends/compare/v0.1.3...v0.1.4
