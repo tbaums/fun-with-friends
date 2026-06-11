@@ -85,6 +85,9 @@ UTILITIES
                          it with this repo + your host claude/gh auth mounted
                          (a reproducible Linux sandbox — see docs/containers.md).
   doctor                 Check tmux / git / gh / claude and report versions.
+  upgrade [--check]      Upgrade this fwf install to the latest release —
+                         git-clone installs ff-pull; tarball installs download
+                         the release and re-link. --check only reports.
   profiles               List available profiles.
   templates              List available factory design templates.
   version                Print the fwf version (aliases: -v, --version).
@@ -289,6 +292,49 @@ case "$cmd" in
   ""|help)   usage;;
   version)   cat "$FWF_DIR/VERSION" 2>/dev/null || echo "unknown";;
   doctor)    doctor;;
+  upgrade)
+    # Self-upgrade. Two install modes, two paths:
+    #   git clone  -> ff-only pull (the clone IS the install; refuses on a dirty tree)
+    #   tarball    -> download the latest release NEXT TO the current dir + re-run
+    #                 its install.sh (re-points the symlink; old dir left for rollback)
+    # FWF_UPGRADE_REPO overrides the canonical repo (forks, tests).
+    check_only=0
+    for a in "$@"; do
+      case "$a" in --check) check_only=1;; *) die "upgrade: unknown flag '$a'";; esac
+    done
+    command -v gh >/dev/null 2>&1 || die "upgrade: gh is required to query releases"
+    current="$(cat "$FWF_DIR/VERSION" 2>/dev/null || echo unknown)"
+    upgrade_repo="${FWF_UPGRADE_REPO:-tbaums/fun-with-friends}"
+    latest="$(gh api "repos/$upgrade_repo/releases/latest" --jq .tag_name 2>/dev/null || true)"
+    if [ -z "$latest" ]; then
+      echo "fwf upgrade: could not query the latest release of $upgrade_repo (gh api failed — offline? unauthenticated?)." >&2
+      [ -d "$FWF_DIR/.git" ] && echo "  your install is a git clone — 'git -C $FWF_DIR pull --ff-only' upgrades it regardless." >&2
+      exit 1
+    fi
+    echo "fwf: installed $current · latest release ${latest#v}"
+    if [ "v$current" = "$latest" ]; then echo "fwf: up to date."; exit 0; fi
+    if [ "$check_only" = 1 ]; then echo "fwf: upgrade available — run 'fwf upgrade'."; exit 0; fi
+    if [ -d "$FWF_DIR/.git" ]; then
+      [ -z "$(git -C "$FWF_DIR" status --porcelain)" ] \
+        || die "upgrade: the clone at $FWF_DIR has local changes — commit or stash them first."
+      git -C "$FWF_DIR" pull --ff-only || die "upgrade: git pull --ff-only failed (diverged from origin?)"
+      echo "fwf: upgraded $current -> $(cat "$FWF_DIR/VERSION") (git pull in $FWF_DIR)."
+    else
+      base="$(dirname "$FWF_DIR")"
+      newdir="$base/fwf-${latest#v}"
+      [ -e "$newdir" ] && die "upgrade: $newdir already exists — remove it or upgrade by hand."
+      tmpd="$(mktemp -d "${TMPDIR:-/tmp}/fwf-upgrade.XXXXXX")"
+      gh release download "$latest" -R "$upgrade_repo" -p '*.tar.gz' -D "$tmpd" \
+        || { rm -rf "$tmpd"; die "upgrade: release download failed"; }
+      tar -C "$base" -xzf "$tmpd"/*.tar.gz
+      rm -rf "$tmpd"
+      [ -x "$newdir/install.sh" ] || die "upgrade: extracted $newdir is missing install.sh — aborting before re-linking"
+      "$newdir/install.sh" ${FWF_UPGRADE_BIN:+"$FWF_UPGRADE_BIN"}
+      echo "fwf: installed ${latest#v} at $newdir (symlink re-pointed)."
+      echo "fwf: the old install at $FWF_DIR was left in place — remove it once you're happy."
+    fi
+    echo "note: a RUNNING factory keeps its old prompts until panes restart — 'fwf resume' (or 'fwf respawn <role>') re-arms them on the new version."
+    ;;
   profiles)  list_profiles;;
   templates)
     for d in "$FWF_DIR"/templates/*/; do

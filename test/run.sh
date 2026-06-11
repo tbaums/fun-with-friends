@@ -332,6 +332,46 @@ assert_contains "stdin goal works" "$(cat "$TMP/suggest-prompt.txt")" "ship a v1
 "$ROOT/fwf" suggest </dev/null >/dev/null 2>&1 && bad "empty goal rejected" || ok "empty goal rejected"
 assert_contains "help mentions suggest" "$("$ROOT/fwf" help)" "suggest <description>"
 
+section "fwf upgrade — hermetic, stubbed gh"
+GHSTUB="$TMP/ghstub"; mkdir -p "$GHSTUB"
+cat > "$GHSTUB/gh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  api) [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1; echo "${FAKE_LATEST:-v0.0.0}";;
+  release)  # gh release download TAG -R repo -p pat -D destdir
+    dest=""
+    while [ $# -gt 0 ]; do [ "$1" = "-D" ] && dest="$2"; shift; done
+    cp "$FWF_TEST_TARBALL" "$dest/";;
+  *) exit 1;;
+esac
+EOS
+chmod +x "$GHSTUB/gh"
+REALV="$(cat "$ROOT/VERSION")"
+assert_contains "help mentions upgrade" "$("$ROOT/fwf" help)" "upgrade [--check]"
+"$ROOT/fwf" upgrade --bogus >/dev/null 2>&1 && bad "upgrade rejects unknown flag" || ok "upgrade rejects unknown flag"
+UPC="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$ROOT/fwf" upgrade --check 2>&1)" && ok "--check up-to-date exits 0" || bad "--check up-to-date exits 0"
+assert_contains "up-to-date reported" "$UPC" "up to date"
+UPA="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$ROOT/fwf" upgrade --check 2>&1)"
+assert_contains "upgrade-available reported" "$UPA" "upgrade available"
+UPF="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$ROOT/fwf" upgrade --check 2>&1)" && bad "gh failure exits nonzero" || ok "gh failure exits nonzero"
+assert_contains "gh failure hints at clone pull" "$UPF" "pull --ff-only"
+
+# end-to-end TARBALL upgrade: old extracted install -> stubbed latest release
+bash "$ROOT/scripts/package.sh" >/dev/null
+TARBALL="$ROOT/dist/fwf-$REALV.tar.gz"
+UPHOME="$TMP/upgrade"; mkdir -p "$UPHOME/bin"
+tar -C "$UPHOME" -xzf "$TARBALL" && mv "$UPHOME/fwf-$REALV" "$UPHOME/fwf-old"
+printf '0.0.1\n' > "$UPHOME/fwf-old/VERSION"
+UPOUT="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" FWF_TEST_TARBALL="$TARBALL" FWF_UPGRADE_BIN="$UPHOME/bin" \
+  "$UPHOME/fwf-old/fwf" upgrade 2>&1)" && ok "tarball upgrade exits 0" || bad "tarball upgrade exits 0" "$UPOUT"
+[ -x "$UPHOME/fwf-$REALV/fwf" ] && ok "new version extracted alongside" || bad "new version extracted alongside"
+LINK="$(readlink "$UPHOME/bin/fwf" || true)"
+assert_contains "symlink re-pointed to new install" "$LINK" "fwf-$REALV/fwf"
+[ -d "$UPHOME/fwf-old" ] && ok "old install left for rollback" || bad "old install left for rollback"
+assert_eq "upgraded copy reports new version" "$REALV" "$("$UPHOME/bin/fwf" version)"
+assert_contains "respawn note printed" "$UPOUT" "fwf respawn"
+rm -rf "$ROOT/dist"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

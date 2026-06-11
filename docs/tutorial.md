@@ -471,3 +471,18 @@ chunks (tmux rejects >10KB `send-keys` arguments); `fwf up` verifies claude
 actually booted in each pane before delivering its prompt and re-sends to
 laggards; everything any agent knows it re-derives from GitHub + git on each
 tick, which is why respawning is always safe.
+
+## 11. Staying current
+
+```bash
+fwf upgrade --check    # am I behind the latest release?
+fwf upgrade            # bring this install up to date
+```
+
+A git-clone install ff-pulls (refusing if you have local edits); a tarball
+install downloads the latest release *next to* the current directory and
+re-points the `fwf` symlink, leaving the old directory in place for rollback.
+One thing the command will remind you of, because it matters: **a running
+factory keeps its old prompts** — agents are armed at launch — so after an
+upgrade, `fwf resume` (or `fwf respawn <role>`) re-arms them on the new
+version. `FWF_UPGRADE_REPO` points at a fork if you run one.
