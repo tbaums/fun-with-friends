@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`fwf upgrade [--check]`** — self-upgrade to the latest GitHub release.
+  Git-clone installs ff-pull (refusing on a dirty tree); tarball installs
+  download the release next to the current dir and re-run its `install.sh`
+  to re-point the symlink (old dir kept for rollback). Reminds you that a
+  running factory keeps its old prompts until `fwf resume`/`respawn`.
+  `FWF_UPGRADE_REPO` targets a fork.
+
 ## [0.4.0] - 2026-06-11
 
 ### Added
