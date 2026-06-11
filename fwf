@@ -38,6 +38,9 @@ USAGE
   fwf [--profile NAME] <command> [args]
 
 GETTING STARTED
+  suggest <description>  Describe what you're trying to do; get a factory
+                         design back — prebuilt or custom template, sizing,
+                         and per-role model picks (works before any profile).
   start <url|path> [--name N] [--yes] [--build]
                          Clone (or use a local path), detect the toolchain,
                          scaffold a profile, provision worktrees, and launch.
@@ -296,6 +299,7 @@ case "$cmd" in
       printf '%-12s %s\n' "$name" "$desc"
     done;;
   init)      do_init "$@";;
+  suggest)   exec "$FWF_DIR/fwf-suggest.sh" "$@";;
   eval)      exec "$FWF_DIR/eval/run.sh" "$@";;
   start)
     # peel off init-only vs run flags: --build belongs to provision

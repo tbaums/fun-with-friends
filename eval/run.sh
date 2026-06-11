@@ -77,11 +77,15 @@ EVAL_TIMEOUT="${FWF_EVAL_TIMEOUT:-300}"
 # Portable hard timeout (macOS has no `timeout`): run the command in the
 # background with a watchdog. stdin must be wired EXPLICITLY inside — a
 # backgrounded command in a non-interactive script otherwise reads /dev/null,
-# silently starving `claude -p` of its prompt.
+# silently starving `claude -p` of its prompt. The watchdog detaches its stdio
+# AND trap-reaps its own sleep: killing just the subshell orphans the sleep,
+# which then holds any captured-stdout pipe open for the full timeout.
 run_with_timeout() { # $1=secs $2=stdin-file, rest=command…
   local secs="$1" infile="$2"; shift 2
   "$@" < "$infile" & local pid=$!
-  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) & local wpid=$!
+  ( trap 'kill "$!" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & wait "$!"
+    kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 </dev/null & local wpid=$!
   local rc=0; wait "$pid" 2>/dev/null || rc=$?
   kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null || true
   return "$rc"

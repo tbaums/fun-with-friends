@@ -90,7 +90,16 @@ fwf_claude_cmd() { # $1=role
     pm)        m="${FWF_MODEL_PM:-$FWF_MODEL}";;
     gv)        m="${FWF_MODEL_GV:-$FWF_MODEL}";;
     captain)   m="${FWF_MODEL_CAPTAIN:-$FWF_MODEL}";;
-    *)         m="$FWF_MODEL";;   # extra roles ride the floor-wide default
+    *)
+      # Extra roles get the same treatment generically: FWF_MODEL_<NAME>
+      # (uppercased role name) beats the floor-wide default. eval is safe
+      # here — the name is whitelisted to [A-Z0-9_] first.
+      _fwf_up="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')"
+      case "$_fwf_up" in
+        *[!A-Z0-9_]*|"") m="$FWF_MODEL";;
+        *) eval "m=\"\${FWF_MODEL_$_fwf_up:-\$FWF_MODEL}\"";;
+      esac
+      unset _fwf_up;;
   esac
   if [ -n "$m" ]; then printf '%s --model %s' "$CLAUDE_CMD" "$m"; else printf '%s' "$CLAUDE_CMD"; fi
 }

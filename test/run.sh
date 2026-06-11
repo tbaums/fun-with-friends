@@ -296,6 +296,42 @@ done
 [ "$SCEN_OK" = 1 ] && ok "all shipped scenarios complete"
 assert_contains "help mentions eval" "$("$ROOT/fwf" help)" "eval --role"
 
+section "fwf suggest (issue #23) — hermetic, stubbed advisor"
+SGSTUB="$TMP/suggest-stub.sh"
+cat > "$SGSTUB" <<EOS
+#!/usr/bin/env bash
+cat > "$TMP/suggest-prompt.txt"
+echo "STUB-ADVICE: prebuilt: refactor"
+EOS
+chmod +x "$SGSTUB"
+SOUT="$(FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf" suggest "make my legacy python monolith maintainable without changing behavior" 2>/dev/null)" \
+  && ok "suggest exits 0" || bad "suggest exits 0"
+assert_contains "advisor response passed through" "$SOUT" "STUB-ADVICE"
+SPROMPT="$(cat "$TMP/suggest-prompt.txt")"
+assert_contains "prompt embeds the goal"          "$SPROMPT" "legacy python monolith"
+assert_contains "catalog lists dev"               "$SPROMPT" "- dev: classic feature factory"
+assert_contains "catalog lists refactor"          "$SPROMPT" "- refactor: behavior-preserving"
+assert_contains "catalog lists ideation"          "$SPROMPT" "- ideation: ideation factory"
+assert_contains "catalog lists dev-sre"           "$SPROMPT" "- dev-sre: dev factory"
+assert_contains "catalog carries inheritance"     "$SPROMPT" "(inherits everything else from 'dev')"
+assert_contains "catalog carries extra panes"     "$SPROMPT" "FWF_EXTRA_ROLES"
+assert_contains "model menu included"             "$SPROMPT" "claude-haiku-4-5-20251001"
+assert_contains "answer contract included"        "$SPROMPT" "## Per-role models"
+assert_contains "eval verification taught"        "$SPROMPT" "fwf eval --role"
+assert_contains "canonical launch shape taught"   "$SPROMPT" "fwf up --template NAME"
+# extra roles honor FWF_MODEL_<NAME> (the knob the advisor recommends)
+SREMODEL="$(FWF_MODEL_SRE=opus-test FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd sre")"
+assert_contains "FWF_MODEL_SRE honored" "$SREMODEL" "--model opus-test"
+# advisor --model is NOT swallowed by the dispatcher's runtime-flag parser
+FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf" suggest --model test-model "any goal" >/dev/null 2>&1 \
+  && ok "suggest --model accepted" || bad "suggest --model accepted"
+[ -z "${FWF_MODEL:-}" ] && ok "suggest --model not exported as FWF_MODEL" || bad "suggest --model leaked"
+# stdin path and the empty-goal guard
+printf 'ship a v1 quickly' | FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf" suggest >/dev/null 2>&1
+assert_contains "stdin goal works" "$(cat "$TMP/suggest-prompt.txt")" "ship a v1 quickly"
+"$ROOT/fwf" suggest </dev/null >/dev/null 2>&1 && bad "empty goal rejected" || ok "empty goal rejected"
+assert_contains "help mentions suggest" "$("$ROOT/fwf" help)" "suggest <description>"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
