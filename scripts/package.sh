@@ -13,7 +13,9 @@ STAGE="$(mktemp -d)"
 DEST="$STAGE/$NAME"
 trap 'rm -rf "$STAGE"' EXIT
 
-mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/docs" "$DEST/eval" "$DEST/containers"
+# NOTE: docs/ and templates/ are cp -R'd whole below — pre-creating their
+# destinations would nest them (cp -R src dest/src when dest exists).
+mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "$DEST/containers"
 cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
 cp fwf-provision.sh fwf-up.sh fwf-respawn.sh fwf-stop.sh fwf-resume.sh fwf-down.sh "$DEST/"
 cp lib/detect.sh lib/profile.sh "$DEST/lib/"
