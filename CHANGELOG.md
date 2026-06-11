@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-11
+
 ### Added
 - **`fwf suggest "<goal>"`** — the factory-design advisor (#23): describe what
   you're trying to do and get back a prebuilt-or-custom template
@@ -219,7 +221,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tbaums/fun-with-friends/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tbaums/fun-with-friends/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/tbaums/fun-with-friends/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tbaums/fun-with-friends/compare/v0.1.6...v0.2.0
