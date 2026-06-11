@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`fwf suggest "<goal>"`** — the factory-design advisor (#23): describe what
+  you're trying to do and get back a prebuilt-or-custom template
+  recommendation, the exact launch command, per-role model picks with
+  rationale (menu in `FWF_MODEL_MENU`), a complete `template.sh` sketch when
+  custom is warranted, and the `fwf eval` commands that would verify the
+  riskiest picks. Reads the installed template catalog dynamically; needs no
+  profile.
+- Extra roles now honor `FWF_MODEL_<NAME>` (e.g. `FWF_MODEL_SRE`) instead of
+  only the floor-wide model default.
+
+### Fixed
+- The portable timeout watchdog (eval harness + suggest) no longer orphans
+  its `sleep`, which held captured-stdout pipes open and could block callers
+  for the full timeout.
+
 ## [0.3.0] - 2026-06-10
 
 ### Added

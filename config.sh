@@ -29,6 +29,10 @@ FWF_MODEL_GV="${FWF_MODEL_GV:-}"
 FWF_MODEL_CAPTAIN="${FWF_MODEL_CAPTAIN:-}"
 FWF_MODEL_CONDUCTOR="${FWF_MODEL_CONDUCTOR:-}"
 
+# The model menu `fwf suggest` recommends from — "id:traits" entries separated
+# by " | ". Edit as models evolve; it is advisory text, not validation.
+FWF_MODEL_MENU="${FWF_MODEL_MENU:-claude-opus-4-8:strongest reasoning, highest cost — synthesis, strategy, judgment seats | claude-sonnet-4-6:strong all-round default — building, reviewing, planning | claude-haiku-4-5-20251001:fast and cheap — mechanical, high-volume, rubric-scored seats}"
+
 # tmux sessions + cadence. The factory runs as TWO sessions: a COORDINATION
 # session (pm · gv · captain) the human attaches to and talks to the captain in,
 # and an IMPLEMENTATION session (impl1-3 · qa1-3 · conductor) that builds. They

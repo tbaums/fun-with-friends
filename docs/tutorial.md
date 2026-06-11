@@ -184,6 +184,39 @@ what `fwf eval` is for (section 8).
 
 ---
 
+## 4½. Not sure what to run? `fwf suggest`
+
+Describe the goal in plain language and get a factory design back:
+
+```bash
+fwf suggest "I inherited a legacy Django app with no tests and weekly prod \
+incidents. Make it safe to change without breaking users, on a budget."
+```
+
+The advisor reads the **installed** template catalog (so your custom templates
+show up too), the sizing/model knobs, and the model menu (`FWF_MODEL_MENU` in
+`config.sh` — edit it as models evolve), then answers in a fixed shape:
+
+- **Recommendation** — a prebuilt template, or a custom one with a named base.
+- **Why** — and the strongest alternative it rejected.
+- **Launch** — the exact `fwf up --template … --pairs … --<role>-model …`
+  command to copy-paste.
+- **Per-role models** — a seat-by-seat table with one-line rationale
+  (strong models only where judgment failures are silent and costly; the
+  cheap model on mechanical, rubric-checkable seats).
+- **Custom template sketch** — when warranted: a complete `template.sh` plus
+  which role prompts to override and the one behavioral change each makes
+  (section 7 shows you how to build it).
+- **Verify** — the `fwf eval` commands that would pressure-test its riskiest
+  model picks before you commit a budget to them.
+
+It needs no profile — run it before `fwf start` when you're deciding what to
+build. `--model M` picks the advisor model itself; pipe the description on
+stdin if you prefer. Treat the output as a strong draft, not gospel: the
+Verify section exists precisely because model fit is empirical (section 8).
+
+---
+
 ## 5. The refactoring factory
 
 ```bash

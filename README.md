@@ -163,6 +163,14 @@ fwf templates                       # list what's shipped
 fwf up --template refactor          # or FWF_TEMPLATE=refactor, or set it in a profile
 ```
 
+Not sure which design fits? Describe the goal and let it advise you —
+including per-role model picks and a custom-template sketch when nothing
+prebuilt fits:
+
+```bash
+fwf suggest "I inherited a legacy app with no tests; make it safe to change"
+```
+
 A template is just `templates/<name>/` — six role prompts plus an optional
 `template.sh` of defaults. Templates can **inherit** prompts from a base
 (`FWF_TEMPLATE_BASE="dev"` — override one file, not six) and **declare extra
@@ -217,6 +225,8 @@ live in `templates/<name>/` (one directory per factory design).
 ## Commands
 
 ```
+fwf suggest "<what you're trying to do>"            describe your goal; get a factory design back —
+                                                    prebuilt or custom template + per-role models
 fwf start <url|path> [--name N] [--yes] [--build]   clone → detect → confirm → provision → up
 fwf init  <url|path> [--name N] [--yes]             clone → detect → scaffold profile
 fwf provision [--build]                             create worktrees + dev data
