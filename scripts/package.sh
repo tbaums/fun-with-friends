@@ -17,7 +17,7 @@ trap 'rm -rf "$STAGE"' EXIT
 # destinations would nest them (cp -R src dest/src when dest exists).
 mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "$DEST/containers"
 cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
-cp fwf-provision.sh fwf-up.sh fwf-respawn.sh fwf-stop.sh fwf-resume.sh fwf-down.sh "$DEST/"
+cp fwf-*.sh "$DEST/"   # ALL engine scripts — a glob so a new fwf-*.sh can't be forgotten
 cp lib/detect.sh lib/profile.sh "$DEST/lib/"
 cp profiles/example.sh "$DEST/profiles/"        # generic template only
 cp prompts/*.txt "$DEST/prompts/"               # shared assets (role prompts live in templates/)
