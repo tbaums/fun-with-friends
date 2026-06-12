@@ -101,6 +101,12 @@ fwf --profile your-repo up                      # launch
 
 ## The pipeline
 
+Every looped role is armed the same way: its full role prompt is delivered
+once at launch and persisted to `~/.fun-with-friends/prompts/<profile>-<role>.prompt`,
+then its loop fires a one-line tick on the role's interval — an agent that has
+compacted re-reads its role from that file instead of having the whole prompt
+re-injected every tick.
+
 - **PM** (loop): turns rough ideas into **draft** GitHub issues labeled
   `product-wip` (hidden from implementers) via back-and-forth, and on a loop
   refines those drafts from new comments. A draft isn't *ready* until the **grand
@@ -239,7 +245,8 @@ fwf up [--floor-only]                               launch both sessions (--floo
                                                     floor around a live captain)
 fwf attach [coord|build]                            attach to coordination (default) or implementation
 fwf captain [--print]                               copy/print the CAPTAIN prompt
-fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain)
+fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain);
+                                                    recreates the pane if it closed entirely
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
 fwf down [--purge|--floor-only]                     kill both sessions (--purge: remove worktrees too;
                                                     --floor-only: keep the captain running)
@@ -284,7 +291,10 @@ one profile present it's selected automatically.
                      issues/<profile>/{open,closed}/), driven by `fwf issues` —
                      and the factory NEVER touches the remote: provision
                      installs a pre-push guard blocking every push unless a
-                     human authorizes that one push with FWF_ALLOW_PUSH=1;
+                     human authorizes that one push with FWF_ALLOW_PUSH=1, and
+                     every pane gets a fail-closed `gh` wrapper that blocks
+                     mutating gh commands (reads pass through) unless that one
+                     invocation is authorized with FWF_ALLOW_GH=1;
                      branches, reviews, merges, and promotion are fully local,
                      and only the captain — on your explicit, per-instance
                      word — pushes or opens an upstream PR, with its body
