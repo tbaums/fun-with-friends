@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-11
+
+### Security
+- **Local-issues mode never touches the remote** (#28). Previously
+  `--issues local` still pushed branches to origin (staging/integration at
+  provision; work branches + PRs from the floor) — unacceptable against
+  repos whose remote the operator doesn't control. Now: provision creates
+  the branch ladder **locally only** and installs a **pre-push guard** in
+  the repo blocking every push (from any worktree) unless a human
+  authorizes that single push with `FWF_ALLOW_PUSH=1`; the guard is removed
+  by a gh-mode re-provision. The floor flow is fully local — implementers
+  hand off via `READY-FOR-REVIEW` comments instead of PRs, QA squash-merges
+  into local staging on a detached-checkout discipline, the conductor
+  promotes locally without fetch/pull/push — and the captain is the sole,
+  explicitly-human-authorized exception for pushing or opening an upstream
+  PR (body mined from the local issue reasoning).
+
+### Fixed
+- gh-mode re-provision on a repo that previously ran local mode removes the
+  guard *before* pushing the ladder (it used to block itself).
+
 ## [0.5.0] - 2026-06-11
 
 ### Added
@@ -250,7 +271,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/tbaums/fun-with-friends/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tbaums/fun-with-friends/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/tbaums/fun-with-friends/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tbaums/fun-with-friends/compare/v0.3.0...v0.4.0

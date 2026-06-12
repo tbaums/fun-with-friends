@@ -16,14 +16,48 @@ cd "$FWF_REPO"
 mkdir -p "$FWF_RUN"
 gh auth status >/dev/null 2>&1 || log "WARNING: gh is not authenticated. Run 'gh auth login'."
 
-# Ensure the staging + integration branches exist locally + on origin. The ladder
-# must be continuous: integration branches from main, and staging from the CURRENT
-# integration tip (NOT main) — otherwise staging diverges from any work already on
-# integration and the conductor's ff-only promote fails.
+# Ensure the staging + integration branches exist. The ladder must be
+# continuous: integration branches from main, and staging from the CURRENT
+# integration tip (NOT main) — otherwise staging diverges from any work already
+# on integration and the conductor's ff-only promote fails.
+#
+# LOCAL ISSUES MODE (#28): the remote is typically NOT operator-controlled, so
+# the ladder is created as LOCAL branches only and NOTHING is pushed — a
+# pre-push guard (below) hard-blocks every push unless a human sets
+# FWF_ALLOW_PUSH=1 for that specific push.
+# The no-push guard: installed in local mode, removed (if ours) in gh mode.
+# Hooks live in the shared git dir, so every worktree/agent inherits it. This
+# block must run BEFORE ensure_branch below — a gh-mode provision on a repo
+# that previously ran local mode has the guard installed, and would otherwise
+# block its own ladder push.
+HOOK="$(git -C "$FWF_REPO" rev-parse --absolute-git-dir)/hooks/pre-push"
+if [ "$FWF_ISSUES" = "local" ]; then
+  if [ -e "$HOOK" ] && ! grep -q "fwf no-push guard" "$HOOK"; then
+    log "WARNING: a pre-push hook already exists at $HOOK — NOT overwriting. Add the fwf no-push guard to it yourself, or pushes will NOT be blocked."
+  else
+    cat > "$HOOK" <<'GUARD'
+#!/usr/bin/env sh
+# fwf no-push guard — installed by fwf-provision in --issues local mode.
+# This repo's remote may not be operator-controlled: ALL pushes are blocked
+# unless a HUMAN explicitly authorizes this one with FWF_ALLOW_PUSH=1.
+[ "${FWF_ALLOW_PUSH:-0}" = "1" ] && exit 0
+echo "fwf: push BLOCKED — fun-with-friends runs here in local-issues mode and never pushes without explicit human permission." >&2
+echo "fwf: a human can authorize a single push with:  FWF_ALLOW_PUSH=1 git push ..." >&2
+exit 1
+GUARD
+    chmod +x "$HOOK"
+    log "no-push guard installed ($HOOK): every push is blocked unless FWF_ALLOW_PUSH=1"
+  fi
+elif [ -e "$HOOK" ] && grep -q "fwf no-push guard" "$HOOK"; then
+  rm -f "$HOOK"
+  log "removed the fwf no-push guard (gh mode)"
+fi
+
 git fetch origin -q
 ensure_branch() { # $1=branch  $2=base-branch (created from origin/$2 if missing)
   git show-ref --verify --quiet "refs/heads/$1" \
-    || { log "creating $1 from origin/$2"; git branch "$1" "origin/$2"; }
+    || { log "creating $1 from $2"; git branch "$1" "origin/$2" 2>/dev/null || git branch "$1" "$2"; }
+  [ "$FWF_ISSUES" = "gh" ] || return 0   # local mode: never create remote branches
   git ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1 \
     || { log "pushing $1 to origin"; git push -u origin "$1"; }
 }

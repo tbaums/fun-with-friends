@@ -428,6 +428,54 @@ FWF_ISSUES=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 
 case "$("$ROOT/fwf" templates)" in *_local-issues*) bad "_local-issues hidden from templates";; *) ok "_local-issues hidden from templates";; esac
 assert_contains "help mentions --issues" "$("$ROOT/fwf" help)" "--issues gh|local"
 
+section "no-push guard in local mode (issue #28) — real git fixture"
+PUSHD="$TMP/push"; mkdir -p "$PUSHD"
+git init -q --bare "$PUSHD/origin.git"
+git clone -q "$PUSHD/origin.git" "$PUSHD/repo" 2>/dev/null
+( cd "$PUSHD/repo" && git config user.email t@t.co && git config user.name t \
+  && echo hi > README && git add -A && git commit -qm init && git branch -M main && git push -q origin main )
+cat > "$ROOT/profiles/.__pushtest.sh" <<EOF
+FWF_REPO="$PUSHD/repo"
+WT_PREFIX="pt"
+WT_BASE="$PUSHD/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+# local mode provision: ladder stays local, guard installed, nothing pushed
+FWF_ISSUES=local FWF_RUN_DIR="$PUSHD/run" FWF_PROFILE=.__pushtest "$ROOT/fwf-provision.sh" >/dev/null 2>&1 \
+  && ok "local provision runs" || bad "local provision runs"
+git -C "$PUSHD/repo" show-ref --verify --quiet refs/heads/staging && ok "staging exists locally" || bad "staging exists locally"
+git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/staging && bad "staging NOT pushed" || ok "staging NOT pushed"
+git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/integration && bad "integration NOT pushed" || ok "integration NOT pushed"
+PUSHHOOK="$(git -C "$PUSHD/repo" rev-parse --absolute-git-dir)/hooks/pre-push"
+grep -q "fwf no-push guard" "$PUSHHOOK" 2>/dev/null && ok "guard installed" || bad "guard installed"
+# the guard actually blocks — and the human override actually works
+PUSHOUT="$(cd "$PUSHD/repo" && git push origin staging 2>&1)" && bad "push blocked by guard" || ok "push blocked by guard"
+assert_contains "block message names the override" "$PUSHOUT" "FWF_ALLOW_PUSH=1"
+git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/staging && bad "blocked push left no ref" || ok "blocked push left no ref"
+( cd "$PUSHD/repo" && FWF_ALLOW_PUSH=1 git push -q origin staging ) && ok "human override pushes" || bad "human override pushes"
+# guard blocks from a WORKTREE too (agents live in worktrees)
+( cd "$PUSHD/wt/pt-impl1" && git push origin impl1/work >/dev/null 2>&1 ) && bad "worktree push blocked" || ok "worktree push blocked"
+# gh-mode provision on the same repo: guard removed, ladder pushed
+FWF_RUN_DIR="$PUSHD/run" FWF_PROFILE=.__pushtest "$ROOT/fwf-provision.sh" >/dev/null 2>&1
+grep -q "fwf no-push guard" "$PUSHHOOK" 2>/dev/null && bad "guard removed in gh mode" || ok "guard removed in gh mode"
+git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/integration && ok "gh mode pushes the ladder" || bad "gh mode pushes the ladder"
+rm -f "$ROOT/profiles/.__pushtest.sh"
+
+section "no-push flow in the rendered prompts (issue #28)"
+NPIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+assert_contains "impl: never push"            "$NPIMPL" "NEVER run \`git push\`"
+assert_contains "impl: local handoff signal"  "$NPIMPL" "READY-FOR-REVIEW impl1"
+NPQA="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+assert_contains "qa: no PRs, local queue"     "$NPQA" "there are NO pull requests here"
+assert_contains "qa: frees the shared branch" "$NPQA" "git switch --detach staging"
+NPCON="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
+assert_contains "conductor: never fetch/pull/push" "$NPCON" "NEVER fetch/pull/push"
+NPCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+assert_contains "captain: sole exception, per-instance" "$NPCAP" "FWF_ALLOW_PUSH=1"
+GHCAP="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+case "$GHCAP" in *FWF_ALLOW_PUSH*) bad "gh mode has no push-guard text";; *) ok "gh mode has no push-guard text";; esac
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
