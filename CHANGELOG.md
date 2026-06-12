@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-11
+
 ### Added
 - **Local issues backend** (`--issues local` / `--local-issues` /
   `FWF_ISSUES`, #26): run the factory against repos whose GitHub
@@ -248,7 +250,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tbaums/fun-with-friends/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/tbaums/fun-with-friends/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tbaums/fun-with-friends/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tbaums/fun-with-friends/compare/v0.2.1...v0.3.0
