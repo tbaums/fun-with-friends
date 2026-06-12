@@ -67,6 +67,16 @@ for _fwf_t in implementer qa conductor pm gv captain $(fwf_extra_names); do
 done
 unset _fwf_t
 
+# Issue-tracker backend (issue #26): "gh" = the target repo's GitHub issues;
+# "local" = a markdown store outside any repo, driven by fwf-issues.sh. The
+# store path is per-profile so two factories never share a tracker.
+case "$FWF_ISSUES" in
+  gh|local) ;;
+  *) echo "fwf: FWF_ISSUES must be 'gh' or 'local' (got '$FWF_ISSUES')" >&2; exit 1;;
+esac
+# shellcheck disable=SC2034  # consumed by fwf-issues.sh / fwf-provision.sh
+FWF_ISSUES_DIR="$FWF_RUN/issues/$PROFILE"
+
 # Derive the implementer/QA pair id array AFTER profile + template load, so
 # either can set its own FWF_PAIRS default (env/CLI win — they arrive pre-set).
 FWF_PAIRS="${FWF_PAIRS:-3}"
@@ -119,9 +129,25 @@ fwf_all_roles() {
 
 # Render a prompt template into a single line, substituting placeholders.
 # Uses bash substitution (not sed) so command strings with && / are safe.
+#
+# LOCAL ISSUES MODE (issue #26): when FWF_ISSUES=local, two uniform rewrites
+# retarget EVERY template at the local tracker with no per-template forks —
+#   `gh issue …`  ->  `fwf --profile <P> issues …`   (the CLI is gh-shaped)
+#   `#<num>`/`#N` ->  `LI-<num>`/`LI-N`              (so PR titles/bodies never
+#                      auto-link an unrelated upstream issue number)
+# — and a per-role ADDENDUM (templates/_local-issues/<role>.tmpl, if present)
+# is appended BEFORE substitution, so addenda are written in the same gh-shaped
+# conventions and stay uniform with the main prompt.
 fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
-  local tmpl="$1" id="${2:-}" text devui
+  local tmpl="$1" id="${2:-}" text devui addendum
   text="$(cat "$tmpl")"
+  if [ "$FWF_ISSUES" = "local" ]; then
+    addendum="$FWF_LIB_DIR/templates/_local-issues/$(basename "$tmpl")"
+    if [ -f "$addendum" ]; then
+      text="$text
+$(cat "$addendum")"
+    fi
+  fi
   devui="${DEV_UI_HINT//__DATA__/$(data_dir "impl$id")}"
   text="${text//__ID__/$id}"
   text="${text//__STAGING__/$STAGING_BRANCH}"
@@ -138,6 +164,11 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   text="${text//__E2E__/$E2E_CMD}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
+  if [ "$FWF_ISSUES" = "local" ]; then
+    text="${text//gh issue /fwf --profile $PROFILE issues }"
+    text="${text//#</LI-<}"
+    text="${text//#N/LI-N}"
+  fi
   printf '%s' "$text" | tr '\n' ' ' | tr -s ' '
 }
 

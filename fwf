@@ -62,6 +62,11 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
 SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
   --template NAME        Factory design template — the role-prompt set the
                          agents run (see 'fwf templates'; default: dev).
+  --issues gh|local      Issue-tracker backend (alias: --local-issues).
+                         local = markdown store under ~/.fun-with-friends/
+                         issues/<profile>, OUTSIDE the repo — for repos whose
+                         GitHub issues/labels you don't control. PRs still go
+                         to GitHub; refs become LI-N; persist via FWF_ISSUES.
   --pairs N              Number of implementer/QA pairs (default 3).
   --model M              Model for every agent (claude --model M).
   --impl-model M | --qa-model M | --pm-model M | --gv-model M
@@ -69,6 +74,9 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          Per-role model override (beats --model for that role).
                          Persist any of these in a profile via FWF_PAIRS /
                          FWF_MODEL / FWF_MODEL_<ROLE>.
+  issues <cmd> [...]     The LOCAL issue tracker (--issues local): a gh-shaped
+                         CLI (create/list/view/edit/comment/close/export) over
+                         a markdown store outside any repo. 'fwf issues help'.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
   down [--purge|--floor-only]
@@ -151,6 +159,9 @@ parse_runtime_flags() {
       --model=*) export FWF_MODEL="${1#*=}"; shift;;
       --template)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_TEMPLATE="$2"; shift 2;;
       --template=*) export FWF_TEMPLATE="${1#*=}"; shift;;
+      --issues)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_ISSUES="$2"; shift 2;;
+      --issues=*) export FWF_ISSUES="${1#*=}"; shift;;
+      --local-issues) export FWF_ISSUES=local; shift;;
       --impl-model|--qa-model|--pm-model|--gv-model|--captain-model|--conductor-model)
         [ $# -ge 2 ] || die "$1 needs a value"
         roleflag="${1#--}"; roleflag="$(printf '%s' "${roleflag%-model}" | tr '[:lower:]' '[:upper:]')"
@@ -340,6 +351,7 @@ case "$cmd" in
     for d in "$FWF_DIR"/templates/*/; do
       [ -d "$d" ] || continue
       name="$(basename "$d")"
+      case "$name" in _*) continue;; esac   # _local-issues etc: addenda, not selectable templates
       desc=""
       [ -f "$d/template.sh" ] && desc="$(sed -n 's/^# fwf template: //p' "$d/template.sh" | head -1)"
       printf '%-12s %s\n' "$name" "$desc"
@@ -361,6 +373,7 @@ case "$cmd" in
     echo "fwf: launching the grid ..."
     FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-up.sh"
     ;;
+  issues)    engine fwf-issues.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

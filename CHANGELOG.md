@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Local issues backend** (`--issues local` / `--local-issues` /
+  `FWF_ISSUES`, #26): run the factory against repos whose GitHub
+  issues/labels you don't control. The whole bus (gated specs, GV sign-offs,
+  atomic claims, approvals, freezes) runs over a markdown store OUTSIDE the
+  repo — one self-contained file per issue under
+  `~/.fun-with-friends/issues/<profile>/{open,closed}/`, status as the
+  directory, labels as a header line, comments appended in lock-serialized
+  order (the CLAIM mutex carries over). Driven by the new **`fwf issues`**
+  CLI (gh-shaped: create/list/view/edit/comment/close/reopen/export, with
+  `--json`/`--jq` and gh-style `--search`), so every role prompt works
+  verbatim via two render-time rewrites (`gh issue` → `fwf issues`,
+  `#N` → `LI-N` — nothing ever links upstream issue numbers). PRs still go
+  to GitHub; the captain closes shipped issues at release and mines the
+  store (`fwf issues export`) when writing PR bodies, changelogs, and docs.
+  `fwf provision` touches no GitHub labels in this mode.
+
 ## [0.4.1] - 2026-06-11
 
 ### Added

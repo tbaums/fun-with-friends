@@ -472,6 +472,45 @@ actually booted in each pane before delivering its prompt and re-sends to
 laggards; everything any agent knows it re-derives from GitHub + git on each
 tick, which is why respawning is always safe.
 
+## 10½. Repos whose issues you don't control: `--issues local`
+
+On a work repo or upstream OSS project you usually can't create labels or fill
+the tracker with a factory's wall-of-text reasoning. Local issues mode moves
+the entire bus out of the repo:
+
+```bash
+fwf up --issues local        # or --local-issues, or FWF_ISSUES=local in the profile
+```
+
+You drive the factory **exactly as before** — same conversations with the
+captain, same gated drafts, GV markers, approvals, claims — but issues live as
+**one markdown file each** under
+`~/.fun-with-friends/issues/<profile>/{open,closed}/N-slug.md`: a
+`# LI-N: title` header, `labels:` and `created:` lines, the body, then every
+comment appended as a `## comment <timestamp>` section. Status is the
+directory; open a file and you can read the entire discussion top to bottom
+(or hand-edit it — the parser is lenient).
+
+What changes mechanically:
+
+- Every role's `gh issue …` commands are rewritten at render time to
+  `fwf issues …` (a gh-shaped CLI: `create/list/view/edit/comment/close/
+  reopen/export`, including `--json`/`--jq` and `--search "is:open -label:x"`,
+  so the prompts work verbatim). The atomic CLAIM mutex carries over —
+  comment appends are lock-ordered, first CLAIM in the file wins.
+- Issue references become **`LI-N`** everywhere (branches, PR titles/bodies,
+  squash commits), so nothing ever auto-links or pollutes the upstream repo's
+  real issue numbers. PRs still go to GitHub as normal.
+- Nothing auto-closes on merge, so the **captain closes shipped issues at
+  release** (`fwf issues close N --comment "shipped in vX"`).
+- The reasoning stays mineable — this is the point: the captain is taught to
+  pull the design discussion into PR descriptions, changelog entries, and
+  docs via `fwf issues view N --comments` and `fwf issues export [N…]`
+  (a clean markdown dump you can quote from directly).
+
+`fwf provision` in this mode touches **no GitHub labels**. The `--jq` flag of
+`fwf issues` needs the `jq` binary; everything else is dependency-free.
+
 ## 11. Staying current
 
 ```bash

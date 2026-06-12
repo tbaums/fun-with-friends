@@ -372,6 +372,62 @@ assert_eq "upgraded copy reports new version" "$REALV" "$("$UPHOME/bin/fwf" vers
 assert_contains "respawn note printed" "$UPOUT" "fwf respawn"
 rm -rf "$ROOT/dist"
 
+section "local issues backend (issue #26) — store CLI"
+ISSRUN="$TMP/issrun"
+ISS() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+OUT="$(ISS create --title "Fix pagination" --body "page 2 repeats an item" --label product-wip --label bug)"
+assert_contains "create prints number + path" "$OUT" "LI-1 created"
+ISS create --title "Dark mode" >/dev/null
+[ -f "$ISSRUN"/issues/example/open/1-fix-pagination.md ] && ok "one md file per issue, status dir" || bad "issue file layout"
+assert_contains "list shows both"         "$(ISS list)" "LI-2"
+assert_contains "label filter"            "$(ISS list --label bug)" "LI-1"
+LSEARCH="$(ISS list --search "is:open -label:product-wip")"
+assert_contains "search negative label keeps LI-2" "$LSEARCH" "LI-2"
+case "$LSEARCH" in *LI-1*) bad "search negative label drops LI-1";; *) ok "search negative label drops LI-1";; esac
+# claim mutex semantics: append-ordered comments, first CLAIM wins
+ISS comment 1 --body "CLAIM impl2" >/dev/null
+ISS comment 1 --body "CLAIM impl1" >/dev/null
+if command -v jq >/dev/null 2>&1; then
+  assert_eq "first CLAIM wins" "CLAIM impl2" "$(ISS view 1 --json comments --jq '[.comments[] | select(.body|startswith("CLAIM "))][0].body')"
+  assert_eq "labels json shape" "product-wip" "$(ISS view 1 --json labels --jq '.labels[0].name')"
+  assert_eq "list json titles" "Dark mode" "$(ISS list --json number,title --jq '.[1].title')"
+else
+  printf '  skip jq-dependent assertions (jq not installed)\n'
+fi
+# edit/close/reopen/export
+ISS edit 1 --remove-label product-wip --add-label approved >/dev/null
+assert_contains "edit relabeled" "$(ISS list --label approved)" "LI-1"
+ISS close 2 --comment "dup of LI-1" >/dev/null
+assert_contains "closed moved state" "$(ISS list --state closed)" "LI-2"
+[ -f "$ISSRUN"/issues/example/closed/2-dark-mode.md ] && ok "close moves the file" || bad "close moves the file"
+ISS reopen 2 >/dev/null
+assert_contains "reopen moves back" "$(ISS list)" "LI-2"
+EXP="$(ISS export)"
+assert_contains "export carries body"     "$EXP" "page 2 repeats an item"
+assert_contains "export carries comments" "$EXP" "CLAIM impl1"
+ISS view 99 >/dev/null 2>&1 && bad "missing issue rejected" || ok "missing issue rejected"
+# removing the LAST label must not die (pipefail regression) and must unblock surveys
+ISS create --title "Gated thing" --label product-wip >/dev/null
+ISS edit 3 --remove-label product-wip >/dev/null 2>&1 && ok "remove last label survives" || bad "remove last label survives"
+assert_contains "un-gated issue enters survey" "$(ISS list --search "is:open -label:product-wip")" "LI-3"
+
+section "local issues backend — render integration"
+LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+assert_contains "gh issue rewritten to fwf issues" "$LIMPL" "fwf --profile example issues list"
+case "$LIMPL" in *"gh issue"*) bad "no gh issue remains";; *) ok "no gh issue remains";; esac
+assert_contains "issue refs become LI-"   "$LIMPL" "Closes LI-<num>"
+assert_contains "implementer addendum appended" "$LIMPL" "LOCAL ISSUES MODE"
+LCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+assert_contains "captain closes at release"  "$LCAP" "CLOSE SHIPPED ISSUES AT RELEASE"
+assert_contains "captain mines the store"    "$LCAP" "issues export"
+GHIMPL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+assert_contains "gh mode untouched: gh issue" "$GHIMPL" "gh issue list"
+assert_contains "gh mode untouched: Closes #" "$GHIMPL" "Closes #<num>"
+case "$GHIMPL" in *"LOCAL ISSUES MODE"*) bad "gh mode has no addendum";; *) ok "gh mode has no addendum";; esac
+FWF_ISSUES=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "bogus backend rejected" || ok "bogus backend rejected"
+case "$("$ROOT/fwf" templates)" in *_local-issues*) bad "_local-issues hidden from templates";; *) ok "_local-issues hidden from templates";; esac
+assert_contains "help mentions --issues" "$("$ROOT/fwf" help)" "--issues gh|local"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
