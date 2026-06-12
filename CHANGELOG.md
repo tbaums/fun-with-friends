@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Profile-persisted `FWF_TEMPLATE`/`FWF_ISSUES` actually win now** (#30).
+  config.sh pre-filled both before the profile loaded, so the documented
+  `${FWF_TEMPLATE:-ideation}` idiom silently launched the dev factory.
+  Defaults now apply in lib.sh after profile+template sourcing (same fix
+  FWF_PAIRS got in #10), and `fwf up` prints the resolved
+  `template · issues · pairs · profile` line BEFORE any pane boots, so a
+  mismatch is visible immediately.
+
+### Changed
+- **Each factory design now looks like itself** (#31): non-dev templates get
+  template-bearing session names (`friends-ideation-coord/-build` — dev keeps
+  the classic names), role-display pane labels (`GEN1 · IMPL1 · diverge →
+  idea briefs`, `SYNTH · CONDUCTOR · portfolio synthesis`, `FRAMER · PM`;
+  refactor wears `REFAC`/`VERIF`/`PLANNER`), a persistent `[template]` tag in
+  the tmux status bar, and a template-aware launch summary. Canonical role
+  tokens stay in every label, so respawn/floor matching is unaffected.
+  Templates set their identity via `FWF_DISPLAY_*`/`FWF_DESC_*` in
+  template.sh. NOTE: a non-dev factory launched on ≤0.5.1 uses the old
+  session names — bring it down with the old version (or set
+  FWF_COORD_SESSION/FWF_BUILD_SESSION) before upgrading.
+
 ## [0.5.1] - 2026-06-11
 
 ### Security

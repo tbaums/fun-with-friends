@@ -35,6 +35,13 @@ send() { fwf_send_prompt "$@"; }
 # Per-pane label (@l) and color (@c).
 label() { tmux set -p -t "$1" @c "$2"; tmux set -p -t "$1" @l "$3"; }
 
+# Display prefix for a role label: "GEN1 · " when the template renames a role,
+# nothing when display == canonical token. The canonical token always stays in
+# the label, so fwf_find_pane/respawn never depend on template display names.
+disp() { # $1=display $2=token $3=id
+  [ "$1" = "$2" ] || printf '%s%s · ' "$1" "$3"
+}
+
 # Shared pane styling for a session: dim+colored inactive border titles, a bright
 # reverse-video "▶ ACTIVE ◀" bar on the focused pane, and dimmed inactive content.
 style_session() { # $1=session
@@ -47,6 +54,9 @@ style_session() { # $1=session
     '#{?pane_active,#[reverse][ ▶ ACTIVE ◀ ]#[noreverse] ,}#[bold]#[fg=#{@c}]#{@l}#[default]'
   tmux set -t "$s" window-style        'fg=colour245'
   tmux set -t "$s" window-active-style 'fg=terminal'
+  # Persistent factory-design tag (issue #31): always visible in the status bar.
+  tmux set -t "$s" status-left-length 24
+  tmux set -t "$s" status-left "#[bold][$FWF_TEMPLATE]#[default] "
 }
 
 if [ "$FLOOR_ONLY" = 1 ]; then
@@ -67,6 +77,11 @@ fi
 
 mkdir -p "$FWF_RUN"
 rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
+
+# Say what is about to launch BEFORE ten panes boot (issue #30): a profile/env
+# mismatch should be visible here, not discovered by briefing the captain.
+echo "fwf: template=$FWF_TEMPLATE · issues=$FWF_ISSUES · pairs=$FWF_PAIRS · profile=$PROFILE"
+echo "fwf: sessions: $COORD_SESSION (coordination) + $BUILD_SESSION (floor)"
 
 # Track what THIS run creates; only those panes get launched + armed.
 BUILD_CREATED=0; PM_CREATED=0; GV_CREATED=0; CAPTAIN_CREATED=0
@@ -92,10 +107,10 @@ else
   done
   for id in "${PAIRS[@]}"; do
     c="$(pair_color "$id")"
-    label "${TP[$id]}" "$c" "IMPL$id · any issue → instant draft PR · impl$id/*"
-    label "${BP[$id]}" "$c" "QA$id · reviews+merges impl$id/* · loop $QA_LOOP_INTERVAL"
+    label "${TP[$id]}" "$c" "$(disp "$FWF_DISPLAY_IMPL" IMPL "$id")IMPL$id · $FWF_DESC_IMPL · impl$id/*"
+    label "${BP[$id]}" "$c" "$(disp "$FWF_DISPLAY_QA" QA "$id")QA$id · $FWF_DESC_QA impl$id/* · loop $QA_LOOP_INTERVAL"
   done
-  label "$CONDUCTOR_PANE" "$CONDUCTOR_COLOR" "CONDUCTOR · e2e on $STAGING_BRANCH → $INTEGRATION_BRANCH (never $DEFAULT_BRANCH)"
+  label "$CONDUCTOR_PANE" "$CONDUCTOR_COLOR" "$(disp "$FWF_DISPLAY_CONDUCTOR" CONDUCTOR "")CONDUCTOR · $FWF_DESC_CONDUCTOR · $STAGING_BRANCH → $INTEGRATION_BRANCH (never $DEFAULT_BRANCH)"
   style_session "$BUILD_SESSION"
 fi
 
@@ -123,7 +138,7 @@ else
   tmux select-layout -t "$COORD_SESSION" even-horizontal
   style_session "$COORD_SESSION"
 fi
-[ "$PM_CREATED" = 1 ] && label "$PM_PANE" "$PM_COLOR" "PM · ideas → $WIP_LABEL draft issues · refine loop $PM_INTERVAL"
+[ "$PM_CREATED" = 1 ] && label "$PM_PANE" "$PM_COLOR" "$(disp "$FWF_DISPLAY_PM" PM "")PM · $FWF_DESC_PM · refine loop $PM_INTERVAL"
 [ "$GV_CREATED" = 1 ] && label "$GV_PANE" "$GV_COLOR" "GRAND VIZIER (GV) · hardens PM specs · advises captain · loop $GV_INTERVAL"
 [ "$CAPTAIN_CREATED" = 1 ] && label "$CAPTAIN_PANE" "$CAPTAIN_COLOR" "CAPTAIN · you talk here · scopes+ships, hones via GV · loop $CAPTAIN_INTERVAL"
 
@@ -208,6 +223,6 @@ if [ "$FLOOR_ONLY" = 1 ]; then
 else
   echo "fwf is up (two sessions):"
 fi
-echo "  coordination  : tmux attach -t $COORD_SESSION   (PM · GV · CAPTAIN — talk to the captain)"
-echo "  implementation: tmux attach -t $BUILD_SESSION   ($FWF_PAIRS impl/qa pair(s) + CONDUCTOR)"
+echo "  coordination: tmux attach -t $COORD_SESSION   ($FWF_DISPLAY_PM · GV · CAPTAIN — talk to the captain)"
+echo "  floor [$FWF_TEMPLATE]: tmux attach -t $BUILD_SESSION   ($FWF_PAIRS $FWF_DISPLAY_IMPL/$FWF_DISPLAY_QA pair(s) + $FWF_DISPLAY_CONDUCTOR)"
 echo "  QA loops every $QA_LOOP_INTERVAL; conductor e2e+promotes every $CONDUCTOR_INTERVAL; GV reviews every $GV_INTERVAL"

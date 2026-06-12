@@ -23,6 +23,10 @@ PROFILE_FILE="$FWF_LIB_DIR/profiles/$PROFILE.sh"
 source "$PROFILE_FILE"
 
 # Resolve the factory template: the directory of role prompts the panes run.
+# The dev fallback applies HERE, after the profile loads (issue #30) — config.sh
+# pre-filling it silently defeated every profile's ${FWF_TEMPLATE:-name}
+# persistence and launched the wrong factory.
+FWF_TEMPLATE="${FWF_TEMPLATE:-dev}"
 # A template may ship a template.sh of config DEFAULTS (e.g. the refactor
 # factory defaults to fewer pairs) — sourced after the profile so profile/env/
 # CLI still win wherever they used the ${VAR:-default} pattern. template.sh
@@ -69,13 +73,39 @@ unset _fwf_t
 
 # Issue-tracker backend (issue #26): "gh" = the target repo's GitHub issues;
 # "local" = a markdown store outside any repo, driven by fwf-issues.sh. The
-# store path is per-profile so two factories never share a tracker.
+# store path is per-profile so two factories never share a tracker. Defaulted
+# HERE (after profile + template) so both can persist it via ${FWF_ISSUES:-…}.
+FWF_ISSUES="${FWF_ISSUES:-gh}"
 case "$FWF_ISSUES" in
   gh|local) ;;
   *) echo "fwf: FWF_ISSUES must be 'gh' or 'local' (got '$FWF_ISSUES')" >&2; exit 1;;
 esac
 # shellcheck disable=SC2034  # consumed by fwf-issues.sh / fwf-provision.sh
 FWF_ISSUES_DIR="$FWF_RUN/issues/$PROFILE"
+
+# Session names, template-aware (issue #31): the dev factory keeps the classic
+# names; any other template embeds its name so `tmux ls` says which factory
+# design is live (friends-ideation-coord/-build). Env/profile overrides win.
+SESSION="${FWF_SESSION:-friends}"
+_fwf_sfx=""
+[ "$FWF_TEMPLATE" = "dev" ] || _fwf_sfx="-$FWF_TEMPLATE"
+COORD_SESSION="${FWF_COORD_SESSION:-${SESSION}${_fwf_sfx}-coord}"   # pm · gv · captain — the human talks here
+BUILD_SESSION="${FWF_BUILD_SESSION:-${SESSION}${_fwf_sfx}-build}"   # the floor
+unset _fwf_sfx
+
+# Role display identities + floor-pane descriptions (issue #31): templates
+# override these so an ideation floor LOOKS like one (GEN/CRITIC/SYNTH), not
+# like a build factory wearing the wrong uniform. Pane labels keep the
+# canonical role token alongside the display name, so respawn/floor matching
+# never depends on these.
+FWF_DISPLAY_IMPL="${FWF_DISPLAY_IMPL:-IMPL}"
+FWF_DISPLAY_QA="${FWF_DISPLAY_QA:-QA}"
+FWF_DISPLAY_CONDUCTOR="${FWF_DISPLAY_CONDUCTOR:-CONDUCTOR}"
+FWF_DISPLAY_PM="${FWF_DISPLAY_PM:-PM}"
+FWF_DESC_IMPL="${FWF_DESC_IMPL:-any issue → instant draft PR}"
+FWF_DESC_QA="${FWF_DESC_QA:-reviews+merges}"
+FWF_DESC_CONDUCTOR="${FWF_DESC_CONDUCTOR:-e2e gate}"
+FWF_DESC_PM="${FWF_DESC_PM:-ideas → gated draft issues}"
 
 # Derive the implementer/QA pair id array AFTER profile + template load, so
 # either can set its own FWF_PAIRS default (env/CLI win — they arrive pre-set).

@@ -9,3 +9,13 @@
 # generators avoid anchoring on each other), so the floor keeps three pairs.
 # Generators iterate faster than coders; critics and the synthesizer follow.
 FWF_PAIRS="${FWF_PAIRS:-3}"
+
+# Visual identity (issue #31): an ideation floor should LOOK like one.
+FWF_DISPLAY_IMPL="${FWF_DISPLAY_IMPL:-GEN}"
+FWF_DISPLAY_QA="${FWF_DISPLAY_QA:-CRITIC}"
+FWF_DISPLAY_CONDUCTOR="${FWF_DISPLAY_CONDUCTOR:-SYNTH}"
+FWF_DISPLAY_PM="${FWF_DISPLAY_PM:-FRAMER}"
+FWF_DESC_IMPL="${FWF_DESC_IMPL:-diverge → idea briefs}"
+FWF_DESC_QA="${FWF_DESC_QA:-critiques+merges briefs}"
+FWF_DESC_CONDUCTOR="${FWF_DESC_CONDUCTOR:-portfolio synthesis}"
+FWF_DESC_PM="${FWF_DESC_PM:-fuzzy goals → challenge frames}"
