@@ -545,6 +545,13 @@ assert_eq "role color matches pair" "$(FWF_PROFILE=example bash -c "source '$ROO
 CRP="$(FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_create_role_pane captain" 2>&1)" && bad "create pane needs session" || ok "create pane needs session"
 assert_contains "create-pane error names fwf up" "$CRP" "fwf up"
 
+section "lean loop ticks (issue #38) — role prompt persisted to disk"
+RPF="$(FWF_RUN_DIR="$TMP/armrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_write_role_prompt impl2 implementer 2")"
+assert_contains "prompt file is per-profile+role" "$RPF" "prompts/example-impl2.prompt"
+assert_contains "file holds the rendered role"    "$(cat "$RPF")" "You are implementer impl2"
+RPF_IDE="$(FWF_RUN_DIR="$TMP/armrun" FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_write_role_prompt impl1 implementer 1")"
+assert_contains "template-aware render persisted" "$(cat "$RPF_IDE")" "IDEA GENERATOR"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

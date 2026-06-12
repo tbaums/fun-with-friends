@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-06-12
+
+### Changed
+- **Loop ticks no longer re-inject the full role prompt** (#38). Arming now
+  delivers the rendered role prompt ONCE (and persists it to
+  `~/.fun-with-friends/prompts/<profile>-<role>.prompt`), then starts the
+  loop with a one-line tick that tells the agent to re-read the file if it
+  has compacted and run one cycle — ~284B per tick instead of the full
+  multi-KB prompt (the captain's 2-minute loop was re-pasting ~6.4KB every
+  tick). Cuts context burn and compaction churn for every role, and ends
+  the "something keeps pasting into my pane" confusion. fwf-up and respawn
+  share the new `fwf_arm_pane`.
+
 ## [0.6.2] - 2026-06-12
 
 ### Fixed
@@ -329,7 +342,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/tbaums/fun-with-friends/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/tbaums/fun-with-friends/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tbaums/fun-with-friends/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tbaums/fun-with-friends/compare/v0.5.1...v0.6.0

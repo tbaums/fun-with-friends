@@ -369,6 +369,28 @@ fwf_send_prompt() { # $1=pane  $2=text
   sleep 1; tmux send-keys -t "$p" Enter; sleep 1; tmux send-keys -t "$p" Enter
 }
 
+# Render a role's prompt and persist it for post-compaction re-hydration
+# (issue #38). Echoes the file path. Per-profile so factories never collide.
+fwf_write_role_prompt() { # $1=role-tag  $2=tmpl-base  $3=id
+  local pf="$FWF_RUN/prompts/$PROFILE-$1.prompt"
+  mkdir -p "$FWF_RUN/prompts"
+  fwf_render "$(fwf_tmpl_path "$2")" "$3" > "$pf"
+  printf '%s\n' "$pf"
+}
+
+# Arm a pane (issue #38): the full rendered role prompt is delivered ONCE as a
+# normal message (and persisted to disk), then the /loop is started with a
+# ONE-LINE tick that points back at the file. Previously the loop re-fired the
+# entire multi-KB prompt every tick, burning the agent's context window and
+# forcing frequent compaction; now a compacted agent re-reads the role from
+# disk instead.
+fwf_arm_pane() { # $1=pane  $2=role-tag  $3=tmpl-base  $4=id  $5=interval
+  local pane="$1" role="$2" tmpl="$3" id="$4" interval="$5" pf
+  pf="$(fwf_write_role_prompt "$role" "$tmpl" "$id")"
+  fwf_send_prompt "$pane" "ADOPT THIS ROLE now and run your first cycle. Your role prompt follows — it is also saved at $pf; re-read that file whenever you have compacted or otherwise lost context. $(cat "$pf")"
+  fwf_send_prompt "$pane" "/loop $interval $role tick: if you have compacted or lost ANY context since the last tick, FIRST re-read your role prompt at $pf. Then run exactly ONE cycle of that role's loop and report in its format. Act the role; do not re-state it."
+}
+
 # True while the pane is still sitting at a shell (claude has not taken over).
 _fwf_pane_is_shell() { # $1=pane
   case "$(tmux display -p -t "$1" '#{pane_current_command}' 2>/dev/null)" in
