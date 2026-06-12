@@ -278,14 +278,18 @@ one profile present it's selected automatically.
 
 ```
 --issues gh|local    issue-tracker backend (alias: --local-issues). Use local
-                     for repos whose GitHub issues/labels you don't control:
-                     the whole gated-spec / claim / approval flow runs over a
-                     markdown store OUTSIDE the repo (one file per issue under
-                     ~/.fun-with-friends/issues/<profile>/{open,closed}/),
-                     driven by `fwf issues`. PRs still go to GitHub; issue
-                     refs become LI-N so nothing links to upstream issues; the
-                     captain closes shipped issues at release and mines the
-                     store (`fwf issues export`) for PR bodies/changelogs/docs.
+                     for repos you don't control: the whole gated-spec / claim
+                     / approval flow runs over a markdown store OUTSIDE the
+                     repo (one file per issue under ~/.fun-with-friends/
+                     issues/<profile>/{open,closed}/), driven by `fwf issues` —
+                     and the factory NEVER touches the remote: provision
+                     installs a pre-push guard blocking every push unless a
+                     human authorizes that one push with FWF_ALLOW_PUSH=1;
+                     branches, reviews, merges, and promotion are fully local,
+                     and only the captain — on your explicit, per-instance
+                     word — pushes or opens an upstream PR, with its body
+                     mined from the local reasoning (`fwf issues export`).
+                     Issue refs become LI-N so nothing links upstream.
 ```
 
 All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,

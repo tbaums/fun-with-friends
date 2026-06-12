@@ -493,20 +493,31 @@ directory; open a file and you can read the entire discussion top to bottom
 
 What changes mechanically:
 
+- **The factory never touches the remote.** `fwf provision` installs a
+  `pre-push` guard in the repo that blocks *every* push — including `staging`
+  and `integration`, which are created as local branches only — unless a
+  human authorizes that single push with `FWF_ALLOW_PUSH=1 git push …`. The
+  guard is removed automatically if you re-provision in gh mode.
 - Every role's `gh issue …` commands are rewritten at render time to
   `fwf issues …` (a gh-shaped CLI: `create/list/view/edit/comment/close/
   reopen/export`, including `--json`/`--jq` and `--search "is:open -label:x"`,
   so the prompts work verbatim). The atomic CLAIM mutex carries over —
   comment appends are lock-ordered, first CLAIM in the file wins.
-- Issue references become **`LI-N`** everywhere (branches, PR titles/bodies,
-  squash commits), so nothing ever auto-links or pollutes the upstream repo's
-  real issue numbers. PRs still go to GitHub as normal.
+- **There are no PRs on the floor.** Implementers hand off with a
+  `READY-FOR-REVIEW implN · branch · sha` comment on the local issue; the
+  paired QA gates the branch on a detached checkout and squash-merges it into
+  the **local** `staging` (freeing the shared branch immediately after); the
+  conductor promotes `staging → integration` locally, never fetching or
+  pushing.
+- Issue references become **`LI-N`** everywhere (branches, squash commits),
+  so nothing ever auto-links or pollutes the upstream repo's real issue
+  numbers.
 - Nothing auto-closes on merge, so the **captain closes shipped issues at
-  release** (`fwf issues close N --comment "shipped in vX"`).
-- The reasoning stays mineable — this is the point: the captain is taught to
-  pull the design discussion into PR descriptions, changelog entries, and
-  docs via `fwf issues view N --comments` and `fwf issues export [N…]`
-  (a clean markdown dump you can quote from directly).
+  release** (`fwf issues close N --comment "shipped in vX"`) — and the
+  captain is the **only** role that may ever touch the remote, strictly on
+  your explicit, per-instance instruction: it pushes the curated branch with
+  `FWF_ALLOW_PUSH=1`, opens the upstream PR, and writes the PR body by mining
+  the local reasoning (`fwf issues view N --comments`, `fwf issues export`).
 
 `fwf provision` in this mode touches **no GitHub labels**. The `--jq` flag of
 `fwf issues` needs the `jq` binary; everything else is dependency-free.
