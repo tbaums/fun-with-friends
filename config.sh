@@ -8,9 +8,10 @@ FWF_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Which factory template the agents run — a directory under templates/ holding
 # the six role prompts (and an optional template.sh of config defaults).
-# Shipped: dev (the classic feature factory), refactor (behavior-preserving
-# refactoring factory). CLI: fwf up --template NAME. Resolved+validated in lib.sh.
-FWF_TEMPLATE="${FWF_TEMPLATE:-dev}"
+# CLI: fwf up --template NAME. DELIBERATELY not defaulted here (issue #30):
+# profiles persist it with FWF_TEMPLATE="${FWF_TEMPLATE:-ideation}", which only
+# works if nothing pre-fills the var before the profile loads — lib.sh applies
+# the final fallback (dev) after profile sourcing.
 
 # How many implementer/QA pairs the floor runs (each id = one implementer + its
 # paired QA reviewer). DELIBERATELY not defaulted here: profiles and templates
@@ -32,8 +33,9 @@ FWF_MODEL_CONDUCTOR="${FWF_MODEL_CONDUCTOR:-}"
 # Issue-tracker backend: "gh" (the target repo's GitHub issues — the default)
 # or "local" (a markdown store under $FWF_RUN/issues/<profile>, OUTSIDE any
 # repo, driven by `fwf issues` — for repos whose issues/labels you don't
-# control). CLI: fwf up --issues local. Validated + wired in lib.sh.
-FWF_ISSUES="${FWF_ISSUES:-gh}"
+# control). CLI: fwf up --issues local. DELIBERATELY not defaulted here (same
+# #30 ordering trap as FWF_TEMPLATE): lib.sh defaults it to gh after the
+# profile AND template load, so both can persist it with the ${VAR:-} idiom.
 
 # The model menu `fwf suggest` recommends from — "id:traits" entries separated
 # by " | ". Edit as models evolve; it is advisory text, not validation.
@@ -44,9 +46,11 @@ FWF_MODEL_MENU="${FWF_MODEL_MENU:-claude-opus-4-8:strongest reasoning, highest c
 # and an IMPLEMENTATION session (impl1-3 · qa1-3 · conductor) that builds. They
 # coordinate through the issue tracker + git, never across panes. FWF_SESSION is
 # the shared base name; each session derives from it (overridable individually).
-SESSION="${FWF_SESSION:-friends}"                       # base name (prefix for both sessions)
-COORD_SESSION="${FWF_COORD_SESSION:-${SESSION}-coord}"  # pm · gv · captain — the human talks here
-BUILD_SESSION="${FWF_BUILD_SESSION:-${SESSION}-build}"  # impl1-3 · qa1-3 · conductor — the build floor
+# Session names derive in lib.sh AFTER the template resolves (issue #31): the
+# dev template keeps the classic ${SESSION}-coord/-build, every other template
+# gets its name embedded (friends-ideation-coord/-build) so `tmux ls` always
+# says which factory design is live. FWF_SESSION/FWF_COORD_SESSION/
+# FWF_BUILD_SESSION still override.
 QA_LOOP_INTERVAL="${FWF_QA_INTERVAL:-1m}"          # how often each QA loop re-checks
 CONDUCTOR_INTERVAL="${FWF_CONDUCTOR_INTERVAL:-2m}" # how often the conductor e2e+promotes
 PM_INTERVAL="${FWF_PM_INTERVAL:-5m}"               # how often the PM loop reviews its draft issues
