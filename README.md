@@ -344,4 +344,4 @@ release is documented in [`RELEASING.md`](RELEASING.md); see
 
 ## License
 
-[MIT](LICENSE) © 2026 Michael Tanenbaum
+[MIT](LICENSE) © 2026 Jamie Tanenbaum
