@@ -533,6 +533,18 @@ assert_contains "local CLAUDE_CMD prepends guard PATH" "$GCMD" "ghguard"
 GCMD_GH="$(FWF_RUN_DIR="$GGRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
 case "$GCMD_GH" in *ghguard*) bad "gh mode CLAUDE_CMD unguarded";; *) ok "gh mode CLAUDE_CMD unguarded";; esac
 
+section "pane recovery helpers (issue #36)"
+RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"
+assert_contains "dev impl label canonical" "$RL_DEV" "IMPL2 · any issue → instant draft PR · impl2/*"
+assert_contains "captain label canonical"  "$RL_DEV" "CAPTAIN · you talk here"
+RL_IDE="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label conductor")"
+assert_contains "ideation impl label wears GEN" "$RL_IDE" "GEN2 · IMPL2 ·"
+assert_contains "ideation conductor wears SYNTH" "$RL_IDE" "SYNTH · CONDUCTOR ·"
+assert_eq "role color matches pair" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_color qa2")" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 2")"
+# creating a pane without a live session fails loudly, not silently
+CRP="$(FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_create_role_pane captain" 2>&1)" && bad "create pane needs session" || ok "create pane needs session"
+assert_contains "create-pane error names fwf up" "$CRP" "fwf up"
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

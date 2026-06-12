@@ -32,15 +32,10 @@ esac
 # Deliver a prompt to a pane (chunked typing + submit — see fwf_send_prompt).
 send() { fwf_send_prompt "$@"; }
 
-# Per-pane label (@l) and color (@c).
-label() { tmux set -p -t "$1" @c "$2"; tmux set -p -t "$1" @l "$3"; }
-
-# Display prefix for a role label: "GEN1 · " when the template renames a role,
-# nothing when display == canonical token. The canonical token always stays in
-# the label, so fwf_find_pane/respawn never depend on template display names.
-disp() { # $1=display $2=token $3=id
-  [ "$1" = "$2" ] || printf '%s%s · ' "$1" "$3"
-}
+# Per-pane label (@l) and color (@c); text/color come from the shared
+# fwf_role_label/fwf_role_color helpers (lib.sh) so respawn-recovery (#36)
+# produces identical panes.
+label_role() { tmux set -p -t "$1" @c "$(fwf_role_color "$2")"; tmux set -p -t "$1" @l "$(fwf_role_label "$2")"; }
 
 # Shared pane styling for a session: dim+colored inactive border titles, a bright
 # reverse-video "▶ ACTIVE ◀" bar on the focused pane, and dimmed inactive content.
@@ -109,11 +104,10 @@ else
     BP[$id]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[$id]}" -c "$(wt_dir "qa$id")")
   done
   for id in "${PAIRS[@]}"; do
-    c="$(pair_color "$id")"
-    label "${TP[$id]}" "$c" "$(disp "$FWF_DISPLAY_IMPL" IMPL "$id")IMPL$id · $FWF_DESC_IMPL · impl$id/*"
-    label "${BP[$id]}" "$c" "$(disp "$FWF_DISPLAY_QA" QA "$id")QA$id · $FWF_DESC_QA impl$id/* · loop $QA_LOOP_INTERVAL"
+    label_role "${TP[$id]}" "impl$id"
+    label_role "${BP[$id]}" "qa$id"
   done
-  label "$CONDUCTOR_PANE" "$CONDUCTOR_COLOR" "$(disp "$FWF_DISPLAY_CONDUCTOR" CONDUCTOR "")CONDUCTOR · $FWF_DESC_CONDUCTOR · $STAGING_BRANCH → $INTEGRATION_BRANCH (never $DEFAULT_BRANCH)"
+  label_role "$CONDUCTOR_PANE" conductor
   style_session "$BUILD_SESSION"
 fi
 
@@ -141,9 +135,9 @@ else
   tmux select-layout -t "$COORD_SESSION" even-horizontal
   style_session "$COORD_SESSION"
 fi
-[ "$PM_CREATED" = 1 ] && label "$PM_PANE" "$PM_COLOR" "$(disp "$FWF_DISPLAY_PM" PM "")PM · $FWF_DESC_PM · refine loop $PM_INTERVAL"
-[ "$GV_CREATED" = 1 ] && label "$GV_PANE" "$GV_COLOR" "GRAND VIZIER (GV) · hardens PM specs · advises captain · loop $GV_INTERVAL"
-[ "$CAPTAIN_CREATED" = 1 ] && label "$CAPTAIN_PANE" "$CAPTAIN_COLOR" "CAPTAIN · you talk here · scopes+ships, hones via GV · loop $CAPTAIN_INTERVAL"
+[ "$PM_CREATED" = 1 ] && label_role "$PM_PANE" pm
+[ "$GV_CREATED" = 1 ] && label_role "$GV_PANE" gv
+[ "$CAPTAIN_CREATED" = 1 ] && label_role "$CAPTAIN_PANE" captain
 
 # --- extra roles declared by the template (e.g. dev-sre's SRE pane) -----------
 # Idempotent like everything else: create only the panes that are missing;
@@ -161,7 +155,7 @@ for er in $(fwf_extra_names); do
     er_anchor="$(tmux list-panes -t "$er_sess" -F '#{pane_id}' | tail -1)"
     er_pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$er_anchor" -c "$(wt_dir "$er")")
     tmux select-layout -t "$er_sess" even-horizontal
-    label "$er_pane" "$(fwf_extra_color "$er")" "$er_tok · template role · loop $(fwf_extra_interval "$er")"
+    label_role "$er_pane" "$er"
     EXTRA_PANES+=( "$er_pane" ); EXTRA_NAMES+=( "$er" )
   fi
 done

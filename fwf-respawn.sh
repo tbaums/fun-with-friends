@@ -43,10 +43,17 @@ token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
 case "$role" in impl*|qa*) token="$token ·";; esac   # numbered roles: IMPL1 must not match IMPL10
 fwf_extra_entry "$role" >/dev/null 2>&1 && token="$token ·"   # extra roles are labeled "NAME · …"
 CP="$(fwf_find_pane "$sess" "$token" || true)"
-[ -n "$CP" ] || { echo "could not find a pane labeled '$token' in session '$sess'" >&2; exit 1; }
-echo "respawning $role in pane $CP"
-
-tmux respawn-pane -k -t "$CP" -c "$(wt_dir "$role")"
+if [ -n "$CP" ]; then
+  echo "respawning $role in pane $CP"
+  tmux respawn-pane -k -t "$CP" -c "$(wt_dir "$role")"
+else
+  # Recovery (issue #36): the pane is GONE entirely (claude-update crash, OOM
+  # kill, accidental close) — create + label a fresh one and arm it, making
+  # respawn the universal answer to "role died" however it died.
+  echo "no pane labeled '$token' in '$sess' — creating a fresh $role pane (recovery)"
+  CP="$(fwf_create_role_pane "$role")" || exit 1
+  echo "created pane $CP for $role"
+fi
 fwf_ensure_claude "$CP" "$(fwf_claude_cmd "$role")" || echo "warning: claude did not come up in $role pane $CP"
 sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
