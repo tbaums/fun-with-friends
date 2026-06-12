@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-12
+
+### Fixed
+- **`fwf respawn <role>` now recovers a pane that closed entirely** (#36).
+  Previously a fully-gone pane (claude-update crash, OOM kill, accidental
+  close) was unrecoverable: respawn required a live labeled pane and
+  `fwf up` refused around existing sessions — a dead captain beside a live
+  floor needed hand-rolled tmux surgery. Respawn now creates + labels a
+  fresh pane when the role's pane is missing (qaN tucks back under its
+  paired IMPLN; coordination panes re-balance; the build grid is left
+  un-flattened) and arms it normally. Pane label/color composition moved
+  to shared lib.sh helpers so launched and recovered panes are
+  indistinguishable across all templates.
+
 ## [0.6.1] - 2026-06-12
 
 ### Security
@@ -315,7 +329,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/tbaums/fun-with-friends/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tbaums/fun-with-friends/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tbaums/fun-with-friends/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/tbaums/fun-with-friends/compare/v0.5.0...v0.5.1

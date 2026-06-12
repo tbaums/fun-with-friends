@@ -258,6 +258,77 @@ $(cat "$addendum")"
   printf '%s' "$text" | tr '\n' ' ' | tr -s ' '
 }
 
+# --- role pane identity: color + label text, shared by fwf-up and respawn ----
+# One source of truth (issue #36) so a recovered pane is indistinguishable
+# from a launched one. Display prefix ("GEN1 · ") appears when a template
+# renames a role; the canonical token always stays in the label, so
+# fwf_find_pane never depends on display names.
+_fwf_disp() { # $1=display $2=token $3=id
+  [ "$1" = "$2" ] || printf '%s%s · ' "$1" "$3"
+}
+fwf_role_color() { # $1=role tag
+  case "$1" in
+    impl*) pair_color "${1#impl}";;
+    qa*)   pair_color "${1#qa}";;
+    conductor) echo "$CONDUCTOR_COLOR";;
+    pm)        echo "$PM_COLOR";;
+    gv)        echo "$GV_COLOR";;
+    captain)   echo "$CAPTAIN_COLOR";;
+    *)         fwf_extra_color "$1" || echo colour208;;
+  esac
+}
+fwf_role_label() { # $1=role tag → the full @l label text
+  local id
+  case "$1" in
+    impl*) id="${1#impl}"
+      printf '%sIMPL%s · %s · impl%s/*' "$(_fwf_disp "$FWF_DISPLAY_IMPL" IMPL "$id")" "$id" "$FWF_DESC_IMPL" "$id";;
+    qa*)   id="${1#qa}"
+      printf '%sQA%s · %s impl%s/* · loop %s' "$(_fwf_disp "$FWF_DISPLAY_QA" QA "$id")" "$id" "$FWF_DESC_QA" "$id" "$QA_LOOP_INTERVAL";;
+    conductor)
+      printf '%sCONDUCTOR · %s · %s → %s (never %s)' "$(_fwf_disp "$FWF_DISPLAY_CONDUCTOR" CONDUCTOR "")" "$FWF_DESC_CONDUCTOR" "$STAGING_BRANCH" "$INTEGRATION_BRANCH" "$DEFAULT_BRANCH";;
+    pm)
+      printf '%sPM · %s · refine loop %s' "$(_fwf_disp "$FWF_DISPLAY_PM" PM "")" "$FWF_DESC_PM" "$PM_INTERVAL";;
+    gv)
+      printf 'GRAND VIZIER (GV) · hardens PM specs · advises captain · loop %s' "$GV_INTERVAL";;
+    captain)
+      printf 'CAPTAIN · you talk here · scopes+ships, hones via GV · loop %s' "$CAPTAIN_INTERVAL";;
+    *)
+      printf '%s · template role · loop %s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" "$(fwf_extra_interval "$1" || echo '?')";;
+  esac
+}
+
+# Recovery (issue #36): create a brand-new pane for a role whose pane closed
+# entirely — fwf-up's split/label logic, available to respawn. The role's
+# session must already exist. qaN tucks under its paired IMPLN when that pane
+# is alive; coordination panes re-balance to even columns; the build grid is
+# NOT re-laid-out (even-horizontal would flatten the impl/qa stacks).
+# Echoes the new pane id.
+fwf_create_role_pane() { # $1=role tag
+  local role="$1" sess anchor pane
+  case "$role" in
+    impl*|qa*|conductor) sess="$BUILD_SESSION";;
+    pm|gv|captain)       sess="$COORD_SESSION";;
+    *) case "$(fwf_extra_session "$role" 2>/dev/null)" in
+         build) sess="$BUILD_SESSION";; *) sess="$COORD_SESSION";;
+       esac;;
+  esac
+  tmux has-session -t "$sess" 2>/dev/null || { echo "fwf: cannot create pane for '$role' — session '$sess' is not running (use fwf up)" >&2; return 1; }
+  pane=""
+  case "$role" in
+    qa*)
+      anchor="$(fwf_find_pane "$sess" "IMPL${role#qa} ·" || true)"
+      [ -n "$anchor" ] && pane=$(tmux split-window -v -P -F '#{pane_id}' -t "$anchor" -c "$(wt_dir "$role")");;
+  esac
+  if [ -z "$pane" ]; then
+    anchor="$(tmux list-panes -t "$sess" -F '#{pane_id}' | tail -1)"
+    pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$anchor" -c "$(wt_dir "$role")")
+    [ "$sess" = "$COORD_SESSION" ] && tmux select-layout -t "$sess" even-horizontal >/dev/null
+  fi
+  tmux set -p -t "$pane" @c "$(fwf_role_color "$role")"
+  tmux set -p -t "$pane" @l "$(fwf_role_label "$role")"
+  printf '%s\n' "$pane"
+}
+
 # Find the pane in a session whose @l label contains a token (PM ·, GRAND
 # VIZIER, CAPTAIN, IMPL1, …). Echoes the pane id; returns 1 if the session is
 # down or no pane matches. Sessions are single-window, so list-panes suffices.
