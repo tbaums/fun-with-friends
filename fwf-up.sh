@@ -29,8 +29,7 @@ case "${1:-}" in
   *) echo "usage: fwf-up.sh [--floor-only]" >&2; exit 1;;
 esac
 
-# Deliver a prompt to a pane (chunked typing + submit — see fwf_send_prompt).
-send() { fwf_send_prompt "$@"; }
+# Arming (issue #38): full role prompt once + lean /loop tick — fwf_arm_pane.
 
 # Per-pane label (@l) and color (@c); text/color come from the shared
 # fwf_role_label/fwf_role_color helpers (lib.sh) so respawn-recovery (#36)
@@ -200,17 +199,17 @@ sleep 2
 # --- deliver prompts to the panes THIS run created -----------------------------
 if [ "$BUILD_CREATED" = 1 ]; then
   for id in "${PAIRS[@]}"; do
-    send "${TP[$id]}" "/loop $IMPL_INTERVAL $(fwf_render "$(fwf_tmpl_path implementer)" "$id")"
-    send "${BP[$id]}" "/loop $QA_LOOP_INTERVAL $(fwf_render "$(fwf_tmpl_path qa)" "$id")"
+    fwf_arm_pane "${TP[$id]}" "impl$id" implementer "$id" "$IMPL_INTERVAL"
+    fwf_arm_pane "${BP[$id]}" "qa$id" qa "$id" "$QA_LOOP_INTERVAL"
   done
-  send "$CONDUCTOR_PANE" "/loop $CONDUCTOR_INTERVAL $(fwf_render "$(fwf_tmpl_path conductor)" "")"
+  fwf_arm_pane "$CONDUCTOR_PANE" conductor conductor "" "$CONDUCTOR_INTERVAL"
 fi
-[ "$PM_CREATED" = 1 ]      && send "$PM_PANE"      "/loop $PM_INTERVAL $(fwf_render "$(fwf_tmpl_path pm)" "")"
-[ "$GV_CREATED" = 1 ]      && send "$GV_PANE"      "/loop $GV_INTERVAL $(fwf_render "$(fwf_tmpl_path gv)" "")"
-[ "$CAPTAIN_CREATED" = 1 ] && send "$CAPTAIN_PANE" "/loop $CAPTAIN_INTERVAL $(fwf_render "$(fwf_tmpl_path captain)" "")"
+[ "$PM_CREATED" = 1 ]      && fwf_arm_pane "$PM_PANE"      pm pm "" "$PM_INTERVAL"
+[ "$GV_CREATED" = 1 ]      && fwf_arm_pane "$GV_PANE"      gv gv "" "$GV_INTERVAL"
+[ "$CAPTAIN_CREATED" = 1 ] && fwf_arm_pane "$CAPTAIN_PANE" captain captain "" "$CAPTAIN_INTERVAL"
 i=0
 while [ "$i" -lt "${#EXTRA_PANES[@]}" ]; do
-  send "${EXTRA_PANES[$i]}" "/loop $(fwf_extra_interval "${EXTRA_NAMES[$i]}") $(fwf_render "$(fwf_tmpl_path "${EXTRA_NAMES[$i]}")" "")"
+  fwf_arm_pane "${EXTRA_PANES[$i]}" "${EXTRA_NAMES[$i]}" "${EXTRA_NAMES[$i]}" "" "$(fwf_extra_interval "${EXTRA_NAMES[$i]}")"
   i=$((i+1))
 done
 

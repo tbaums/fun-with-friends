@@ -14,15 +14,15 @@ source "$DIR/lib.sh"
 
 role="${1:-}"
 case "$role" in
-  impl[1-9]|impl[1-9][0-9]) tmpl=implementer; id="${role#impl}"; loop="/loop $IMPL_INTERVAL ";    sess="$BUILD_SESSION";;
-  qa[1-9]|qa[1-9][0-9])     tmpl=qa;          id="${role#qa}";   loop="/loop $QA_LOOP_INTERVAL "; sess="$BUILD_SESSION";;
-  conductor) tmpl=conductor;   id="";             loop="/loop $CONDUCTOR_INTERVAL "; sess="$BUILD_SESSION";;
-  pm)        tmpl=pm;          id="";             loop="/loop $PM_INTERVAL ";        sess="$COORD_SESSION";;
-  gv)        tmpl=gv;          id="";             loop="/loop $GV_INTERVAL ";        sess="$COORD_SESSION";;
-  captain)   tmpl=captain;     id="";             loop="/loop $CAPTAIN_INTERVAL ";   sess="$COORD_SESSION";;
+  impl[1-9]|impl[1-9][0-9]) tmpl=implementer; id="${role#impl}"; interval="$IMPL_INTERVAL";    sess="$BUILD_SESSION";;
+  qa[1-9]|qa[1-9][0-9])     tmpl=qa;          id="${role#qa}";   interval="$QA_LOOP_INTERVAL"; sess="$BUILD_SESSION";;
+  conductor) tmpl=conductor;   id="";             interval="$CONDUCTOR_INTERVAL"; sess="$BUILD_SESSION";;
+  pm)        tmpl=pm;          id="";             interval="$PM_INTERVAL";        sess="$COORD_SESSION";;
+  gv)        tmpl=gv;          id="";             interval="$GV_INTERVAL";        sess="$COORD_SESSION";;
+  captain)   tmpl=captain;     id="";             interval="$CAPTAIN_INTERVAL";   sess="$COORD_SESSION";;
   *)
     if fwf_extra_entry "$role" >/dev/null 2>&1; then   # template-declared extra role (e.g. sre)
-      tmpl="$role"; id=""; loop="/loop $(fwf_extra_interval "$role") "
+      tmpl="$role"; id=""; interval="$(fwf_extra_interval "$role")"
       case "$(fwf_extra_session "$role")" in
         build) sess="$BUILD_SESSION";; *) sess="$COORD_SESSION";;
       esac
@@ -59,6 +59,5 @@ sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
-text="$loop$(fwf_render "$(fwf_tmpl_path "$tmpl")" "$id")"
-fwf_send_prompt "$CP" "$text"
-echo "$role respawned and prompt delivered in $CP"
+fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
+echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"
