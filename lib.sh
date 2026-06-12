@@ -83,6 +83,62 @@ esac
 # shellcheck disable=SC2034  # consumed by fwf-issues.sh / fwf-provision.sh
 FWF_ISSUES_DIR="$FWF_RUN/issues/$PROFILE"
 
+# The gh-write guard (issue #34) — the issue-tracker counterpart of #28's
+# pre-push hook. In local mode every pane gets this directory PREPENDED to
+# PATH; it holds (a) a `gh` wrapper that fail-closed blocks every mutating
+# command unless a human authorizes that invocation with FWF_ALLOW_GH=1
+# (reads stay allowed), and (b) an `fwf` symlink so the local-issues CLI is
+# ALWAYS resolvable in panes — the unguarded gh fallback in the #34 incident
+# started with `fwf` missing from a non-login pane PATH.
+FWF_GHGUARD_DIR="$FWF_RUN/ghguard"
+fwf_install_ghguard() {
+  local real_gh
+  real_gh="$(command -v gh || true)"
+  mkdir -p "$FWF_GHGUARD_DIR"
+  ln -sf "$FWF_LIB_DIR/fwf" "$FWF_GHGUARD_DIR/fwf"
+  cat > "$FWF_GHGUARD_DIR/gh" <<GHGUARD
+#!/usr/bin/env sh
+# fwf gh-write guard — installed for --issues local mode (issue #34).
+# The factory's tracker is LOCAL; the remote's issues/labels/PRs are not ours
+# to write. Mutating gh commands are blocked unless a HUMAN authorizes this
+# single invocation with FWF_ALLOW_GH=1. Reads pass through.
+REAL_GH="${real_gh:-gh}"
+[ "\${FWF_ALLOW_GH:-0}" = "1" ] && exec "\$REAL_GH" "\$@"
+blocked() {
+  echo "fwf: gh write BLOCKED ('gh \$*') — local-issues mode never writes to the remote tracker." >&2
+  echo "fwf: use 'fwf issues …' for the local tracker; a human can authorize one real gh write with: FWF_ALLOW_GH=1 gh …" >&2
+  exit 1
+}
+case "\${1:-}" in
+  ""|help|--help|--version|version|status|search) exec "\$REAL_GH" "\$@" ;;
+  auth)   case "\${2:-}" in status|token) exec "\$REAL_GH" "\$@";; *) blocked "\$@";; esac ;;
+  config) case "\${2:-}" in get|list|"") exec "\$REAL_GH" "\$@";; *) blocked "\$@";; esac ;;
+  api)
+    meth="GET"; prev=""
+    for a in "\$@"; do
+      case "\$prev" in --method|-X) meth="\$a";; esac
+      case "\$a" in --method=*) meth="\${a#--method=}";; -X=*) meth="\${a#-X=}";; esac
+      prev="\$a"
+    done
+    case "\$meth" in GET|HEAD|get|head) exec "\$REAL_GH" "\$@";; *) blocked "\$@";; esac ;;
+  *)
+    # topic commands (issue/pr/label/release/repo/run/workflow/gist/…):
+    # allow the read-shaped subcommands, block everything else fail-closed.
+    case "\${2:-}" in
+      list|view|status|diff|checks|download|watch) exec "\$REAL_GH" "\$@" ;;
+      *) blocked "\$@" ;;
+    esac ;;
+esac
+GHGUARD
+  chmod +x "$FWF_GHGUARD_DIR/gh"
+}
+
+# In local mode, panes launch claude with the guard dir first on PATH (the
+# \$PATH stays literal here and expands in the pane's shell).
+if [ "$FWF_ISSUES" = "local" ]; then
+  CLAUDE_CMD="env PATH=\"$FWF_GHGUARD_DIR:\$PATH\" $CLAUDE_CMD"
+fi
+
 # Session names, template-aware (issue #31): the dev factory keeps the classic
 # names; any other template embeds its name so `tmux ls` says which factory
 # design is live (friends-ideation-coord/-build). Env/profile overrides win.

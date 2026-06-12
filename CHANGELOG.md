@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-12
+
+### Security
+- **Local-issues mode now hard-guards `gh` writes, not just pushes** (#34).
+  A real incident showed the gap: with the tracker local, an agent that
+  resolved the wrong backend (the #30 ordering bug, fixed in 0.6.0) or that
+  simply couldn't find `fwf` on a pane's non-login PATH fell back to real
+  `gh` and wrote issues/labels/comments onto a company repo. Now, in
+  `--issues local`, every pane launches with a guard directory first on
+  PATH containing (a) a `gh` wrapper that fail-closed blocks every mutating
+  command — `issue/pr/label/... create|comment|edit|merge|close`, `api`
+  with non-GET methods, unknown verbs — unless a human authorizes that
+  single invocation with `FWF_ALLOW_GH=1` (reads pass through), and (b) an
+  `fwf` symlink so the local-issues CLI is always resolvable and the
+  fallback is never needed. Installed by provision and re-asserted by every
+  `fwf up`; the captain's upstream-PR duty now uses `FWF_ALLOW_GH=1`
+  alongside `FWF_ALLOW_PUSH=1`.
+
 ## [0.6.0] - 2026-06-12
 
 ### Fixed
@@ -297,7 +315,8 @@ First tagged release.
   the human drives the project from.
 - MIT license, release runbook (`RELEASING.md`), and an URL-first README.
 
-[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tbaums/fun-with-friends/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/tbaums/fun-with-friends/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tbaums/fun-with-friends/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/tbaums/fun-with-friends/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tbaums/fun-with-friends/compare/v0.4.1...v0.5.0
