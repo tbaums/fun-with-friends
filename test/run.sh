@@ -552,9 +552,110 @@ assert_contains "file holds the rendered role"    "$(cat "$RPF")" "You are imple
 RPF_IDE="$(FWF_RUN_DIR="$TMP/armrun" FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_write_role_prompt impl1 implementer 1")"
 assert_contains "template-aware render persisted" "$(cat "$RPF_IDE")" "IDEA GENERATOR"
 
+section "fwf dash (issue #40) — decision inbox + actions"
+DRUN="$TMP/dashrun"
+DSH()  { FWF_RUN_DIR="$DRUN" FWF_PROFILE=example FWF_ISSUES=local "$ROOT/fwf-dash.sh" "$@"; }
+ISSD() { FWF_RUN_DIR="$DRUN" FWF_PROFILE=example FWF_ISSUES=local "$ROOT/fwf-issues.sh" "$@"; }
+# Three issues: a signed-off gated draft (a real decision), a gated draft the GV
+# has NOT signed off (not yet a decision), and an ordinary open issue.
+ISSD create --title "un-gate: KB folder merge" --body "merge the folders" --label product-wip >/dev/null
+ISSD comment 1 --body "GV-SIGNOFF: strategically sound; risks called out." >/dev/null
+ISSD create --title "dark mode toggle" --body "stub spec" --label product-wip >/dev/null
+ISSD create --title "fix pagination" --body "page 2 repeats an item" >/dev/null
+
+# The decision queue is exactly: open + WIP_LABEL + a GV-SIGNOFF comment.
+DEC="$(DSH decisions)"
+assert_contains "signed-off gated draft is a decision" "$DEC" "un-gate: KB folder merge"
+case "$DEC" in *"dark mode toggle"*) bad "gated-but-unsigned must be excluded";; *) ok "gated-but-unsigned excluded";; esac
+case "$DEC" in *"fix pagination"*)   bad "ungated issue must be excluded";;     *) ok "ungated issue excluded";; esac
+
+# Issues tab lists every open issue and flags the gated ones.
+ISS_TAB="$(DSH issues)"
+assert_contains "issues tab lists ungated issues too" "$ISS_TAB" "fix pagination"
+assert_contains "issues tab flags a gated issue"      "$ISS_TAB" "gated"
+UNGATED_FLAG="$(printf '%s\n' "$ISS_TAB" | awk -F'\t' '$1==3{print $2}')"
+assert_eq "ungated issue carries no gate flag" "" "$UNGATED_FLAG"
+
+# Action construction — local backend, asserted through the dryrun seam.
+APP="$(FWF_DASH_DRYRUN=1 DSH act approve 1)"
+assert_contains "approve posts the go-ahead comment" "$APP" "comment 1 --body go ahead"
+assert_contains "approve un-gates (removes WIP label)" "$APP" "edit 1 --remove-label product-wip"
+REJ="$(FWF_DASH_DRYRUN=1 DSH act reject 1 needs a benchmark)"
+assert_contains "reject comments the reason" "$REJ" "comment 1 --body needs a benchmark"
+case "$REJ" in *remove-label*) bad "reject must NOT un-gate";; *) ok "reject keeps the gate"; esac
+COM="$(FWF_DASH_DRYRUN=1 DSH act comment 1 please add acceptance criteria)"
+assert_contains "comment posts the given text" "$COM" "comment 1 --body please add acceptance criteria"
+
+# Same verbs on the gh backend build gh commands (identical behavior, different leaf).
+GHD() { FWF_RUN_DIR="$DRUN" FWF_PROFILE=example FWF_ISSUES=gh FWF_DASH_DRYRUN=1 "$ROOT/fwf-dash.sh" "$@"; }
+GAP="$(GHD act approve 384)"
+assert_contains "gh approve -> gh issue comment" "$GAP" "gh issue comment 384 --body go ahead"
+assert_contains "gh approve -> gh issue edit"    "$GAP" "gh issue edit 384 --remove-label product-wip"
+assert_contains "gh open -> gh issue view --web" "$(GHD act open 384)" "gh issue view 384 --web"
+
+# Role controls wrap the existing scripts.
+assert_contains "respawn wraps fwf-respawn.sh" "$(FWF_DASH_DRYRUN=1 DSH act respawn impl2)" "fwf-respawn.sh impl2"
+assert_contains "stop wraps fwf-stop.sh"       "$(FWF_DASH_DRYRUN=1 DSH act stop)"          "fwf-stop.sh"
+
+# Roles roster + captain passthrough, derived from tmux pane state via a fake tmux
+# that stands up a CAPTAIN pane (live) and an IMPL1 pane (idle shell).
+mkdir -p "$TMP/dashbin"
+cat > "$TMP/dashbin/tmux" <<'FAKE'
+#!/usr/bin/env bash
+sub="$1"; shift || true
+_pane() { local p=""; while [ $# -gt 0 ]; do [ "$1" = "-t" ] && { p="$2"; shift; }; shift; done; printf '%s' "$p"; }
+case "$sub" in
+  has-session)     exit 0;;                         # every session "exists"
+  list-panes)      printf '%s\n' '%0' '%1';;        # two panes per session
+  show)            case "$(_pane "$@")" in
+                     %0) echo 'CAPTAIN · you talk here · loop 2m';;
+                     %1) echo 'IMPL1 · any issue → instant draft PR · impl1/*';;
+                   esac;;
+  display-message) case "$(_pane "$@")" in %0) echo node;; %1) echo bash;; esac;;
+  *) exit 0;;
+esac
+FAKE
+chmod +x "$TMP/dashbin/tmux"
+ROLES_OUT="$(PATH="$TMP/dashbin:$PATH" DSH roles)"
+assert_contains "captain pane on a busy command reads live" "$ROLES_OUT" "$(printf 'captain\t● live')"
+assert_contains "impl1 on a bare shell reads idle"          "$ROLES_OUT" "$(printf 'impl1\t○ idle')"
+assert_contains "an unmatched role reads down"              "$ROLES_OUT" "$(printf 'impl2\t· down')"
+PT="$(PATH="$TMP/dashbin:$PATH" FWF_RUN_DIR="$DRUN" FWF_PROFILE=example FWF_ISSUES=gh FWF_DASH_DRYRUN=1 "$ROOT/fwf-dash.sh" act passthrough ship it tonight)"
+assert_contains "passthrough send-keys to the CAPTAIN pane" "$PT" "send-keys -t %0 -l ship it tonight"
+
+# The optional status.json overlay (needs jq): fresh -> rendered, stale -> ignored.
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$DRUN/state/example"
+  cat > "$DRUN/state/example/status.json" <<'JSON'
+{ "prod": "v9.9 ✓ · e2e ✓",
+  "pipeline": "staging +2 ahead · integration clean · main = prod",
+  "roles": [ { "id": "impl1", "issue": 441, "title": "auth refactor" } ],
+  "decisions": [
+    { "id": "1",   "kind": "ungate",  "issue": 1,    "recommendation": "ship" },
+    { "id": "REL", "kind": "release", "issue": null, "title": "release v9.9 -> main", "gv": "gate ✓" }
+  ] }
+JSON
+  BRD="$(DSH board)"
+  assert_contains "fresh status.json fills prod"        "$BRD" "prod v9.9 ✓"
+  assert_contains "fresh status.json marks itself"      "$BRD" "status.json ✓"
+  assert_contains "fresh status.json overlays pipeline" "$BRD" "staging +2 ahead"
+  DEC2="$(DSH decisions)"
+  assert_contains "decision enriched with recommendation" "$DEC2" "captain: ship"
+  assert_contains "release decision shows as its own row"  "$DEC2" "release v9.9"
+  # Age it out: a fixed past mtime is unambiguously stale on both BSD and GNU touch.
+  touch -t 202001010000 "$DRUN/state/example/status.json"
+  BRD2="$(DSH board)"
+  case "$BRD2" in *"status.json ✓"*) bad "a stale overlay must be ignored";; *) ok "stale overlay ignored (degrades to derived)"; esac
+  DEC3="$(DSH decisions)"
+  case "$DEC3" in *"release v9.9"*) bad "stale release decision must drop";; *) ok "stale release decision dropped"; esac
+else
+  printf '  skip status.json overlay (jq not installed)\n'
+fi
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
+"$ROOT/fwf" dash bogus-view >/dev/null 2>&1 && bad "dash rejects unknown subcommand" || ok "dash rejects unknown subcommand"
 
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"

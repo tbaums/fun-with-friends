@@ -55,6 +55,10 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
                          --floor-only: (re)create just the floor (build session
                          + PM/GV panes) around a LIVE captain pane, untouched.
   attach [coord|build]   tmux attach to coordination (default) or implementation.
+  dash                   Open the captain dashboard: a persistent status board +
+                         an actionable decision inbox (y/n/c/o on gated issues,
+                         r/s role controls, an all-issues tab, t = captain
+                         passthrough). bash/fzf/tmux; see docs/dash.md.
   captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
   respawn <role>         Hot-swap one pane:
                          implN | qaN | conductor | pm | gv | captain.
@@ -374,6 +378,7 @@ case "$cmd" in
     FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-up.sh"
     ;;
   issues)    engine fwf-issues.sh "$@";;
+  dash)      engine fwf-dash.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never
