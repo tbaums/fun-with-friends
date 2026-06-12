@@ -593,6 +593,21 @@ assert_contains "gh approve -> gh issue comment" "$GAP" "gh issue comment 384 --
 assert_contains "gh approve -> gh issue edit"    "$GAP" "gh issue edit 384 --remove-label product-wip"
 assert_contains "gh open -> gh issue view --web" "$(GHD act open 384)" "gh issue view 384 --web"
 
+# Regression: gh's plain columns (number/STATE/title/…) differ from the local
+# store's (number/title/…), so the dash reads titles via the gh-shaped
+# `--json number,title --jq` both backends share — never by column position.
+mkdir -p "$TMP/dashbin"
+cat > "$TMP/dashbin/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+# Stands in for `gh issue list … --json number,title --jq '.[]|"\(.number)\t\(.title)"'`.
+[ "$1" = "issue" ] || exit 0
+case "$2" in list) printf '512\tWire the new auth flow\n';; *) exit 0;; esac
+FAKEGH
+chmod +x "$TMP/dashbin/gh"
+GH_TAB="$(PATH="$TMP/dashbin:$PATH" FWF_RUN_DIR="$DRUN" FWF_PROFILE=example FWF_ISSUES=gh "$ROOT/fwf-dash.sh" issues)"
+assert_contains "gh issues tab reads the real title" "$GH_TAB" "Wire the new auth flow"
+case "$GH_TAB" in *"$(printf '\tOPEN\t')"*) bad "gh STATE column must not leak as title";; *) ok "gh title parsed via --json, not column"; esac
+
 # Role controls wrap the existing scripts.
 assert_contains "respawn wraps fwf-respawn.sh" "$(FWF_DASH_DRYRUN=1 DSH act respawn impl2)" "fwf-respawn.sh impl2"
 assert_contains "stop wraps fwf-stop.sh"       "$(FWF_DASH_DRYRUN=1 DSH act stop)"          "fwf-stop.sh"

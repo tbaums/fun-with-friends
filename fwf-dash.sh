@@ -43,9 +43,12 @@ die() { echo "fwf dash: $*" >&2; exit 1; }
 STATE_DIR="$FWF_RUN/state/$PROFILE"
 STATUS_JSON="$STATE_DIR/status.json"
 DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"   # captain ticks every CAPTAIN_INTERVAL (2m); 90s = "this tick"
+DASH_REFRESH="${FWF_DASH_REFRESH:-5}"          # board redraw cadence (s); each redraw re-derives the
+                                               # decision count, so keep it gentle on the gh API backend
 
-# Portable mtime (BSD stat -f, GNU stat -c). Echoes epoch seconds, or nothing.
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true; }
+# Portable mtime: GNU stat (-c %Y) first so the BSD fallback (-f %m) is never
+# called on Linux (where -f means --file-system and outputs unrelated text).
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true; }
 # True when status.json exists and is younger than DASH_STALE_SECS.
 status_fresh() {
   local m age
@@ -97,18 +100,20 @@ di_read() {
 issue_num() { local n="$1"; n="${n#LI-}"; n="${n#\#}"; printf '%s' "$n"; }
 
 # --- derivation: issues -----------------------------------------------------
-# Open issues, optionally filtered to one label, as "number<TAB>title" rows. Both
-# backends print number-first / title-second TSV in non-interactive mode, so one
-# parse serves both (no jq needed on the read path).
+# Open issues, optionally filtered to one label, as "number<TAB>title" rows.
+# Uses the gh-shaped `--json number,title --jq` both backends implement, because
+# their PLAIN columns differ (gh: number/state/title…; local: number/title…) —
+# the JSON field names are the only uniform contract. gh's `--jq` is its own
+# embedded jq (no system jq needed); the local store's `--jq` uses system jq,
+# which local-issues factories already require. Best-effort: any read failure
+# (tracker down, no jq for the local store) degrades to an empty list, not a crash.
 list_open() { # $1=label-or-empty
-  local args
-  args="list --state open"
-  [ -n "${1:-}" ] && args="$args --label $1"
-  # Best-effort read: the board degrades gracefully when the tracker is
-  # unreachable. `|| true` also absorbs the local backend's `list` exiting
-  # non-zero in plain (non-JSON) mode — a benign quirk that set -e would amplify.
-  # shellcheck disable=SC2086  # word-splitting the flag string is intentional
-  { di_read $args 2>/dev/null || true; } | awk -F'\t' 'NF>=2 { n=$1; sub(/^LI-/,"",n); sub(/^#/,"",n); print n "\t" $2 }'
+  local prog='.[] | "\(.number)\t\(.title)"'
+  if [ -n "${1:-}" ]; then
+    di_read list --state open --label "$1" --json number,title --jq "$prog" 2>/dev/null || true
+  else
+    di_read list --state open --json number,title --jq "$prog" 2>/dev/null || true
+  fi
 }
 
 # Does an issue carry a current GV sign-off? The gate the human waits behind: the
@@ -330,7 +335,7 @@ cmd_launch() {
     printf '#!/usr/bin/env bash\n'
     printf "export FWF_PROFILE=%s FWF_RUN_DIR=%s FWF_ISSUES=%s FWF_TEMPLATE=%s\n" \
       "$(_q "$PROFILE")" "$(_q "$FWF_RUN")" "$(_q "$FWF_ISSUES")" "$(_q "$FWF_TEMPLATE")"
-    printf "while :; do clear; %s board; sleep 3; done\n" "$(_q "$DIR/fwf-dash.sh")"
+    printf "while :; do clear; %s board; sleep %s; done\n" "$(_q "$DIR/fwf-dash.sh")" "$DASH_REFRESH"
   } > "$board"
   {
     printf '#!/usr/bin/env bash\n'

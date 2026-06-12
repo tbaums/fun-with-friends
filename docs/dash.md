@@ -138,6 +138,15 @@ It prints the exact command instead of executing it — useful for a cautious
 look before you wire the keys to a live tracker, and the seam the hermetic tests
 assert against.
 
+## Tuning
+
+| Env var | Default | Effect |
+|---|---|---|
+| `FWF_DASH_REFRESH` | `5` | Board redraw cadence (seconds). Each redraw re-derives the decision count (one issue read per gated draft), so on the **gh** backend keep this gentle to stay clear of API rate limits; on the local store it is free. |
+| `FWF_DASH_STALE_SECS` | `90` | How fresh `status.json` must be (by mtime) to overlay it. |
+| `FWF_DASH_DRYRUN` | `0` | When `1`, `act` prints the command instead of running it. |
+| `PAGER` | `less -R` | Pager for `o` on the local backend. |
+
 ## Scope
 
 v1 is the bash/fzf/tmux MVP above. A compiled TUI (bubbletea/ratatui), per-role
