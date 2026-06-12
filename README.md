@@ -243,6 +243,9 @@ fwf respawn <role>                                  hot-swap one pane (implN|qaN
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
 fwf down [--purge|--floor-only]                     kill both sessions (--purge: remove worktrees too;
                                                     --floor-only: keep the captain running)
+fwf issues <create|list|view|edit|comment|close|reopen|export>
+                                                    the local issue tracker (--issues local):
+                                                    gh-shaped CLI over a markdown store
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
@@ -273,9 +276,21 @@ one profile present it's selected automatically.
                      --gv-model, --captain-model, --conductor-model
 ```
 
+```
+--issues gh|local    issue-tracker backend (alias: --local-issues). Use local
+                     for repos whose GitHub issues/labels you don't control:
+                     the whole gated-spec / claim / approval flow runs over a
+                     markdown store OUTSIDE the repo (one file per issue under
+                     ~/.fun-with-friends/issues/<profile>/{open,closed}/),
+                     driven by `fwf issues`. PRs still go to GitHub; issue
+                     refs become LI-N so nothing links to upstream issues; the
+                     captain closes shipped issues at release and mines the
+                     store (`fwf issues export`) for PR bodies/changelogs/docs.
+```
+
 All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
-`FWF_MODEL_<ROLE>`. A template may ship its own defaults (`template.sh`);
-precedence is CLI/env → profile → template → stock.
+`FWF_MODEL_<ROLE>`, `FWF_ISSUES`. A template may ship its own defaults
+(`template.sh`); precedence is CLI/env → profile → template → stock.
 
 ## Notes & caveats
 

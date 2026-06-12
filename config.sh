@@ -29,6 +29,12 @@ FWF_MODEL_GV="${FWF_MODEL_GV:-}"
 FWF_MODEL_CAPTAIN="${FWF_MODEL_CAPTAIN:-}"
 FWF_MODEL_CONDUCTOR="${FWF_MODEL_CONDUCTOR:-}"
 
+# Issue-tracker backend: "gh" (the target repo's GitHub issues — the default)
+# or "local" (a markdown store under $FWF_RUN/issues/<profile>, OUTSIDE any
+# repo, driven by `fwf issues` — for repos whose issues/labels you don't
+# control). CLI: fwf up --issues local. Validated + wired in lib.sh.
+FWF_ISSUES="${FWF_ISSUES:-gh}"
+
 # The model menu `fwf suggest` recommends from — "id:traits" entries separated
 # by " | ". Edit as models evolve; it is advisory text, not validation.
 FWF_MODEL_MENU="${FWF_MODEL_MENU:-claude-opus-4-8:strongest reasoning, highest cost — synthesis, strategy, judgment seats | claude-sonnet-4-6:strong all-round default — building, reviewing, planning | claude-haiku-4-5-20251001:fast and cheap — mechanical, high-volume, rubric-scored seats}"
