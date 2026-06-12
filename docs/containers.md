@@ -44,10 +44,10 @@ cheaper non-container fixes. That asymmetry shapes the scoping below.
   netns ends the e2e port wars; a contained process set ends "who touched my
   worktree"; the floor becomes reproducible (`docker run` N copies) and
   disposable (issue #6's floor-down = stop containers).
-- **(b) Prod server+worker.** High value *for transom specifically* (clean
-  process boundary around `transom-data` kills the hourly lock jam), but it is
-  app-specific, not fwf-generic — it belongs in the app repo's profile, not in
-  fwf. fwf's contribution is the base image + the volume/auth pattern below.
+- **(b) Prod server+worker.** High value when the factory babysits a live
+  service (a clean process boundary around the app's data repo kills
+  host-writer lock jams), but it is app-specific, not fwf-generic — it belongs
+  in the app repo's profile, not in fwf. fwf's contribution is the base image + the volume/auth pattern below.
 - **(c) Whole tmux session(s) including captain.** Works (tmux-in-container +
   `docker exec -it … tmux attach` is fine), but costs the captain's host
   affordances (clipboard, notifications, local editors) for no isolation win —
@@ -97,8 +97,9 @@ Explored; it works, with these specifics:
 - The **app repo + worktrees** mount as a named volume or host bind. Worktrees
   stay host-visible (the human inspects them); the container only adds a
   closed process set around them.
-- **Data repos** (e.g. `transom-data`): named volume owned by exactly one
-  container — that is the whole point (no Spotlight, no stray host writer).
+- **Data repos** (an app's separate state/content repo): named volume owned by
+  exactly one container — that is the whole point (no Spotlight, no stray host
+  writer).
   Back up via `git push` from inside, which the factory already does.
 - `~/.fun-with-friends` run-state (locks, STOP sentinel) mounts shared so host
   `fwf stop` still reaches contained agents.
