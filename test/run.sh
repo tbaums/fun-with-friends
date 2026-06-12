@@ -494,6 +494,45 @@ assert_eq "ideation identity + session name" "friends-ideation-coord|GEN|CRITIC|
 DEVIDENT="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \"\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
 assert_eq "dev keeps classic names" "friends-build|IMPL" "$DEVIDENT"
 
+section "gh-write guard in local mode (issue #34)"
+GGRUN="$TMP/ggrun"
+# install the guard via the real code path, then swap in a recording fake gh
+FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_install_ghguard"
+[ -x "$GGRUN/ghguard/gh" ] && ok "guard wrapper installed" || bad "guard wrapper installed"
+GGFWF="$(readlink "$GGRUN/ghguard/fwf")"
+assert_contains "fwf resolvable in panes (the gh-fallback cause)" "$GGFWF" "fwf"
+"$GGRUN/ghguard/fwf" version >/dev/null 2>&1 && ok "guard-dir fwf actually runs" || bad "guard-dir fwf actually runs"
+# Re-install with a fake `gh` first on PATH so the wrapper BAKES it as the
+# real gh — exercising the resolution logic itself, with no sed -i (BSD/GNU
+# sed disagree on -i '' and CI runs both).
+mkdir -p "$TMP/fakebin"
+printf '#!/usr/bin/env bash\necho "REAL-GH RAN: $*"\n' > "$TMP/fakebin/gh"; chmod +x "$TMP/fakebin/gh"
+FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "PATH='$TMP/fakebin':\$PATH; source '$ROOT/lib.sh'; fwf_install_ghguard"
+GG() { "$GGRUN/ghguard/gh" "$@"; }
+# reads pass through
+assert_contains "issue list passes"   "$(GG issue list 2>&1)" "REAL-GH RAN: issue list"
+assert_contains "pr view passes"      "$(GG pr view 12 2>&1)" "REAL-GH RAN"
+assert_contains "auth status passes"  "$(GG auth status 2>&1)" "REAL-GH RAN"
+assert_contains "api GET passes"      "$(GG api repos/x/y 2>&1)" "REAL-GH RAN"
+# mutations blocked, fail-closed
+GG issue create --title x >/dev/null 2>&1 && bad "issue create blocked" || ok "issue create blocked"
+GG issue comment 5 --body x >/dev/null 2>&1 && bad "issue comment blocked" || ok "issue comment blocked"
+GG label create wip >/dev/null 2>&1 && bad "label create blocked" || ok "label create blocked"
+GG pr merge 7 >/dev/null 2>&1 && bad "pr merge blocked" || ok "pr merge blocked"
+GG api -X POST repos/x/y/issues >/dev/null 2>&1 && bad "api POST blocked" || ok "api POST blocked"
+GG api --method DELETE repos/x >/dev/null 2>&1 && bad "api DELETE blocked" || ok "api DELETE blocked"
+GG workflow run ci >/dev/null 2>&1 && bad "unknown-verb fail-closed" || ok "unknown-verb fail-closed"
+GGMSG="$(GG issue create --title x 2>&1 || true)"
+assert_contains "block names the local CLI"  "$GGMSG" "fwf issues"
+assert_contains "block names the override"   "$GGMSG" "FWF_ALLOW_GH=1"
+# the human override passes through
+assert_contains "FWF_ALLOW_GH=1 authorizes" "$(FWF_ALLOW_GH=1 GG issue create --title x 2>&1)" "REAL-GH RAN: issue create"
+# pane launch command carries the guard PATH in local mode only
+GCMD="$(FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
+assert_contains "local CLAUDE_CMD prepends guard PATH" "$GCMD" "ghguard"
+GCMD_GH="$(FWF_RUN_DIR="$GGRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
+case "$GCMD_GH" in *ghguard*) bad "gh mode CLAUDE_CMD unguarded";; *) ok "gh mode CLAUDE_CMD unguarded";; esac
+
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"

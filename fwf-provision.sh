@@ -76,6 +76,10 @@ else
   # nothing to create on GitHub, and we must NOT touch the repo's labels.
   mkdir -p "$FWF_ISSUES_DIR/open"
   log "local issue store ready at $FWF_ISSUES_DIR (no GitHub labels touched)"
+  # gh-write guard (#34): panes get this dir first on PATH — gh mutations
+  # blocked (FWF_ALLOW_GH=1 to authorize one), and `fwf` always resolvable.
+  fwf_install_ghguard
+  log "gh-write guard installed ($FWF_GHGUARD_DIR): gh mutations blocked in panes unless FWF_ALLOW_GH=1"
 fi
 
 add_branch_wt() { # $1=tag  $2=branch
