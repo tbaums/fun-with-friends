@@ -502,8 +502,12 @@ FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT
 GGFWF="$(readlink "$GGRUN/ghguard/fwf")"
 assert_contains "fwf resolvable in panes (the gh-fallback cause)" "$GGFWF" "fwf"
 "$GGRUN/ghguard/fwf" version >/dev/null 2>&1 && ok "guard-dir fwf actually runs" || bad "guard-dir fwf actually runs"
-FAKEGH="$TMP/fakegh"; printf '#!/usr/bin/env bash\necho "REAL-GH RAN: $*"\n' > "$FAKEGH"; chmod +x "$FAKEGH"
-sed -i '' "s|^REAL_GH=.*|REAL_GH=\"$FAKEGH\"|" "$GGRUN/ghguard/gh"
+# Re-install with a fake `gh` first on PATH so the wrapper BAKES it as the
+# real gh — exercising the resolution logic itself, with no sed -i (BSD/GNU
+# sed disagree on -i '' and CI runs both).
+mkdir -p "$TMP/fakebin"
+printf '#!/usr/bin/env bash\necho "REAL-GH RAN: $*"\n' > "$TMP/fakebin/gh"; chmod +x "$TMP/fakebin/gh"
+FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "PATH='$TMP/fakebin':\$PATH; source '$ROOT/lib.sh'; fwf_install_ghguard"
 GG() { "$GGRUN/ghguard/gh" "$@"; }
 # reads pass through
 assert_contains "issue list passes"   "$(GG issue list 2>&1)" "REAL-GH RAN: issue list"
