@@ -11,6 +11,17 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Added
+- **9-archetype persona library + deep sweep mode** (#47). Expands the
+  `user-testing` template from 3 persona archetypes to 9 (power user,
+  slow-network / low-end device, returning user, privacy-conscious skeptic,
+  international / non-native-English user, and accessibility user join the
+  original three). Each archetype is a different bug-class lens; the library is
+  embedded in every persona prompt so a 3-persona quick gate and a 9-persona deep
+  sweep use the same file with no fork. `FWF_UT_MODE=deep` selects all 9;
+  `FWF_PAIRS` still overrides. For runs with `FWF_PAIRS > 9`, personas wrap
+  around the library and add a personal twist so coverage never degrades.
+
 ## [0.20.0] - 2026-06-30
 
 ### Added

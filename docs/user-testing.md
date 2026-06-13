@@ -150,10 +150,38 @@ shortcut) close without scripting the personas.
 
 ---
 
+## Trial modes (issue #47)
+
+| Mode | Activate | Personas | Duration |
+|------|----------|----------|----------|
+| **Quick gate** (default) | nothing, or `FWF_UT_MODE=quick` | 3 (archetypes 1–3) | ~25 min |
+| **Deep sweep** | `FWF_UT_MODE=deep` | 9 (all archetypes) | ~75 min |
+
+The **quick gate** (archetypes 1–3: rusher, mobile, label-blind first-timer) is cheap enough to run before every promotion. The **deep sweep** is for periodic full-coverage audits — use it before a major release or when the quick gate has been green long enough that you want broader coverage.
+
+### Archetype library
+
+| # | Archetype | Bug class it catches |
+|---|-----------|----------------------|
+| 1 | Impatient rusher | Rage-click bugs, slow responses, friction abandonment |
+| 2 | Distracted mobile user | Tiny targets, overflow, stale tab recovery |
+| 3 | Label-blind first-timer | Wrong mental model, hostile input, shortcut accidents |
+| 4 | Power user | Edge cases, bulk actions, keyboard shortcuts, missing undo |
+| 5 | Slow-network / low-end device | Latency-masked failures, double-submit, silent errors |
+| 6 | Returning user | Stale sessions, moved nav, lost drafts |
+| 7 | Privacy-conscious skeptic | Export/delete paths, sharing visibility, encryption claims |
+| 8 | International / non-native-English user | Unicode, RTL, locale assumptions, translation overflow |
+| 9 | Accessibility user | Keyboard-only, focus traps, contrast, unlabeled controls |
+
+For a deep sweep, set `UT_APP_URL_1` through `UT_APP_URL_9` so each archetype drives its own app instance — the trial-1 lesson: shared backends blur cross-persona findings.
+
+---
+
 ## Knobs (all user-testing-only; no-ops elsewhere)
 
 | knob | default | meaning |
 |------|---------|---------|
+| `FWF_UT_MODE` | `quick` | `deep` → 9 personas (all archetypes); `quick` → 3 |
 | `UT_APP_URL` | — (required) | the shared UAT/scratch app the personas drive |
 | `UT_APP_URL_<id>` | falls back to `UT_APP_URL` | per-persona app instance (avoids shared-backend bleed) |
 | `UT_BROWSER` | `firefox` | browser engine the Playwright MCP drives |

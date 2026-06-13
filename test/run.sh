@@ -892,6 +892,27 @@ assert_contains "persona sweeps nav + shortcuts" "$(UTE 'fwf_render "$(fwf_tmpl_
 assert_contains "researcher quarantines bleed" "$(UTE "fwf_render \"\$(fwf_tmpl_path pm)\" ''")" "QUARANTINE"
 
 # --------------------------------------------------------------------------
+section "user-testing deep sweep mode (issue #47) — archetype library + FWF_UT_MODE"
+# new archetypes present in the library (all 9 are in every rendered prompt)
+ILIB="$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')"
+assert_contains "archetype 4 power user in library"   "$ILIB" "POWER USER"
+assert_contains "archetype 5 slow-network in library" "$ILIB" "SLOW-NETWORK"
+assert_contains "archetype 6 returning user in library" "$ILIB" "RETURNING USER"
+assert_contains "archetype 7 privacy skeptic in library" "$ILIB" "PRIVACY"
+assert_contains "archetype 8 i18n user in library"    "$ILIB" "NON-NATIVE-ENGLISH"
+assert_contains "archetype 9 accessibility in library" "$ILIB" "ACCESSIBILITY USER"
+# FWF_UT_MODE=deep expands to 9 personas; default stays at 3
+assert_eq "deep mode sets FWF_PAIRS=9" "9" \
+  "$(FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
+assert_eq "default mode keeps FWF_PAIRS=3" "3" \
+  "$(FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
+# explicit FWF_PAIRS still wins over the mode preset
+assert_eq "explicit FWF_PAIRS overrides deep mode" "6" \
+  "$(FWF_UT_MODE=deep FWF_PAIRS=6 FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
+# wrap-around guidance present for runs where FWF_PAIRS > 9
+assert_contains "wrap-around guidance in library" "$ILIB" "WRAP AROUND"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
