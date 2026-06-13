@@ -911,6 +911,15 @@ assert_eq "explicit FWF_PAIRS overrides deep mode" "6" \
   "$(FWF_UT_MODE=deep FWF_PAIRS=6 FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
 # wrap-around guidance present for runs where FWF_PAIRS > 9
 assert_contains "wrap-around guidance in library" "$ILIB" "WRAP AROUND"
+# count-aware captain/researcher prompts: __UT_PERSONA_COUNT__ / __UT_PERSONA_PANES__
+# render to the live roster so they read right for both a quick gate and a deep sweep
+CAPQ="$(UTE 'fwf_render "$(fwf_tmpl_path captain)" ""')"
+assert_contains "captain reads 3 personas (quick)"  "$CAPQ" "just 3 source-blind"
+assert_contains "captain lists the persona panes"   "$CAPQ" "impl1, impl2, impl3"
+DEEPR() { FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+assert_contains "captain reads 9 personas (deep)"   "$(DEEPR 'fwf_render "$(fwf_tmpl_path captain)" ""')" "just 9 source-blind"
+assert_contains "captain lists impl9 in deep sweep" "$(DEEPR 'fwf_render "$(fwf_tmpl_path captain)" ""')" "impl9"
+assert_contains "researcher reads 9 streams (deep)" "$(DEEPR 'fwf_render "$(fwf_tmpl_path pm)" ""')" "9 streams"
 
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"
