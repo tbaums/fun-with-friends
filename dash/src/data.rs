@@ -86,7 +86,7 @@ pub fn parse(bytes: &[u8]) -> Result<Dashboard, String> {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = r#"{
+    const SAMPLE: &str = r##"{
         "profile":"transom","template":"dev","parked":true,
         "prod":"v0.16.0 ✓","pipeline":"staging +3 ahead","stamp":"status.json",
         "generated_at":"12:04:31",
@@ -94,7 +94,7 @@ mod tests {
                  {"role":"qa1","state":"down","detail":""}],
         "decisions":[{"id":"384","title":"un-gate: KB","flags":"GV ✓✓ · captain: ship","body":"Merge."}],
         "issues":[{"number":40,"title":"fwf dash","gated":false,"body":"Why\nShape"}]
-    }"#;
+    }"##;
 
     #[test]
     fn parses_a_full_snapshot() {

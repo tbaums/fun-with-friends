@@ -1,9 +1,0 @@
-    Updating crates.io index
-     Locking 76 packages to latest compatible versions
-      Adding ratatui v0.29.0 (available: v0.30.1)
-      Adding unicode-width v0.2.0 (available: v0.2.2)
-error: can't find bin `fwf-dash` at path `/Users/mt/fwf-solo/dash/src/main.rs`
- --> /Users/mt/fwf-solo/dash/Cargo.toml
-error: can't find bin `fwf-dash` at path `/Users/mt/fwf-solo/dash/src/main.rs`
- --> /Users/mt/fwf-solo/dash/Cargo.toml
-error: could not compile due to 2 previous target resolution errors

@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`fwf dash` — a read-only status board** (#40, milestone 1). A compiled
+  Rust + ratatui TUI (new `dash/` crate) that shows the factory at a glance:
+  roles (← tmux pane liveness), pipeline (← git branch deltas), prod, and the
+  human-gated decision list (← the `product-wip` + `GV-SIGNOFF` label
+  protocol). Derived-first, so it works with the factory parked, and overlays
+  the captain's `status.json` when fresh. Three sections (Roles / Decisions /
+  Issues) with a scrollable, lightly-markdown-styled detail preview. Keyboard
+  model from the prior-art research — **no F-keys**: `j`/`k` + arrows nav,
+  `Tab`/`Shift-Tab` + `[`/`]` + `1`/`2`/`3` section switch, `PgUp`/`PgDn` +
+  `Ctrl-u`/`Ctrl-d` (and mouse wheel) preview scroll, `r` refresh, `?` help,
+  `q` quit. The data layer stays in bash (`fwf-dash-data.sh`, the gh-dash
+  model) so the gh/local backend abstraction and profile resolution remain in
+  one tested place; the binary is purely the renderer and never mutates the
+  tracker. Builds on first run (`cargo build --release`); CI gains a cargo
+  build/test/clippy/fmt job. Replaces the retired fzf prototype (PR #41).
+  Interactive actions (y/n/c/o, role controls, captain passthrough) land in
+  milestone 2.
+
 ## [0.6.3] - 2026-06-12
 
 ### Changed
