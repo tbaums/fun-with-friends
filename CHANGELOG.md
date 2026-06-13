@@ -16,14 +16,25 @@ adheres to [Semantic Versioning](https://semver.org/).
   Issues) with a scrollable, lightly-markdown-styled detail preview. Keyboard
   model from the prior-art research — **no F-keys**: `j`/`k` + arrows nav,
   `Tab`/`Shift-Tab` + `[`/`]` + `1`/`2`/`3` section switch, `PgUp`/`PgDn` +
-  `Ctrl-u`/`Ctrl-d` (and mouse wheel) preview scroll, `r` refresh, `?` help,
-  `q` quit. The data layer stays in bash (`fwf-dash-data.sh`, the gh-dash
+  `Ctrl-u`/`Ctrl-d` (and mouse wheel) preview scroll, `Ctrl-r` refresh, `?`
+  help, `q` quit. The data layer stays in bash (`fwf-dash-data.sh`, the gh-dash
   model) so the gh/local backend abstraction and profile resolution remain in
-  one tested place; the binary is purely the renderer and never mutates the
-  tracker. Builds on first run (`cargo build --release`); CI gains a cargo
-  build/test/clippy/fmt job. Replaces the retired fzf prototype (PR #41).
-  Interactive actions (y/n/c/o, role controls, captain passthrough) land in
-  milestone 2.
+  one tested place; the binary is purely the renderer. Builds on first run
+  (`cargo build --release`); CI gains a cargo build/test/clippy/fmt job.
+  Replaces the retired fzf prototype (PR #41).
+- **`fwf dash` actions — the decision inbox + controls** (#40, milestone 2).
+  On the proven read-only foundation: **`y`** approve (un-gates by removing the
+  WIP label + posts the go-ahead) / **`n`** reject on a decision, **`c`**
+  comment (inline text field) and **`o`** open (browser for gh, detail for
+  local) on decisions and issues, **`r`** respawn / **`s`** stop on a role, and
+  **`t`** to send a line to the captain from anywhere. Mutating actions confirm
+  first (or take typed text in an inline modal) and run on a worker thread, so
+  a slow gh call never freezes the board; the result lands in a colour-coded
+  status line and the board auto-refreshes. The write side stays in bash too
+  (`fwf-dash-act.sh`) behind the same gh/local abstraction, with an
+  `FWF_DASH_DRYRUN` seam (prints the constructed command instead of running it)
+  that both the hermetic tests and cautious operators use; in local-issues mode
+  writes route to the local store and never reach gh (the #34 guard).
 
 ## [0.6.3] - 2026-06-12
 

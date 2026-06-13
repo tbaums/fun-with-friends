@@ -1,21 +1,29 @@
-//! `fwf-dash` — a read-only Rust + ratatui status board for the fun-with-friends
-//! factory (issue #40, milestone 1).
+//! `fwf-dash` — a Rust + ratatui dashboard for the fun-with-friends factory
+//! (issue #40). Milestone 1 was the read-only status board; milestone 2 layers
+//! the actions on the same proven foundation.
 //!
-//! The binary is purely the renderer: a background thread shells out to the bash
-//! data provider (`fwf-dash-data.sh`, via `data::fetch`) on a refresh timer and
-//! pushes snapshots over a channel; the main thread owns the terminal, handles
-//! input, and draws the latest snapshot. Keeping the fetch off the render thread
-//! is what keeps the board flicker-free even when the provider makes a slow gh
-//! call — ratatui only writes the per-frame diff, so an unchanged redraw is a
-//! no-op.
+//! The binary is the renderer + input layer; both the read side and the write
+//! side stay in bash. A background thread shells out to the read-only data
+//! provider (`fwf-dash-data.sh`, via `data::fetch`) on a refresh timer and pushes
+//! snapshots over a channel; the main thread owns the terminal, handles input,
+//! and draws the latest snapshot. On an action keypress it spawns a one-shot
+//! thread that shells out to the action layer (`fwf-dash-act.sh`) and reports the
+//! result back over a channel — so a slow gh call never freezes the UI. Keeping
+//! the fetch and the mutations off the render thread is what keeps the board
+//! flicker-free; ratatui only writes the per-frame diff, so an unchanged redraw
+//! is a no-op.
 //!
 //! Input model is the prior-art one from the #40 research (NO F-keys): j/k+arrows
 //! move the list cursor, Tab/Shift-Tab + [ ] + 1/2/3 switch section, PgUp/PgDn +
-//! Ctrl-u/Ctrl-d scroll the preview, ? toggles help, r forces a refresh, q quits,
-//! and the mouse wheel scrolls the preview.
+//! Ctrl-u/Ctrl-d scroll the preview, Ctrl-r refreshes, ? toggles help, q quits,
+//! mouse wheel scrolls. Actions (milestone 2): on Decisions y approve / n reject /
+//! c comment / o open; on Issues c comment / o open; on Roles r respawn / s stop;
+//! t sends a line to the captain from anywhere. Mutating actions confirm first
+//! (or take typed text in an inline modal) and never touch the tracker until then.
 
 mod data;
 
+use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
@@ -92,6 +100,46 @@ impl Feed {
     }
 }
 
+/// A pending action and the target it acts on (an issue id or a role name; empty
+/// for the swarm-wide stop and the captain passthrough). Verbs match the
+/// `fwf-dash-act.sh` subcommands exactly.
+#[derive(Clone)]
+struct Action {
+    verb: &'static str,
+    target: String,
+}
+
+/// The modal overlay, if any. Only one is up at a time and it owns input until
+/// dismissed — so an action can never half-fire.
+enum Overlay {
+    None,
+    Help,
+    /// A yes/no gate before a mutating action (approve / reject / respawn / stop).
+    Confirm {
+        action: Action,
+        prompt: String,
+    },
+    /// A free-text field whose contents become the action's last argument
+    /// (comment body / captain message).
+    Input {
+        action: Action,
+        prompt: String,
+        buffer: String,
+    },
+}
+
+/// The result of a shelled-out action, sent back from the worker thread.
+struct ActionOutcome {
+    ok: bool,
+    message: String,
+}
+
+/// A transient status line shown in the footer until the next keypress.
+struct Status {
+    message: String,
+    is_err: bool,
+}
+
 /// All mutable UI state. One cursor + one preview scroll offset per tab so moving
 /// between sections preserves where you were.
 struct App {
@@ -99,13 +147,17 @@ struct App {
     tab: Tab,
     cursors: [ListState; 3],
     scroll: [u16; 3],
-    show_help: bool,
+    overlay: Overlay,
+    status: Option<Status>,
+    /// True while an action is shelling out — disables firing another.
+    busy: bool,
     refresh: Sender<()>,
+    action_tx: Sender<ActionOutcome>,
     should_quit: bool,
 }
 
 impl App {
-    fn new(refresh: Sender<()>) -> App {
+    fn new(refresh: Sender<()>, action_tx: Sender<ActionOutcome>) -> App {
         let mut cursors: [ListState; 3] = Default::default();
         for c in &mut cursors {
             c.select(Some(0));
@@ -115,8 +167,11 @@ impl App {
             tab: Tab::Roles,
             cursors,
             scroll: [0; 3],
-            show_help: false,
+            overlay: Overlay::None,
+            status: None,
+            busy: false,
             refresh,
+            action_tx,
             should_quit: false,
         }
     }
@@ -159,22 +214,206 @@ impl App {
         *s = (*s as i32 + delta).max(0) as u16;
     }
 
-    fn on_key(&mut self, key: KeyEvent) {
-        // Help overlay swallows everything except the keys that dismiss it.
-        if self.show_help {
-            match key.code {
-                KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q') => self.show_help = false,
-                _ => {}
-            }
+    /// The id of the selected decision/issue row, as the act layer expects it
+    /// (decisions carry a string id; issues a number). None on Roles or empty.
+    fn selected_id(&self) -> Option<String> {
+        let d = self.feed.dashboard()?;
+        let sel = self.cursors[self.tab.index()].selected().unwrap_or(0);
+        match self.tab {
+            Tab::Decisions => d.decisions.get(sel).map(|x| x.id.clone()),
+            Tab::Issues => d.issues.get(sel).map(|x| x.number.to_string()),
+            Tab::Roles => None,
+        }
+    }
+
+    fn selected_role(&self) -> Option<String> {
+        let d = self.feed.dashboard()?;
+        let sel = self.cursors[Tab::Roles.index()].selected().unwrap_or(0);
+        d.roles.get(sel).map(|x| x.role.clone())
+    }
+
+    fn set_status(&mut self, message: impl Into<String>, is_err: bool) {
+        self.status = Some(Status {
+            message: message.into(),
+            is_err,
+        });
+    }
+
+    /// Shell out to the action layer on a worker thread and report back over the
+    /// channel. `text` is the optional trailing argument (comment / captain body).
+    fn spawn_action(&mut self, action: Action, text: Option<String>) {
+        if self.busy {
             return;
         }
+        let script = match std::env::var("FWF_DASH_ACT") {
+            Ok(s) => s,
+            Err(_) => {
+                self.set_status("FWF_DASH_ACT is not set (run via `fwf dash`)", true);
+                return;
+            }
+        };
+        self.busy = true;
+        self.set_status(format!("⏳ {} {}…", action.verb, action.target), false);
+        let tx = self.action_tx.clone();
+        thread::spawn(move || {
+            let outcome = run_action(&script, &action, text.as_deref());
+            let _ = tx.send(outcome);
+        });
+    }
+
+    /// Begin an action from a key on the active row: gate mutating verbs behind a
+    /// Confirm, route free-text verbs through an Input, fire read-only ones now.
+    fn begin_action(&mut self, verb: &'static str) {
+        if self.busy {
+            return;
+        }
+        match verb {
+            "approve" | "reject" => {
+                if let Some(id) = self.selected_id() {
+                    let action = Action {
+                        verb,
+                        target: id.clone(),
+                    };
+                    let prompt = if verb == "approve" {
+                        format!(
+                            "Approve #{id}?  un-gates (removes the WIP label) + posts the go-ahead"
+                        )
+                    } else {
+                        format!("Reject #{id}?  posts a needs-changes comment; stays gated")
+                    };
+                    self.overlay = Overlay::Confirm { action, prompt };
+                }
+            }
+            "comment" => {
+                if let Some(id) = self.selected_id() {
+                    self.overlay = Overlay::Input {
+                        action: Action {
+                            verb,
+                            target: id.clone(),
+                        },
+                        prompt: format!("Comment on #{id}"),
+                        buffer: String::new(),
+                    };
+                }
+            }
+            "open" => {
+                if let Some(id) = self.selected_id() {
+                    self.spawn_action(Action { verb, target: id }, None);
+                }
+            }
+            "respawn" => {
+                if let Some(role) = self.selected_role() {
+                    self.overlay = Overlay::Confirm {
+                        action: Action {
+                            verb,
+                            target: role.clone(),
+                        },
+                        prompt: format!("Respawn role '{role}'?  hot-swaps the pane"),
+                    };
+                }
+            }
+            "stop" => {
+                self.overlay = Overlay::Confirm {
+                    action: Action {
+                        verb,
+                        target: String::new(),
+                    },
+                    prompt: "Stop the WHOLE swarm?  every agent commits WIP and idles".to_string(),
+                };
+            }
+            "passthrough" => {
+                self.overlay = Overlay::Input {
+                    action: Action {
+                        verb,
+                        target: String::new(),
+                    },
+                    prompt: "Send to the CAPTAIN".to_string(),
+                    buffer: String::new(),
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key(&mut self, key: KeyEvent) {
+        // A keypress clears the last action's status line.
+        self.status = None;
+        // Modals own input until dismissed.
+        match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::Help => {
+                // Stays open unless a dismiss key was pressed.
+                if !matches!(
+                    key.code,
+                    KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')
+                ) {
+                    self.overlay = Overlay::Help;
+                }
+                return;
+            }
+            Overlay::Confirm { action, prompt } => {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        self.spawn_action(action, None)
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        self.set_status("cancelled", false)
+                    }
+                    _ => self.overlay = Overlay::Confirm { action, prompt }, // keep waiting
+                }
+                return;
+            }
+            Overlay::Input {
+                action,
+                prompt,
+                mut buffer,
+            } => {
+                match key.code {
+                    KeyCode::Esc => self.set_status("cancelled", false),
+                    KeyCode::Enter => {
+                        let text = buffer.trim().to_string();
+                        if text.is_empty() {
+                            self.set_status("empty — skipped", false);
+                        } else {
+                            self.spawn_action(action, Some(text));
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        buffer.pop();
+                        self.overlay = Overlay::Input {
+                            action,
+                            prompt,
+                            buffer,
+                        };
+                    }
+                    KeyCode::Char(c) => {
+                        buffer.push(c);
+                        self.overlay = Overlay::Input {
+                            action,
+                            prompt,
+                            buffer,
+                        };
+                    }
+                    _ => {
+                        self.overlay = Overlay::Input {
+                            action,
+                            prompt,
+                            buffer,
+                        }
+                    }
+                }
+                return;
+            }
+            Overlay::None => {}
+        }
+
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('c') if ctrl => self.should_quit = true,
-            KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('r') => {
+            KeyCode::Char('?') => self.overlay = Overlay::Help,
+            KeyCode::Char('r') if ctrl => {
                 let _ = self.refresh.send(());
+                self.set_status("refreshing…", false);
             }
             // Section switching.
             KeyCode::Tab | KeyCode::Char(']') => self.select_tab(self.tab.cycle(1)),
@@ -192,22 +431,85 @@ impl App {
             KeyCode::Char('u') if ctrl => self.scroll_preview(-10),
             KeyCode::PageDown => self.scroll_preview(10),
             KeyCode::PageUp => self.scroll_preview(-10),
+            // Actions — gated by the active section.
+            KeyCode::Char('t') => self.begin_action("passthrough"),
+            KeyCode::Char('y') if self.tab == Tab::Decisions => self.begin_action("approve"),
+            KeyCode::Char('n') if self.tab == Tab::Decisions => self.begin_action("reject"),
+            KeyCode::Char('c') if matches!(self.tab, Tab::Decisions | Tab::Issues) => {
+                self.begin_action("comment")
+            }
+            KeyCode::Char('o') if matches!(self.tab, Tab::Decisions | Tab::Issues) => {
+                self.begin_action("open")
+            }
+            KeyCode::Char('r') if self.tab == Tab::Roles => self.begin_action("respawn"),
+            KeyCode::Char('s') if self.tab == Tab::Roles => self.begin_action("stop"),
             _ => {}
+        }
+    }
+}
+
+/// Run the action layer once (on a worker thread). gh's browser-open and the
+/// local pager are suppressed via FWF_DASH_NO_PAGER so nothing fights the TUI.
+fn run_action(script: &str, action: &Action, text: Option<&str>) -> ActionOutcome {
+    let mut cmd = Command::new("bash");
+    cmd.arg(script).arg(action.verb);
+    if !action.target.is_empty() {
+        cmd.arg(&action.target);
+    }
+    if let Some(t) = text {
+        cmd.arg(t);
+    }
+    cmd.env("FWF_DASH_NO_PAGER", "1");
+    match cmd.output() {
+        Err(e) => ActionOutcome {
+            ok: false,
+            message: format!("could not run the action layer: {e}"),
+        },
+        Ok(out) => {
+            let tail = |b: &[u8]| {
+                String::from_utf8_lossy(b)
+                    .lines()
+                    .last()
+                    .unwrap_or("")
+                    .to_string()
+            };
+            if out.status.success() {
+                let msg = tail(&out.stdout);
+                ActionOutcome {
+                    ok: true,
+                    message: if msg.is_empty() {
+                        format!("{} {} ✓", action.verb, action.target)
+                    } else {
+                        msg
+                    },
+                }
+            } else {
+                let err = tail(&out.stderr);
+                ActionOutcome {
+                    ok: false,
+                    message: if err.is_empty() {
+                        format!("{} failed", action.verb)
+                    } else {
+                        err
+                    },
+                }
+            }
         }
     }
 }
 
 fn main() -> Result<()> {
     // Data thread: fetch immediately, then on each refresh tick or on-demand
-    // request. recv_timeout doubles as the timer and the `r`-key listener.
+    // request. recv_timeout doubles as the timer and the Ctrl-r listener.
     let (data_tx, data_rx) = mpsc::channel::<Result<Dashboard, String>>();
     let (refresh_tx, refresh_rx) = mpsc::channel::<()>();
+    let (action_tx, action_rx) = mpsc::channel::<ActionOutcome>();
     let interval = refresh_interval();
     thread::spawn(move || data_loop(data_tx, refresh_rx, interval));
 
     let mut terminal = init_terminal().context("initializing the terminal")?;
-    let app = App::new(refresh_tx);
-    let result = run(&mut terminal, app, data_rx);
+    let app = App::new(refresh_tx, action_tx);
+    let result = run(&mut terminal, app, data_rx, action_rx);
     restore_terminal();
     result
 }
@@ -254,6 +556,7 @@ fn run(
     terminal: &mut Tui,
     mut app: App,
     data_rx: Receiver<Result<Dashboard, String>>,
+    action_rx: Receiver<ActionOutcome>,
 ) -> Result<()> {
     while !app.should_quit {
         // Drain any snapshots the data thread produced since last frame.
@@ -271,6 +574,16 @@ fn run(
             };
             // Keep the cursor in range if the row count shrank.
             clamp_cursor(&mut app);
+        }
+
+        // Drain finished actions: surface the result and refresh on success so
+        // the board reflects the mutation (un-gated issue, respawned role, …).
+        while let Ok(outcome) = action_rx.try_recv() {
+            app.busy = false;
+            app.set_status(outcome.message, !outcome.ok);
+            if outcome.ok {
+                let _ = app.refresh.send(());
+            }
         }
 
         terminal.draw(|f| ui(f, &mut app))?;
@@ -312,17 +625,20 @@ fn ui(f: &mut Frame, app: &mut App) {
             Constraint::Length(4), // header
             Constraint::Length(1), // tab bar
             Constraint::Min(3),    // body
-            Constraint::Length(1), // footer / legend
+            Constraint::Length(1), // footer / legend / status
         ])
         .split(f.area());
 
     render_header(f, chunks[0], app);
     render_tabs(f, chunks[1], app);
     render_body(f, chunks[2], app);
-    render_footer(f, chunks[3]);
+    render_footer(f, chunks[3], app);
 
-    if app.show_help {
-        render_help(f, f.area());
+    match &app.overlay {
+        Overlay::Help => render_help(f, f.area()),
+        Overlay::Confirm { prompt, .. } => render_confirm(f, f.area(), prompt),
+        Overlay::Input { prompt, buffer, .. } => render_input(f, f.area(), prompt, buffer),
+        Overlay::None => {}
     }
 }
 
@@ -592,53 +908,111 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
     );
 }
 
-fn render_footer(f: &mut Frame, area: Rect) {
+/// The footer is the action+nav legend, unless a status line is up — a finished
+/// action's result or a "working…" note, colour-coded.
+fn render_footer(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(s) = &app.status {
+        let style = if s.is_err {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        let glyph = if s.is_err { " ✗ " } else { " ✓ " };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(glyph, style),
+                Span::styled(
+                    truncate(&s.message, area.width.saturating_sub(4) as usize),
+                    style,
+                ),
+            ])),
+            area,
+        );
+        return;
+    }
+
     let dim = Style::default().fg(Color::DarkGray);
     let key = Style::default().fg(Color::Cyan);
-    let spans = vec![
-        Span::styled(" 1/2/3·Tab ", key),
-        Span::styled("section ", dim),
+    // Action hints depend on the active section.
+    let actions: &[(&str, &str)] = match app.tab {
+        Tab::Decisions => &[
+            ("y", "approve"),
+            ("n", "reject"),
+            ("c", "comment"),
+            ("o", "open"),
+        ],
+        Tab::Issues => &[("c", "comment"), ("o", "open")],
+        Tab::Roles => &[("r", "respawn"), ("s", "stop")],
+    };
+    let mut spans = vec![
+        Span::styled(" 1/2/3 ", key),
+        Span::styled("tab ", dim),
         Span::styled(" j/k ", key),
         Span::styled("move ", dim),
-        Span::styled(" PgUp/Dn·^u/^d ", key),
-        Span::styled("scroll ", dim),
-        Span::styled(" r ", key),
-        Span::styled("refresh ", dim),
-        Span::styled(" ? ", key),
-        Span::styled("help ", dim),
-        Span::styled(" q ", key),
-        Span::styled("quit", dim),
     ];
+    for (k, label) in actions {
+        spans.push(Span::styled(format!(" {k} "), key));
+        spans.push(Span::styled(format!("{label} "), dim));
+    }
+    spans.push(Span::styled(" t ", key));
+    spans.push(Span::styled("captain ", dim));
+    spans.push(Span::styled(" ? ", key));
+    spans.push(Span::styled("help ", dim));
+    spans.push(Span::styled(" q ", key));
+    spans.push(Span::styled("quit", dim));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let popup = centered_rect(60, 70, area);
+    let popup = centered_rect(64, 80, area);
     f.render_widget(Clear, popup);
     let lines = vec![
         Line::from(Span::styled(
-            "fwf dash — read-only status board (#40)",
+            "fwf dash — status board + decision inbox (#40)",
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         help_row("1 / 2 / 3", "jump to Roles / Decisions / Issues"),
-        help_row("Tab / Shift-Tab", "next / previous section"),
-        help_row("[ / ]", "previous / next section"),
+        help_row("Tab / Shift-Tab  ·  [ ]", "next / previous section"),
         help_row("j / k  ·  ↓ / ↑", "move the list cursor"),
         help_row("g / G", "first / last row"),
-        help_row("PgDn / PgUp", "scroll the detail preview"),
-        help_row("Ctrl-d / Ctrl-u", "scroll the detail preview"),
-        help_row("mouse wheel", "scroll the detail preview"),
-        help_row("r", "force a data refresh now"),
-        help_row("?", "toggle this help"),
-        help_row("q  ·  Esc", "quit"),
+        help_row("PgDn/PgUp · Ctrl-d/u · wheel", "scroll the detail preview"),
+        help_row("Ctrl-r", "force a data refresh now"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Decisions",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_row("y / n", "approve (un-gate) / reject — confirms first"),
+        help_row("c", "comment (opens a text field)"),
+        help_row("o", "open in the browser (gh) / detail (local)"),
+        Line::from(Span::styled(
+            "  Issues",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_row("c / o", "comment / open"),
+        Line::from(Span::styled(
+            "  Roles",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_row("r / s", "respawn the role / stop the swarm — confirms"),
+        Line::from(Span::styled(
+            "  Anywhere",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_row("t", "send a line to the captain (text field)"),
+        help_row("? · q · Esc", "toggle help · quit"),
         Line::from(""),
         Line::from(Span::styled(
             "derived-first: roles←tmux · pipeline←git · decisions←label protocol",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "press ?, Esc, or q to close",
             Style::default().fg(Color::DarkGray),
         )),
     ];
@@ -651,9 +1025,71 @@ fn render_help(f: &mut Frame, area: Rect) {
 
 fn help_row(keys: &str, desc: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("  {keys:<18}"), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("  {keys:<28}"), Style::default().fg(Color::Cyan)),
         Span::raw(desc.to_string()),
     ])
+}
+
+/// A small centered yes/no gate for a mutating action.
+fn render_confirm(f: &mut Frame, area: Rect, prompt: &str) {
+    let popup = centered_rect(60, 22, area);
+    f.render_widget(Clear, popup);
+    let lines = vec![
+        Line::from(Span::styled(
+            prompt.to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  y ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::raw(" yes    "),
+            Span::styled(" n ", Style::default().fg(Color::Black).bg(Color::Red)),
+            Span::raw(" no / Esc"),
+        ]),
+    ];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Confirm ")
+        .style(Style::default().bg(Color::Black));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+/// A single-line text field whose contents become the action's last argument.
+fn render_input(f: &mut Frame, area: Rect, prompt: &str, buffer: &str) {
+    let popup = centered_rect(70, 26, area);
+    f.render_widget(Clear, popup);
+    let lines = vec![
+        Line::from(Span::styled(
+            prompt.to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("▏", Style::default().fg(Color::DarkGray)),
+            Span::raw(buffer.to_string()),
+            Span::styled("█", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter send · Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Input ")
+        .style(Style::default().bg(Color::Black));
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
 }
 
 // --- text helpers -----------------------------------------------------------
@@ -717,7 +1153,7 @@ fn markdownish(body: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// A centered rect `pct_x`×`pct_y` percent of `area`, for the help popup.
+/// A centered rect `pct_x`×`pct_y` percent of `area`, for the overlays.
 fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
     let v = Layout::default()
         .direction(Direction::Vertical)
@@ -740,6 +1176,12 @@ fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_app() -> App {
+        let (rtx, _r) = mpsc::channel();
+        let (atx, _a) = mpsc::channel();
+        App::new(rtx, atx)
+    }
 
     #[test]
     fn tab_cycles_and_wraps() {
@@ -764,13 +1206,78 @@ mod tests {
 
     #[test]
     fn cursor_clamps_to_rows() {
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(tx);
+        let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
             roles: vec![],
             ..Default::default()
         });
         app.move_cursor(5); // no rows: stays put, no panic.
         assert_eq!(app.cursor().selected(), Some(0));
+    }
+
+    #[test]
+    fn selected_id_tracks_tab_and_cursor() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            decisions: vec![data::Decision {
+                id: "337".into(),
+                title: "t".into(),
+                flags: String::new(),
+                body: String::new(),
+            }],
+            issues: vec![data::Issue {
+                number: 42,
+                title: "i".into(),
+                gated: false,
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Decisions;
+        assert_eq!(app.selected_id().as_deref(), Some("337"));
+        app.tab = Tab::Issues;
+        assert_eq!(app.selected_id().as_deref(), Some("42"));
+        app.tab = Tab::Roles;
+        assert_eq!(app.selected_id(), None);
+    }
+
+    #[test]
+    fn approve_opens_a_confirm_not_a_fire() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            decisions: vec![data::Decision {
+                id: "337".into(),
+                title: "t".into(),
+                flags: String::new(),
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Decisions;
+        app.begin_action("approve");
+        match &app.overlay {
+            Overlay::Confirm { action, .. } => {
+                assert_eq!(action.verb, "approve");
+                assert_eq!(action.target, "337");
+            }
+            _ => panic!("approve should open a confirm overlay"),
+        }
+    }
+
+    #[test]
+    fn comment_opens_an_input_field() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            issues: vec![data::Issue {
+                number: 9,
+                title: "i".into(),
+                gated: false,
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Issues;
+        app.begin_action("comment");
+        assert!(matches!(app.overlay, Overlay::Input { .. }));
     }
 }

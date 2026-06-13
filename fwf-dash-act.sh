@@ -73,7 +73,11 @@ main() {
     open)
       local n; n="$(issue_num "${1:-}")"; [ -n "$n" ] || die "open: need an issue id"
       if [ "$FWF_ISSUES" = "local" ]; then
+        # The local store has no web view. The TUI sets FWF_DASH_NO_PAGER (its
+        # alt-screen can't host a pager) and just shows the body in the Detail
+        # pane, so here we only confirm; a CLI caller still gets the pager.
         if [ "${FWF_DASH_DRYRUN:-0}" = 1 ]; then printf 'DRYRUN: fwf-issues.sh view %s --comments\n' "$n"
+        elif [ "${FWF_DASH_NO_PAGER:-0}" = 1 ]; then printf 'local issue %s — shown in the Detail pane (no web view)\n' "$n"
         else "$DIR/fwf-issues.sh" view "$n" --comments | ${PAGER:-less -R}; fi
       else
         di view "$n" --web
