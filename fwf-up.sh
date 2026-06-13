@@ -127,6 +127,10 @@ else
     [ "$id" = 1 ] && continue
     TP[$id]=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(fwf_role_cwd "impl$id")")
     prev="${TP[$id]}"
+    # Rebalance after each split so a wide floor (e.g. a #47 deep sweep of 9
+    # personas) never runs the active pane out of width mid-loop ("no space for
+    # new pane"). A no-op for small floors — the final layout is unchanged.
+    tmux select-layout -t "$BUILD_SESSION" even-horizontal >/dev/null 2>&1
   done
   # A template may suppress the conductor (e.g. user-testing has no gate pipeline).
   CONDUCTOR_PANE=""

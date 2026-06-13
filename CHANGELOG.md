@@ -20,7 +20,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
   embedded in every persona prompt so a 3-persona quick gate and a 9-persona deep
   sweep use the same file with no fork. `FWF_UT_MODE=deep` selects all 9;
   `FWF_PAIRS` still overrides. For runs with `FWF_PAIRS > 9`, personas wrap
-  around the library and add a personal twist so coverage never degrades.
+  around the library and add a personal twist so coverage never degrades. The
+  captain and researcher prompts are now persona-count-aware (rendered from the
+  live roster), and `fwf up` rebalances the floor layout as it splits so a wide
+  sweep (9+ persona panes) launches without running tmux out of pane width
+  ("no space for new pane").
 
 ## [0.20.0] - 2026-06-30
 
