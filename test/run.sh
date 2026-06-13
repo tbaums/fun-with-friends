@@ -573,8 +573,8 @@ case "$DEC" in *"fix pagination"*)   bad "ungated issue must be excluded";;     
 ISS_TAB="$(DSH issues)"
 assert_contains "issues tab lists ungated issues too" "$ISS_TAB" "fix pagination"
 assert_contains "issues tab flags a gated issue"      "$ISS_TAB" "gated"
-UNGATED_FLAG="$(printf '%s\n' "$ISS_TAB" | awk -F'\t' '$1==3{print $2}')"
-assert_eq "ungated issue carries no gate flag" "" "$UNGATED_FLAG"
+ROW3="$(printf '%s\n' "$ISS_TAB" | awk -F'\t' '$1==3{print $2}')"
+case "$ROW3" in *gated*) bad "ungated issue must not be marked gated";; *) ok "ungated issue carries no gate mark"; esac
 
 # Action construction — local backend, asserted through the dryrun seam.
 APP="$(FWF_DASH_DRYRUN=1 DSH act approve 1)"
@@ -637,6 +637,12 @@ assert_contains "impl1 on a bare shell reads idle"          "$ROLES_OUT" "$(prin
 assert_contains "an unmatched role reads down"              "$ROLES_OUT" "$(printf 'impl2\t· down')"
 PT="$(PATH="$TMP/dashbin:$PATH" FWF_RUN_DIR="$DRUN" FWF_PROFILE=example FWF_ISSUES=gh FWF_DASH_DRYRUN=1 "$ROOT/fwf-dash.sh" act passthrough ship it tonight)"
 assert_contains "passthrough send-keys to the CAPTAIN pane" "$PT" "send-keys -t %0 -l ship it tonight"
+
+# Single-pane fzf surface: the board header, the roles tab rows, and the ? overlay.
+assert_contains "header carries a visible key legend"   "$(DSH header decisions)" "y approve"
+assert_contains "header legend is view-specific (roles)" "$(DSH header roles)"     "r respawn"
+assert_contains "roles-view keeps the role name visible" "$(DSH roles-view)"       "$(printf 'captain\tcaptain')"
+assert_contains "? help overlay documents the actions"   "$(DSH keys)"             "swarm-wide graceful stop"
 
 # The optional status.json overlay (needs jq): fresh -> rendered, stale -> ignored.
 if command -v jq >/dev/null 2>&1; then

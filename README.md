@@ -55,6 +55,7 @@ macOS or Linux (the UX is a tmux grid; Windows needs WSL). You need:
 | [`gh`](https://cli.github.com/) (authenticated) | issues + pull requests |
 | [`claude`](https://www.anthropic.com/claude-code) | a Claude Code session in every pane |
 | `bash` ≥ 3.2 | macOS's stock 3.2 is fine — the scripts are 3.2-clean |
+| [`fzf`](https://github.com/junegunn/fzf) | only for `fwf dash`, the captain dashboard (`brew install fzf` / `apt install fzf`) |
 
 Check everything at once:
 

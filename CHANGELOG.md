@@ -9,23 +9,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 - **`fwf dash` — a k9s-style captain dashboard** (#40). A persistent,
   deterministic surface that splits the captain's two jobs: judgment stays in
-  the chat session; state display + decision ergonomics move here. Opens a
-  dedicated tmux window — a top pane looping a status board (roles, pipeline,
-  prod) and a bottom fzf **decision inbox** of human-gated issues. The data is
-  **derived first**, so the dashboard works with the factory parked: roles from
-  tmux pane state, pipeline from git branch deltas, the decision queue from the
-  label protocol (open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting the
-  human). The captain's tick MAY write
-  `~/.fun-with-friends/state/<profile>/status.json` (prod/pipeline/per-role
-  detail/recommendations + release decisions); the board overlays it when fresh
-  and degrades gracefully when it is stale or absent. Actions route through the
-  same `fwf issues` abstraction, so the **gh and local backends behave
-  identically**: `y` un-gates (removes `product-wip`) + posts the standard
-  go-ahead, `n` rejects, `c` comments, `o` opens; `r`/`s` wrap
+  the chat session; state display + decision ergonomics move here. It is a
+  **single [fzf](https://github.com/junegunn/fzf) surface** — the status board
+  (roles, pipeline, prod) is the fzf header, the issue is the preview, and a
+  **decision inbox** of human-gated issues is the list. `--disabled` makes every
+  key a real binding (no fuzzy field to swallow `j`/`k`), a persistent legend +
+  `?` overlay make it usable without docs, and one pane means it nests cleanly
+  inside any tmux with no focus problem and never flickers. The data is
+  **derived first**, so it works with the factory parked: roles from tmux pane
+  state, pipeline from git branch deltas, the decision queue from the label
+  protocol (open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting the human).
+  The captain's tick MAY write `~/.fun-with-friends/state/<profile>/status.json`
+  (prod/pipeline/per-role detail/recommendations + release decisions); the board
+  overlays it when fresh and degrades gracefully when it is stale or absent.
+  Actions route through the same `fwf issues` abstraction, so the **gh and local
+  backends behave identically**: `y` un-gates (removes `product-wip`) + posts the
+  standard go-ahead, `n` rejects, `c` comments, `o` opens; `r`/`s` wrap
   `fwf-respawn.sh`/`fwf-stop.sh`; `t` send-keys a one-liner to the captain pane
   without leaving the dashboard. An all-issues tab (F2) and a roles tab (F3) sit
   beside the inbox. No daemon, no LLM in the read or button path; one new dep
-  (fzf). `FWF_DASH_DRYRUN=1` prints the constructed command instead of running
+  (`fzf`). `FWF_DASH_DRYRUN=1` prints the constructed command instead of running
   it. Schema + keys documented in `docs/dash.md`.
 
 ## [0.6.3] - 2026-06-12

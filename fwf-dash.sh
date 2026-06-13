@@ -21,13 +21,19 @@
 # as if the human had typed in the issue. r/s wrap fwf-respawn.sh/fwf-stop.sh; `t`
 # send-keys a one-liner to the captain pane without leaving the dashboard.
 #
-# Subcommands (the launcher wires the interactive panes to the rest):
-#   (default)         open the TUI: a tmux window, status-board loop + fzf inbox
-#   board             render the status board once (top pane loops this)
-#   decisions         emit the decision-inbox rows (TSV id<TAB>flags<TAB>title)
-#   issues            emit every open issue (the issues tab), same row shape
-#   roles             emit the role roster (TSV role<TAB>state<TAB>detail)
-#   preview <id>      render one issue (body + thread) for the fzf preview / pager
+# The dash is a SINGLE fzf surface (issue #40 UAT): the board is the fzf header
+# (atomic repaint — no flicker), the issue is the preview, and `--disabled` makes
+# every printable key a binding (no fuzzy field to swallow j/k). One pane ⇒ no
+# nested-tmux focus problem. The subcommands below are what the fzf binds call:
+#   (default)         open the dash (the fzf surface)
+#   board             render the full status board once (standalone glance)
+#   header <view>     the compact 3-line header fzf shows (board + key legend)
+#   keys              the `?` help overlay (key reference)
+#   decisions         decision-inbox rows  — TSV "issue#<TAB>display"
+#   issues            all open issues (the issues tab), same row shape
+#   roles             role roster (raw: role<TAB>state<TAB>detail) for board/header
+#   roles-view        roles tab rows for the inbox — TSV "role<TAB>display"
+#   preview <key>     render one issue (body + thread) for the fzf preview / pager
 #   act <verb> [args] perform an action (see `act` below) — the button path
 #   help
 set -euo pipefail
@@ -43,8 +49,6 @@ die() { echo "fwf dash: $*" >&2; exit 1; }
 STATE_DIR="$FWF_RUN/state/$PROFILE"
 STATUS_JSON="$STATE_DIR/status.json"
 DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"   # captain ticks every CAPTAIN_INTERVAL (2m); 90s = "this tick"
-DASH_REFRESH="${FWF_DASH_REFRESH:-5}"          # board redraw cadence (s); each redraw re-derives the
-                                               # decision count, so keep it gentle on the gh API backend
 
 # Portable mtime: GNU stat (-c %Y) first so the BSD fallback (-f %m) is never
 # called on Linux (where -f means --file-system and outputs unrelated text).
@@ -126,17 +130,22 @@ has_gv_signoff() { # $1=number
 }
 
 # --- views ------------------------------------------------------------------
+# Every view emits "KEY<TAB>DISPLAY": fzf hides field 1 (--with-nth=2..) and acts on
+# it ({1}); field 2 is the human row. Decisions/issues key on the issue number,
+# roles on the role tag.
+#
 # Decision inbox: derived gated items (open + WIP_LABEL + GV-SIGNOFF) enriched with
 # the captain's recommendation from status.json when fresh, PLUS any non-issue
 # decisions the captain queued (e.g. a release) that have no gated issue of their own.
 cmd_decisions() {
-  local num title rec
+  local num title rec flags
   while IFS="$(printf '\t')" read -r num title; do
     [ -n "$num" ] || continue
     has_gv_signoff "$num" || continue
     rec=""
     status_fresh && rec="$(status_q ".decisions[]? | select((.issue|tostring)==\"$num\") | .recommendation // \"\"")"
-    printf '%s\t%s\t%s\n' "$num" "$(_flagcol "GV ✓✓" "$rec")" "$title"
+    flags="$(_flagcol "GV ✓✓" "$rec")"
+    printf '%s\t#%-5s %s%s\n' "$num" "$num" "$title" "${flags:+   ·   $flags}"
   done <<EOF
 $(list_open "$WIP_LABEL")
 EOF
@@ -145,33 +154,41 @@ EOF
     status_q '.decisions[]? | select((.kind // "")=="release") | [(.id // "REL"), (.gv // ""), .title] | @tsv' \
       | while IFS="$(printf '\t')" read -r id gv title; do
           [ -n "${id:-}" ] || continue
-          printf '%s\t%s\t%s\n' "$id" "$(_flagcol "$gv" "")" "$title"
+          printf '%s\t%-6s %s%s\n' "$id" "$id" "$title" "${gv:+   ·   $gv}"
         done
   fi
 }
 
-# A compact "flags" column: "GV ✓✓   captain: ship". Kept narrow for the inbox row.
+# A compact "flags" column: "GV ✓✓ · captain: ship". Kept narrow for the inbox row.
 _flagcol() { # $1=gv-marker $2=recommendation
   local out="${1:-}"
   [ -n "${2:-}" ] && out="${out:+$out · }captain: $2"
   printf '%s' "$out"
 }
 
-# Issues tab: every open issue (not just gated ones), same row shape so the same
-# open/comment keys work. The flags column marks gated issues — the gated set is
-# derived ONCE (jq-free) from the label filter, not per-issue.
+# Issues tab: every open issue (not just gated ones), same open/comment keys. Gated
+# issues are marked; the gated set is derived ONCE (jq-free) from the label filter.
 cmd_issues() {
-  local nl gated num title flag
+  local nl gated num title mark
   nl=$'\n'   # a literal newline ($(printf '\n') would be stripped to empty)
   gated="$nl$(list_open "$WIP_LABEL" | cut -f1)$nl"
   while IFS="$(printf '\t')" read -r num title; do
     [ -n "$num" ] || continue
-    flag=""
-    case "$gated" in *"$nl$num$nl"*) flag="gated";; esac
-    printf '%s\t%s\t%s\n' "$num" "$flag" "$title"
+    mark=""
+    case "$gated" in *"$nl$num$nl"*) mark="⚑ gated · ";; esac
+    printf '%s\t#%-5s %s%s\n' "$num" "$num" "$mark" "$title"
   done <<EOF
 $(list_open "")
 EOF
+}
+
+# Roles VIEW for the inbox tab: "role<TAB>display" so r/s act on field 1 while the
+# role name stays visible in the row (cmd_roles keeps the raw board shape for the
+# board/header/tests).
+cmd_roles_view() {
+  cmd_roles | while IFS="$(printf '\t')" read -r role state detail; do
+    printf '%s\t%-10s %-7s %s\n' "$role" "$role" "$state" "$detail"
+  done
 }
 
 # Roles roster: derived liveness (● up / ○ down) from tmux pane state, overlaid with
@@ -201,32 +218,97 @@ cmd_roles() {
   done
 }
 
-# --- the status board (top pane) --------------------------------------------
-# A single deterministic render: a header (profile · template · prod · freshness),
-# the role roster, the pipeline line, and the decision count. The top pane loops it.
-cmd_board() {
-  local prod pipeline parked ndec stamp
-  prod="—"; pipeline="—"
+# --- the status board -------------------------------------------------------
+# Shared board data as "prod<TAB>stamp<TAB>pipeline": the status.json overlay when
+# fresh, else derived. One source so the full board and the dash header never drift.
+board_fields() {
+  local prod pipeline stamp
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
     stamp="status.json ✓"
   else
-    pipeline="$(derive_pipeline)"
+    prod="—"; pipeline="$(derive_pipeline)"
     stamp="$([ -f "$STATUS_JSON" ] && echo 'status.json stale' || echo 'derived')"
   fi
+  printf '%s\t%s\t%s\n' "$prod" "$stamp" "$pipeline"
+}
+
+# A one-line roster glance ("3 live · 0 idle · 7 down") for the compact header.
+_roles_glance() {
+  local live=0 idle=0 down=0 st
+  while IFS="$(printf '\t')" read -r _ st _; do
+    case "$st" in *live*) live=$((live+1));; *idle*) idle=$((idle+1));; *) down=$((down+1));; esac
+  done <<EOF
+$(cmd_roles)
+EOF
+  printf '%s live · %s idle · %s down' "$live" "$idle" "$down"
+}
+
+# The full board (profile · prod · the role roster · pipeline · decision count) —
+# rendered ONCE, never in a clear-loop. Useful standalone (`fwf dash board`); the
+# interactive dash uses the compact `header` instead so fzf owns the screen.
+cmd_board() {
+  local prod stamp pipeline parked ndec
+  IFS="$(printf '\t')" read -r prod stamp pipeline <<EOF
+$(board_fields)
+EOF
   parked=""
   [ -f "$STOP_FILE" ] && parked="  · ⏸ PARKED (STOP)"
   ndec="$(cmd_decisions | grep -c . || true)"
 
   printf 'fwf · %s · %s    prod %s · %s%s\n' "$PROFILE" "$FWF_TEMPLATE" "$prod" "$stamp" "$parked"
-  printf '\n'
-  printf 'ROLES\n'
+  printf '\nROLES\n'
   cmd_roles | while IFS="$(printf '\t')" read -r role state detail; do
     printf '  %-10s %-7s %s\n' "$role" "$state" "$detail"
   done
   printf '\nPIPELINE  %s\n' "$pipeline"
-  printf '\nDECISIONS (%s)  — switch to the inbox below: j/k move · enter open · y/n/c/o · r/s roles · t captain\n' "$ndec"
+  printf '\nDECISIONS (%s)\n' "$ndec"
+}
+
+# The COMPACT header the interactive dash shows above the inbox: three lines —
+# identity + prod, a roster glance + pipeline, and a context-sensitive key legend.
+# fzf repaints it atomically (transform-header on each action), so it never flickers.
+cmd_header() { # $1 = active view (decisions|issues|roles)
+  local view="${1:-decisions}" prod stamp pipeline parked legend
+  IFS="$(printf '\t')" read -r prod stamp pipeline <<EOF
+$(board_fields)
+EOF
+  parked=""; [ -f "$STOP_FILE" ] && parked="  ·  ⏸ PARKED"
+  case "$view" in
+    issues) legend='j/k move · ↵ preview · c comment · o open · F1 decisions · F3 roles · ? help · q quit';;
+    roles)  legend='j/k move · r respawn · s stop(swarm) · t captain · F1 decisions · F2 issues · ? help · q quit';;
+    *)      legend='j/k move · y approve · n reject · c comment · o open · t captain · F2 issues · F3 roles · ? help · q quit';;
+  esac
+  printf 'fwf · %s · %s   ·   prod %s · %s%s\n' "$PROFILE" "$FWF_TEMPLATE" "$prod" "$stamp" "$parked"
+  printf 'roles %s   ·   pipeline %s\n' "$(_roles_glance)" "$pipeline"
+  printf '%s' "$legend"
+}
+
+# The `?` help overlay (shown in the preview pane; any cursor move restores the
+# issue preview). One screen, so a first-timer never needs docs/dash.md.
+cmd_keys() {
+  cat <<'KEYS'
+  fwf dash — keys
+
+  MOVE      j / ↓   down        k / ↑   up
+            the preview follows the cursor
+
+  DECISIONS & ISSUES
+    y  approve   un-gate (remove the WIP label) + post the go-ahead
+    n  reject    post a "needs changes" comment; the issue stays gated
+    c  comment   type a comment and post it
+    o  open      browser (gh backend) / pager (local backend)
+
+  ROLES
+    r  respawn   restart the role under the cursor
+    s  stop      swarm-wide graceful stop (resumable)
+
+  ANY VIEW
+    t  captain   send a one-line message to the captain pane
+    F1/F2/F3     switch to decisions / issues / roles
+    ctrl-r       refresh now      ? this help      q / esc  quit
+KEYS
 }
 
 # Pipeline derived from the TARGET repo's branch deltas (best-effort; the captain's
@@ -243,9 +325,12 @@ derive_pipeline() {
 }
 
 # --- preview / pager --------------------------------------------------------
-cmd_preview() { # $1=id
+cmd_preview() { # $1=row key (issue number, a role tag, or a release id)
   local n; n="$(issue_num "${1:-}")"
-  [ -n "$n" ] || { echo "(no issue selected)"; return 0; }
+  case "$n" in
+    '') echo "(nothing selected)"; return 0;;
+    *[!0-9]*) echo "(no issue body for this row — keys: ? for help)"; return 0;;  # role / release rows
+  esac
   di_read view "$n" --comments 2>/dev/null || echo "(could not load issue $n)"
 }
 
@@ -314,82 +399,57 @@ cmd_act() {
 }
 
 # --- the interactive launcher (default) -------------------------------------
-# A dedicated tmux window: a top status-board pane on a plain refresh loop, and a
-# bottom fzf inbox whose preview is the issue body and whose keybinds are the
-# actions. fzf's reload keeps the inbox live; nothing here is a daemon. Tabs switch
-# the inbox between decisions / issues / roles.
+# ONE fzf surface (issue #40 UAT). The board is the fzf HEADER — repainted
+# atomically by fzf, never a clear-loop, so it cannot flicker. The issue is the
+# PREVIEW. `--disabled` turns OFF fuzzy typing, so every printable key is a real
+# binding (j/k/y/n/c/o/r/s/t/?) — input can never land in a filter field as
+# garbage. One pane ⇒ no nested-tmux focus problem: fzf is a single fullscreen app,
+# `q` returns you to the shell. Run it in whatever pane/window/terminal you like.
+#
+# transform-header re-renders the board after each action and on every move
+# (the `focus` bind), so the board tracks state without a daemon; ctrl-r forces it.
+# Prompts (c/t) are read inside `act` from /dev/tty, which fzf's execute() restores.
 cmd_launch() {
-  command -v fzf >/dev/null 2>&1 || die "the dashboard needs fzf (brew/apt install fzf)"
-  command -v tmux >/dev/null 2>&1 || die "the dashboard needs tmux"
+  command -v fzf >/dev/null 2>&1 || die "the dashboard needs fzf — see docs/dash.md (brew install fzf / apt install fzf)"
+  local D="$DIR/fwf-dash.sh" tab
+  tab="$(printf '\t')"
+  # Children spawned by fzf binds inherit the resolved context, so the binds call
+  # this script plainly — no per-bind env prefix, no nested quoting.
+  export FWF_PROFILE="$PROFILE" FWF_RUN_DIR="$FWF_RUN" FWF_ISSUES="$FWF_ISSUES" FWF_TEMPLATE="$FWF_TEMPLATE"
 
-  # Materialize the two pane commands as small scripts under the run dir (rewritten
-  # each launch, so nothing leaks and nothing is stale). tmux then just runs
-  # `bash <script>` — no giant double-quoted command strings to mis-escape — and the
-  # scripts EXPORT the resolved context so every fzf bind can call this script plainly
-  # (no per-bind profile prefix, no nested $()). Prompts are read inside `act` from
-  # /dev/tty, which fzf's execute() makes available.
-  local rundir="$FWF_RUN/dash/$PROFILE"
-  mkdir -p "$rundir"
-  local board="$rundir/board.sh" inbox="$rundir/inbox.sh"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf "export FWF_PROFILE=%s FWF_RUN_DIR=%s FWF_ISSUES=%s FWF_TEMPLATE=%s\n" \
-      "$(_q "$PROFILE")" "$(_q "$FWF_RUN")" "$(_q "$FWF_ISSUES")" "$(_q "$FWF_TEMPLATE")"
-    printf "while :; do clear; %s board; sleep %s; done\n" "$(_q "$DIR/fwf-dash.sh")" "$DASH_REFRESH"
-  } > "$board"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf "export FWF_PROFILE=%s FWF_RUN_DIR=%s FWF_ISSUES=%s FWF_TEMPLATE=%s\n" \
-      "$(_q "$PROFILE")" "$(_q "$FWF_RUN")" "$(_q "$FWF_ISSUES")" "$(_q "$FWF_TEMPLATE")"
-    printf 'D=%s\n' "$(_q "$DIR/fwf-dash.sh")"
-    cat <<'INBOX'
-HDR_D='DECISIONS · enter preview · y approve · n reject · c comment · o open · F2 issues · F3 roles · t captain'
-HDR_I='ISSUES (all open) · enter preview · c comment · o open · F1 decisions · F3 roles'
-HDR_R='ROLES · r respawn · s stop (swarm) · F1 decisions · F2 issues'
-"$D" decisions | fzf --ansi --delimiter=$'\t' --with-nth=2.. --header="$HDR_D" \
-  --preview="$D preview {1}" --preview-window=right,58%,wrap \
-  --bind="y:execute-silent($D act approve {1})+reload($D decisions)" \
-  --bind="n:execute($D act reject {1})+reload($D decisions)" \
-  --bind="c:execute($D act comment {1})" \
-  --bind="o:execute($D act open {1})" \
-  --bind="r:execute-silent($D act respawn {1})+reload($D roles)" \
-  --bind="s:execute($D act stop)" \
-  --bind="t:execute($D act passthrough)" \
-  --bind="f1:reload($D decisions)+change-header($HDR_D)" \
-  --bind="f2:reload($D issues)+change-header($HDR_I)" \
-  --bind="f3:reload($D roles)+change-header($HDR_R)" \
-  --bind="ctrl-r:reload($D decisions)"
-INBOX
-  } > "$inbox"
-
-  if [ -n "${TMUX:-}" ]; then
-    # Inside tmux already (the coord session): a dedicated window, board pane on top.
-    tmux new-window -n "fwf-dash" "bash '$inbox'"
-    tmux split-window -v -b -l '38%' "bash '$board'"
-    tmux select-pane -D
-  else
-    # Standalone: a throwaway session that closes when you quit the inbox (q/Esc).
-    local sess="fwf-dash-$PROFILE"
-    tmux has-session -t "$sess" 2>/dev/null && exec tmux attach -t "$sess"
-    tmux new-session -d -s "$sess" "bash '$board'"
-    tmux split-window -t "$sess" -v -l '62%' "bash '$inbox'"
-    tmux select-pane -t "$sess" -D
-    exec tmux attach -t "$sess"
-  fi
+  "$D" decisions | fzf \
+    --ansi --disabled --no-sort --layout=reverse --header-first --cycle \
+    --delimiter="$tab" --with-nth='2..' \
+    --prompt='decisions ▸ ' --pointer='▶' \
+    --header="$("$D" header decisions)" \
+    --preview="$D preview {1}" --preview-window='right,55%,wrap,border-left' \
+    --bind='j:down,k:up,ctrl-n:down,ctrl-p:up,g:first,G:last' \
+    --bind="y:execute-silent($D act approve {1})+reload($D decisions)+transform-header($D header decisions)" \
+    --bind="n:execute($D act reject {1})+reload($D decisions)+transform-header($D header decisions)" \
+    --bind="c:execute($D act comment {1})+refresh-preview" \
+    --bind="o:execute($D act open {1})" \
+    --bind="r:execute-silent($D act respawn {1})+reload($D roles-view)+transform-header($D header roles)" \
+    --bind="s:execute($D act stop)+transform-header($D header roles)" \
+    --bind="t:execute($D act passthrough)" \
+    --bind="f1:reload($D decisions)+change-prompt(decisions ▸ )+transform-header($D header decisions)" \
+    --bind="f2:reload($D issues)+change-prompt(issues ▸ )+transform-header($D header issues)" \
+    --bind="f3:reload($D roles-view)+change-prompt(roles ▸ )+transform-header($D header roles)" \
+    --bind="?:preview($D keys)" \
+    --bind="ctrl-r:reload($D decisions)+transform-header($D header decisions)" \
+    || true   # q/esc exit non-zero; that is a normal quit, not a failure
 }
-
-# Single-quote a value for safe embedding in a generated script (closes/reopens
-# around any embedded single quote).
-_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # --- dispatch ---------------------------------------------------------------
 cmd="${1:-launch}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
   launch|"")  cmd_launch "$@";;
   board)      cmd_board "$@";;
+  header)     cmd_header "$@";;
+  keys)       cmd_keys "$@";;
   decisions)  cmd_decisions "$@";;
   issues)     cmd_issues "$@";;
   roles)      cmd_roles "$@";;
+  roles-view) cmd_roles_view "$@";;
   preview)    cmd_preview "$@";;
   act)        cmd_act "$@";;
   help|-h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//';;

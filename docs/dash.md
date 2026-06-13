@@ -11,25 +11,48 @@ keystroke. `fwf dash` is that second surface.
 fwf [--profile NAME] dash
 ```
 
-It opens a dedicated tmux window (a new window in the coordination session when
-you launch it from inside one; a throwaway standalone session otherwise):
+It is a **single [fzf](https://github.com/junegunn/fzf) surface** that takes over
+the terminal you run it in (run it in its own pane/window/terminal to keep your
+captain chat visible; `q` returns you to the shell):
 
 ```
-┌ fwf · transom · dev ──────────── prod v0.16.0 ✓ · status.json ✓ ┐
-│ ROLES    impl1 ● live   #441 auth refactor                      │
-│          qa1   ● live   #438 gating                             │
-│ PIPELINE staging +3 ahead · integration clean · main = prod     │
-├ DECISIONS · y approve · n reject · c comment · o open · t captain┤
-│ ▶ #384  un-gate: KB folder merge      GV ✓✓ · captain: ship      │
-│   REL   release v0.17.0 → main        gate ✓                     │
-└──────────────────────────────────────────────────────────────────┘
+ fwf · transom · dev   ·   prod v0.16.0 ✓ · status.json ✓
+ roles 3 live · 0 idle · 7 down   ·   pipeline staging +3 ahead · integration clean · main = prod
+ j/k move · y approve · n reject · c comment · o open · t captain · F2 issues · F3 roles · ? help · q quit
+ decisions ▸                                    ┌───────────────────────────────────┐
+ ▶ #384  un-gate: KB folder merge   ·  GV ✓✓    │ # un-gate: KB folder merge         │
+   #333  un-gate: graph v2 backlinks · GV ✓✓    │ labels: product-wip               │
+   REL   release v0.17.0 → main      ·  gate ✓  │                                   │
+                                                │ Merge the KB folders into one …   │
+                                                └───────────────────────────────────┘
 ```
 
-Top pane: a plain refresh loop rendering the status board. Bottom pane: an
-[fzf](https://github.com/junegunn/fzf) decision inbox whose preview is the issue
-body and whose keybinds are the actions. No daemon, no LLM in the read path or
-the button path — `fzf` and `tmux` are the only dependencies beyond what the
-factory already needs.
+The **board is the fzf header** (top three lines: identity + prod, a roster glance
++ pipeline, and a context key legend). The **issue is the preview**. There is no
+second pane and no refresh loop, so:
+
+- **No flicker.** fzf repaints the whole surface atomically; the header is
+  re-rendered (via `transform-header`) only on an action, a tab switch, or
+  `ctrl-r` — never in a `clear`-and-reprint loop.
+- **One input surface.** fzf runs with `--disabled` (no fuzzy-search field), so
+  every printable key is a real binding — `j`/`k` move, `y`/`n`/`c`/`o` act,
+  nothing lands as garbage in a filter. A persistent key legend lives in the
+  header and `?` opens a full help overlay; a first-timer never needs this doc.
+- **Nesting is a non-issue.** One fullscreen app has no inner panes to switch
+  focus between, so it behaves the same whether or not you are inside (an outer)
+  tmux. No daemon, no LLM in the read path or the button path — `fzf` is the only
+  dependency beyond what the factory already needs.
+
+## Setup
+
+- **`fzf` must be installed** (`brew install fzf` / `apt install fzf`). It is the
+  one dependency the dashboard adds beyond the factory's; `fwf dash` errors with a
+  clear message if it is missing.
+- The dash reads the profile like every `fwf` command, so it needs
+  `profiles/<name>.sh` to resolve. A profile written by `fwf init`/`fwf start`
+  lives in *that* install's `profiles/` dir — a **fresh clone or git worktree of
+  the fwf repo has only `profiles/example.sh`**, so run the dash from your real
+  install (or copy the profile in / pass `--profile`).
 
 ## Derived first
 
@@ -98,12 +121,11 @@ the prod field and leaves the rest derived.
 
 ## Keys
 
-The inbox is the interactive surface; the board pane is display-only.
+The legend is always visible in the header, and `?` opens this as an overlay.
 
 | Key | Decisions / Issues view | Roles view |
 |---|---|---|
-| `j` / `k`, arrows | move | move |
-| `enter` | preview the full issue (right pane) | — |
+| `j` / `k`, `↓` / `↑`, `g` / `G` | move (the preview follows the cursor) | move |
 | `y` | **approve** — remove `product-wip` + post the standard go-ahead | — |
 | `n` | **reject** — post a "needs changes" comment, stay gated | — |
 | `c` | **comment** — prompts for text, posts it | — |
@@ -112,8 +134,7 @@ The inbox is the interactive surface; the board pane is display-only.
 | `s` | — | **stop** — swarm-wide graceful halt (`fwf-stop.sh`) |
 | `t` | **captain passthrough** — prompts, then send-keys to the captain pane | (same) |
 | `F1` / `F2` / `F3` | switch to Decisions / Issues / Roles | (same) |
-| `ctrl-r` | force a reload | — |
-| `q` / `esc` | quit | quit |
+| `?` | help overlay · `ctrl-r` force refresh · `q` / `esc` quit | (same) |
 
 ## Actions go through the tracker
 
@@ -142,7 +163,6 @@ assert against.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `FWF_DASH_REFRESH` | `5` | Board redraw cadence (seconds). Each redraw re-derives the decision count (one issue read per gated draft), so on the **gh** backend keep this gentle to stay clear of API rate limits; on the local store it is free. |
 | `FWF_DASH_STALE_SECS` | `90` | How fresh `status.json` must be (by mtime) to overlay it. |
 | `FWF_DASH_DRYRUN` | `0` | When `1`, `act` prints the command instead of running it. |
 | `PAGER` | `less -R` | Pager for `o` on the local backend. |
