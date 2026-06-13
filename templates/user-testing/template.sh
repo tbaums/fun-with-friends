@@ -23,7 +23,12 @@
 # FWF_UT_ALLOW_TARGET=1). Designed for the default `gh` issue backend, so the
 # researcher can read the target's tracker for cross-referencing AFTER sessions.
 FWF_TEMPLATE_BASE="dev"
-FWF_PAIRS="${FWF_PAIRS:-3}"                                   # 3 personas
+# FWF_UT_MODE=deep runs all 9 archetypes; default quick-gate runs 3.
+if [ "${FWF_UT_MODE:-}" = "deep" ]; then
+  FWF_PAIRS="${FWF_PAIRS:-9}"
+else
+  FWF_PAIRS="${FWF_PAIRS:-3}"
+fi
 FWF_SUPPRESS_ROLES="${FWF_SUPPRESS_ROLES:-qa conductor gv}"   # no gate pipeline
 FWF_NO_WORKTREE_ROLES="${FWF_NO_WORKTREE_ROLES:-impl}"        # personas are source-blind
 

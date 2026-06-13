@@ -450,7 +450,7 @@ fwf_all_roles() {
 # is appended BEFORE substitution, so addenda are written in the same gh-shaped
 # conventions and stay uniform with the main prompt.
 fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
-  local tmpl="$1" id="${2:-}" text devui addendum
+  local tmpl="$1" id="${2:-}" text devui addendum _utp _utn=0 _utpanes=""
   text="$(cat "$tmpl")"
   if [ "$FWF_ISSUES" = "local" ]; then
     addendum="$FWF_LIB_DIR/templates/_local-issues/$(basename "$tmpl")"
@@ -478,6 +478,14 @@ $(cat "$addendum")"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
   text="${text//__UT_ROOT__/$(fwf_ut_root)}"          # user-testing: shared evidence + findings-report root
+  # user-testing: count + tags of the live persona panes, so the captain/researcher
+  # prompts read correctly whether a quick gate (3) or a deep sweep (e.g. 8) is running.
+  for _utp in "${PAIRS[@]}"; do
+    fwf_role_suppressed "impl$_utp" && continue
+    _utn=$((_utn+1)); _utpanes="${_utpanes:+$_utpanes, }impl$_utp"
+  done
+  text="${text//__UT_PERSONA_COUNT__/$_utn}"
+  text="${text//__UT_PERSONA_PANES__/$_utpanes}"
   if [ "$FWF_ISSUES" = "local" ]; then
     text="${text//gh issue /fwf --profile $PROFILE issues }"
     text="${text//#</LI-<}"
