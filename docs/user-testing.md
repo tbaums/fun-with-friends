@@ -40,7 +40,11 @@ claude mcp list        # expect a 'playwright' entry
 
 `fwf provision` and `fwf up` run a **preflight** for the `user-testing` template:
 if the `playwright` MCP is not registered they print these exact commands and
-keep going (a warning, never a block). To have provision install it for you:
+keep going (a warning, never a block). The preflight reads the MCP registry from
+your config (`~/.claude.json` `mcpServers`, override with `CLAUDE_CONFIG`) — NOT
+a live `claude mcp list` probe — so a server that is registered but momentarily
+unconnectable does not false-alarm as "missing". To have provision install it
+for you:
 
 ```bash
 FWF_UT_SETUP_BROWSER=1 fwf --profile <p> provision

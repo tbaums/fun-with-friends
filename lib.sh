@@ -267,24 +267,44 @@ fwf_ut_browser_setup_cmds() {
   printf '  npx playwright install %s\n' "$UT_BROWSER"
   printf '  claude mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser %s\n' "$UT_BROWSER"
 }
+# Is the browser MCP REGISTERED? Read the CONFIG directly (~/.claude.json user
+# mcpServers) — NOT a live `claude mcp list` probe. The probe opens a connection
+# to each server, so a registered-but-momentarily-unconnectable MCP reads as
+# "not registered" — a false-negative that scares the operator into a needless
+# re-install (observed during a wide sweep: the MCP was ✔ Connected yet the probe
+# said missing). The config is authoritative for "registered"; connectivity is a
+# separate, transient concern. Generous on purpose: the server name as an
+# mcpServers key ANYWHERE in the config (user scope or any project) counts.
+# Overridable for tests: CLAUDE_CONFIG (path) and UT_BROWSER_MCP_NAME (server name).
+fwf_ut_browser_mcp_registered() {
+  local cfg="${CLAUDE_CONFIG:-$HOME/.claude.json}" name="${UT_BROWSER_MCP_NAME:-playwright}"
+  [ -f "$cfg" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    jq -e --arg n "$name" \
+      '((.mcpServers // {}) | has($n)) or ([.projects[]?.mcpServers // {} | has($n)] | any)' \
+      "$cfg" >/dev/null 2>&1
+    return
+  fi
+  # jq-less fallback: the server name present as a JSON key in the operator's own
+  # config. Coarse but fail-SAFE — it errs toward "registered" (no false alarm).
+  grep -q "\"$name\"[[:space:]]*:" "$cfg"
+}
 # Browser-MCP preflight for the user-testing factory (issue #42). Personas drive a
 # real browser through the Playwright MCP ("hands, not a test framework"); trial
 # one could not launch until this was wired by hand. So the factory now checks:
-# WARNS (fail-open) with the exact setup if the MCP is missing — or, with
+# WARNS (fail-open) with the exact setup if the MCP is not registered — or, with
 # FWF_UT_SETUP_BROWSER=1, installs it. No-op for every other template.
 fwf_ut_browser_preflight() {
   [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
+  fwf_ut_browser_mcp_registered && return 0
   local claude_bin; claude_bin="${CLAUDE_CMD%% *}"
-  if command -v "$claude_bin" >/dev/null 2>&1 && "$claude_bin" mcp list 2>/dev/null | grep -qi playwright; then
-    return 0
-  fi
   if [ "${FWF_UT_SETUP_BROWSER:-0}" = "1" ] && command -v npx >/dev/null 2>&1 && command -v "$claude_bin" >/dev/null 2>&1; then
     echo "fwf user-testing: installing the Playwright browser MCP (browser=$UT_BROWSER)…" >&2
     npx playwright install "$UT_BROWSER" 1>&2 || true
     "$claude_bin" mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser "$UT_BROWSER" 1>&2 || true
     return 0
   fi
-  echo "fwf user-testing: the Playwright browser MCP ('playwright') is not registered — personas would have no hands." >&2
+  echo "fwf user-testing: the Playwright browser MCP ('${UT_BROWSER_MCP_NAME:-playwright}') is not registered in ${CLAUDE_CONFIG:-$HOME/.claude.json} — personas would have no hands." >&2
   echo "fwf user-testing: set it up once (browser defaults to '$UT_BROWSER'; override with UT_BROWSER), then re-run:" >&2
   fwf_ut_browser_setup_cmds >&2
   echo "fwf user-testing: or re-run provision with FWF_UT_SETUP_BROWSER=1 to install it automatically. See docs/user-testing.md." >&2
