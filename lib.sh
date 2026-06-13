@@ -54,6 +54,32 @@ fwf_extra_interval() { local e; e="$(fwf_extra_entry "$1")" || return 1; e="${e#
 fwf_extra_color()    { local e rest; e="$(fwf_extra_entry "$1")" || return 1
   rest="${e#*:*:*:}"; if [ "$rest" = "$e" ]; then echo "colour208"; else echo "$rest"; fi; }
 
+# Roster shaping a template (or profile/env) declares — both default empty, so
+# every existing template is byte-for-byte unaffected (the helpers short-circuit
+# on an empty list). Lists are space-separated and match a role by its exact tag
+# (conductor, gv, pm) OR by family (impl → every implN, qa → every qaN).
+#
+#   FWF_SUPPRESS_ROLES     roles the engine must NOT launch/provision/arm. The
+#                          user-testing template suppresses "qa conductor gv" so
+#                          the floor is exactly 3 personas + researcher + captain.
+#   FWF_NO_WORKTREE_ROLES  roles that get NO git worktree — only a throwaway
+#                          scratch dir. The user-testing personas are source-blind
+#                          by construction: "impl" here means they never receive a
+#                          checkout of the target's source, just a browser.
+FWF_SUPPRESS_ROLES="${FWF_SUPPRESS_ROLES:-}"
+FWF_NO_WORKTREE_ROLES="${FWF_NO_WORKTREE_ROLES:-}"
+_fwf_role_in_list() { # $1=role tag  $2=space-separated tags/families → rc 0 if it matches
+  local r fam="$1"
+  case "$1" in impl*) fam=impl;; qa*) fam=qa;; esac
+  for r in $2; do
+    [ "$r" = "$1" ] && return 0
+    [ "$r" = "$fam" ] && return 0
+  done
+  return 1
+}
+fwf_role_suppressed()  { _fwf_role_in_list "$1" "$FWF_SUPPRESS_ROLES"; }
+fwf_role_no_worktree() { _fwf_role_in_list "$1" "$FWF_NO_WORKTREE_ROLES"; }
+
 # Resolve a role's prompt file: the template's own copy wins; otherwise fall
 # back to its FWF_TEMPLATE_BASE. Echoes the path; rc 1 (with a message) if
 # neither has it.
@@ -203,13 +229,122 @@ fwf_claude_cmd() { # $1=role
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
 wt_dir() { echo "$WT_BASE/${WT_PREFIX}-$1"; }
 
+# Shared scratch root for source-blind (worktree-less) roles: per-profile, OUTSIDE
+# any repo, so personas have a place for browser-driver plumbing and screenshot
+# evidence without ever touching the target's source tree. __UT_ROOT__ resolves here.
+fwf_ut_root() { echo "$FWF_RUN/ut/$PROFILE"; }
+
+# Working directory for a role's pane: its worktree, or — for a worktree-less
+# role (FWF_NO_WORKTREE_ROLES) — a throwaway per-role scratch dir, which is
+# created on demand so every `tmux … -c "$(fwf_role_cwd X)"` call site is safe
+# even if provision has not run. Idempotent.
+fwf_role_cwd() { # $1=role tag
+  if fwf_role_no_worktree "$1"; then
+    local d; d="$(fwf_ut_root)/$1"; mkdir -p "$d"; echo "$d"
+  else
+    wt_dir "$1"
+  fi
+}
+
+# Per-persona app URL (issue #42, trial-one learning). Trial one ran 3 personas
+# against ONE UT_APP_URL, so a shared backend bled cross-session artifacts between
+# them — the scorecard's #1 false-signal source. Give each persona its OWN app
+# instance: UT_APP_URL_<id> overrides the shared UT_APP_URL for persona <id>;
+# unset falls back to the shared URL. See docs/user-testing.md for the one-
+# instance-per-persona setup.
+fwf_ut_app_url() { # $1=persona id (empty -> shared)
+  local u="${UT_APP_URL:-}"
+  case "${1:-}" in [0-9]*) eval "u=\"\${UT_APP_URL_$1:-$u}\"";; esac
+  printf '%s' "$u"
+}
+
+# The browser engine the personas' Playwright MCP drives. Defaults to FIREFOX —
+# trial one validated on Firefox, and it is Jamie's browser. Override with UT_BROWSER.
+UT_BROWSER="${UT_BROWSER:-firefox}"
+# The exact one-time setup that wired the browser MCP for trial one — echoed by
+# the preflight and documented in docs/user-testing.md.
+fwf_ut_browser_setup_cmds() {
+  printf '  npx playwright install %s\n' "$UT_BROWSER"
+  printf '  claude mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser %s\n' "$UT_BROWSER"
+}
+# Browser-MCP preflight for the user-testing factory (issue #42). Personas drive a
+# real browser through the Playwright MCP ("hands, not a test framework"); trial
+# one could not launch until this was wired by hand. So the factory now checks:
+# WARNS (fail-open) with the exact setup if the MCP is missing — or, with
+# FWF_UT_SETUP_BROWSER=1, installs it. No-op for every other template.
+fwf_ut_browser_preflight() {
+  [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
+  local claude_bin; claude_bin="${CLAUDE_CMD%% *}"
+  if command -v "$claude_bin" >/dev/null 2>&1 && "$claude_bin" mcp list 2>/dev/null | grep -qi playwright; then
+    return 0
+  fi
+  if [ "${FWF_UT_SETUP_BROWSER:-0}" = "1" ] && command -v npx >/dev/null 2>&1 && command -v "$claude_bin" >/dev/null 2>&1; then
+    echo "fwf user-testing: installing the Playwright browser MCP (browser=$UT_BROWSER)…" >&2
+    npx playwright install "$UT_BROWSER" 1>&2 || true
+    "$claude_bin" mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser "$UT_BROWSER" 1>&2 || true
+    return 0
+  fi
+  echo "fwf user-testing: the Playwright browser MCP ('playwright') is not registered — personas would have no hands." >&2
+  echo "fwf user-testing: set it up once (browser defaults to '$UT_BROWSER'; override with UT_BROWSER), then re-run:" >&2
+  fwf_ut_browser_setup_cmds >&2
+  echo "fwf user-testing: or re-run provision with FWF_UT_SETUP_BROWSER=1 to install it automatically. See docs/user-testing.md." >&2
+  return 0
+}
+
+# Prod-target refusal for the user-testing factory (issue #42): a trial must run
+# only against an isolated scratch/UAT instance, never production. Fail-closed
+# ALLOW-LIST — anything that is not obviously a throwaway target is refused, so a
+# misconfigured profile can't point whacky personas at a live system. A human
+# can override one launch with FWF_UT_ALLOW_TARGET=1. No-op for other templates.
+# Returns 0 if the target is acceptable, 1 (with guidance on stderr) if refused.
+# Check ONE url against the scratch/UAT allow-list. rc 0 = acceptable, rc 1 =
+# refused (with guidance on stderr). Fail-CLOSED: anything not obviously a
+# throwaway target is refused, so a misconfigured profile can't point whacky
+# personas at a live system.
+_fwf_ut_guard_one() { # $1=url
+  local url="$1" host
+  host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"   # strip scheme, path, userinfo
+  case "$host" in "["*) host="${host%%]*}"; host="${host#[}";; *) host="${host%%:*}";; esac  # IPv6 [..]:port vs host:port
+  case "$host" in
+    localhost|127.*|0.0.0.0|::1|*.local|*.localhost|*.test) return 0;;
+    *uat*|*staging*|*scratch*|*sandbox*|*test*|*dev*)        return 0;;
+    *)
+      echo "fwf user-testing: REFUSING target '$url' (host '$host') — it does not look like a scratch/UAT instance." >&2
+      echo "fwf user-testing: trials run ONLY against an isolated UAT/scratch app — loopback, *.local/*.test, or a host containing uat/staging/test/scratch/sandbox/dev." >&2
+      echo "fwf user-testing: if this really IS a throwaway target, re-run with FWF_UT_ALLOW_TARGET=1." >&2
+      return 1;;
+  esac
+}
+# Guard the shared UT_APP_URL AND every per-persona UT_APP_URL_<id> override
+# (issue #42). A human can override ONE launch with FWF_UT_ALLOW_TARGET=1.
+# No-op for every other template.
+fwf_ut_guard_target() {
+  [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
+  if [ "${FWF_UT_ALLOW_TARGET:-0}" = "1" ]; then
+    echo "fwf user-testing: TARGET GUARD OVERRIDDEN (FWF_UT_ALLOW_TARGET=1) — you asserted the target(s) are scratch/UAT." >&2
+    return 0
+  fi
+  if [ -z "${UT_APP_URL:-}" ]; then
+    echo "fwf user-testing: UT_APP_URL is not set — personas have no app to drive." >&2
+    echo "fwf user-testing: set UT_APP_URL in your profile to a running UAT/scratch app (e.g. http://localhost:3939). Trials NEVER target prod." >&2
+    return 1
+  fi
+  local id u rc=0
+  _fwf_ut_guard_one "$UT_APP_URL" || rc=1
+  for id in "${PAIRS[@]}"; do      # per-persona overrides, if any are set
+    eval "u=\"\${UT_APP_URL_$id:-}\""
+    [ -n "$u" ] && { _fwf_ut_guard_one "$u" || rc=1; }
+  done
+  return "$rc"
+}
+
 # The canonical set of looped roles, one per line, in launch/arm order. Single
 # source of truth — fwf-up delivers prompts to these and fwf-resume re-arms them.
 fwf_all_roles() {
-  local id
-  for id in "${PAIRS[@]}"; do echo "impl$id"; done
-  for id in "${PAIRS[@]}"; do echo "qa$id"; done
-  echo conductor; echo pm; echo gv; echo captain
+  local id r
+  for id in "${PAIRS[@]}"; do fwf_role_suppressed "impl$id" || echo "impl$id"; done
+  for id in "${PAIRS[@]}"; do fwf_role_suppressed "qa$id"   || echo "qa$id";   done
+  for r in conductor pm gv captain; do fwf_role_suppressed "$r" || echo "$r"; done
   fwf_extra_names
 }
 
@@ -250,6 +385,8 @@ $(cat "$addendum")"
   text="${text//__E2E__/$E2E_CMD}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
+  text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
+  text="${text//__UT_ROOT__/$(fwf_ut_root)}"          # user-testing: shared evidence + findings-report root
   if [ "$FWF_ISSUES" = "local" ]; then
     text="${text//gh issue /fwf --profile $PROFILE issues }"
     text="${text//#</LI-<}"
@@ -317,11 +454,11 @@ fwf_create_role_pane() { # $1=role tag
   case "$role" in
     qa*)
       anchor="$(fwf_find_pane "$sess" "IMPL${role#qa} ·" || true)"
-      [ -n "$anchor" ] && pane=$(tmux split-window -v -P -F '#{pane_id}' -t "$anchor" -c "$(wt_dir "$role")");;
+      [ -n "$anchor" ] && pane=$(tmux split-window -v -P -F '#{pane_id}' -t "$anchor" -c "$(fwf_role_cwd "$role")");;
   esac
   if [ -z "$pane" ]; then
     anchor="$(tmux list-panes -t "$sess" -F '#{pane_id}' | tail -1)"
-    pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$anchor" -c "$(wt_dir "$role")")
+    pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$anchor" -c "$(fwf_role_cwd "$role")")
     [ "$sess" = "$COORD_SESSION" ] && tmux select-layout -t "$sess" even-horizontal >/dev/null
   fi
   tmux set -p -t "$pane" @c "$(fwf_role_color "$role")"

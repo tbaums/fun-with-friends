@@ -6,6 +6,52 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`user-testing` factory template** (#42). A versioned template whose instance
+  is 3 personas + 1 researcher + captain — whacky, unscripted, **source-blind**
+  users who drive the product like real humans (not like an LLM writing tests),
+  a researcher who dedupes their diaries into a ranked top-10 findings report,
+  and a captain who grades the trial against ground truth and gates which
+  findings graduate to real tickets.
+  - **Personas are structurally source-blind**: they get NO worktree — only a
+    browser (Playwright, used interactively as hands) against a profile-declared
+    `UT_APP_URL`, plus a throwaway scratch dir for diary + screenshot evidence.
+    An agent that has read the code can't un-know the intended flow, so the blind
+    run is enforced by construction, not just by prompt.
+  - **Persona contract**: character card + assigned goal (never a script),
+    EXPECT → ACT → OBSERVE think-aloud per step, a screenshot after every action,
+    at least one mobile-viewport persona, and a hard ban on writing test files or
+    assertions. The researcher writes a report doc for human grading (trial one
+    does not auto-file) and may read the target's tracker only AFTER sessions end.
+  - **Prod-target refusal**: a trial runs only against an isolated scratch/UAT
+    instance — fwf refuses a prod-looking `UT_APP_URL` (fail-closed allow-list;
+    a human overrides one launch with `FWF_UT_ALLOW_TARGET=1`).
+  - **Browser provisioning** (trial-one learning): personas drive a real browser
+    via a Playwright MCP. `fwf provision`/`up` now run a preflight for the
+    `user-testing` template — if the `playwright` MCP is missing they print the
+    exact one-time setup (`npx playwright install firefox` +
+    `claude mcp add playwright …`) and keep going, or install it with
+    `FWF_UT_SETUP_BROWSER=1`. Browser defaults to **Firefox** (`UT_BROWSER`).
+  - **Per-persona app isolation** (trial-one learning): `UT_APP_URL_<id>` gives
+    each persona its own app instance, avoiding the shared-backend bleed that was
+    the scorecard's #1 false-signal source. Each per-persona URL is prod-guarded
+    too. The researcher prompt now quarantines cross-session bleed rather than
+    reporting it as a finding.
+  - **Coverage beat**: the persona prompt nudges at least one desktop persona to
+    open every nav destination and try the app's keyboard shortcuts (incl. Help)
+    once across a session — as curiosity, not a scripted sweep — closing the
+    coverage-gap recall misses without losing the unscripted spirit.
+  - **Runbook**: [`docs/user-testing.md`](docs/user-testing.md) — the full
+    trial sequence (browser setup → profile → provision → up → conclude/grade),
+    the prod-target guard, per-persona isolation, and every knob.
+- **Worktree-less and suppressible roles in the engine** (#42). Two additive,
+  default-empty knobs a template may declare: `FWF_NO_WORKTREE_ROLES` (a role
+  gets a throwaway scratch dir instead of a git worktree) and
+  `FWF_SUPPRESS_ROLES` (a stock role the factory does not launch/provision/arm —
+  matched by tag or family). `user-testing` uses them to repurpose impl1-3 as
+  source-blind personas and suppress qa/conductor/gv. Every existing template is
+  byte-for-byte unaffected (the knobs short-circuit when empty).
+
 ## [0.6.3] - 2026-06-12
 
 ### Changed
