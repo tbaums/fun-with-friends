@@ -246,24 +246,63 @@ fwf_role_cwd() { # $1=role tag
   fi
 }
 
+# Per-persona app URL (issue #42, trial-one learning). Trial one ran 3 personas
+# against ONE UT_APP_URL, so a shared backend bled cross-session artifacts between
+# them — the scorecard's #1 false-signal source. Give each persona its OWN app
+# instance: UT_APP_URL_<id> overrides the shared UT_APP_URL for persona <id>;
+# unset falls back to the shared URL. See docs/user-testing.md for the one-
+# instance-per-persona setup.
+fwf_ut_app_url() { # $1=persona id (empty -> shared)
+  local u="${UT_APP_URL:-}"
+  case "${1:-}" in [0-9]*) eval "u=\"\${UT_APP_URL_$1:-$u}\"";; esac
+  printf '%s' "$u"
+}
+
+# The browser engine the personas' Playwright MCP drives. Defaults to FIREFOX —
+# trial one validated on Firefox, and it is Jamie's browser. Override with UT_BROWSER.
+UT_BROWSER="${UT_BROWSER:-firefox}"
+# The exact one-time setup that wired the browser MCP for trial one — echoed by
+# the preflight and documented in docs/user-testing.md.
+fwf_ut_browser_setup_cmds() {
+  printf '  npx playwright install %s\n' "$UT_BROWSER"
+  printf '  claude mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser %s\n' "$UT_BROWSER"
+}
+# Browser-MCP preflight for the user-testing factory (issue #42). Personas drive a
+# real browser through the Playwright MCP ("hands, not a test framework"); trial
+# one could not launch until this was wired by hand. So the factory now checks:
+# WARNS (fail-open) with the exact setup if the MCP is missing — or, with
+# FWF_UT_SETUP_BROWSER=1, installs it. No-op for every other template.
+fwf_ut_browser_preflight() {
+  [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
+  local claude_bin; claude_bin="${CLAUDE_CMD%% *}"
+  if command -v "$claude_bin" >/dev/null 2>&1 && "$claude_bin" mcp list 2>/dev/null | grep -qi playwright; then
+    return 0
+  fi
+  if [ "${FWF_UT_SETUP_BROWSER:-0}" = "1" ] && command -v npx >/dev/null 2>&1 && command -v "$claude_bin" >/dev/null 2>&1; then
+    echo "fwf user-testing: installing the Playwright browser MCP (browser=$UT_BROWSER)…" >&2
+    npx playwright install "$UT_BROWSER" 1>&2 || true
+    "$claude_bin" mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser "$UT_BROWSER" 1>&2 || true
+    return 0
+  fi
+  echo "fwf user-testing: the Playwright browser MCP ('playwright') is not registered — personas would have no hands." >&2
+  echo "fwf user-testing: set it up once (browser defaults to '$UT_BROWSER'; override with UT_BROWSER), then re-run:" >&2
+  fwf_ut_browser_setup_cmds >&2
+  echo "fwf user-testing: or re-run provision with FWF_UT_SETUP_BROWSER=1 to install it automatically. See docs/user-testing.md." >&2
+  return 0
+}
+
 # Prod-target refusal for the user-testing factory (issue #42): a trial must run
 # only against an isolated scratch/UAT instance, never production. Fail-closed
 # ALLOW-LIST — anything that is not obviously a throwaway target is refused, so a
 # misconfigured profile can't point whacky personas at a live system. A human
 # can override one launch with FWF_UT_ALLOW_TARGET=1. No-op for other templates.
 # Returns 0 if the target is acceptable, 1 (with guidance on stderr) if refused.
-fwf_ut_guard_target() {
-  [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
-  local url="${UT_APP_URL:-}" host
-  if [ "${FWF_UT_ALLOW_TARGET:-0}" = "1" ]; then
-    echo "fwf user-testing: TARGET GUARD OVERRIDDEN (FWF_UT_ALLOW_TARGET=1) for '$url' — you asserted this is a scratch/UAT target." >&2
-    return 0
-  fi
-  if [ -z "$url" ]; then
-    echo "fwf user-testing: UT_APP_URL is not set — personas have no app to drive." >&2
-    echo "fwf user-testing: set UT_APP_URL in your profile to a running UAT/scratch app (e.g. http://localhost:3939). Trials NEVER target prod." >&2
-    return 1
-  fi
+# Check ONE url against the scratch/UAT allow-list. rc 0 = acceptable, rc 1 =
+# refused (with guidance on stderr). Fail-CLOSED: anything not obviously a
+# throwaway target is refused, so a misconfigured profile can't point whacky
+# personas at a live system.
+_fwf_ut_guard_one() { # $1=url
+  local url="$1" host
   host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"   # strip scheme, path, userinfo
   case "$host" in "["*) host="${host%%]*}"; host="${host#[}";; *) host="${host%%:*}";; esac  # IPv6 [..]:port vs host:port
   case "$host" in
@@ -275,6 +314,28 @@ fwf_ut_guard_target() {
       echo "fwf user-testing: if this really IS a throwaway target, re-run with FWF_UT_ALLOW_TARGET=1." >&2
       return 1;;
   esac
+}
+# Guard the shared UT_APP_URL AND every per-persona UT_APP_URL_<id> override
+# (issue #42). A human can override ONE launch with FWF_UT_ALLOW_TARGET=1.
+# No-op for every other template.
+fwf_ut_guard_target() {
+  [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
+  if [ "${FWF_UT_ALLOW_TARGET:-0}" = "1" ]; then
+    echo "fwf user-testing: TARGET GUARD OVERRIDDEN (FWF_UT_ALLOW_TARGET=1) — you asserted the target(s) are scratch/UAT." >&2
+    return 0
+  fi
+  if [ -z "${UT_APP_URL:-}" ]; then
+    echo "fwf user-testing: UT_APP_URL is not set — personas have no app to drive." >&2
+    echo "fwf user-testing: set UT_APP_URL in your profile to a running UAT/scratch app (e.g. http://localhost:3939). Trials NEVER target prod." >&2
+    return 1
+  fi
+  local id u rc=0
+  _fwf_ut_guard_one "$UT_APP_URL" || rc=1
+  for id in "${PAIRS[@]}"; do      # per-persona overrides, if any are set
+    eval "u=\"\${UT_APP_URL_$id:-}\""
+    [ -n "$u" ] && { _fwf_ut_guard_one "$u" || rc=1; }
+  done
+  return "$rc"
 }
 
 # The canonical set of looped roles, one per line, in launch/arm order. Single
@@ -324,7 +385,7 @@ $(cat "$addendum")"
   text="${text//__E2E__/$E2E_CMD}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
-  text="${text//__UT_APP_URL__/${UT_APP_URL:-}}"      # user-testing: the live UAT/scratch app personas drive
+  text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
   text="${text//__UT_ROOT__/$(fwf_ut_root)}"          # user-testing: shared evidence + findings-report root
   if [ "$FWF_ISSUES" = "local" ]; then
     text="${text//gh issue /fwf --profile $PROFILE issues }"

@@ -136,4 +136,9 @@ if [ -n "${E2E_SETUP_CMD:-}" ] && ! fwf_role_suppressed conductor; then
     && log "e2e deps installed in conductor" || log "e2e deps install skipped/failed"
 fi
 
+# user-testing (issue #42): personas drive a real browser via the Playwright MCP.
+# Verify it is wired (or set it up with FWF_UT_SETUP_BROWSER=1) so a trial never
+# hits the "personas have no hands" wall trial one hit. Warns only; no-op elsewhere.
+fwf_ut_browser_preflight
+
 log "provision complete (profile=$PROFILE, build=$DO_BUILD)"

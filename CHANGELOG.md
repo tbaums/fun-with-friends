@@ -26,6 +26,24 @@ adheres to [Semantic Versioning](https://semver.org/).
   - **Prod-target refusal**: a trial runs only against an isolated scratch/UAT
     instance — fwf refuses a prod-looking `UT_APP_URL` (fail-closed allow-list;
     a human overrides one launch with `FWF_UT_ALLOW_TARGET=1`).
+  - **Browser provisioning** (trial-one learning): personas drive a real browser
+    via a Playwright MCP. `fwf provision`/`up` now run a preflight for the
+    `user-testing` template — if the `playwright` MCP is missing they print the
+    exact one-time setup (`npx playwright install firefox` +
+    `claude mcp add playwright …`) and keep going, or install it with
+    `FWF_UT_SETUP_BROWSER=1`. Browser defaults to **Firefox** (`UT_BROWSER`).
+  - **Per-persona app isolation** (trial-one learning): `UT_APP_URL_<id>` gives
+    each persona its own app instance, avoiding the shared-backend bleed that was
+    the scorecard's #1 false-signal source. Each per-persona URL is prod-guarded
+    too. The researcher prompt now quarantines cross-session bleed rather than
+    reporting it as a finding.
+  - **Coverage beat**: the persona prompt nudges at least one desktop persona to
+    open every nav destination and try the app's keyboard shortcuts (incl. Help)
+    once across a session — as curiosity, not a scripted sweep — closing the
+    coverage-gap recall misses without losing the unscripted spirit.
+  - **Runbook**: [`docs/user-testing.md`](docs/user-testing.md) — the full
+    trial sequence (browser setup → profile → provision → up → conclude/grade),
+    the prod-target guard, per-persona isolation, and every knob.
 - **Worktree-less and suppressible roles in the engine** (#42). Two additive,
   default-empty knobs a template may declare: `FWF_NO_WORKTREE_ROLES` (a role
   gets a throwaway scratch dir instead of a git worktree) and

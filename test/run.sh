@@ -646,6 +646,43 @@ FWF_TEMPLATE=user-testing FWF_ISSUES=local FWF_RUN_DIR="$UTPD/run" FWF_PROFILE=.
 rm -f "$ROOT/profiles/.__utprov.sh"
 
 # --------------------------------------------------------------------------
+section "user-testing trial-one learnings (issue #42) — browser, per-persona URL, coverage"
+# helper: run an expression with the user-testing template + arbitrary inline env
+UTE() { FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+# per-persona app URL: UT_APP_URL_<id> overrides the shared URL; unset falls back
+assert_eq "shared URL fallback" "http://localhost:3939" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 fwf_ut_app_url 1')"
+assert_eq "per-persona override wins" "http://localhost:3940" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=http://localhost:3940 fwf_ut_app_url 2')"
+assert_eq "other persona keeps shared" "http://localhost:3939" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=http://localhost:3940 fwf_ut_app_url 1')"
+# render substitutes THIS persona's URL into the prompt
+assert_contains "persona 2 prompt gets its own URL" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=https://p2-uat.test fwf_render "$(fwf_tmpl_path implementer)" 2')" \
+  "https://p2-uat.test"
+# guard checks per-persona overrides too: a prod override is refused, all-UAT passes
+UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_3=https://app.example.com fwf_ut_guard_target' 2>/dev/null \
+  && bad "guard refuses a prod per-persona override" || ok "guard refuses a prod per-persona override"
+UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=https://x-uat.internal fwf_ut_guard_target' 2>/dev/null \
+  && ok "guard passes loopback + per-persona uat" || bad "guard passes loopback + per-persona uat"
+# browser knob + setup commands
+assert_eq "UT_BROWSER defaults to firefox" "firefox" "$(UTE 'echo "$UT_BROWSER"')"
+assert_contains "setup cmds install the browser"   "$(UTE 'fwf_ut_browser_setup_cmds')" "npx playwright install firefox"
+assert_contains "setup cmds add the playwright MCP" "$(UTE 'fwf_ut_browser_setup_cmds')" "claude mcp add playwright"
+assert_contains "UT_BROWSER flows into setup cmds"  "$(UTE 'UT_BROWSER=chromium fwf_ut_browser_setup_cmds')" "--browser chromium"
+# preflight WARNS (fail-open, rc 0) when the MCP is absent, and names the fix
+PF="$(UTE 'CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight' 2>&1)"
+UTE 'CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight' >/dev/null 2>&1 && ok "preflight is fail-open (rc 0)" || bad "preflight is fail-open (rc 0)"
+assert_contains "preflight names the setup" "$PF" "npx playwright install firefox"
+# preflight is a no-op for every other template (no output)
+assert_eq "preflight no-ops off-template" "" \
+  "$(FWF_TEMPLATE=dev FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight" 2>&1)"
+# coverage beat in the persona prompt; quarantine guidance in the researcher prompt
+assert_contains "persona has a coverage beat" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "COVERAGE BEAT"
+assert_contains "persona sweeps nav + shortcuts" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "KEYBOARD SHORTCUTS"
+assert_contains "researcher quarantines bleed" "$(UTE "fwf_render \"\$(fwf_tmpl_path pm)\" ''")" "QUARANTINE"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

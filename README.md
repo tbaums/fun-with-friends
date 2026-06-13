@@ -157,7 +157,7 @@ its single-port suite never collides.
 
 ## Factory templates
 
-The pipeline above is the **dev** template — one of four shipped factory
+The pipeline above is the **dev** template — one of five shipped factory
 designs. A template re-aims every role's prompt (and optionally the topology)
 while reusing all the machinery: tmux grid, branch ladder, labels, floor
 lifecycle, stop/resume.
@@ -168,6 +168,7 @@ lifecycle, stop/resume.
 | `refactor` | behavior-preserving structural improvement — characterize-first refactorers, behavior-contract verifiers, a planner that ranks debt by churn×complexity, a captain that sequences instead of parallelizing | [docs/refactor-factory.md](docs/refactor-factory.md) |
 | `ideation` | ranked idea portfolios under `ideas/` — stance-diverse generators, feasibility-hardening critics, a synthesizer that clusters and ranks pairwise into `PORTFOLIO.md` | [docs/ideation-factory.md](docs/ideation-factory.md) |
 | `dev-sre` | dev + a dedicated prod-ops (SRE) pane; the captain does zero ops while it runs | [docs/captain-split.md](docs/captain-split.md) |
+| `user-testing` | ranked usability findings — 3 source-blind personas drive a real browser like whacky humans, a researcher dedupes their diaries into a top-10 report graded against ground truth, a captain gates what graduates | [docs/user-testing.md](docs/user-testing.md) |
 
 ```bash
 fwf templates                       # list what's shipped

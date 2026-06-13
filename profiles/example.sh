@@ -37,6 +37,15 @@ DEV_UI_HINT='make dev'
 # sandbox/dev pass; a human can override one launch with FWF_UT_ALLOW_TARGET=1).
 # Unused by every other template. Leave unset unless you run `--template user-testing`.
 UT_APP_URL="${FWF_UT_APP_URL:-}"
+# Per-persona app instances (recommended — avoids shared-backend bleed between
+# personas, trial one's #1 false-signal source). UT_APP_URL_<id> overrides the
+# shared URL for persona <id>; each is guarded the same way. Leave unset to share.
+#   UT_APP_URL_1="http://localhost:3941"
+#   UT_APP_URL_2="http://localhost:3942"
+#   UT_APP_URL_3="http://localhost:3943"
+# Browser engine the personas' Playwright MCP drives (default firefox — the
+# trial-validated, Jamie's-browser default). See docs/user-testing.md to wire it.
+UT_BROWSER="${FWF_UT_BROWSER:-firefox}"
 
 # Optional: factory design, issue backend, floor sizing, per-role models.
 # CLI flags (fwf up --template T --issues B --pairs N --impl-model M …) and

@@ -33,6 +33,9 @@ esac
 # whacky source-blind personas must only ever hit an isolated scratch/UAT app.
 # No-op for every other template.
 fwf_ut_guard_target || exit 1
+# ...and warn at launch if the personas' browser MCP is not wired (the wall trial
+# one hit). Fail-open — a warning, never a block. No-op for every other template.
+fwf_ut_browser_preflight
 
 # Arming (issue #38): full role prompt once + lean /loop tick — fwf_arm_pane.
 
