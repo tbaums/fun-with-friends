@@ -54,6 +54,32 @@ fwf_extra_interval() { local e; e="$(fwf_extra_entry "$1")" || return 1; e="${e#
 fwf_extra_color()    { local e rest; e="$(fwf_extra_entry "$1")" || return 1
   rest="${e#*:*:*:}"; if [ "$rest" = "$e" ]; then echo "colour208"; else echo "$rest"; fi; }
 
+# Roster shaping a template (or profile/env) declares — both default empty, so
+# every existing template is byte-for-byte unaffected (the helpers short-circuit
+# on an empty list). Lists are space-separated and match a role by its exact tag
+# (conductor, gv, pm) OR by family (impl → every implN, qa → every qaN).
+#
+#   FWF_SUPPRESS_ROLES     roles the engine must NOT launch/provision/arm. The
+#                          user-testing template suppresses "qa conductor gv" so
+#                          the floor is exactly 3 personas + researcher + captain.
+#   FWF_NO_WORKTREE_ROLES  roles that get NO git worktree — only a throwaway
+#                          scratch dir. The user-testing personas are source-blind
+#                          by construction: "impl" here means they never receive a
+#                          checkout of the target's source, just a browser.
+FWF_SUPPRESS_ROLES="${FWF_SUPPRESS_ROLES:-}"
+FWF_NO_WORKTREE_ROLES="${FWF_NO_WORKTREE_ROLES:-}"
+_fwf_role_in_list() { # $1=role tag  $2=space-separated tags/families → rc 0 if it matches
+  local r fam="$1"
+  case "$1" in impl*) fam=impl;; qa*) fam=qa;; esac
+  for r in $2; do
+    [ "$r" = "$1" ] && return 0
+    [ "$r" = "$fam" ] && return 0
+  done
+  return 1
+}
+fwf_role_suppressed()  { _fwf_role_in_list "$1" "$FWF_SUPPRESS_ROLES"; }
+fwf_role_no_worktree() { _fwf_role_in_list "$1" "$FWF_NO_WORKTREE_ROLES"; }
+
 # Resolve a role's prompt file: the template's own copy wins; otherwise fall
 # back to its FWF_TEMPLATE_BASE. Echoes the path; rc 1 (with a message) if
 # neither has it.
@@ -203,13 +229,61 @@ fwf_claude_cmd() { # $1=role
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
 wt_dir() { echo "$WT_BASE/${WT_PREFIX}-$1"; }
 
+# Shared scratch root for source-blind (worktree-less) roles: per-profile, OUTSIDE
+# any repo, so personas have a place for browser-driver plumbing and screenshot
+# evidence without ever touching the target's source tree. __UT_ROOT__ resolves here.
+fwf_ut_root() { echo "$FWF_RUN/ut/$PROFILE"; }
+
+# Working directory for a role's pane: its worktree, or — for a worktree-less
+# role (FWF_NO_WORKTREE_ROLES) — a throwaway per-role scratch dir, which is
+# created on demand so every `tmux … -c "$(fwf_role_cwd X)"` call site is safe
+# even if provision has not run. Idempotent.
+fwf_role_cwd() { # $1=role tag
+  if fwf_role_no_worktree "$1"; then
+    local d; d="$(fwf_ut_root)/$1"; mkdir -p "$d"; echo "$d"
+  else
+    wt_dir "$1"
+  fi
+}
+
+# Prod-target refusal for the user-testing factory (issue #42): a trial must run
+# only against an isolated scratch/UAT instance, never production. Fail-closed
+# ALLOW-LIST — anything that is not obviously a throwaway target is refused, so a
+# misconfigured profile can't point whacky personas at a live system. A human
+# can override one launch with FWF_UT_ALLOW_TARGET=1. No-op for other templates.
+# Returns 0 if the target is acceptable, 1 (with guidance on stderr) if refused.
+fwf_ut_guard_target() {
+  [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
+  local url="${UT_APP_URL:-}" host
+  if [ "${FWF_UT_ALLOW_TARGET:-0}" = "1" ]; then
+    echo "fwf user-testing: TARGET GUARD OVERRIDDEN (FWF_UT_ALLOW_TARGET=1) for '$url' — you asserted this is a scratch/UAT target." >&2
+    return 0
+  fi
+  if [ -z "$url" ]; then
+    echo "fwf user-testing: UT_APP_URL is not set — personas have no app to drive." >&2
+    echo "fwf user-testing: set UT_APP_URL in your profile to a running UAT/scratch app (e.g. http://localhost:3939). Trials NEVER target prod." >&2
+    return 1
+  fi
+  host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"   # strip scheme, path, userinfo
+  case "$host" in "["*) host="${host%%]*}"; host="${host#[}";; *) host="${host%%:*}";; esac  # IPv6 [..]:port vs host:port
+  case "$host" in
+    localhost|127.*|0.0.0.0|::1|*.local|*.localhost|*.test) return 0;;
+    *uat*|*staging*|*scratch*|*sandbox*|*test*|*dev*)        return 0;;
+    *)
+      echo "fwf user-testing: REFUSING target '$url' (host '$host') — it does not look like a scratch/UAT instance." >&2
+      echo "fwf user-testing: trials run ONLY against an isolated UAT/scratch app — loopback, *.local/*.test, or a host containing uat/staging/test/scratch/sandbox/dev." >&2
+      echo "fwf user-testing: if this really IS a throwaway target, re-run with FWF_UT_ALLOW_TARGET=1." >&2
+      return 1;;
+  esac
+}
+
 # The canonical set of looped roles, one per line, in launch/arm order. Single
 # source of truth — fwf-up delivers prompts to these and fwf-resume re-arms them.
 fwf_all_roles() {
-  local id
-  for id in "${PAIRS[@]}"; do echo "impl$id"; done
-  for id in "${PAIRS[@]}"; do echo "qa$id"; done
-  echo conductor; echo pm; echo gv; echo captain
+  local id r
+  for id in "${PAIRS[@]}"; do fwf_role_suppressed "impl$id" || echo "impl$id"; done
+  for id in "${PAIRS[@]}"; do fwf_role_suppressed "qa$id"   || echo "qa$id";   done
+  for r in conductor pm gv captain; do fwf_role_suppressed "$r" || echo "$r"; done
   fwf_extra_names
 }
 
@@ -250,6 +324,8 @@ $(cat "$addendum")"
   text="${text//__E2E__/$E2E_CMD}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
+  text="${text//__UT_APP_URL__/${UT_APP_URL:-}}"      # user-testing: the live UAT/scratch app personas drive
+  text="${text//__UT_ROOT__/$(fwf_ut_root)}"          # user-testing: shared evidence + findings-report root
   if [ "$FWF_ISSUES" = "local" ]; then
     text="${text//gh issue /fwf --profile $PROFILE issues }"
     text="${text//#</LI-<}"
@@ -317,11 +393,11 @@ fwf_create_role_pane() { # $1=role tag
   case "$role" in
     qa*)
       anchor="$(fwf_find_pane "$sess" "IMPL${role#qa} ·" || true)"
-      [ -n "$anchor" ] && pane=$(tmux split-window -v -P -F '#{pane_id}' -t "$anchor" -c "$(wt_dir "$role")");;
+      [ -n "$anchor" ] && pane=$(tmux split-window -v -P -F '#{pane_id}' -t "$anchor" -c "$(fwf_role_cwd "$role")");;
   esac
   if [ -z "$pane" ]; then
     anchor="$(tmux list-panes -t "$sess" -F '#{pane_id}' | tail -1)"
-    pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$anchor" -c "$(wt_dir "$role")")
+    pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$anchor" -c "$(fwf_role_cwd "$role")")
     [ "$sess" = "$COORD_SESSION" ] && tmux select-layout -t "$sess" even-horizontal >/dev/null
   fi
   tmux set -p -t "$pane" @c "$(fwf_role_color "$role")"

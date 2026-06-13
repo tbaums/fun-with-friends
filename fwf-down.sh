@@ -59,5 +59,8 @@ if [ "$purge" = 1 ]; then
     git -C "$FWF_REPO" worktree remove --force "$(wt_dir "$tag")" 2>/dev/null || true
   done
   git -C "$FWF_REPO" worktree prune
+  # Worktree-less roles (e.g. user-testing personas) keep a scratch dir + evidence
+  # under the per-profile UT root instead of a worktree — clear it on purge too.
+  [ -d "$(fwf_ut_root)" ] && { rm -rf "$(fwf_ut_root)"; echo "removed user-testing scratch root $(fwf_ut_root)"; }
   echo "purge complete. (Branches and remote PRs are left intact.)"
 fi

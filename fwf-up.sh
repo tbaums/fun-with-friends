@@ -29,6 +29,11 @@ case "${1:-}" in
   *) echo "usage: fwf-up.sh [--floor-only]" >&2; exit 1;;
 esac
 
+# user-testing (issue #42): refuse a prod-looking target BEFORE any pane boots —
+# whacky source-blind personas must only ever hit an isolated scratch/UAT app.
+# No-op for every other template.
+fwf_ut_guard_target || exit 1
+
 # Arming (issue #38): full role prompt once + lean /loop tick — fwf_arm_pane.
 
 # Per-pane label (@l) and color (@c); text/color come from the shared
@@ -89,24 +94,31 @@ if tmux has-session -t "$BUILD_SESSION" 2>/dev/null; then
   echo "build session '$BUILD_SESSION' already up — leaving it untouched."
 else
   BUILD_CREATED=1
-  tmux new-session -d -s "$BUILD_SESSION" -c "$(wt_dir impl1)"
+  # fwf_role_cwd gives each pane its worktree, or a throwaway scratch dir for a
+  # worktree-less (source-blind) role such as a user-testing persona (issue #42).
+  tmux new-session -d -s "$BUILD_SESSION" -c "$(fwf_role_cwd impl1)"
   TP[1]=$(tmux display -p -t "$BUILD_SESSION" '#{pane_id}')
   prev="${TP[1]}"
   for id in "${PAIRS[@]}"; do
     [ "$id" = 1 ] && continue
-    TP[$id]=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(wt_dir "impl$id")")
+    TP[$id]=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(fwf_role_cwd "impl$id")")
     prev="${TP[$id]}"
   done
-  CONDUCTOR_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(wt_dir conductor)")
+  # A template may suppress the conductor (e.g. user-testing has no gate pipeline).
+  CONDUCTOR_PANE=""
+  if ! fwf_role_suppressed conductor; then
+    CONDUCTOR_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(fwf_role_cwd conductor)")
+  fi
   tmux select-layout -t "$BUILD_SESSION" even-horizontal
   for id in "${PAIRS[@]}"; do
-    BP[$id]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[$id]}" -c "$(wt_dir "qa$id")")
+    fwf_role_suppressed "qa$id" && continue   # suppressed pairs run impl-only (no QA column)
+    BP[$id]=$(tmux split-window -v -P -F '#{pane_id}' -t "${TP[$id]}" -c "$(fwf_role_cwd "qa$id")")
   done
   for id in "${PAIRS[@]}"; do
     label_role "${TP[$id]}" "impl$id"
-    label_role "${BP[$id]}" "qa$id"
+    [ -n "${BP[$id]:-}" ] && label_role "${BP[$id]}" "qa$id"
   done
-  label_role "$CONDUCTOR_PANE" conductor
+  [ -n "$CONDUCTOR_PANE" ] && label_role "$CONDUCTOR_PANE" conductor
   style_session "$BUILD_SESSION"
 fi
 
@@ -114,23 +126,34 @@ fi
 if [ "$FLOOR_ONLY" = 1 ]; then
   # Recreate only the PM/GV panes that are missing, splitting LEFT of the
   # captain (-b) so the familiar PM · GV · CAPTAIN order is preserved.
-  GV_PANE="$(fwf_find_pane "$COORD_SESSION" "GRAND VIZIER" || true)"
-  if [ -z "$GV_PANE" ]; then
-    GV_CREATED=1
-    GV_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "$CAPTAIN_PANE" -c "$(wt_dir gv)")
+  GV_PANE=""
+  if ! fwf_role_suppressed gv; then
+    GV_PANE="$(fwf_find_pane "$COORD_SESSION" "GRAND VIZIER" || true)"
+    if [ -z "$GV_PANE" ]; then
+      GV_CREATED=1
+      GV_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "$CAPTAIN_PANE" -c "$(fwf_role_cwd gv)")
+    fi
   fi
   PM_PANE="$(fwf_find_pane "$COORD_SESSION" "PM ·" || true)"
   if [ -z "$PM_PANE" ]; then
     PM_CREATED=1
-    PM_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "$GV_PANE" -c "$(wt_dir pm)")
+    # split left of the GV if there is one, else left of the captain.
+    PM_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "${GV_PANE:-$CAPTAIN_PANE}" -c "$(fwf_role_cwd pm)")
   fi
   tmux select-layout -t "$COORD_SESSION" even-horizontal
 else
-  CAPTAIN_CREATED=1; PM_CREATED=1; GV_CREATED=1
-  tmux new-session -d -s "$COORD_SESSION" -c "$(wt_dir pm)"
+  CAPTAIN_CREATED=1; PM_CREATED=1; GV_CREATED=0
+  tmux new-session -d -s "$COORD_SESSION" -c "$(fwf_role_cwd pm)"
   PM_PANE=$(tmux display -p -t "$COORD_SESSION" '#{pane_id}')
-  GV_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$PM_PANE" -c "$(wt_dir gv)")
-  CAPTAIN_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$GV_PANE" -c "$(wt_dir captain)")
+  # A template may suppress the Grand Vizier (e.g. user-testing: PM=researcher,
+  # captain — no GV). When it does, the captain splits off the PM directly.
+  cap_anchor="$PM_PANE"
+  if ! fwf_role_suppressed gv; then
+    GV_CREATED=1
+    GV_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$PM_PANE" -c "$(fwf_role_cwd gv)")
+    cap_anchor="$GV_PANE"
+  fi
+  CAPTAIN_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$cap_anchor" -c "$(fwf_role_cwd captain)")
   tmux select-layout -t "$COORD_SESSION" even-horizontal
   style_session "$COORD_SESSION"
 fi
@@ -166,9 +189,9 @@ NEW_PANES=(); NEW_ROLES=()
 if [ "$BUILD_CREATED" = 1 ]; then
   for id in "${PAIRS[@]}"; do
     NEW_PANES+=( "${TP[$id]}" ); NEW_ROLES+=( "impl$id" )
-    NEW_PANES+=( "${BP[$id]}" ); NEW_ROLES+=( "qa$id" )
+    [ -n "${BP[$id]:-}" ] && { NEW_PANES+=( "${BP[$id]}" ); NEW_ROLES+=( "qa$id" ); }
   done
-  NEW_PANES+=( "$CONDUCTOR_PANE" ); NEW_ROLES+=( conductor )
+  [ -n "$CONDUCTOR_PANE" ] && { NEW_PANES+=( "$CONDUCTOR_PANE" ); NEW_ROLES+=( conductor ); }
 fi
 [ "$PM_CREATED" = 1 ]      && { NEW_PANES+=( "$PM_PANE" );      NEW_ROLES+=( pm ); }
 [ "$GV_CREATED" = 1 ]      && { NEW_PANES+=( "$GV_PANE" );      NEW_ROLES+=( gv ); }
@@ -200,9 +223,9 @@ sleep 2
 if [ "$BUILD_CREATED" = 1 ]; then
   for id in "${PAIRS[@]}"; do
     fwf_arm_pane "${TP[$id]}" "impl$id" implementer "$id" "$IMPL_INTERVAL"
-    fwf_arm_pane "${BP[$id]}" "qa$id" qa "$id" "$QA_LOOP_INTERVAL"
+    [ -n "${BP[$id]:-}" ] && fwf_arm_pane "${BP[$id]}" "qa$id" qa "$id" "$QA_LOOP_INTERVAL"
   done
-  fwf_arm_pane "$CONDUCTOR_PANE" conductor conductor "" "$CONDUCTOR_INTERVAL"
+  [ -n "$CONDUCTOR_PANE" ] && fwf_arm_pane "$CONDUCTOR_PANE" conductor conductor "" "$CONDUCTOR_INTERVAL"
 fi
 [ "$PM_CREATED" = 1 ]      && fwf_arm_pane "$PM_PANE"      pm pm "" "$PM_INTERVAL"
 [ "$GV_CREATED" = 1 ]      && fwf_arm_pane "$GV_PANE"      gv gv "" "$GV_INTERVAL"

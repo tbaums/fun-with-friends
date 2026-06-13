@@ -30,6 +30,14 @@ E2E_SETUP_CMD=''                  # one-time e2e dep install in the conductor tr
 # (only meaningful if you define data_dir() below).
 DEV_UI_HINT='make dev'
 
+# user-testing template (issue #42) ONLY: the running app URL the source-blind
+# personas drive with a browser (rendered into their prompts as __UT_APP_URL__).
+# MUST be an isolated scratch/UAT instance — fwf refuses a prod-looking host
+# (loopback, *.local/*.test, or a host containing uat/staging/test/scratch/
+# sandbox/dev pass; a human can override one launch with FWF_UT_ALLOW_TARGET=1).
+# Unused by every other template. Leave unset unless you run `--template user-testing`.
+UT_APP_URL="${FWF_UT_APP_URL:-}"
+
 # Optional: factory design, issue backend, floor sizing, per-role models.
 # CLI flags (fwf up --template T --issues B --pairs N --impl-model M …) and
 # env vars beat these profile defaults — keep the ${VAR:-default} shape.

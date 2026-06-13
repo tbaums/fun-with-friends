@@ -100,22 +100,38 @@ warm() { # $1=tag
   ( cd "$(wt_dir "$1")" && eval "$BUILD_CMD" ) || log "build FAILED: $1"
 }
 
+# A worktree-less role (FWF_NO_WORKTREE_ROLES — e.g. a source-blind user-testing
+# persona) gets a throwaway scratch dir instead of a checkout (and no seed/warm,
+# since there is no source to build). A suppressed role gets nothing at all.
+ut_scratch() { # $1=role tag — create + announce the role's scratch dir
+  local d; d="$(fwf_role_cwd "$1")"; log "scratch $d ($1: source-blind, no worktree)"
+}
 for id in "${PAIRS[@]}"; do
-  add_branch_wt   "impl$id" "impl$id/work"
-  add_detached_wt "qa$id"
-  seed_data "$(data_dir "impl$id")"; log "seeded $(data_dir "impl$id")"
-  warm "impl$id"; warm "qa$id"
+  if fwf_role_no_worktree "impl$id"; then
+    ut_scratch "impl$id"
+  else
+    add_branch_wt "impl$id" "impl$id/work"
+    seed_data "$(data_dir "impl$id")"; log "seeded $(data_dir "impl$id")"
+    warm "impl$id"
+  fi
+  if ! fwf_role_suppressed "qa$id"; then
+    add_detached_wt "qa$id"; warm "qa$id"
+  fi
 done
 add_detached_wt "pm"
-add_detached_wt "gv"          # Grand Vizier — read-mostly critic (no build, no dev data)
+fwf_role_suppressed gv || add_detached_wt "gv"   # Grand Vizier — read-mostly critic (no build, no dev data)
 add_detached_wt "captain"    # Captain — releases + direct deep work
 warm "captain"
-add_detached_wt "conductor"
-warm "conductor"
-for er in $(fwf_extra_names); do add_detached_wt "$er"; done   # template-declared extra roles
+if ! fwf_role_suppressed conductor; then
+  add_detached_wt "conductor"
+  warm "conductor"
+fi
+for er in $(fwf_extra_names); do   # template-declared extra roles
+  if fwf_role_no_worktree "$er"; then ut_scratch "$er"; else add_detached_wt "$er"; fi
+done
 
-# e2e deps for the conductor (it owns e2e).
-if [ -n "${E2E_SETUP_CMD:-}" ]; then
+# e2e deps for the conductor (it owns e2e) — only when the conductor is active.
+if [ -n "${E2E_SETUP_CMD:-}" ] && ! fwf_role_suppressed conductor; then
   ( cd "$(wt_dir conductor)" && eval "$E2E_SETUP_CMD" >/dev/null 2>&1 ) \
     && log "e2e deps installed in conductor" || log "e2e deps install skipped/failed"
 fi
