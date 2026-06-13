@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-13
+
 ### Added
 - **`user-testing` factory template** (#42). A versioned template whose instance
   is 3 personas + 1 researcher + captain — whacky, unscripted, **source-blind**
