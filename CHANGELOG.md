@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-13
+
+### Fixed
+- **Browser-MCP preflight false-negative** (#42). The `user-testing` preflight
+  detected the Playwright MCP with a live `claude mcp list` probe, which opens a
+  connection to each server — so a registered-but-momentarily-unconnectable MCP
+  read as "not registered" and scared the operator into a needless re-install
+  (seen during a wide sweep: the MCP was ✔ Connected yet the probe reported it
+  missing). Detection now reads the config registry directly (`~/.claude.json`
+  `mcpServers`, user scope or any project; override with `CLAUDE_CONFIG` /
+  `UT_BROWSER_MCP_NAME`), which is authoritative for "registered" and independent
+  of transient connectivity.
+
 ## [0.7.0] - 2026-06-13
 
 ### Added

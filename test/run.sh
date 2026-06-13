@@ -670,13 +670,27 @@ assert_eq "UT_BROWSER defaults to firefox" "firefox" "$(UTE 'echo "$UT_BROWSER"'
 assert_contains "setup cmds install the browser"   "$(UTE 'fwf_ut_browser_setup_cmds')" "npx playwright install firefox"
 assert_contains "setup cmds add the playwright MCP" "$(UTE 'fwf_ut_browser_setup_cmds')" "claude mcp add playwright"
 assert_contains "UT_BROWSER flows into setup cmds"  "$(UTE 'UT_BROWSER=chromium fwf_ut_browser_setup_cmds')" "--browser chromium"
-# preflight WARNS (fail-open, rc 0) when the MCP is absent, and names the fix
-PF="$(UTE 'CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight' 2>&1)"
-UTE 'CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight' >/dev/null 2>&1 && ok "preflight is fail-open (rc 0)" || bad "preflight is fail-open (rc 0)"
+# detection reads the CONFIG (~/.claude.json mcpServers), NOT a live `claude mcp
+# list` probe — a registered-but-unconnectable MCP must read as PRESENT (the
+# false-negative bug). Fixtures: one config WITH the server, one WITHOUT.
+printf '{"mcpServers":{"playwright":{"command":"npx"}}}\n' > "$TMP/claude-with.json"
+printf '{"mcpServers":{"other":{"command":"x"}}}\n'        > "$TMP/claude-without.json"
+# registered → silent, rc 0 — and crucially does NOT depend on the claude binary
+# being runnable (CLAUDE_CMD points at a missing bin, proving no live probe)
+REG="$(UTE 'CLAUDE_CONFIG='"$TMP"'/claude-with.json CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight' 2>&1)"
+assert_eq "registered MCP is silent (no false negative)" "" "$REG"
+UTE 'CLAUDE_CONFIG='"$TMP"'/claude-with.json fwf_ut_browser_mcp_registered' && ok "registered detected from config" || bad "registered detected from config"
+# not registered → WARNS (fail-open, rc 0) and names the fix
+PF="$(UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_preflight' 2>&1)"
+UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_preflight' >/dev/null 2>&1 && ok "preflight is fail-open (rc 0)" || bad "preflight is fail-open (rc 0)"
 assert_contains "preflight names the setup" "$PF" "npx playwright install firefox"
+assert_contains "preflight names the config path" "$PF" "claude-without.json"
+UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_mcp_registered' && bad "unregistered must be NO" || ok "unregistered detected from config"
+# missing config file → unregistered (warns), never a crash
+UTE 'CLAUDE_CONFIG='"$TMP"'/does-not-exist.json fwf_ut_browser_mcp_registered' && bad "missing config = NO" || ok "missing config reads unregistered"
 # preflight is a no-op for every other template (no output)
 assert_eq "preflight no-ops off-template" "" \
-  "$(FWF_TEMPLATE=dev FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight" 2>&1)"
+  "$(FWF_TEMPLATE=dev FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; CLAUDE_CONFIG=$TMP/claude-without.json fwf_ut_browser_preflight" 2>&1)"
 # coverage beat in the persona prompt; quarantine guidance in the researcher prompt
 assert_contains "persona has a coverage beat" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "COVERAGE BEAT"
 assert_contains "persona sweeps nav + shortcuts" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "KEYBOARD SHORTCUTS"
