@@ -27,6 +27,10 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
+# Drive the factory on tmux's DEFAULT socket regardless of which tmux the dash is
+# displayed in (role respawn/stop + captain passthrough send-keys must reach the
+# factory's panes, not the dash's host session). See fwf-dash-data.sh for why.
+unset TMUX
 
 # Every mutation funnels through here; FWF_DASH_DRYRUN=1 prints the argv instead
 # of running it (what the hermetic tests assert on).

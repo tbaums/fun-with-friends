@@ -22,6 +22,12 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
+# The factory lives on tmux's DEFAULT socket (fwf launches it with plain tmux).
+# The dash binary may be displayed inside a DIFFERENT tmux (e.g. a separate
+# socket, to get mouse-wheel forwarding), which would otherwise point our role
+# detection at the wrong server and show every role "down". Detach from the host
+# tmux so pane liveness is always read off the factory's server.
+unset TMUX
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq is required for fwf dash"}'; exit 1; }
 
 STATE_DIR="$FWF_RUN/state/$PROFILE"
