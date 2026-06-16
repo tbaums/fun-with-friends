@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-06-16
+
+### Fixed
+- **`fwf dash` needs-you banner fired permanently** (#40). The captain prints
+  "⛔ NEEDS YOU — nothing right now" as a standing status line every tick, so
+  matching that substring lit the banner always. It now triggers only on an
+  active interactive selection menu ("Enter to select" footer) — present solely
+  while the captain is actually awaiting your choice.
+
 ## [0.10.0] - 2026-06-16
 
 ### Added
