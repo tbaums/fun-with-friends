@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-16
+
+### Added
+- **`fwf dash` surfaces "CAPTAIN NEEDS YOU"** (#40). The Decisions tab only knew
+  the gh label protocol (gated issue + `GV-SIGNOFF`), so the dash could read "0
+  decisions" while the captain was blocked on an in-pane decision (a "NEEDS YOU"
+  state or interactive menu — e.g. a ship/release call). The data provider now
+  reads the captain pane directly and emits `needs_you {active, summary}`; the
+  dash renders an unmissable full-width red **⛔ CAPTAIN NEEDS YOU — <question> ·
+  attach: tmux attach -t friends-coord** banner below the tabs, on every tab.
+  Derived-first (pane read), independent of the gh labels.
+
 ## [0.9.0] - 2026-06-16
 
 ### Added
