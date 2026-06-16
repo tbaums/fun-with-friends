@@ -557,6 +557,42 @@ section "dispatcher: bad input is rejected"
 "$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
 
 # --------------------------------------------------------------------------
+# fwf dash action layer (#40 milestone 2): assert the EXACT constructed command
+# via the FWF_DASH_DRYRUN seam — no tracker, no tmux, both backends. Same spirit
+# as the gh-write-guard tests. FWF_REPO points at a non-git path so the gh path
+# is deterministic (plain `gh issue`, no repo-dir cd).
+act() { # <env-prefix...> -- verb args... ; echoes DRYRUN output
+  FWF_PROFILE=example FWF_REPO="$TMP/no-such-repo" FWF_DASH_DRYRUN=1 \
+    bash "$ROOT/fwf-dash-act.sh" "$@" 2>&1
+}
+section "dash act: gh backend constructs the right writes"
+A_OUT="$(act approve 40)"
+assert_contains "approve posts go-ahead comment" "$A_OUT" "gh issue comment 40 --body go ahead"
+assert_contains "approve un-gates the label"     "$A_OUT" "gh issue edit 40 --remove-label product-wip"
+assert_contains "reject default text"   "$(act reject 40)" "gh issue comment 40 --body Not yet"
+assert_contains "reject custom text"    "$(act reject 40 needs a repro)" "gh issue comment 40 --body needs a repro"
+assert_contains "comment posts body"    "$(act comment 40 looks good)" "gh issue comment 40 --body looks good"
+assert_contains "open uses the browser" "$(act open 40)" "gh issue view 40 --web"
+
+section "dash act: id normalization strips # and LI-"
+assert_contains "strips leading #"  "$(act comment '#41' hi)" "gh issue comment 41 --body hi"
+assert_contains "strips LI- prefix" "$(act comment LI-7 hi)"  "gh issue comment 7 --body hi"
+
+section "dash act: local backend routes to fwf-issues.sh (never gh)"
+loc() { FWF_PROFILE=example FWF_ISSUES=local FWF_DASH_DRYRUN=1 bash "$ROOT/fwf-dash-act.sh" "$@" 2>&1; }
+L_OUT="$(loc approve LI-3)"
+assert_contains "local approve uses fwf-issues.sh" "$L_OUT" "fwf-issues.sh comment 3 --body go ahead"
+assert_contains "local approve un-gates"           "$L_OUT" "fwf-issues.sh edit 3 --remove-label product-wip"
+case "$(loc approve LI-3)" in *"gh issue"*) bad "local backend must not call gh";; *) ok "local backend never calls gh";; esac
+
+section "dash act: role controls + validation"
+assert_contains "respawn wraps fwf-respawn.sh" "$(act respawn impl2)" "fwf-respawn.sh impl2"
+assert_contains "stop wraps fwf-stop.sh"       "$(act stop)" "fwf-stop.sh"
+act approve >/dev/null 2>&1 && bad "approve without id rejected" || ok "approve without id rejected"
+act comment 40 >/dev/null 2>&1 && bad "empty comment rejected" || ok "empty comment rejected"
+act bogus-verb >/dev/null 2>&1 && bad "unknown verb rejected" || ok "unknown verb rejected"
+
+# --------------------------------------------------------------------------
 section "user-testing template (issue #42) — roster + source-blind personas"
 UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
 assert_contains "templates lists user-testing" "$("$ROOT/fwf" templates)" "user-testing"

@@ -6,6 +6,45 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`fwf dash` — a read-only status board** (#40, milestone 1). A compiled
+  Rust + ratatui TUI (new `dash/` crate) that shows the factory at a glance:
+  roles (← tmux pane liveness), pipeline (← git branch deltas), prod, and the
+  human-gated decision list (← the `product-wip` + `GV-SIGNOFF` label
+  protocol). Derived-first, so it works with the factory parked, and overlays
+  the captain's `status.json` when fresh. Three sections (Roles / Decisions /
+  Issues) with a scrollable, lightly-markdown-styled detail preview. Keyboard
+  model from the prior-art research — **no F-keys**: `j`/`k` + arrows nav,
+  `Tab`/`Shift-Tab` + `[`/`]` + `1`/`2`/`3` section switch, `PgUp`/`PgDn` +
+  `Ctrl-u`/`Ctrl-d` (and mouse wheel) preview scroll, `Ctrl-r` refresh, `?`
+  help, `q` quit. The data layer stays in bash (`fwf-dash-data.sh`, the gh-dash
+  model) so the gh/local backend abstraction and profile resolution remain in
+  one tested place; the binary is purely the renderer. Builds on first run
+  (`cargo build --release`); CI gains a cargo build/test/clippy/fmt job.
+  Replaces the retired fzf prototype (PR #41).
+- **`fwf dash` actions — the decision inbox + controls** (#40, milestone 2).
+  On the proven read-only foundation: **`y`** approve (un-gates by removing the
+  WIP label + posts the go-ahead) / **`x`** reject on a decision, **`c`**
+  comment (inline text field) and **`o`** open (browser for gh, detail for
+  local) on decisions and issues, **`r`** respawn / **`s`** stop on a role, and
+  **`t`** to send a line to the captain from anywhere. Mutating actions confirm
+  first (or take typed text in an inline modal) and run on a worker thread, so
+  a slow gh call never freezes the board; the result lands in a colour-coded
+  status line and the board auto-refreshes. The write side stays in bash too
+  (`fwf-dash-act.sh`) behind the same gh/local abstraction, with an
+  `FWF_DASH_DRYRUN` seam (prints the constructed command instead of running it)
+  that both the hermetic tests and cautious operators use; in local-issues mode
+  writes route to the local store and never reach gh (the #34 guard).
+- **`fwf dash` detail threads + scroll/mouse polish** (#40, milestone 3, from
+  UAT feedback). The detail pane now shows the selected row's **full thread
+  (body + comments)**, lazily fetched for that row only on a dedicated worker
+  thread (the per-tick board snapshot stays cheap); after you comment / approve
+  / reject it re-pulls so your just-posted comment shows at once. `n`/`p` scroll
+  the detail pane (reject moved off `n` to **`x`**); the launcher enables tmux
+  `mouse on` for the session so the wheel works wherever the dash is stood up.
+  The detail provider pulls the thread as JSON (`gh`'s `view --comments` is
+  TTY-only and emits nothing as a subprocess).
+
 ## [0.7.1] - 2026-06-13
 
 ### Fixed

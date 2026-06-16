@@ -38,3 +38,22 @@ jobs:
         run: bash --version | head -1
       - name: Run functional tests
         run: bash test/run.sh
+
+  dash:
+    name: dash crate (rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Show toolchain
+        run: cargo --version && rustc --version
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy (fail on warnings)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build (release)
+        run: cargo build --release --locked
+      - name: Test
+        run: cargo test --locked

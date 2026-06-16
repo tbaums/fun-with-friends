@@ -1,0 +1,20 @@
+[package]
+name = "fwf-dash"
+version = "0.1.0"
+edition = "2021"
+description = "fwf dash — a read-only Rust + ratatui status board for the fun-with-friends factory (issue #40)"
+license = "MIT"
+
+[[bin]]
+name = "fwf-dash"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+strip = true
+opt-level = "s"
