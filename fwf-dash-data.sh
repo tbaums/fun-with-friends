@@ -104,7 +104,11 @@ needs_you_json() {
   pane="$(fwf_find_pane "$COORD_SESSION" "CAPTAIN" 2>/dev/null || true)"
   [ -n "$pane" ] || { echo '{"active":false,"summary":""}'; return 0; }
   content="$(tmux capture-pane -p -t "$pane" 2>/dev/null || true)"
-  if printf '%s' "$content" | grep -qE "NEEDS YOU|Enter to select|to navigate · Esc"; then
+  # The captain prints "⛔ NEEDS YOU — nothing right now" as a STANDING status
+  # line every tick, so that substring is not a signal. The reliable "actually
+  # blocked on you" signal is an active interactive selection menu, whose footer
+  # is "Enter to select … Esc to cancel" — present only while awaiting a choice.
+  if printf '%s' "$content" | grep -qE "Enter to select"; then
     summary="$(printf '%s' "$content" | grep -E '\?[[:space:]]*$' | tail -1 \
                  | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     [ -n "$summary" ] || summary="waiting on a decision"
