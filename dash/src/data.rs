@@ -25,6 +25,19 @@ pub struct Dashboard {
     pub issues: Vec<Issue>,
     #[serde(default)]
     pub activity: Activity,
+    #[serde(default)]
+    pub needs_you: NeedsYou,
+}
+
+/// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
+/// state or interactive menu) that the gh label protocol doesn't capture — so the
+/// dash can show an unmissable banner instead of looking calm.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct NeedsYou {
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub summary: String,
 }
 
 /// Factory motion, derived from PRs against the integration targets: drafts are

@@ -93,6 +93,28 @@ roles_json() {
   done | jq -s '.'
 }
 
+# --- needs-you (captain blocked on a human decision) ------------------------
+# The captain surfaces "NEEDS YOU" (and/or an interactive decision menu) in its
+# pane when it's waiting on a call the gh label protocol doesn't capture — so the
+# Decisions tab can read empty while the captain is actually blocked on you. Read
+# the captain pane directly and flag it (with the decision question if we can find
+# one) so the dash can show an unmissable banner.
+needs_you_json() {
+  local pane content summary
+  pane="$(fwf_find_pane "$COORD_SESSION" "CAPTAIN" 2>/dev/null || true)"
+  [ -n "$pane" ] || { echo '{"active":false,"summary":""}'; return 0; }
+  content="$(tmux capture-pane -p -t "$pane" 2>/dev/null || true)"
+  if printf '%s' "$content" | grep -qE "NEEDS YOU|Enter to select|to navigate · Esc"; then
+    summary="$(printf '%s' "$content" | grep -E '\?[[:space:]]*$' | tail -1 \
+                 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [ -n "$summary" ] || summary="waiting on a decision"
+    summary="$(printf '%s' "$summary" | cut -c1-140)"
+    jq -n --arg s "$summary" '{active:true, summary:$s}'
+  else
+    echo '{"active":false,"summary":""}'
+  fi
+}
+
 # --- issues + decisions -----------------------------------------------------
 # All open issues, with bodies + labels, in one backend call (gh and the local
 # store share the --json field names even though their plain columns differ).
@@ -175,7 +197,7 @@ activity_json() {
 
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions activity
+  local prod pipeline stamp parked gen issues roles decisions activity needs_you
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -190,16 +212,17 @@ main() {
   roles="$(roles_json)"
   decisions="$(decisions_json "$issues")"
   activity="$(activity_json)"
+  needs_you="$(needs_you_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
     --argjson parked "$parked" \
     --arg prod "$prod" --arg pipeline "$pipeline" --arg stamp "$stamp" --arg gen "$gen" \
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
-    --argjson activity "$activity" \
+    --argjson activity "$activity" --argjson needs_you "$needs_you" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
-      activity:$activity}'
+      activity:$activity, needs_you:$needs_you}'
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------

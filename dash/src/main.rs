@@ -701,20 +701,41 @@ fn clamp_cursor(app: &mut App) {
 // --- rendering --------------------------------------------------------------
 
 fn ui(f: &mut Frame, app: &mut App) {
+    // A red "CAPTAIN NEEDS YOU" banner slots in below the tab bar whenever the
+    // captain is blocked on a human decision, so the dash is never calm-looking
+    // while something is actually waiting on you.
+    let needs = app
+        .feed
+        .dashboard()
+        .map(|d| d.needs_you.active)
+        .unwrap_or(false);
+
+    let mut constraints = vec![
+        Constraint::Length(4), // header
+        Constraint::Length(1), // tab bar
+    ];
+    if needs {
+        constraints.push(Constraint::Length(1)); // needs-you banner
+    }
+    constraints.push(Constraint::Min(3)); // body
+    constraints.push(Constraint::Length(1)); // footer / legend / status
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4), // header
-            Constraint::Length(1), // tab bar
-            Constraint::Min(3),    // body
-            Constraint::Length(1), // footer / legend / status
-        ])
+        .constraints(constraints)
         .split(f.area());
 
-    render_header(f, chunks[0], app);
-    render_tabs(f, chunks[1], app);
-    render_body(f, chunks[2], app);
-    render_footer(f, chunks[3], app);
+    let mut i = 0;
+    render_header(f, chunks[i], app);
+    i += 1;
+    render_tabs(f, chunks[i], app);
+    i += 1;
+    if needs {
+        render_needs_banner(f, chunks[i], app);
+        i += 1;
+    }
+    render_body(f, chunks[i], app);
+    i += 1;
+    render_footer(f, chunks[i], app);
 
     match &app.overlay {
         Overlay::Help => render_help(f, f.area()),
@@ -722,6 +743,29 @@ fn ui(f: &mut Frame, app: &mut App) {
         Overlay::Input { prompt, buffer, .. } => render_input(f, f.area(), prompt, buffer),
         Overlay::None => {}
     }
+}
+
+/// The red attention banner — shown only when `needs_you.active`, full-width
+/// below the tabs so it's the first thing the eye hits on any tab.
+fn render_needs_banner(f: &mut Frame, area: Rect, app: &App) {
+    let summary = app
+        .feed
+        .dashboard()
+        .map(|d| d.needs_you.summary.clone())
+        .unwrap_or_default();
+    let text = if summary.is_empty() {
+        " ⛔ CAPTAIN NEEDS YOU — a decision is waiting · attach: tmux attach -t friends-coord "
+            .to_string()
+    } else {
+        format!(" ⛔ CAPTAIN NEEDS YOU — {summary}  · attach: tmux attach -t friends-coord ")
+    };
+    let para = Paragraph::new(text).style(
+        Style::default()
+            .bg(Color::Red)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(para, area);
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
