@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-16
+
 ### Added
 - **`fwf dash` — a read-only status board** (#40, milestone 1). A compiled
   Rust + ratatui TUI (new `dash/` crate) that shows the factory at a glance:
