@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-16
+
+### Fixed
+- **`fwf dash` showed every role "down" when displayed in a different tmux than
+  the factory** (#40). The dash may run inside a separate tmux session (e.g. to
+  forward the mouse wheel to the TUI), but `fwf up` puts the factory on tmux's
+  default socket. Role detection used the inherited `$TMUX`, so it queried the
+  wrong server and read every pane as down even with the swarm live. The data and
+  action layers now `unset TMUX`, so pane liveness is read — and role/captain
+  controls are driven — on the factory's socket regardless of where the dash is
+  shown. Board data (issues/decisions, from `gh`) was unaffected.
+
 ## [0.8.0] - 2026-06-16
 
 ### Added
