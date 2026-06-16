@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-16
+
+### Added
+- **`fwf dash` Activity tab — live factory motion** (#40). A new landing section
+  that answers "what's the factory *doing*", derived from PRs against the
+  integration targets: **BUILDING** (draft PRs — an implementer still working,
+  per role + issue + CI state), **IN TEST / REVIEW** (ready PRs handed to QA, with
+  an aggregate check glyph ✓/●/✗), and **MERGED (recent)** (promotions to
+  staging/integration with time). Selecting a row loads that PR's full detail
+  (body + checks + comments) in the preview via the lazy-detail worker (the detail
+  provider tries the issue view, then falls back to `gh pr view`). Sections are
+  now `1 Activity / 2 Roles / 3 Decisions / 4 Issues`. Data stays in bash
+  (`activity_json`, gh-only); the binary renders.
+
+### Fixed
+- Dash footer's Decisions legend showed the old `n` for reject; corrected to `x`.
+
 ## [0.8.1] - 2026-06-16
 
 ### Fixed
