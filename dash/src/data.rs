@@ -75,6 +75,27 @@ pub fn fetch() -> Result<Dashboard, String> {
     parse(&out.stdout)
 }
 
+/// Fetch ONE issue/decision's full thread (body + comments) as plain text for the
+/// detail pane. Lazy: called only for the selected row, off the per-tick board
+/// fetch, so a freshly-posted comment appears the moment the dash re-requests it.
+pub fn fetch_detail(id: &str) -> Result<String, String> {
+    let script = std::env::var("FWF_DASH_DATA")
+        .map_err(|_| "FWF_DASH_DATA is not set (run via `fwf dash`)".to_string())?;
+    let out = Command::new("bash")
+        .arg(&script)
+        .arg("detail")
+        .arg(id)
+        .output()
+        .map_err(|e| format!("could not run the detail provider: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "detail provider exited {}",
+            out.status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Parse a dashboard snapshot from provider stdout (split out so it is unit-testable
 /// without spawning bash).
 pub fn parse(bytes: &[u8]) -> Result<Dashboard, String> {

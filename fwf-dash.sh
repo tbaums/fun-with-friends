@@ -35,4 +35,16 @@ command -v jq >/dev/null 2>&1 || die "dash: jq is required for the data provider
 # FWF_PROFILE flow through) so they resolve the same factory the binary renders.
 export FWF_DASH_DATA="$DIR/fwf-dash-data.sh"
 export FWF_DASH_ACT="$DIR/fwf-dash-act.sh"
+
+# Mouse-wheel scroll in the detail pane needs the host tmux to forward wheel
+# events to the alt-screen TUI, which only happens when that session has
+# `mouse on`. Enable it for the duration (session-local) and revert on exit so
+# the wheel works wherever the dash is stood up — concierge, factory, or the
+# user's own tmux — without editing any tmux.conf. Outside tmux this is a no-op.
+if [ -n "${TMUX:-}" ]; then
+  tmux set mouse on 2>/dev/null || true
+  "$BIN"; rc=$?
+  tmux set -u mouse 2>/dev/null || true   # drop our override; revert to prior default
+  exit "$rc"
+fi
 exec "$BIN"

@@ -153,4 +153,35 @@ main() {
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues}'
 }
+
+# --- detail (lazy, per-selection) -------------------------------------------
+# `fwf-dash-data.sh detail <id>` emits ONE issue/decision's full thread (body +
+# comments) as plain text for the dash's right pane. Fetched on demand for the
+# selected row only — never in the per-tick board snapshot — so the comment you
+# just posted shows up the instant the dash re-requests it after the action.
+detail_view() {
+  local id="$1"
+  case "$id" in
+    ''|*[!0-9]*) echo "(no detail for '$id')"; return 0 ;;  # numeric ids only
+  esac
+  # gh's `view --comments` is TTY-ONLY — it prints nothing as a subprocess. So pull
+  # the thread as JSON (gh's embedded --jq works headless) and format it ourselves.
+  # The local backend renders comments fine in script mode, so it keeps --comments.
+  if [ "$FWF_ISSUES" = "local" ]; then
+    di_read view "$id" --comments 2>/dev/null || echo "(detail unavailable for #$id)"
+  else
+    di_read view "$id" --json number,title,state,body,comments --jq '
+      "#\(.number) · \(.title)\nstate: \(.state)\n\n\(.body)\n" +
+      (if (.comments | length) > 0
+       then "\n--- comments (\(.comments | length)) ---\n" +
+            ([.comments[] | "\n— @\(.author.login) · \(.createdAt[0:10]) —\n\(.body)"] | join("\n"))
+       else "\n(no comments yet)" end)' 2>/dev/null \
+      || echo "(detail unavailable for #$id)"
+  fi
+}
+
+if [ "${1:-}" = "detail" ]; then
+  detail_view "${2:-}"
+  exit 0
+fi
 main

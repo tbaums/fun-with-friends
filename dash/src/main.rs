@@ -15,8 +15,9 @@
 //!
 //! Input model is the prior-art one from the #40 research (NO F-keys): j/k+arrows
 //! move the list cursor, Tab/Shift-Tab + [ ] + 1/2/3 switch section, PgUp/PgDn +
-//! Ctrl-u/Ctrl-d scroll the preview, Ctrl-r refreshes, ? toggles help, q quits,
-//! mouse wheel scrolls. Actions (milestone 2): on Decisions y approve / n reject /
+//! Ctrl-u/Ctrl-d scroll the preview (n/p are the primary detail-pane keys),
+//! Ctrl-r refreshes, ? toggles help, q quits, mouse wheel scrolls. Actions
+//! (milestone 2): on Decisions y approve / x reject /
 //! c comment / o open; on Issues c comment / o open; on Roles r respawn / s stop;
 //! t sends a line to the captain from anywhere. Mutating actions confirm first
 //! (or take typed text in an inline modal) and never touch the tracker until then.
@@ -153,11 +154,21 @@ struct App {
     busy: bool,
     refresh: Sender<()>,
     action_tx: Sender<ActionOutcome>,
+    /// Requests the selected row's full thread (body + comments) from the detail worker.
+    detail_tx: Sender<String>,
+    /// (id, text) of the thread currently loaded for the selected row's preview.
+    detail: Option<(String, String)>,
+    /// Last id we asked the detail worker for, to dedupe rapid selection changes.
+    detail_req: Option<String>,
     should_quit: bool,
 }
 
 impl App {
-    fn new(refresh: Sender<()>, action_tx: Sender<ActionOutcome>) -> App {
+    fn new(
+        refresh: Sender<()>,
+        action_tx: Sender<ActionOutcome>,
+        detail_tx: Sender<String>,
+    ) -> App {
         let mut cursors: [ListState; 3] = Default::default();
         for c in &mut cursors {
             c.select(Some(0));
@@ -172,8 +183,38 @@ impl App {
             busy: false,
             refresh,
             action_tx,
+            detail_tx,
+            detail: None,
+            detail_req: None,
             should_quit: false,
         }
+    }
+
+    /// Ask the detail worker for the selected row's full thread, unless we already
+    /// asked for this id. Numeric ids only (issues + numeric decisions); Roles and
+    /// non-numeric decisions (e.g. a release pseudo-row) have no fetchable thread.
+    fn request_detail(&mut self) {
+        let id = match self.tab {
+            Tab::Decisions | Tab::Issues => self.selected_id(),
+            Tab::Roles => None,
+        };
+        match id {
+            Some(id) if id.chars().all(|c| c.is_ascii_digit()) => {
+                if self.detail_req.as_deref() != Some(id.as_str()) {
+                    self.detail_req = Some(id.clone());
+                    let _ = self.detail_tx.send(id);
+                }
+            }
+            _ => self.detail_req = None,
+        }
+    }
+
+    /// Force a detail re-fetch for the selected row after an action mutates the
+    /// thread (comment / approve / reject), so the right pane reflects it at once.
+    fn refetch_detail(&mut self) {
+        self.detail = None; // fall back to the board's body until the fresh thread lands
+        self.detail_req = None; // clear the dedupe so request_detail re-sends
+        self.request_detail();
     }
 
     fn cursor(&mut self) -> &mut ListState {
@@ -194,6 +235,7 @@ impl App {
 
     fn select_tab(&mut self, tab: Tab) {
         self.tab = tab;
+        self.request_detail();
     }
 
     /// Move the list cursor by `delta`, clamped to the row range. Resets the
@@ -207,6 +249,7 @@ impl App {
         let next = (cur + delta).clamp(0, count as isize - 1) as usize;
         self.cursor().select(Some(next));
         self.scroll[self.tab.index()] = 0;
+        self.request_detail();
     }
 
     fn scroll_preview(&mut self, delta: i32) {
@@ -426,7 +469,10 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
             KeyCode::Char('g') | KeyCode::Home => self.move_cursor(isize::MIN / 2),
             KeyCode::Char('G') | KeyCode::End => self.move_cursor(isize::MAX / 2),
-            // Preview scroll.
+            // Preview scroll. n/p are the primary detail-pane keys (next/prev);
+            // Ctrl-d/u, PgDn/Up and the wheel remain as secondary.
+            KeyCode::Char('n') => self.scroll_preview(3),
+            KeyCode::Char('p') => self.scroll_preview(-3),
             KeyCode::Char('d') if ctrl => self.scroll_preview(10),
             KeyCode::Char('u') if ctrl => self.scroll_preview(-10),
             KeyCode::PageDown => self.scroll_preview(10),
@@ -434,7 +480,7 @@ impl App {
             // Actions — gated by the active section.
             KeyCode::Char('t') => self.begin_action("passthrough"),
             KeyCode::Char('y') if self.tab == Tab::Decisions => self.begin_action("approve"),
-            KeyCode::Char('n') if self.tab == Tab::Decisions => self.begin_action("reject"),
+            KeyCode::Char('x') if self.tab == Tab::Decisions => self.begin_action("reject"),
             KeyCode::Char('c') if matches!(self.tab, Tab::Decisions | Tab::Issues) => {
                 self.begin_action("comment")
             }
@@ -504,12 +550,15 @@ fn main() -> Result<()> {
     let (data_tx, data_rx) = mpsc::channel::<Result<Dashboard, String>>();
     let (refresh_tx, refresh_rx) = mpsc::channel::<()>();
     let (action_tx, action_rx) = mpsc::channel::<ActionOutcome>();
+    let (detail_req_tx, detail_req_rx) = mpsc::channel::<String>();
+    let (detail_tx, detail_rx) = mpsc::channel::<(String, String)>();
     let interval = refresh_interval();
     thread::spawn(move || data_loop(data_tx, refresh_rx, interval));
+    thread::spawn(move || detail_loop(detail_req_rx, detail_tx));
 
     let mut terminal = init_terminal().context("initializing the terminal")?;
-    let app = App::new(refresh_tx, action_tx);
-    let result = run(&mut terminal, app, data_rx, action_rx);
+    let app = App::new(refresh_tx, action_tx, detail_req_tx);
+    let result = run(&mut terminal, app, data_rx, action_rx, detail_rx);
     restore_terminal();
     result
 }
@@ -537,6 +586,21 @@ fn data_loop(tx: Sender<Result<Dashboard, String>>, req: Receiver<()>, interval:
     }
 }
 
+/// Detail worker: fetches the selected row's full thread on demand. Coalesces a
+/// burst of requests (fast j/k scrolling) down to the latest id so we only pay
+/// for the row the cursor actually landed on.
+fn detail_loop(req: Receiver<String>, tx: Sender<(String, String)>) {
+    while let Ok(mut id) = req.recv() {
+        while let Ok(newer) = req.try_recv() {
+            id = newer;
+        }
+        let text = data::fetch_detail(&id).unwrap_or_else(|e| format!("(detail unavailable: {e})"));
+        if tx.send((id, text)).is_err() {
+            return; // main thread is gone.
+        }
+    }
+}
+
 type Tui = Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
 
 fn init_terminal() -> Result<Tui> {
@@ -557,6 +621,7 @@ fn run(
     mut app: App,
     data_rx: Receiver<Result<Dashboard, String>>,
     action_rx: Receiver<ActionOutcome>,
+    detail_rx: Receiver<(String, String)>,
 ) -> Result<()> {
     while !app.should_quit {
         // Drain any snapshots the data thread produced since last frame.
@@ -577,12 +642,22 @@ fn run(
         }
 
         // Drain finished actions: surface the result and refresh on success so
-        // the board reflects the mutation (un-gated issue, respawned role, …).
+        // the board reflects the mutation (un-gated issue, respawned role, …) and
+        // the detail pane re-pulls the thread (so your just-posted comment shows).
         while let Ok(outcome) = action_rx.try_recv() {
             app.busy = false;
             app.set_status(outcome.message, !outcome.ok);
             if outcome.ok {
                 let _ = app.refresh.send(());
+                app.refetch_detail();
+            }
+        }
+
+        // Apply any detail thread that finished loading, if it still matches the
+        // selected row (a stale result for a row we've scrolled past is dropped).
+        while let Ok((id, text)) = detail_rx.try_recv() {
+            if app.selected_id().as_deref() == Some(id.as_str()) {
+                app.detail = Some((id, text));
             }
         }
 
@@ -823,7 +898,7 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
     let d = app.feed.dashboard().expect("checked by caller");
     let selected = app.cursors[tab.index()].selected().unwrap_or(0);
 
-    let (items, title, body): (Vec<ListItem>, &str, String) = match tab {
+    let (items, title, body, sel_id): (Vec<ListItem>, &str, String, Option<String>) = match tab {
         Tab::Decisions => {
             let items = d
                 .decisions
@@ -851,7 +926,8 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
                 .get(selected)
                 .map(|x| x.body.clone())
                 .unwrap_or_default();
-            (items, " Decisions — awaiting you ", body)
+            let sel_id = d.decisions.get(selected).map(|x| x.id.clone());
+            (items, " Decisions — awaiting you ", body, sel_id)
         }
         Tab::Issues => {
             let items = d
@@ -877,7 +953,8 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
                 .get(selected)
                 .map(|x| x.body.clone())
                 .unwrap_or_default();
-            (items, " Issues — all open ", body)
+            let sel_id = d.issues.get(selected).map(|x| x.number.to_string());
+            (items, " Issues — all open ", body, sel_id)
         }
         Tab::Roles => unreachable!(),
     };
@@ -895,12 +972,27 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
     f.render_stateful_widget(list, cols[0], &mut state);
     app.cursors[tab.index()] = state;
 
-    // Preview pane.
-    let pblock = Block::default().borders(Borders::ALL).title(" Detail ");
+    // Preview pane: the selected row's full thread (body + comments), lazily
+    // loaded for this row only. Until it lands we show the board's body snapshot;
+    // a title hint flags the in-flight fetch.
+    let thread = match &app.detail {
+        Some((id, text)) if Some(id.as_str()) == sel_id.as_deref() => Some(text.as_str()),
+        _ => None,
+    };
+    let loading = thread.is_none()
+        && sel_id
+            .as_deref()
+            .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()));
+    let ptitle = if loading {
+        " Detail · loading thread… "
+    } else {
+        " Detail "
+    };
+    let pblock = Block::default().borders(Borders::ALL).title(ptitle);
     let preview = if empty {
         Paragraph::new("— nothing here —").style(Style::default().fg(Color::DarkGray))
     } else {
-        Paragraph::new(markdownish(&body)).wrap(Wrap { trim: false })
+        Paragraph::new(markdownish(thread.unwrap_or(&body))).wrap(Wrap { trim: false })
     };
     f.render_widget(
         preview.block(pblock).scroll((app.scroll[tab.index()], 0)),
@@ -976,7 +1068,10 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_row("Tab / Shift-Tab  ·  [ ]", "next / previous section"),
         help_row("j / k  ·  ↓ / ↑", "move the list cursor"),
         help_row("g / G", "first / last row"),
-        help_row("PgDn/PgUp · Ctrl-d/u · wheel", "scroll the detail preview"),
+        help_row(
+            "n / p  ·  PgDn/PgUp · Ctrl-d/u · wheel",
+            "scroll the detail preview",
+        ),
         help_row("Ctrl-r", "force a data refresh now"),
         Line::from(""),
         Line::from(Span::styled(
@@ -985,7 +1080,7 @@ fn render_help(f: &mut Frame, area: Rect) {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         )),
-        help_row("y / n", "approve (un-gate) / reject — confirms first"),
+        help_row("y / x", "approve (un-gate) / reject — confirms first"),
         help_row("c", "comment (opens a text field)"),
         help_row("o", "open in the browser (gh) / detail (local)"),
         Line::from(Span::styled(
@@ -1180,7 +1275,8 @@ mod tests {
     fn test_app() -> App {
         let (rtx, _r) = mpsc::channel();
         let (atx, _a) = mpsc::channel();
-        App::new(rtx, atx)
+        let (dtx, _d) = mpsc::channel();
+        App::new(rtx, atx, dtx)
     }
 
     #[test]
