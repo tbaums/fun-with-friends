@@ -43,28 +43,32 @@ use ratatui::{Frame, Terminal};
 
 use data::Dashboard;
 
-/// The three sections of the board. Order matters: it is the 1/2/3 jump order and
-/// the Tab cycle order.
+/// The four sections of the board. Order matters: it is the 1/2/3/4 jump order
+/// and the Tab cycle order. Activity is first so it's the landing view — the
+/// "what's going on right now" overview.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Activity,
     Roles,
     Decisions,
     Issues,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Roles, Tab::Decisions, Tab::Issues];
+    const ALL: [Tab; 4] = [Tab::Activity, Tab::Roles, Tab::Decisions, Tab::Issues];
 
     fn index(self) -> usize {
         match self {
-            Tab::Roles => 0,
-            Tab::Decisions => 1,
-            Tab::Issues => 2,
+            Tab::Activity => 0,
+            Tab::Roles => 1,
+            Tab::Decisions => 2,
+            Tab::Issues => 3,
         }
     }
 
     fn title(self) -> &'static str {
         match self {
+            Tab::Activity => "Activity",
             Tab::Roles => "Roles",
             Tab::Decisions => "Decisions",
             Tab::Issues => "Issues",
@@ -146,8 +150,8 @@ struct Status {
 struct App {
     feed: Feed,
     tab: Tab,
-    cursors: [ListState; 3],
-    scroll: [u16; 3],
+    cursors: [ListState; 4],
+    scroll: [u16; 4],
     overlay: Overlay,
     status: Option<Status>,
     /// True while an action is shelling out — disables firing another.
@@ -169,15 +173,15 @@ impl App {
         action_tx: Sender<ActionOutcome>,
         detail_tx: Sender<String>,
     ) -> App {
-        let mut cursors: [ListState; 3] = Default::default();
+        let mut cursors: [ListState; 4] = Default::default();
         for c in &mut cursors {
             c.select(Some(0));
         }
         App {
             feed: Feed::Loading,
-            tab: Tab::Roles,
+            tab: Tab::Activity,
             cursors,
-            scroll: [0; 3],
+            scroll: [0; 4],
             overlay: Overlay::None,
             status: None,
             busy: false,
@@ -195,7 +199,7 @@ impl App {
     /// non-numeric decisions (e.g. a release pseudo-row) have no fetchable thread.
     fn request_detail(&mut self) {
         let id = match self.tab {
-            Tab::Decisions | Tab::Issues => self.selected_id(),
+            Tab::Activity | Tab::Decisions | Tab::Issues => self.selected_id(),
             Tab::Roles => None,
         };
         match id {
@@ -226,6 +230,7 @@ impl App {
         match self.feed.dashboard() {
             None => 0,
             Some(d) => match self.tab {
+                Tab::Activity => d.activity.len(),
                 Tab::Roles => d.roles.len(),
                 Tab::Decisions => d.decisions.len(),
                 Tab::Issues => d.issues.len(),
@@ -263,6 +268,7 @@ impl App {
         let d = self.feed.dashboard()?;
         let sel = self.cursors[self.tab.index()].selected().unwrap_or(0);
         match self.tab {
+            Tab::Activity => d.activity.flat().get(sel).map(|x| x.pr.to_string()),
             Tab::Decisions => d.decisions.get(sel).map(|x| x.id.clone()),
             Tab::Issues => d.issues.get(sel).map(|x| x.number.to_string()),
             Tab::Roles => None,
@@ -461,9 +467,10 @@ impl App {
             // Section switching.
             KeyCode::Tab | KeyCode::Char(']') => self.select_tab(self.tab.cycle(1)),
             KeyCode::BackTab | KeyCode::Char('[') => self.select_tab(self.tab.cycle(-1)),
-            KeyCode::Char('1') => self.select_tab(Tab::Roles),
-            KeyCode::Char('2') => self.select_tab(Tab::Decisions),
-            KeyCode::Char('3') => self.select_tab(Tab::Issues),
+            KeyCode::Char('1') => self.select_tab(Tab::Activity),
+            KeyCode::Char('2') => self.select_tab(Tab::Roles),
+            KeyCode::Char('3') => self.select_tab(Tab::Decisions),
+            KeyCode::Char('4') => self.select_tab(Tab::Issues),
             // List navigation.
             KeyCode::Char('j') | KeyCode::Down => self.move_cursor(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
@@ -808,6 +815,7 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, t)| {
             let count = match (app.feed.dashboard(), t) {
+                (Some(d), Tab::Activity) => d.activity.len(),
                 (Some(d), Tab::Roles) => d.roles.len(),
                 (Some(d), Tab::Decisions) => d.decisions.len(),
                 (Some(d), Tab::Issues) => d.issues.len(),
@@ -842,10 +850,165 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     match app.tab {
+        Tab::Activity => render_activity(f, area, app),
         Tab::Roles => render_roles(f, area, app),
         Tab::Decisions => render_list_with_preview(f, area, app, Tab::Decisions),
         Tab::Issues => render_list_with_preview(f, area, app, Tab::Issues),
     }
+}
+
+/// The Activity board — the landing view: BUILDING (draft PRs) / IN TEST / MERGED
+/// as one scrollable cursor list (left) with the selected PR's detail (right).
+/// Row order matches `Activity::flat`, so the cursor index maps straight to a PR;
+/// group headers are embedded in the first row of each group (purely cosmetic).
+fn render_activity(f: &mut Frame, area: Rect, app: &mut App) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(area);
+
+    let d = app.feed.dashboard().expect("checked by caller");
+    let act = &d.activity;
+    let selected = app.cursors[Tab::Activity.index()].selected().unwrap_or(0);
+
+    let groups: [(&str, &[data::ActivityItem]); 3] = [
+        ("BUILDING", &act.building),
+        ("IN TEST / REVIEW", &act.in_test),
+        ("MERGED (recent)", &act.merged),
+    ];
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut first_group = true;
+    for (label, rows) in groups {
+        if rows.is_empty() {
+            continue;
+        }
+        for (i, it) in rows.iter().enumerate() {
+            let mut lines: Vec<Line> = Vec::new();
+            if i == 0 {
+                if !first_group {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(
+                    label.to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            lines.push(activity_row_line(it, cols[0].width));
+            items.push(ListItem::new(lines));
+        }
+        first_group = false;
+    }
+
+    let empty = act.is_empty();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Activity — factory motion "),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)))
+        .highlight_symbol("▌");
+    let mut state = app.cursors[Tab::Activity.index()].clone();
+    f.render_stateful_widget(list, cols[0], &mut state);
+    app.cursors[Tab::Activity.index()] = state;
+
+    // Right preview: the selected PR's thread (lazily fetched), with a one-line
+    // summary of the row as the placeholder until it lands.
+    let flat = act.flat();
+    let sel_pr = flat.get(selected).map(|x| x.pr.to_string());
+    let thread = match &app.detail {
+        Some((id, text)) if Some(id.as_str()) == sel_pr.as_deref() => Some(text.as_str()),
+        _ => None,
+    };
+    let loading = thread.is_none() && sel_pr.is_some();
+    let ptitle = if loading {
+        " Detail · loading PR… "
+    } else {
+        " Detail "
+    };
+    let fallback = flat.get(selected).map(activity_summary).unwrap_or_default();
+    let pblock = Block::default().borders(Borders::ALL).title(ptitle);
+    let preview = if empty {
+        Paragraph::new("— factory idle: no open PRs or recent merges —")
+            .style(Style::default().fg(Color::DarkGray))
+    } else {
+        Paragraph::new(markdownish(thread.unwrap_or(&fallback))).wrap(Wrap { trim: false })
+    };
+    f.render_widget(
+        preview
+            .block(pblock)
+            .scroll((app.scroll[Tab::Activity.index()], 0)),
+        cols[1],
+    );
+}
+
+/// One compact list line for an activity row. Merged rows (which carry a `when`)
+/// render as `#pr →base when  title`; building/test rows as `role #issue ✓ title`.
+fn activity_row_line(it: &data::ActivityItem, width: u16) -> Line<'static> {
+    let w = width.saturating_sub(6) as usize;
+    if !it.when.is_empty() {
+        Line::from(vec![
+            Span::styled(format!("  #{} ", it.pr), Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("→{} {}  ", it.base, it.when),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(truncate(&it.title, w)),
+        ])
+    } else {
+        let (glyph, gcol) = checks_glyph(&it.checks);
+        let who = if it.role.is_empty() {
+            "—".to_string()
+        } else {
+            it.role.clone()
+        };
+        let iss = if it.issue.is_empty() {
+            String::new()
+        } else {
+            format!("#{} ", it.issue)
+        };
+        Line::from(vec![
+            Span::styled(format!("  {:<6} ", who), Style::default().fg(Color::Blue)),
+            Span::raw(iss),
+            Span::styled(format!("{} ", glyph), Style::default().fg(gcol)),
+            Span::raw(truncate(&it.title, w)),
+            Span::styled(
+                format!("  PR#{}", it.pr),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
+    }
+}
+
+/// Glyph + colour for a PR's aggregate check state.
+fn checks_glyph(checks: &str) -> (&'static str, Color) {
+    match checks {
+        "pass" => ("✓", Color::Green),
+        "run" => ("●", Color::Yellow),
+        "fail" => ("✗", Color::Red),
+        _ => ("·", Color::DarkGray),
+    }
+}
+
+/// Placeholder detail shown until the selected PR's full thread is fetched.
+fn activity_summary(it: &&data::ActivityItem) -> String {
+    let mut s = format!("PR #{}  → {}\n{}\n", it.pr, it.base, it.title);
+    if !it.role.is_empty() {
+        s.push_str(&format!("\nrole:   {}", it.role));
+    }
+    if !it.issue.is_empty() {
+        s.push_str(&format!("\nissue:  #{}", it.issue));
+    }
+    if !it.checks.is_empty() {
+        s.push_str(&format!("\nchecks: {}", it.checks));
+    }
+    if !it.when.is_empty() {
+        s.push_str(&format!("\nmerged: {}", it.when));
+    }
+    s.push_str("\n\n(loading PR detail…)");
+    s
 }
 
 fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
@@ -956,7 +1119,7 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
             let sel_id = d.issues.get(selected).map(|x| x.number.to_string());
             (items, " Issues — all open ", body, sel_id)
         }
-        Tab::Roles => unreachable!(),
+        Tab::Activity | Tab::Roles => unreachable!(),
     };
 
     let empty = items.is_empty();
@@ -1027,9 +1190,10 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let key = Style::default().fg(Color::Cyan);
     // Action hints depend on the active section.
     let actions: &[(&str, &str)] = match app.tab {
+        Tab::Activity => &[("n/p", "scroll PR"), ("Ctrl-r", "refresh")],
         Tab::Decisions => &[
             ("y", "approve"),
-            ("n", "reject"),
+            ("x", "reject"),
             ("c", "comment"),
             ("o", "open"),
         ],
@@ -1037,7 +1201,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         Tab::Roles => &[("r", "respawn"), ("s", "stop")],
     };
     let mut spans = vec![
-        Span::styled(" 1/2/3 ", key),
+        Span::styled(" 1-4 ", key),
         Span::styled("tab ", dim),
         Span::styled(" j/k ", key),
         Span::styled("move ", dim),
@@ -1064,7 +1228,10 @@ fn render_help(f: &mut Frame, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        help_row("1 / 2 / 3", "jump to Roles / Decisions / Issues"),
+        help_row(
+            "1 / 2 / 3 / 4",
+            "jump to Activity / Roles / Decisions / Issues",
+        ),
         help_row("Tab / Shift-Tab  ·  [ ]", "next / previous section"),
         help_row("j / k  ·  ↓ / ↑", "move the list cursor"),
         help_row("g / G", "first / last row"),
@@ -1073,6 +1240,17 @@ fn render_help(f: &mut Frame, area: Rect) {
             "scroll the detail preview",
         ),
         help_row("Ctrl-r", "force a data refresh now"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Activity",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_row(
+            "(read-only)",
+            "BUILDING (draft PRs) · IN TEST · MERGED; selected PR's detail on the right",
+        ),
         Line::from(""),
         Line::from(Span::styled(
             "  Decisions",
@@ -1281,9 +1459,10 @@ mod tests {
 
     #[test]
     fn tab_cycles_and_wraps() {
-        assert!(matches!(Tab::Roles.cycle(1), Tab::Decisions));
-        assert!(matches!(Tab::Issues.cycle(1), Tab::Roles));
-        assert!(matches!(Tab::Roles.cycle(-1), Tab::Issues));
+        // Order: Activity → Roles → Decisions → Issues → (wrap) Activity.
+        assert!(matches!(Tab::Activity.cycle(1), Tab::Roles));
+        assert!(matches!(Tab::Issues.cycle(1), Tab::Activity));
+        assert!(matches!(Tab::Activity.cycle(-1), Tab::Issues));
     }
 
     #[test]

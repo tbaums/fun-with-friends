@@ -23,6 +23,57 @@ pub struct Dashboard {
     pub decisions: Vec<Decision>,
     #[serde(default)]
     pub issues: Vec<Issue>,
+    #[serde(default)]
+    pub activity: Activity,
+}
+
+/// Factory motion, derived from PRs against the integration targets: drafts are
+/// being built, ready PRs are in test/review, recent merges are promotions.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Activity {
+    #[serde(default)]
+    pub building: Vec<ActivityItem>,
+    #[serde(default)]
+    pub in_test: Vec<ActivityItem>,
+    #[serde(default)]
+    pub merged: Vec<ActivityItem>,
+}
+
+impl Activity {
+    /// building → in_test → merged: the display and cursor-selection order.
+    pub fn flat(&self) -> Vec<&ActivityItem> {
+        self.building
+            .iter()
+            .chain(&self.in_test)
+            .chain(&self.merged)
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.building.len() + self.in_test.len() + self.merged.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityItem {
+    pub pr: i64,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub issue: String,
+    #[serde(default)]
+    pub base: String,
+    /// "pass" | "run" | "fail" | "none" — on building / in_test rows.
+    #[serde(default)]
+    pub checks: String,
+    /// "MM-DD HH:MM" — on merged rows.
+    #[serde(default)]
+    pub when: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

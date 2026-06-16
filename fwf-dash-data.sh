@@ -134,9 +134,48 @@ decisions_json() { # $1 = open_issues_json
   } | jq -s '.'
 }
 
+# --- activity (factory motion: building / in test / merged) -----------------
+# PRs against the factory's integration targets (staging/integration) ARE the
+# motion: draft = an implementer still building; ready = handed to QA/review
+# (with CI state); recently merged = promoted. gh-only — the local issue backend
+# has no PR concept, so it yields an empty activity block.
+gh_pr() { if [ -d "$FWF_REPO/.git" ]; then ( cd "$FWF_REPO" && gh pr "$@" ); else gh pr "$@"; fi; }
+activity_json() {
+  if [ "${FWF_ISSUES:-gh}" = "local" ]; then
+    echo '{"building":[],"in_test":[],"merged":[]}'; return 0
+  fi
+  local open merged
+  open="$(gh_pr list --state open --limit 50 \
+            --json number,title,isDraft,baseRefName,headRefName,statusCheckRollup 2>/dev/null || true)"
+  merged="$(gh_pr list --state merged --limit 12 \
+            --json number,title,baseRefName,headRefName,mergedAt 2>/dev/null || true)"
+  [ -n "$open" ] || open='[]'
+  [ -n "$merged" ] || merged='[]'
+  jq -n --argjson open "$open" --argjson merged "$merged" \
+        --arg staging "$STAGING_BRANCH" --arg integ "$INTEGRATION_BRANCH" '
+    [$staging, $integ] as $t
+    | def role:  (try (.headRefName | capture("^(?<r>impl[0-9]+|qa[0-9]+|conductor|pm)/").r) catch null) // "";
+      def issue: (try (.headRefName | capture("issue-(?<n>[0-9]+)").n) catch null) // "";
+      def checks:
+        ([.statusCheckRollup[]?]) as $c
+        | if   ($c|length)==0 then "none"
+          elif any($c[]; .conclusion=="FAILURE" or .conclusion=="CANCELLED" or .conclusion=="TIMED_OUT") then "fail"
+          elif any($c[]; (.status//"")=="IN_PROGRESS" or (.status//"")=="QUEUED" or (.status//"")=="PENDING") then "run"
+          else "pass" end;
+      {
+        building: [ $open[]   | .baseRefName as $b | select($t|index($b)) | select(.isDraft)
+                    | {pr:.number, role:role, issue:issue, base:$b, checks:checks, title:.title} ],
+        in_test:  [ $open[]   | .baseRefName as $b | select($t|index($b)) | select(.isDraft|not)
+                    | {pr:.number, role:role, issue:issue, base:$b, checks:checks, title:.title} ],
+        merged:   [ $merged[] | .baseRefName as $b | select($t|index($b))
+                    | {pr:.number, role:role, issue:issue, base:$b,
+                       when:((.mergedAt // "")[5:16] | gsub("T";" ")), title:.title} ]
+      }'
+}
+
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions
+  local prod pipeline stamp parked gen issues roles decisions activity
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -150,14 +189,17 @@ main() {
   issues="$(open_issues_json)"
   roles="$(roles_json)"
   decisions="$(decisions_json "$issues")"
+  activity="$(activity_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
     --argjson parked "$parked" \
     --arg prod "$prod" --arg pipeline "$pipeline" --arg stamp "$stamp" --arg gen "$gen" \
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
+    --argjson activity "$activity" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
-      stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues}'
+      stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
+      activity:$activity}'
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------
@@ -176,13 +218,32 @@ detail_view() {
   if [ "$FWF_ISSUES" = "local" ]; then
     di_read view "$id" --comments 2>/dev/null || echo "(detail unavailable for #$id)"
   else
-    di_read view "$id" --json number,title,state,body,comments --jq '
+    # A number is EITHER an issue or a PR (GitHub shares the namespace). Try the
+    # issue view first; if it yields nothing the id is a PR (an Activity row), so
+    # render the PR with its check rollup + comments instead.
+    local out
+    out="$(di_read view "$id" --json number,title,state,body,comments --jq '
       "#\(.number) · \(.title)\nstate: \(.state)\n\n\(.body)\n" +
       (if (.comments | length) > 0
        then "\n--- comments (\(.comments | length)) ---\n" +
             ([.comments[] | "\n— @\(.author.login) · \(.createdAt[0:10]) —\n\(.body)"] | join("\n"))
-       else "\n(no comments yet)" end)' 2>/dev/null \
-      || echo "(detail unavailable for #$id)"
+       else "\n(no comments yet)" end)' 2>/dev/null || true)"
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+    else
+      gh_pr view "$id" --json number,title,state,isDraft,headRefName,baseRefName,body,statusCheckRollup,comments --jq '
+        "PR #\(.number) · \(.title)\nstate: \(.state)\(if .isDraft then " (draft)" else "" end)   \(.headRefName) → \(.baseRefName)\n" +
+        (([.statusCheckRollup[]?]) as $c
+         | if ($c|length) > 0
+           then "\nchecks:\n" + ([$c[] | "  \(.name // .context // "check"): \(.conclusion // .status // "?")"] | join("\n")) + "\n"
+           else "" end) +
+        "\n\(.body // "")\n" +
+        (if (.comments | length) > 0
+         then "\n--- comments (\(.comments | length)) ---\n" +
+              ([.comments[] | "\n— @\(.author.login) · \(.createdAt[0:10]) —\n\(.body)"] | join("\n"))
+         else "\n(no comments yet)" end)' 2>/dev/null \
+        || echo "(detail unavailable for #$id)"
+    fi
   fi
 }
 
