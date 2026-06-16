@@ -33,6 +33,9 @@ esac
 if [ -n "$id" ] && [ "$id" -gt "$FWF_PAIRS" ]; then
   echo "fwf-respawn: $role is beyond the configured floor (FWF_PAIRS=$FWF_PAIRS)" >&2; exit 1
 fi
+if fwf_role_suppressed "$role"; then
+  echo "fwf-respawn: '$role' is suppressed in template '$FWF_TEMPLATE' — it is not part of this factory." >&2; exit 1
+fi
 
 tmux has-session -t "$sess" 2>/dev/null || { echo "no tmux session '$sess'" >&2; exit 1; }
 
@@ -45,7 +48,7 @@ fwf_extra_entry "$role" >/dev/null 2>&1 && token="$token ·"   # extra roles are
 CP="$(fwf_find_pane "$sess" "$token" || true)"
 if [ -n "$CP" ]; then
   echo "respawning $role in pane $CP"
-  tmux respawn-pane -k -t "$CP" -c "$(wt_dir "$role")"
+  tmux respawn-pane -k -t "$CP" -c "$(fwf_role_cwd "$role")"
 else
   # Recovery (issue #36): the pane is GONE entirely (claude-update crash, OOM
   # kill, accidental close) — create + label a fresh one and arm it, making

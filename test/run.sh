@@ -593,6 +593,146 @@ act comment 40 >/dev/null 2>&1 && bad "empty comment rejected" || ok "empty comm
 act bogus-verb >/dev/null 2>&1 && bad "unknown verb rejected" || ok "unknown verb rejected"
 
 # --------------------------------------------------------------------------
+section "user-testing template (issue #42) — roster + source-blind personas"
+UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+assert_contains "templates lists user-testing" "$("$ROOT/fwf" templates)" "user-testing"
+# roster: exactly 3 personas + researcher + captain (qa/conductor/gv suppressed)
+UT_ROLES="$(UT 'fwf_all_roles')"
+assert_eq "roster is 5 roles" "5" "$(printf '%s\n' "$UT_ROLES" | grep -c .)"
+assert_eq "roster = personas + researcher + captain" "impl1 impl2 impl3 pm captain" "$(printf '%s' "$UT_ROLES" | tr '\n' ' ' | sed 's/ $//')"
+case "$UT_ROLES" in *qa*|*conductor*|*gv*) bad "qa/conductor/gv suppressed from roster";; *) ok "qa/conductor/gv suppressed from roster";; esac
+# suppression + worktree-less helpers
+UT 'fwf_role_suppressed qa1'       && ok "qa1 suppressed"            || bad "qa1 suppressed"
+UT 'fwf_role_suppressed conductor' && ok "conductor suppressed"      || bad "conductor suppressed"
+UT 'fwf_role_suppressed gv'        && ok "gv suppressed"             || bad "gv suppressed"
+UT 'fwf_role_suppressed impl1'     && bad "persona impl1 NOT suppressed" || ok "persona impl1 NOT suppressed"
+UT 'fwf_role_no_worktree impl2'    && ok "persona impl2 is worktree-less"  || bad "persona impl2 is worktree-less"
+UT 'fwf_role_no_worktree pm'       && bad "researcher pm keeps a worktree" || ok "researcher pm keeps a worktree"
+# persona cwd is a scratch dir under the UT root, never a worktree; pm cwd is its worktree
+assert_contains "persona cwd is UT scratch" "$(UT 'fwf_role_cwd impl1')" "/ut/example/impl1"
+case "$(UT 'fwf_role_cwd impl1')" in *ex-impl1*) bad "persona cwd must not be a worktree";; *) ok "persona cwd is not a worktree";; esac
+assert_contains "researcher cwd IS a worktree" "$(UT 'fwf_role_cwd pm')" "ex-pm"
+# identity + per-template session names
+assert_eq "user-testing identity + sessions" "PERSONA|RESEARCHER|friends-user-testing-coord|friends-user-testing-build" \
+  "$(UT 'echo "$FWF_DISPLAY_IMPL|$FWF_DISPLAY_PM|$COORD_SESSION|$BUILD_SESSION"')"
+# default models: personas Sonnet, researcher Opus; env override still wins
+assert_contains "persona defaults to sonnet"  "$(UT 'fwf_claude_cmd impl1')" "--model sonnet"
+assert_contains "researcher defaults to opus" "$(UT 'fwf_claude_cmd pm')"    "--model opus"
+assert_contains "FWF_MODEL_IMPL override wins" "$(FWF_MODEL_IMPL=haiku FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")" "--model haiku"
+
+section "user-testing role contracts (issue #42) — rendered prompts"
+PER="$(UT 'fwf_render "$(fwf_tmpl_path implementer)" 2')"
+assert_contains "persona is source-blind"          "$PER" "STRUCTURALLY SOURCE-BLIND"
+assert_contains "persona thinks aloud (EXPECT)"    "$PER" "EXPECT"
+assert_contains "persona is banned from asserts"   "$PER" "never write a test file"
+assert_contains "persona drives playwright as hands" "$PER" "PLAYWRIGHT"
+assert_contains "persona 2 is mobile"              "$PER" "MOBILE viewport"
+assert_contains "persona gets the app URL"         "$PER" "http://localhost:3939"
+assert_contains "persona writes under the UT root" "$PER" "/ut/example"
+case "$PER" in *"CLAIM impl"*) bad "persona must not inherit the impl claim protocol";; *) ok "persona has no impl claim protocol";; esac
+RES="$(UT "fwf_render \"\$(fwf_tmpl_path pm)\" ''")"
+assert_contains "researcher top-10 budget"         "$RES" "at most TEN"
+assert_contains "researcher writes a report doc"   "$RES" "findings-report.md"
+assert_contains "researcher keeps a scorecard"     "$RES" "scorecard.md"
+assert_contains "researcher does not auto-file (trial one)" "$RES" "do NOT auto-file"
+assert_contains "researcher reads tracker post-session"     "$RES" "AFTER PERSONA SESSIONS END"
+CAP="$(UT "fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+assert_contains "captain enforces scratch/UAT only" "$CAP" "SCRATCH/UAT"
+assert_contains "captain holds ground truth"        "$CAP" "KNOWN-UNFIXED DEFECTS"
+assert_contains "captain gates graduation"          "$CAP" "GATE WHAT GRADUATES"
+
+section "user-testing prod-target refusal (issue #42)"
+UTG() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; ${2:-} fwf_ut_guard_target"; }
+UTG "http://localhost:3939" 2>/dev/null            && ok "loopback target allowed"   || bad "loopback target allowed"
+UTG "https://transom-uat.internal/app" 2>/dev/null && ok "uat host allowed"           || bad "uat host allowed"
+UTG "https://app.example.com" 2>/dev/null          && bad "prod-looking host refused" || ok "prod-looking host refused"
+UTG "" 2>/dev/null                                 && bad "empty target refused"       || ok "empty target refused"
+UTG "https://app.example.com" "FWF_UT_ALLOW_TARGET=1" 2>/dev/null && ok "human override allows it" || bad "human override allows it"
+FWF_TEMPLATE=dev UT_APP_URL="https://app.example.com" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ut_guard_target" && ok "guard no-ops for other templates" || bad "guard no-ops for other templates"
+assert_contains "refusal names the override" "$(FWF_TEMPLATE=user-testing FWF_UT_APP_URL=https://app.example.com FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ut_guard_target" 2>&1)" "FWF_UT_ALLOW_TARGET=1"
+# respawn refuses a suppressed role before any tmux work; recognizes a persona
+UTRSP="$(FWF_TEMPLATE=user-testing FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/fwf-respawn.sh" conductor 2>&1)" && bad "respawn refuses suppressed conductor" || ok "respawn refuses suppressed conductor"
+assert_contains "respawn names the suppression" "$UTRSP" "suppressed"
+UTRSP2="$(FWF_TEMPLATE=user-testing FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/fwf-respawn.sh" impl1 2>&1)" && bad "respawn persona recognized" || ok "respawn persona recognized"
+assert_contains "respawn persona hits session, not usage" "$UTRSP2" "no tmux session"
+
+section "user-testing provisioning (issue #42) — personas get scratch dirs, not worktrees"
+UTPD="$TMP/utprov"; mkdir -p "$UTPD"
+git init -q --bare "$UTPD/origin.git"
+git clone -q "$UTPD/origin.git" "$UTPD/repo" 2>/dev/null
+( cd "$UTPD/repo" && git config user.email t@t.co && git config user.name t \
+  && echo hi > README && git add -A && git commit -qm init && git branch -M main && git push -q origin main )
+cat > "$ROOT/profiles/.__utprov.sh" <<EOF
+FWF_REPO="$UTPD/repo"
+WT_PREFIX="utp"
+WT_BASE="$UTPD/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+UT_APP_URL="http://localhost:3939"
+EOF
+FWF_TEMPLATE=user-testing FWF_ISSUES=local FWF_RUN_DIR="$UTPD/run" FWF_PROFILE=.__utprov "$ROOT/fwf-provision.sh" >/dev/null 2>&1 \
+  && ok "user-testing provision runs" || bad "user-testing provision runs"
+[ -d "$UTPD/wt/utp-impl1" ] && bad "persona impl1 has NO worktree" || ok "persona impl1 has no worktree"
+[ -d "$UTPD/run/ut/.__utprov/impl1" ] && ok "persona impl1 got a scratch dir" || bad "persona impl1 got a scratch dir"
+[ -d "$UTPD/wt/utp-qa1" ]        && bad "qa1 suppressed (no worktree)"        || ok "qa1 suppressed (no worktree)"
+[ -d "$UTPD/wt/utp-conductor" ]  && bad "conductor suppressed (no worktree)"  || ok "conductor suppressed (no worktree)"
+[ -d "$UTPD/wt/utp-gv" ]         && bad "gv suppressed (no worktree)"         || ok "gv suppressed (no worktree)"
+[ -d "$UTPD/wt/utp-pm" ]         && ok "researcher pm has a worktree"         || bad "researcher pm has a worktree"
+[ -d "$UTPD/wt/utp-captain" ]    && ok "captain has a worktree"               || bad "captain has a worktree"
+rm -f "$ROOT/profiles/.__utprov.sh"
+
+# --------------------------------------------------------------------------
+section "user-testing trial-one learnings (issue #42) — browser, per-persona URL, coverage"
+# helper: run an expression with the user-testing template + arbitrary inline env
+UTE() { FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+# per-persona app URL: UT_APP_URL_<id> overrides the shared URL; unset falls back
+assert_eq "shared URL fallback" "http://localhost:3939" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 fwf_ut_app_url 1')"
+assert_eq "per-persona override wins" "http://localhost:3940" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=http://localhost:3940 fwf_ut_app_url 2')"
+assert_eq "other persona keeps shared" "http://localhost:3939" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=http://localhost:3940 fwf_ut_app_url 1')"
+# render substitutes THIS persona's URL into the prompt
+assert_contains "persona 2 prompt gets its own URL" \
+  "$(UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=https://p2-uat.test fwf_render "$(fwf_tmpl_path implementer)" 2')" \
+  "https://p2-uat.test"
+# guard checks per-persona overrides too: a prod override is refused, all-UAT passes
+UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_3=https://app.example.com fwf_ut_guard_target' 2>/dev/null \
+  && bad "guard refuses a prod per-persona override" || ok "guard refuses a prod per-persona override"
+UTE 'UT_APP_URL=http://localhost:3939 UT_APP_URL_2=https://x-uat.internal fwf_ut_guard_target' 2>/dev/null \
+  && ok "guard passes loopback + per-persona uat" || bad "guard passes loopback + per-persona uat"
+# browser knob + setup commands
+assert_eq "UT_BROWSER defaults to firefox" "firefox" "$(UTE 'echo "$UT_BROWSER"')"
+assert_contains "setup cmds install the browser"   "$(UTE 'fwf_ut_browser_setup_cmds')" "npx playwright install firefox"
+assert_contains "setup cmds add the playwright MCP" "$(UTE 'fwf_ut_browser_setup_cmds')" "claude mcp add playwright"
+assert_contains "UT_BROWSER flows into setup cmds"  "$(UTE 'UT_BROWSER=chromium fwf_ut_browser_setup_cmds')" "--browser chromium"
+# detection reads the CONFIG (~/.claude.json mcpServers), NOT a live `claude mcp
+# list` probe — a registered-but-unconnectable MCP must read as PRESENT (the
+# false-negative bug). Fixtures: one config WITH the server, one WITHOUT.
+printf '{"mcpServers":{"playwright":{"command":"npx"}}}\n' > "$TMP/claude-with.json"
+printf '{"mcpServers":{"other":{"command":"x"}}}\n'        > "$TMP/claude-without.json"
+# registered → silent, rc 0 — and crucially does NOT depend on the claude binary
+# being runnable (CLAUDE_CMD points at a missing bin, proving no live probe)
+REG="$(UTE 'CLAUDE_CONFIG='"$TMP"'/claude-with.json CLAUDE_CMD=claude-nope-xyz fwf_ut_browser_preflight' 2>&1)"
+assert_eq "registered MCP is silent (no false negative)" "" "$REG"
+UTE 'CLAUDE_CONFIG='"$TMP"'/claude-with.json fwf_ut_browser_mcp_registered' && ok "registered detected from config" || bad "registered detected from config"
+# not registered → WARNS (fail-open, rc 0) and names the fix
+PF="$(UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_preflight' 2>&1)"
+UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_preflight' >/dev/null 2>&1 && ok "preflight is fail-open (rc 0)" || bad "preflight is fail-open (rc 0)"
+assert_contains "preflight names the setup" "$PF" "npx playwright install firefox"
+assert_contains "preflight names the config path" "$PF" "claude-without.json"
+UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_mcp_registered' && bad "unregistered must be NO" || ok "unregistered detected from config"
+# missing config file → unregistered (warns), never a crash
+UTE 'CLAUDE_CONFIG='"$TMP"'/does-not-exist.json fwf_ut_browser_mcp_registered' && bad "missing config = NO" || ok "missing config reads unregistered"
+# preflight is a no-op for every other template (no output)
+assert_eq "preflight no-ops off-template" "" \
+  "$(FWF_TEMPLATE=dev FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; CLAUDE_CONFIG=$TMP/claude-without.json fwf_ut_browser_preflight" 2>&1)"
+# coverage beat in the persona prompt; quarantine guidance in the researcher prompt
+assert_contains "persona has a coverage beat" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "COVERAGE BEAT"
+assert_contains "persona sweeps nav + shortcuts" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "KEYBOARD SHORTCUTS"
+assert_contains "researcher quarantines bleed" "$(UTE "fwf_render \"\$(fwf_tmpl_path pm)\" ''")" "QUARANTINE"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
