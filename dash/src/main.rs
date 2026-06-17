@@ -901,7 +901,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// The Activity board — the landing view: BUILDING (draft PRs) / IN TEST / MERGED
+/// The Activity board — the landing view: BUILDING / IN TEST / MERGED / REVIEW→main
 /// as one scrollable cursor list (left) with the selected PR's detail (right).
 /// Row order matches `Activity::flat`, so the cursor index maps straight to a PR;
 /// group headers are embedded in the first row of each group (purely cosmetic).
@@ -915,10 +915,11 @@ fn render_activity(f: &mut Frame, area: Rect, app: &mut App) {
     let act = &d.activity;
     let selected = app.cursors[Tab::Activity.index()].selected().unwrap_or(0);
 
-    let groups: [(&str, &[data::ActivityItem]); 3] = [
+    let groups: [(&str, &[data::ActivityItem]); 4] = [
         ("BUILDING", &act.building),
         ("IN TEST / REVIEW", &act.in_test),
         ("MERGED (recent)", &act.merged),
+        ("REVIEW → main (direct PRs)", &act.to_main),
     ];
     let mut items: Vec<ListItem> = Vec::new();
     let mut first_group = true;
@@ -992,36 +993,50 @@ fn render_activity(f: &mut Frame, area: Rect, app: &mut App) {
 /// render as `#pr →base when  title`; building/test rows as `role #issue ✓ title`.
 fn activity_row_line(it: &data::ActivityItem, width: u16) -> Line<'static> {
     let w = width.saturating_sub(6) as usize;
+    // Lead every row with the ISSUE (the unit of work — matches the Issues tab),
+    // and always show the PR as an explicit secondary tag, so the two tabs key on
+    // the same number. Rows with no linked issue lead with the PR instead.
+    let lead = if it.issue.is_empty() {
+        Span::styled(format!("  PR {} ", it.pr), Style::default().fg(Color::Blue))
+    } else {
+        Span::styled(
+            format!("  #{} ", it.issue),
+            Style::default().fg(Color::Blue),
+        )
+    };
+    let pr_tag = if it.issue.is_empty() {
+        Span::raw(String::new()) // PR already shown as the lead
+    } else {
+        Span::styled(
+            format!("  · PR {}", it.pr),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
     if !it.when.is_empty() {
+        // merged
         Line::from(vec![
-            Span::styled(format!("  #{} ", it.pr), Style::default().fg(Color::Green)),
+            lead,
             Span::styled(
-                format!("→{} {}  ", it.base, it.when),
+                format!("→{} {} ", it.base, it.when),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::raw(truncate(&it.title, w)),
+            pr_tag,
         ])
     } else {
+        // building / in test
         let (glyph, gcol) = checks_glyph(&it.checks);
         let who = if it.role.is_empty() {
-            "—".to_string()
-        } else {
-            it.role.clone()
-        };
-        let iss = if it.issue.is_empty() {
             String::new()
         } else {
-            format!("#{} ", it.issue)
+            format!("  {}", it.role)
         };
         Line::from(vec![
-            Span::styled(format!("  {:<6} ", who), Style::default().fg(Color::Blue)),
-            Span::raw(iss),
+            lead,
             Span::styled(format!("{} ", glyph), Style::default().fg(gcol)),
             Span::raw(truncate(&it.title, w)),
-            Span::styled(
-                format!("  PR#{}", it.pr),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(who, Style::default().fg(Color::Blue)),
+            pr_tag,
         ])
     }
 }
@@ -1293,7 +1308,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         )),
         help_row(
             "(read-only)",
-            "BUILDING (draft PRs) · IN TEST · MERGED; selected PR's detail on the right",
+            "BUILDING · IN TEST · MERGED · REVIEW→main; rows lead with the issue (· PR N)",
         ),
         Line::from(""),
         Line::from(Span::styled(

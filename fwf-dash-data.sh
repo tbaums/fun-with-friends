@@ -178,7 +178,8 @@ activity_json() {
   [ -n "$open" ] || open='[]'
   [ -n "$merged" ] || merged='[]'
   jq -n --argjson open "$open" --argjson merged "$merged" \
-        --arg staging "$STAGING_BRANCH" --arg integ "$INTEGRATION_BRANCH" '
+        --arg staging "$STAGING_BRANCH" --arg integ "$INTEGRATION_BRANCH" \
+        --arg default "$DEFAULT_BRANCH" '
     [$staging, $integ] as $t
     | def role:  (try (.headRefName | capture("^(?<r>impl[0-9]+|qa[0-9]+|conductor|pm)/").r) catch null) // "";
       def issue: (try (.headRefName | capture("issue-(?<n>[0-9]+)").n) catch null) // "";
@@ -195,7 +196,9 @@ activity_json() {
                     | {pr:.number, role:role, issue:issue, base:$b, checks:checks, title:.title} ],
         merged:   [ $merged[] | .baseRefName as $b | select($t|index($b))
                     | {pr:.number, role:role, issue:issue, base:$b,
-                       when:((.mergedAt // "")[5:16] | gsub("T";" ")), title:.title} ]
+                       when:((.mergedAt // "")[5:16] | gsub("T";" ")), title:.title} ],
+        to_main:  [ $open[]   | select(.baseRefName == $default)
+                    | {pr:.number, role:role, issue:issue, base:.baseRefName, checks:checks, title:.title} ]
       }'
 }
 

@@ -50,20 +50,26 @@ pub struct Activity {
     pub in_test: Vec<ActivityItem>,
     #[serde(default)]
     pub merged: Vec<ActivityItem>,
+    /// Open PRs straight to the default branch (e.g. `main`) — outside the
+    /// staging/integration factory pipeline. Surfaced as a "review" hint so
+    /// direct PRs (often human-authored, no linked issue) are still findable.
+    #[serde(default)]
+    pub to_main: Vec<ActivityItem>,
 }
 
 impl Activity {
-    /// building → in_test → merged: the display and cursor-selection order.
+    /// building → in_test → merged → to_main: display and cursor-selection order.
     pub fn flat(&self) -> Vec<&ActivityItem> {
         self.building
             .iter()
             .chain(&self.in_test)
             .chain(&self.merged)
+            .chain(&self.to_main)
             .collect()
     }
 
     pub fn len(&self) -> usize {
-        self.building.len() + self.in_test.len() + self.merged.len()
+        self.building.len() + self.in_test.len() + self.merged.len() + self.to_main.len()
     }
 
     pub fn is_empty(&self) -> bool {
