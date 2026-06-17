@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-17
+
+### Changed
+- **`fwf dash` Activity rows now lead with the issue, not the PR** (#40). The
+  Activity tab keyed on PR number (merged rows led with `#PR`) while the Issues
+  tab keys on issue number, so the two didn't line up. Every Activity row now
+  leads with the **issue** (`#497 …`) with the PR as an explicit `· PR N` tag;
+  rows with no linked issue lead with `PR N`.
+
+### Added
+- **`fwf dash` "REVIEW → main" group** (#40). Open PRs straight to the default
+  branch (outside the staging/integration factory pipeline — often human-authored
+  with no linked issue) now appear in their own group, so a direct-to-main PR is
+  findable instead of showing nowhere.
+
 ## [0.10.1] - 2026-06-16
 
 ### Fixed
