@@ -1631,7 +1631,14 @@ mod tests {
     }
 
     // --- Activity-tab formatting (#53) -------------------------------------
-    fn act_item(pr: i64, issue: &str, base: &str, checks: &str, when: &str, role: &str) -> data::ActivityItem {
+    fn act_item(
+        pr: i64,
+        issue: &str,
+        base: &str,
+        checks: &str,
+        when: &str,
+        role: &str,
+    ) -> data::ActivityItem {
         data::ActivityItem {
             pr,
             role: role.into(),
@@ -1655,7 +1662,11 @@ mod tests {
     #[test]
     fn activity_row_merged_leads_with_issue_then_base_when() {
         let it = act_item(8, "42", "staging", "", "06-18 12:34", "qa2");
-        let t: String = activity_row_line(&it, 80).spans.iter().map(|s| s.content.as_ref()).collect();
+        let t: String = activity_row_line(&it, 80)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(t.contains("#42"), "leads with the issue: {t}");
         assert!(t.contains("→staging 06-18 12:34"), "shows base + when: {t}");
         assert!(t.contains("· PR 8"), "tags the PR explicitly: {t}");
@@ -1664,7 +1675,11 @@ mod tests {
     #[test]
     fn activity_row_without_issue_leads_with_pr_and_shows_checks() {
         let it = act_item(7, "", "staging", "pass", "", "impl1");
-        let t: String = activity_row_line(&it, 80).spans.iter().map(|s| s.content.as_ref()).collect();
+        let t: String = activity_row_line(&it, 80)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(t.contains("PR 7"), "leads with PR when no issue: {t}");
         assert!(t.contains("✓"), "building row shows the checks glyph: {t}");
         assert!(t.contains("impl1"), "shows the role: {t}");
