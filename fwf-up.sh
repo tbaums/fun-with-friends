@@ -79,6 +79,7 @@ fi
 
 mkdir -p "$FWF_RUN"
 rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
+printf '%s\n' "$FWF_TEMPLATE" > "$FWF_RUN/template"   # persist the running template so read-only tools (the dash) resolve it, not the dev default (#51)
 # Local mode (#34): (re)write the gh-write guard the panes' PATH points at —
 # idempotent, and `fwf up` must never depend on provision having been recent.
 [ "$FWF_ISSUES" = "local" ] && fwf_install_ghguard

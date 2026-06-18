@@ -47,6 +47,7 @@ for s in "$COORD_SESSION" "$BUILD_SESSION"; do
   if tmux kill-session -t "$s" 2>/dev/null; then echo "killed tmux session '$s'"; else echo "no tmux session '$s'"; fi
 done
 rmdir "$E2E_LOCK" 2>/dev/null || true
+rm -f "$FWF_RUN/template"   # clear the persisted running-template marker (#51) so it can't go stale once the factory is down
 
 if [ "$purge" = 1 ]; then
   echo "purging worktrees and impl dev-data…"

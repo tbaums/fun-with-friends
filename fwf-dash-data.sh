@@ -133,11 +133,23 @@ has_gv_signoff() { # $1=number
   local thread; thread="$(di_read view "$1" --comments 2>/dev/null || true)"
   case "$thread" in *GV-SIGNOFF*) return 0;; *) return 1;; esac
 }
+# Templates where the CAPTAIN sequences releases of GV-signed-off items in
+# dependency order — so a gated + GV-SIGNOFF issue is the captain's queue, not a
+# human go/no-go (#51). The human's decisions in these modes surface via the
+# captain's NEEDS-YOU menu (needs_you_json) instead. In dev-style templates the
+# human un-gates GV-approved items (the dash `y` key), so they ARE decisions.
+captain_sequences_releases() {
+  case "$FWF_TEMPLATE" in refactor) return 0;; *) return 1;; esac
+}
 # Decision rows: gated + GV-SIGNOFF, enriched with the captain's recommendation
 # (status.json) when fresh; plus any release-kind decisions the captain queued.
 decisions_json() { # $1 = open_issues_json
   local issues="$1" num title body rec flags
   {
+    # A gated + GV-SIGNOFF issue is a human decision ONLY where the human un-gates
+    # (dev-style). In captain-sequenced templates the captain releases these in
+    # order, so skip them — they'd otherwise read as false "needs you" rows (#51).
+    if ! captain_sequences_releases; then
     printf '%s\n' "$issues" | jq -r '.[] | select(.gated) | .number' | while read -r num; do
       [ -n "$num" ] || continue
       has_gv_signoff "$num" || continue
@@ -149,6 +161,7 @@ decisions_json() { # $1 = open_issues_json
       jq -n --arg id "$num" --arg title "$title" --arg flags "$flags" --arg body "$body" \
         '{id:$id, title:$title, flags:$flags, body:$body}'
     done
+    fi
     if status_fresh; then
       status_q '.decisions[]? | select((.kind // "")=="release") | [(.id // "REL"), (.gv // ""), .title, (.body // "")] | @tsv' \
         | while IFS="$(printf '\t')" read -r id gv title body; do
