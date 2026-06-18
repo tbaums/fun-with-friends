@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-06-18
+
+### Fixed
+- **`fwf dash` reflects the running factory's template; refactor Decisions tab
+  no longer shows false "needs you" rows** (#51). The dash defaulted the template
+  to `dev`, so a running `refactor` factory was labelled "dev" and its gated +
+  GV-SIGNOFF items appeared as human go/no-go decisions — but in refactor the
+  captain sequences those releases. `fwf up` now persists the active template
+  (`$FWF_RUN/template`, cleared by `fwf down`); `lib.sh` resolves it when none is
+  set, so read-only tools show what's actually running. In captain-sequenced
+  templates the Decisions tab no longer infers a human decision from gated +
+  GV-SIGNOFF (genuine release decisions and the needs-you banner are unchanged;
+  dev behaviour is unchanged).
+
 ## [0.11.1] - 2026-06-18
 
 ### Fixed
