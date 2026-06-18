@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-06-18
+
+### Added
+- **Test coverage for the `fwf dash` data layer** (#52, #53). The bash provider
+  (`fwf-dash-data.sh`) — the dash's read/derivation logic, previously untested —
+  is now sourceable and covered: `captain_sequences_releases` by template, a
+  `decisions_json` regression for #51 (gated + GV-SIGNOFF surfaces in dev, not
+  refactor), and `activity_json` PR bucketing + role/issue branch parsing (with
+  stubbed `di_read`/`gh_pr`). Added Rust unit tests for the Activity-tab pure
+  functions (`checks_glyph`, `activity_row_line`, `activity_summary`,
+  `Activity::flat`). (Remaining gaps tracked in #54 render/golden snapshots and
+  #55 key-handling/`run_action`.)
+
+### Changed
+- **Running-template resolution is now opt-in** (`FWF_USE_RUNNING_TEMPLATE`, set
+  by the dash) so the machine's persisted run-state can't leak into tests or
+  ordinary commands; they keep the dev default. Refines #51.
+
 ## [0.11.2] - 2026-06-18
 
 ### Fixed
