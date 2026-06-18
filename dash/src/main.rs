@@ -1472,11 +1472,13 @@ fn markdownish(body: &str) -> Vec<Line<'static>> {
             } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
                 Line::from(Span::styled(line, Style::default().fg(Color::Green)))
             } else if trimmed.starts_with('>') {
+                // Blockquotes are callouts (GATED / notes) — the text most worth
+                // reading. Use the terminal's default foreground (no fg override,
+                // so it can't be low-contrast on any theme); italic keeps them
+                // distinct without sacrificing legibility (#50).
                 Line::from(Span::styled(
                     line,
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
+                    Style::default().add_modifier(Modifier::ITALIC),
                 ))
             } else {
                 Line::from(line)
@@ -1536,6 +1538,19 @@ mod tests {
         assert_eq!(markdownish("   ").len(), 1);
         let lines = markdownish("# Title\n- a bullet\nplain");
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn markdownish_blockquote_is_legible_not_darkgray() {
+        // Callout blockquotes (GATED / notes) must not render in DarkGray —
+        // it's near-invisible on dark terminals (#50). They use the default
+        // terminal foreground (fg None) and stay distinct via italic.
+        let lines = markdownish("> **GATED** do not implement");
+        assert_eq!(lines.len(), 1);
+        let style = lines[0].spans[0].style;
+        assert_ne!(style.fg, Some(Color::DarkGray));
+        assert_eq!(style.fg, None);
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
     }
 
     #[test]
