@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-06-18
+
+### Fixed
+- **`fwf dash` blockquote callouts are legible again** (#50). Detail-pane
+  blockquotes (the `> **GATED …**` / `> **Metrics note:**` callouts) were
+  styled `DarkGray` — ANSI bright-black, near-invisible on dark terminals.
+  They now use the terminal's default foreground (can't be low-contrast on
+  any theme), keeping italic for distinction.
+
 ## [0.11.0] - 2026-06-17
 
 ### Changed
