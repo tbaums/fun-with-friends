@@ -593,6 +593,35 @@ act comment 40 >/dev/null 2>&1 && bad "empty comment rejected" || ok "empty comm
 act bogus-verb >/dev/null 2>&1 && bad "unknown verb rejected" || ok "unknown verb rejected"
 
 # --------------------------------------------------------------------------
+# fwf dash DATA provider (#52): source the provider (main is guarded) and drive
+# its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
+# captain-sequenced decisions behaviour and activity bucketing/branch parsing.
+DD="$ROOT/fwf-dash-data.sh"
+
+section "dash data: captain_sequences_releases keys off the template (#51)"
+assert_eq "refactor → captain-sequenced" "yes" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; captain_sequences_releases && echo yes || echo no")"
+assert_eq "dev → human-decided" "no" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; captain_sequences_releases && echo yes || echo no")"
+
+section "dash data: decisions_json surfaces gated+GV-SIGNOFF in dev, not refactor (#51)"
+DD_FIX='[{"number":9,"title":"x","gated":true,"body":"b"}]'
+DD_STUB='di_read() { case "$*" in *"view 9"*) echo "GV-SIGNOFF ok";; esac; }; status_fresh() { return 1; }'
+assert_eq "dev surfaces the decision" '["9"]' \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
+assert_eq "refactor surfaces none" "[]" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '.')"
+
+section "dash data: activity_json buckets PRs + parses role/issue from the branch"
+printf '%s' '[{"number":7,"title":"wip","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-42-foo","statusCheckRollup":[]}]' > "$TMP/dd-open.json"
+printf '%s' '[{"number":8,"title":"done","baseRefName":"integration","headRefName":"qa2/issue-43-bar","mergedAt":"2026-06-18T12:34:56Z"}]' > "$TMP/dd-merged.json"
+DD_ACT="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; STAGING_BRANCH=staging INTEGRATION_BRANCH=integration DEFAULT_BRANCH=main; gh_pr() { case \"\$*\" in *'--state open'*) cat '$TMP/dd-open.json';; *'--state merged'*) cat '$TMP/dd-merged.json';; esac; }; activity_json")"
+assert_eq "draft PR → building bucket, role parsed" "impl1" "$(printf '%s' "$DD_ACT" | jq -r '.building[0].role')"
+assert_eq "issue number parsed from branch"         "42"    "$(printf '%s' "$DD_ACT" | jq -r '.building[0].issue')"
+assert_eq "merged PR bucketed by base branch"       "8"     "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].pr')"
+assert_eq "merged 'when' formatted from mergedAt"   "06-18 12:34" "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].when')"
+
+# --------------------------------------------------------------------------
 section "user-testing template (issue #42) — roster + source-blind personas"
 UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
 assert_contains "templates lists user-testing" "$("$ROOT/fwf" templates)" "user-testing"

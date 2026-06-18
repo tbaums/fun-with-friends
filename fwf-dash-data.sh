@@ -20,6 +20,10 @@
 #     issues:[{number,title,gated,body}] }
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The dash reflects the RUNNING factory, so it opts in to resolving the
+# persisted running template (lib.sh reads $FWF_RUN/template only under this
+# flag, so other tools/tests keep the dev default) — see #51.
+export FWF_USE_RUNNING_TEMPLATE=1
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
 # The factory lives on tmux's DEFAULT socket (fwf launches it with plain tmux).
@@ -290,8 +294,13 @@ detail_view() {
   fi
 }
 
-if [ "${1:-}" = "detail" ]; then
-  detail_view "${2:-}"
-  exit 0
+# Dispatch only when run directly. Sourcing the script (e.g. from the test
+# suite) just loads the functions so they can be unit-tested with stubbed
+# di_read/gh_pr/status — no gh, no tmux (#52).
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  if [ "${1:-}" = "detail" ]; then
+    detail_view "${2:-}"
+    exit 0
+  fi
+  main
 fi
-main

@@ -26,11 +26,12 @@ source "$PROFILE_FILE"
 # The dev fallback applies HERE, after the profile loads (issue #30) — config.sh
 # pre-filling it silently defeated every profile's ${FWF_TEMPLATE:-name}
 # persistence and launched the wrong factory.
-# When the template isn't set by env/CLI/profile, prefer the RUNNING factory's
-# persisted template (fwf up writes $FWF_RUN/template; fwf down clears it) so
-# read-only tools — chiefly the dash — reflect what's actually up rather than the
-# dev default (#51). Explicit FWF_TEMPLATE still wins (the guard is on -z).
-if [ -z "${FWF_TEMPLATE:-}" ] && [ -f "$FWF_RUN/template" ]; then
+# A tool that wants to reflect the RUNNING factory (chiefly the dash) opts in
+# with FWF_USE_RUNNING_TEMPLATE=1; we then prefer the factory's persisted
+# template (fwf up writes $FWF_RUN/template; fwf down clears it) over the dev
+# default (#51). Opt-in keeps tests and ordinary commands at the dev default and
+# avoids the machine's run-state leaking into them. Explicit FWF_TEMPLATE wins.
+if [ -n "${FWF_USE_RUNNING_TEMPLATE:-}" ] && [ -z "${FWF_TEMPLATE:-}" ] && [ -f "$FWF_RUN/template" ]; then
   FWF_TEMPLATE="$(cat "$FWF_RUN/template" 2>/dev/null)"
 fi
 FWF_TEMPLATE="${FWF_TEMPLATE:-dev}"

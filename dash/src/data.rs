@@ -213,4 +213,27 @@ mod tests {
     fn reports_bad_json() {
         assert!(parse(b"not json").is_err());
     }
+
+    #[test]
+    fn activity_flat_orders_building_intest_merged_tomain() {
+        let mk = |pr: i64| ActivityItem {
+            pr,
+            role: String::new(),
+            issue: String::new(),
+            base: String::new(),
+            checks: String::new(),
+            when: String::new(),
+            title: String::new(),
+        };
+        let a = Activity {
+            building: vec![mk(1)],
+            in_test: vec![mk(2)],
+            merged: vec![mk(3)],
+            to_main: vec![mk(4)],
+        };
+        assert_eq!(a.len(), 4);
+        assert!(!a.is_empty());
+        let order: Vec<i64> = a.flat().iter().map(|x| x.pr).collect();
+        assert_eq!(order, vec![1, 2, 3, 4]);
+    }
 }

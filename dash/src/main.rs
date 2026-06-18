@@ -1629,4 +1629,55 @@ mod tests {
         app.begin_action("comment");
         assert!(matches!(app.overlay, Overlay::Input { .. }));
     }
+
+    // --- Activity-tab formatting (#53) -------------------------------------
+    fn act_item(pr: i64, issue: &str, base: &str, checks: &str, when: &str, role: &str) -> data::ActivityItem {
+        data::ActivityItem {
+            pr,
+            role: role.into(),
+            issue: issue.into(),
+            base: base.into(),
+            checks: checks.into(),
+            when: when.into(),
+            title: "a title".into(),
+        }
+    }
+
+    #[test]
+    fn checks_glyph_maps_each_state() {
+        assert_eq!(checks_glyph("pass"), ("✓", Color::Green));
+        assert_eq!(checks_glyph("run"), ("●", Color::Yellow));
+        assert_eq!(checks_glyph("fail"), ("✗", Color::Red));
+        assert_eq!(checks_glyph("none"), ("·", Color::DarkGray));
+        assert_eq!(checks_glyph(""), ("·", Color::DarkGray));
+    }
+
+    #[test]
+    fn activity_row_merged_leads_with_issue_then_base_when() {
+        let it = act_item(8, "42", "staging", "", "06-18 12:34", "qa2");
+        let t: String = activity_row_line(&it, 80).spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(t.contains("#42"), "leads with the issue: {t}");
+        assert!(t.contains("→staging 06-18 12:34"), "shows base + when: {t}");
+        assert!(t.contains("· PR 8"), "tags the PR explicitly: {t}");
+    }
+
+    #[test]
+    fn activity_row_without_issue_leads_with_pr_and_shows_checks() {
+        let it = act_item(7, "", "staging", "pass", "", "impl1");
+        let t: String = activity_row_line(&it, 80).spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(t.contains("PR 7"), "leads with PR when no issue: {t}");
+        assert!(t.contains("✓"), "building row shows the checks glyph: {t}");
+        assert!(t.contains("impl1"), "shows the role: {t}");
+    }
+
+    #[test]
+    fn activity_summary_includes_the_key_fields() {
+        let it = act_item(8, "42", "staging", "pass", "06-18 12:34", "qa2");
+        let s = activity_summary(&&it);
+        assert!(s.contains("PR #8  → staging"));
+        assert!(s.contains("role:   qa2"));
+        assert!(s.contains("issue:  #42"));
+        assert!(s.contains("checks: pass"));
+        assert!(s.contains("merged: 06-18 12:34"));
+    }
 }
