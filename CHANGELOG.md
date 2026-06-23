@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-22
+
+### Added
+- **Validation factory template** (`fwf up --template validate`) (#56). Funnels
+  one posited business+product idea through three falsification gates — market
+  reality → solution → business — each with **pre-registered kill criteria**
+  written before the analysis. Stance-diverse analysts lead with the
+  disconfirming case (evidence-tiered findings + a required cheapest-disconfirming
+  test); the red-team runs 2–3 adversarial honing rounds with a different lens
+  each; the adjudicator writes a GO/CONDITIONAL-GO/KILL/PIVOT verdict with
+  confidence bounded by the weakest load-bearing link and business paths ranked
+  pairwise. A KILL short-circuits the funnel but **preserves state** (dossier in
+  the repo, closed issue with a verdict); the human overrides by reopening with
+  new evidence or an explicitly accepted risk. PIVOT is first-class; no new labels
+  (phase lives in the issue's GATE CHECKLIST). Design in `docs/validate-factory.md`.
+
 ## [0.11.3] - 2026-06-18
 
 ### Added
