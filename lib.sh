@@ -125,53 +125,78 @@ FWF_ISSUES_DIR="$FWF_RUN/issues/$PROFILE"
 # ALWAYS resolvable in panes — the unguarded gh fallback in the #34 incident
 # started with `fwf` missing from a non-login pane PATH.
 FWF_GHGUARD_DIR="$FWF_RUN/ghguard"
+# Shared REST+ETag read cache (#57 sibling): collapses N agents' identical
+# `gh issue/pr list` polls into one fetch per TTL off the CORE bucket (separate
+# from the GraphQL pool the factory was exhausting). Tunable via env.
+export FWF_GHCACHE_DIR="${FWF_GHCACHE_DIR:-$FWF_RUN/ghcache}"
+export FWF_GHCACHE_TTL="${FWF_GHCACHE_TTL:-60}"
+export FWF_REPO
 fwf_install_ghguard() {
-  local real_gh
+  local real_gh slug
   real_gh="$(command -v gh || true)"
+  slug="$(git -C "$FWF_REPO" config --get remote.origin.url 2>/dev/null)"
+  slug="${slug%.git}"; slug="${slug#git@github.com:}"; slug="${slug#https://github.com/}"; slug="${slug#ssh://git@github.com/}"
   mkdir -p "$FWF_GHGUARD_DIR"
   ln -sf "$FWF_LIB_DIR/fwf" "$FWF_GHGUARD_DIR/fwf"
+  # Part (a): a `gh` shim that routes the hot, high-frequency reads through the
+  # shared cache in EVERY mode. Baked install-time values (real gh path, repo,
+  # cache dir) keep it self-contained in non-login panes.
   cat > "$FWF_GHGUARD_DIR/gh" <<GHGUARD
 #!/usr/bin/env sh
-# fwf gh-write guard — installed for --issues local mode (issue #34).
-# The factory's tracker is LOCAL; the remote's issues/labels/PRs are not ours
-# to write. Mutating gh commands are blocked unless a HUMAN authorizes this
-# single invocation with FWF_ALLOW_GH=1. Reads pass through.
+# fwf gh shim (#57 sibling): (a) REST+ETag read cache for the hot list/view
+# polls in all modes; (b) in local mode, the fail-closed write guard (#34).
 REAL_GH="${real_gh:-gh}"
-[ "\${FWF_ALLOW_GH:-0}" = "1" ] && exec "\$REAL_GH" "\$@"
+CACHE="$FWF_LIB_DIR/fwf-ghcache.sh"
+export FWF_REAL_GH="\$REAL_GH" FWF_GHCACHE_DIR="$FWF_GHCACHE_DIR" FWF_REPO="$FWF_REPO" FWF_GHCACHE_REPO="$slug" FWF_GHCACHE_TTL="$FWF_GHCACHE_TTL"
+_t="\${1:-}"; _v="\${2:-}"
+case "\$_t \$_v" in
+  "issue list"|"pr list"|"issue view"|"pr view")
+    shift 2; exec "\$CACHE" serve "\$_t" "\$_v" "\$@" ;;
+esac
+GHGUARD
+  # Part (b): write policy. Local mode fails closed; gh mode passes through.
+  if [ "$FWF_ISSUES" = "local" ]; then
+    cat >> "$FWF_GHGUARD_DIR/gh" <<'GHGUARD'
+# local-issues mode (#34): the remote tracker is not ours to write. Block
+# mutations unless a HUMAN authorizes this single call with FWF_ALLOW_GH=1.
+[ "${FWF_ALLOW_GH:-0}" = "1" ] && exec "$REAL_GH" "$@"
 blocked() {
-  echo "fwf: gh write BLOCKED ('gh \$*') — local-issues mode never writes to the remote tracker." >&2
+  echo "fwf: gh write BLOCKED ('gh $*') — local-issues mode never writes to the remote tracker." >&2
   echo "fwf: use 'fwf issues …' for the local tracker; a human can authorize one real gh write with: FWF_ALLOW_GH=1 gh …" >&2
   exit 1
 }
-case "\${1:-}" in
-  ""|help|--help|--version|version|status|search) exec "\$REAL_GH" "\$@" ;;
-  auth)   case "\${2:-}" in status|token) exec "\$REAL_GH" "\$@";; *) blocked "\$@";; esac ;;
-  config) case "\${2:-}" in get|list|"") exec "\$REAL_GH" "\$@";; *) blocked "\$@";; esac ;;
+case "${1:-}" in
+  ""|help|--help|--version|version|status|search) exec "$REAL_GH" "$@" ;;
+  auth)   case "${2:-}" in status|token) exec "$REAL_GH" "$@";; *) blocked "$@";; esac ;;
+  config) case "${2:-}" in get|list|"") exec "$REAL_GH" "$@";; *) blocked "$@";; esac ;;
   api)
     meth="GET"; prev=""
-    for a in "\$@"; do
-      case "\$prev" in --method|-X) meth="\$a";; esac
-      case "\$a" in --method=*) meth="\${a#--method=}";; -X=*) meth="\${a#-X=}";; esac
-      prev="\$a"
+    for a in "$@"; do
+      case "$prev" in --method|-X) meth="$a";; esac
+      case "$a" in --method=*) meth="${a#--method=}";; -X=*) meth="${a#-X=}";; esac
+      prev="$a"
     done
-    case "\$meth" in GET|HEAD|get|head) exec "\$REAL_GH" "\$@";; *) blocked "\$@";; esac ;;
+    case "$meth" in GET|HEAD|get|head) exec "$REAL_GH" "$@";; *) blocked "$@";; esac ;;
   *)
-    # topic commands (issue/pr/label/release/repo/run/workflow/gist/…):
-    # allow the read-shaped subcommands, block everything else fail-closed.
-    case "\${2:-}" in
-      list|view|status|diff|checks|download|watch) exec "\$REAL_GH" "\$@" ;;
-      *) blocked "\$@" ;;
+    case "${2:-}" in
+      list|view|status|diff|checks|download|watch) exec "$REAL_GH" "$@" ;;
+      *) blocked "$@" ;;
     esac ;;
 esac
 GHGUARD
+  else
+    cat >> "$FWF_GHGUARD_DIR/gh" <<'GHGUARD'
+# gh mode: every non-cached command passes straight through to real gh.
+exec "$REAL_GH" "$@"
+GHGUARD
+  fi
   chmod +x "$FWF_GHGUARD_DIR/gh"
 }
 
-# In local mode, panes launch claude with the guard dir first on PATH (the
-# \$PATH stays literal here and expands in the pane's shell).
-if [ "$FWF_ISSUES" = "local" ]; then
-  CLAUDE_CMD="env PATH=\"$FWF_GHGUARD_DIR:\$PATH\" $CLAUDE_CMD"
-fi
+# Panes always launch claude with the guard dir first on PATH so the shared read
+# cache intercepts gh (and, in local mode, the write guard fires). The literal
+# \$PATH expands later, in the pane's own shell.
+CLAUDE_CMD="env PATH=\"$FWF_GHGUARD_DIR:\$PATH\" $CLAUDE_CMD"
 
 # Session names, template-aware (issue #31): the dev factory keeps the classic
 # names; any other template embeds its name so `tmux ls` says which factory

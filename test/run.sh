@@ -527,11 +527,23 @@ assert_contains "block names the local CLI"  "$GGMSG" "fwf issues"
 assert_contains "block names the override"   "$GGMSG" "FWF_ALLOW_GH=1"
 # the human override passes through
 assert_contains "FWF_ALLOW_GH=1 authorizes" "$(FWF_ALLOW_GH=1 GG issue create --title x 2>&1)" "REAL-GH RAN: issue create"
-# pane launch command carries the guard PATH in local mode only
+# pane launch command carries the guard PATH in BOTH modes now (#57): the shim
+# is the REST+ETag read cache in gh mode, and additionally the write guard in local.
 GCMD="$(FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
 assert_contains "local CLAUDE_CMD prepends guard PATH" "$GCMD" "ghguard"
 GCMD_GH="$(FWF_RUN_DIR="$GGRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
-case "$GCMD_GH" in *ghguard*) bad "gh mode CLAUDE_CMD unguarded";; *) ok "gh mode CLAUDE_CMD unguarded";; esac
+assert_contains "gh mode CLAUDE_CMD prepends guard PATH (read cache)" "$GCMD_GH" "ghguard"
+
+# fwf-ghcache.sh: reshape a SEEDED canonical REST snapshot offline (#57). With
+# FWF_REAL_GH=/bin/false any network/GraphQL fallback would yield empty + fail,
+# so a correct answer proves the cache served the open set from the snapshot.
+CHROOT="$TMP/ghcache"; mkdir -p "$CHROOT/x__y"
+printf '%s' '[{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L1","name":"bug","description":"d","color":"c"}],"assignees":[]},{"number":7,"title":"Beta","body":"b","state":"open","html_url":"u","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}]' > "$CHROOT/x__y/issues.json"
+touch "$CHROOT/x__y/issues.ts"
+GHC() { FWF_GHCACHE_DIR="$CHROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+assert_eq "ghcache reshapes canonical offline" '9,7' "$(GHC serve issue list --json number,title --jq '[.[].number]|@csv')"
+assert_eq "ghcache --label filter offline"    '9'   "$(GHC serve issue list --label bug --json number --jq '[.[].number]|@csv')"
+assert_eq "ghcache projects gh-shaped labels"  '[{"labels":[{"id":"L1","name":"bug","description":"d","color":"c"}],"number":9}]' "$(GHC serve issue list --label bug --json number,labels)"
 
 section "pane recovery helpers (issue #36)"
 RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"

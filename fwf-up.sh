@@ -80,9 +80,10 @@ fi
 mkdir -p "$FWF_RUN"
 rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
 printf '%s\n' "$FWF_TEMPLATE" > "$FWF_RUN/template"   # persist the running template so read-only tools (the dash) resolve it, not the dev default (#51)
-# Local mode (#34): (re)write the gh-write guard the panes' PATH points at —
-# idempotent, and `fwf up` must never depend on provision having been recent.
-[ "$FWF_ISSUES" = "local" ] && fwf_install_ghguard
+# (Re)write the gh shim the panes' PATH points at: the REST+ETag read cache in
+# every mode, plus the fail-closed write guard in local mode (#34/#57). Idempotent,
+# and `fwf up` must never depend on provision having been recent.
+fwf_install_ghguard
 
 # Say what is about to launch BEFORE ten panes boot (issue #30): a profile/env
 # mismatch should be visible here, not discovered by briefing the captain.

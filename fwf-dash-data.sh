@@ -52,10 +52,13 @@ status_q() { status_fresh || { echo ""; return 0; }; jq -r "$1" "$STATUS_JSON" 2
 di_read() {
   if [ "$FWF_ISSUES" = "local" ]; then
     "$DIR/fwf-issues.sh" "$@"
-  elif [ -d "$FWF_REPO/.git" ]; then
-    ( cd "$FWF_REPO" && gh issue "$@" )
   else
-    gh issue "$@"
+    case "${1:-}" in
+      # Hot reads through the shared REST+ETag cache (off GraphQL) — same
+      # snapshot the floor reads, so the dash never re-drains the budget (#57).
+      list|view) FWF_REAL_GH="$(command -v gh)" "$DIR/fwf-ghcache.sh" serve issue "$@" ;;
+      *) if [ -d "$FWF_REPO/.git" ]; then ( cd "$FWF_REPO" && gh issue "$@" ); else gh issue "$@"; fi ;;
+    esac
   fi
 }
 
@@ -182,7 +185,12 @@ decisions_json() { # $1 = open_issues_json
 # motion: draft = an implementer still building; ready = handed to QA/review
 # (with CI state); recently merged = promoted. gh-only — the local issue backend
 # has no PR concept, so it yields an empty activity block.
-gh_pr() { if [ -d "$FWF_REPO/.git" ]; then ( cd "$FWF_REPO" && gh pr "$@" ); else gh pr "$@"; fi; }
+gh_pr() {
+  case "${1:-}" in
+    list|view) FWF_REAL_GH="$(command -v gh)" "$DIR/fwf-ghcache.sh" serve pr "$@" ;;
+    *) if [ -d "$FWF_REPO/.git" ]; then ( cd "$FWF_REPO" && gh pr "$@" ); else gh pr "$@"; fi ;;
+  esac
+}
 activity_json() {
   if [ "${FWF_ISSUES:-gh}" = "local" ]; then
     echo '{"building":[],"in_test":[],"merged":[]}'; return 0
