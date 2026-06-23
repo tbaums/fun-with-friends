@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-23
+
+### Added
+- **Shared REST+ETag `gh` read cache** (`fwf-ghcache.sh`) (#57). The factory's hot
+  `gh issue list` / `gh pr list` polls — previously GraphQL, which ten agents drain
+  to zero in minutes, stalling the floor (and starving any human `gh`) — now route
+  through a **single-flight, TTL'd cache** served from one canonical REST fetch per
+  topic off the **core** bucket (separate from the GraphQL pool), with
+  `If-None-Match` so an unchanged poll returns `304` for free. Every list variant
+  (per-label, per-base, projection, `--jq`) and the dash read the same snapshot;
+  output is byte-identical to `gh`. Tunable via `FWF_GHCACHE_TTL` (default 60),
+  `FWF_GHCACHE_DIR`, `FWF_GHCACHE_OFF`. See `docs/gh-read-cache.md`.
+
+### Changed
+- The pane `gh` shim (`fwf_install_ghguard`) is now installed in **all** modes
+  (previously local-only): it provides the read cache everywhere, and additionally
+  keeps the fail-closed remote-write guard in `--issues local` mode (#34).
+
 ## [0.12.0] - 2026-06-22
 
 ### Added
