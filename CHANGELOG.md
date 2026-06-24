@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-06-23
+
+### Fixed
+- **gh read cache: the dash's detail/thread pane showed "detail unavailable"** (#57
+  regression). The cache's fallback `gh issue/pr view` ran without repo context, so
+  it worked for agents (whose cwd is their worktree) but failed for the **dash**,
+  which runs outside the target repo — `gh` couldn't resolve the issue number,
+  returned empty, and the detail pane rendered "detail unavailable". The cache now
+  exports `GH_REPO=<owner/repo>` so its gh calls resolve from any cwd. Added a
+  dash-data regression test that drives `detail_view` through the **real** cache
+  from outside a repo (the existing stubbed-`di_read` tests had skipped that path).
+
 ## [0.13.0] - 2026-06-23
 
 ### Added
