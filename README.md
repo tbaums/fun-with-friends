@@ -315,8 +315,17 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   only on repos and machines where that is acceptable.
 - **The swarm never touches the default branch** — `staging` and `integration`
   are its only shared branches; you alone promote `integration → main`.
-- **Per-tree build dirs can be large** (ten worktrees). Don't `--purge`
-  between runs unless retiring the factory; keep builds warm.
+- **Per-tree build dirs can be large** (ten worktrees). To stop each worktree
+  carrying its own multi-GB compile cache, a profile can export a shared
+  `CARGO_TARGET_DIR` so every tree builds into one dir — dependencies (the bulk)
+  dedupe to a single copy; only first-party crates rebuild on branch switches.
+  The `transom` profile does this (`#638`), overridable via `FWF_CARGO_TARGET_DIR`.
+  Watch for cargo's build-lock serializing concurrent builds across panes.
+- **Disk-pressure guard:** `fwf up` refuses to start (or cycle the floor) when
+  free space is below `FWF_MIN_FREE_GB` (default `50`, set `0` to disable). On a
+  shared host a full disk fails not just builds but prod writes — it once wedged
+  a release. Don't `--purge` between runs unless retiring the factory; keep
+  builds warm.
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.

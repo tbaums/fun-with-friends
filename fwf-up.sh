@@ -37,6 +37,19 @@ fwf_ut_guard_target || exit 1
 # one hit). Fail-open — a warning, never a block. No-op for every other template.
 fwf_ut_browser_preflight
 
+# Disk-pressure guard (#638): on a shared host a full disk fails not just builds
+# but PROD writes (data repo, TTS cache) — it's what wedged the v0.22.0 release.
+# Refuse to bring up / cycle the floor below a free-space floor. The swarm's
+# shared CARGO_TARGET_DIR keeps steady state bounded; this is the backstop.
+# Tunable via FWF_MIN_FREE_GB (set 0 to disable).
+fwf_min_free_gb="${FWF_MIN_FREE_GB:-50}"
+fwf_free_gb="$(df -g "$HOME" | awk 'NR==2 {print $4}')"
+if [ "$fwf_min_free_gb" -gt 0 ] && [ "${fwf_free_gb:-0}" -lt "$fwf_min_free_gb" ]; then
+  echo "fwf: REFUSING to start — only ${fwf_free_gb}G free on \$HOME (floor ${fwf_min_free_gb}G)." >&2
+  echo "fwf: free disk first — stale Rust target/ dirs are the usual culprit — then retry." >&2
+  exit 1
+fi
+
 # Arming (issue #38): full role prompt once + lean /loop tick — fwf_arm_pane.
 
 # Per-pane label (@l) and color (@c); text/color come from the shared
