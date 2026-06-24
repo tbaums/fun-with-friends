@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-06-24
+
+### Fixed
+- **Portable file-mtime in the gh read cache** (#57): `stat -f %m` is BSD
+  "format mtime", but on GNU/Linux `-f` means `--file-system` and *succeeds*
+  with junk, so the `|| stat -c %Y` fallback never ran — the canonical snapshot
+  was deemed stale and offline reshape fell back to empty. This failed the
+  `ghcache … offline` tests on Linux (passing on macOS) and had blocked the
+  Release workflow's test gate since v0.12.0. Try GNU `-c %Y` first, then BSD.
+
 ## [0.14.0] - 2026-06-24
 
 ### Added
