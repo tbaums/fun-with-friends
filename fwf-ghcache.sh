@@ -36,7 +36,12 @@ real_gh() {
 }
 
 now() { date +%s; }
-file_age() { local m; m="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null)"; [ -n "$m" ] && echo $(( $(now) - m )) || echo 999999; }
+file_age() { # seconds since $1 was modified; 999999 (==stale) if unknowable.
+  # GNU form FIRST: BSD `stat -f` means --file-system on GNU and *succeeds* with
+  # junk, so `-f %m || -c %Y` never reaches the GNU fallback on Linux (#57).
+  local m; m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)"
+  case "$m" in ''|*[!0-9]*) echo 999999;; *) echo $(( $(now) - m ));; esac
+}
 fresh() { [ -f "$1" ] && [ "$(file_age "$1")" -lt "${2:-$TTL}" ]; }
 
 # owner/name — from env, else parsed from the repo's origin remote (no API call).
