@@ -633,6 +633,23 @@ assert_eq "issue number parsed from branch"         "42"    "$(printf '%s' "$DD_
 assert_eq "merged PR bucketed by base branch"       "8"     "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].pr')"
 assert_eq "merged 'when' formatted from mergedAt"   "06-18 12:34" "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].when')"
 
+section "dash data: detail_view renders through the REAL gh cache from outside the repo (#57 regression)"
+# The dash runs outside the target repo; the cache's fallback `gh issue view N`
+# must still resolve the repo (via GH_REPO) or it fails "could not resolve" and
+# the detail pane shows "detail unavailable". Stub `gh` on PATH so di_read's real
+# `gh` IS the stub: it fails unless GH_REPO is set, else returns a canned thread.
+mkdir -p "$TMP/dbin"
+cat > "$TMP/dbin/gh" <<'STUB'
+#!/usr/bin/env bash
+[ -z "${GH_REPO:-}" ] && { echo "GraphQL: Could not resolve to an issue with the number of ${3:-}." >&2; exit 1; }
+case "$1 $2" in "issue view") printf '#%s · stub thread\nstate: OPEN\n' "$3"; exit 0;; esac
+exit 1
+STUB
+chmod +x "$TMP/dbin/gh"
+DD_DETAIL="$(cd "$TMP" && PATH="$TMP/dbin:$PATH" FWF_PROFILE=example FWF_GHCACHE_DIR="$TMP/ghcd" FWF_GHCACHE_REPO=o/r FWF_GHCACHE_TTL=9999 bash "$DD" detail 5 2>/dev/null)"
+assert_contains "detail renders the thread via the cache" "$DD_DETAIL" "#5 · stub thread"
+case "$DD_DETAIL" in *"detail unavailable"*) bad "detail must not be 'unavailable' when the cache has repo context";; *) ok "detail is not 'unavailable'";; esac
+
 # --------------------------------------------------------------------------
 section "user-testing template (issue #42) — roster + source-blind personas"
 UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }

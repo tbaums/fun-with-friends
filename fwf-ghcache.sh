@@ -49,6 +49,10 @@ repo_slug() {
 }
 
 SLUG="$(repo_slug)"
+# Give every real-gh call (the tier-1 fallback for view/--search) an explicit
+# repo, so it resolves from ANY cwd — the dash runs outside the target repo, where
+# bare `gh issue view N` would otherwise fail "could not resolve to an issue".
+[ -n "$SLUG" ] && export GH_REPO="$SLUG"
 ROOT="${FWF_GHCACHE_DIR:-${FWF_RUN:-$HOME/.fun-with-friends}/ghcache}/${SLUG//\//__}"
 mkdir -p "$ROOT/locks" "$ROOT/stdout" "$ROOT/reviews" 2>/dev/null
 
