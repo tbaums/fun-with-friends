@@ -155,7 +155,9 @@ assert_contains "resume --clear-only message" "$RES" "cleared STOP sentinel"
 
 section "floor lifecycle flags (issue #6) — no live tmux needed"
 # Isolated session names guarantee we never touch a real factory.
-FU_ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$"
+# FWF_MIN_FREE_GB=0 disables the disk-pressure guard (#638) so these flag-logic
+# tests don't depend on the runner's free disk.
+FU_ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0"
 # up: unknown flag rejected before any tmux work
 env $FU_ENV "$ROOT/fwf-up.sh" --bogus >/dev/null 2>&1 && bad "up rejects unknown flag" || ok "up rejects unknown flag"
 # up --floor-only without a live coord session points at the full launch path
@@ -168,6 +170,14 @@ DOWNOUT="$(env $FU_ENV "$ROOT/fwf-down.sh" --floor-only 2>&1)" && ok "floor-only
 assert_contains "floor-only down names the comeback" "$DOWNOUT" "fwf up --floor-only"
 # help advertises the floor lifecycle
 assert_contains "help mentions --floor-only" "$("$ROOT/fwf" help)" "--floor-only"
+
+section "disk-pressure guard (issue #638) — refuses below the free-space floor"
+# An impossibly high floor must refuse before any tmux work; portable df runs.
+GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=999999 "$ROOT/fwf-up.sh" 2>&1)" && bad "guard refuses below floor" || ok "guard refuses below floor"
+assert_contains "guard names the shortfall" "$GUARDOUT" "REFUSING to start"
+# Floor of 0 disables the guard (it must not be the thing that blocks here).
+G0="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0 "$ROOT/fwf-up.sh" --floor-only 2>&1)"
+case "$G0" in *"REFUSING to start"*) bad "floor 0 disables guard";; *) ok "floor 0 disables guard";; esac
 
 section "runtime sizing + models (issue #7)"
 # PAIRS derives from FWF_PAIRS after the profile loads

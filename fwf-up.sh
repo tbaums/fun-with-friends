@@ -43,7 +43,9 @@ fwf_ut_browser_preflight
 # shared CARGO_TARGET_DIR keeps steady state bounded; this is the backstop.
 # Tunable via FWF_MIN_FREE_GB (set 0 to disable).
 fwf_min_free_gb="${FWF_MIN_FREE_GB:-50}"
-fwf_free_gb="$(df -g "$HOME" | awk 'NR==2 {print $4}')"
+# POSIX df (-Pk): 1024-byte blocks, one line per fs — portable across macOS/Linux
+# (unlike BSD-only `df -g`). $4 is available KiB; fold to whole GiB.
+fwf_free_gb="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print int($4/1024/1024)}')"
 if [ "$fwf_min_free_gb" -gt 0 ] && [ "${fwf_free_gb:-0}" -lt "$fwf_min_free_gb" ]; then
   echo "fwf: REFUSING to start — only ${fwf_free_gb}G free on \$HOME (floor ${fwf_min_free_gb}G)." >&2
   echo "fwf: free disk first — stale Rust target/ dirs are the usual culprit — then retry." >&2
