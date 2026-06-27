@@ -11,12 +11,14 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-06-27
+
 ### Changed
-- **CHANGELOG items carry a docs commit ref.** Every entry now cites two refs —
-  code and docs — the per-item guarantee that doc changes are in for each change
-  (`RELEASING.md`, the CHANGELOG convention header). The `dev` implementer
-  template notes that a change's in-PR docs are what the release cites as its
-  `docs <sha>`.
+- **CHANGELOG items carry a docs commit ref** (code 593cc79, docs 593cc79).
+  Every entry now cites two refs — code and docs — the per-item guarantee that
+  doc changes are in for each change (`RELEASING.md`, the CHANGELOG convention
+  header). The `dev` implementer template notes that a change's in-PR docs are
+  what the release cites as its `docs <sha>`.
 
 ## [0.16.0] - 2026-06-27
 
