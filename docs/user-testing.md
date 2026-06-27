@@ -124,7 +124,9 @@ Outputs land under `~/.fun-with-friends/ut/<profile>/`:
 - **`findings-report.md`** — ranked **top-10-max** findings (severity, persona,
   narrative repro, evidence path, suspected-known-issue cross-ref). Trial one
   writes this **for human grading** — findings graduate to real tracker tickets
-  only after you pass them.
+  only after you pass them, and graduated findings are filed `product-wip` so
+  they route through the dev factory's PM → GV-signoff flow (not built straight
+  from the report).
 - **`scorecard.md`** — recall against the captain's known-unfixed-defects list
   (the canary), human-graded precision per finding, your triage time (target
   < 30 min), and "what to change next trial" (persona-card / researcher-rule

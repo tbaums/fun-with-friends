@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-27
+
+### Changed
+- **User-testing findings route through PM/GV** (`user-testing` template): the
+  captain now files every graduated tester finding as `product-wip`, so it
+  enters the dev factory's PM → GV-signoff flow instead of being built straight
+  from the report. Closes the gap where the fix path bypassed product review.
+
 ## [0.15.0] - 2026-06-27
 
 ### Added
