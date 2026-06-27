@@ -4,7 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+**Convention:** every item carries two commit refs — code and docs:
+`- **Feature** (#NNN, code <sha>, docs <sha>) — …`. Same SHA when docs rode in
+the implementing commit; distinct when separate. The docs ref is mandatory and
+is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
+
 ## [Unreleased]
+
+### Changed
+- **CHANGELOG items carry a docs commit ref.** Every entry now cites two refs —
+  code and docs — the per-item guarantee that doc changes are in for each change
+  (`RELEASING.md`, the CHANGELOG convention header). The `dev` implementer
+  template notes that a change's in-PR docs are what the release cites as its
+  `docs <sha>`.
 
 ## [0.16.0] - 2026-06-27
 

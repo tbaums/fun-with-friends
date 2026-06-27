@@ -16,7 +16,13 @@ and creates a GitHub Release with the tarball attached and auto-generated notes.
 2. **Bump the version** in `VERSION` (e.g. `0.2.0`). Skip if it already holds the
    number you're releasing.
 3. **Update [`CHANGELOG.md`](CHANGELOG.md)**: move items from `Unreleased` into a
-   new `## [X.Y.Z] - YYYY-MM-DD` section.
+   new `## [X.Y.Z] - YYYY-MM-DD` section. **Every entry carries two commit refs —
+   code and docs**: `- **Feature** (#NNN, code <sha>, docs <sha>) — …`. Same SHA
+   when docs rode in the implementing commit; distinct when docs landed
+   separately. The **docs ref is mandatory** — it's the per-item proof the doc
+   changes are in for that change (a genuinely doc-less internal change cites
+   `docs none — internal`). Verify each user-facing item's `docs <sha>` actually
+   touched a doc (`git show <sha> --stat`) before tagging.
 4. **Commit** the bump: `git commit -am "Release vX.Y.Z"`.
 5. **Tag and push**:
    ```bash
