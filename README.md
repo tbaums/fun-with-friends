@@ -125,13 +125,15 @@ re-injected every tick.
   implementer posts a `CLAIM implN` comment, re-checks that the first claim in
   the thread is its own (losers yield with zero wasted work; stale claims
   expire after 15 minutes), and only then branches and opens a draft PR
-  (`Closes #N`). One issue = one branch = one PR. They loop: address review
+  (`Closes #N`). One issue = one branch = one PR, and a behavior-changing PR
+  **updates its own docs in the same PR** (definition of done). They loop: address review
   feedback, wait while a PR is in review, or claim the next issue once one
   merges — never stalling idle. The captain can pre-assign with `ASSIGNED
   implN` comments when releasing a batch.
 - **QA1–3** (paired by branch prefix): review only `implN/*` PRs, run the fast
-  gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`).
-  No e2e here — kept fast and parallel-safe.
+  gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`);
+  they also **request changes on a behavior-changing PR whose diff didn't update
+  its docs**, so docs ride with the change. No e2e here — kept fast and parallel-safe.
 - **CONDUCTOR** (owns e2e and the gate into `integration`): when `staging` is
   ahead, acquires the e2e lock, runs the **full e2e suite** on `staging`, and on
   green ff-merges **`staging → integration`**. It **never touches the default

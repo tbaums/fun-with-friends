@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-27
+
+### Added
+- **Docs ride in the PR — definition of done** (`dev` template): a
+  behavior-changing implementer PR must update its own docs (README, `docs/`,
+  in-app help, keyboard-shortcut reference, tutorials) in the same PR, and QA
+  now **requests changes** on a behavior-changing PR whose diff didn't touch its
+  docs. Pure internal refactors are exempt. The implementer honors a repo
+  `CONTRIBUTING.md` if present. Documented in the pipeline section of the README.
+
 ## [0.14.1] - 2026-06-24
 
 ### Fixed
