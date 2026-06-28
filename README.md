@@ -141,7 +141,11 @@ re-injected every tick.
   proposal that recommends building spawns a new build ticket through the normal
   flow. This is the path for GV-signed-but-not-buildable tickets, so a scoped,
   approved exploration no longer stalls in `product-wip` limbo with no role to
-  produce it.
+  produce it. **Cross-machine note:** this flow lives in the *templates*, which
+  ship in the repo — a box only has it once its install is current, so run `fwf
+  upgrade` (then `fwf resume`/`fwf respawn <role>` to re-arm running panes) on
+  each machine. `fwf up` also warns automatically if the box is behind the latest
+  release, so a stale machine can't silently run the old flow.
 - **QA1–3** (paired by branch prefix): review only `implN/*` PRs, run the fast
   gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`);
   they also **request changes on a behavior-changing PR whose diff didn't update

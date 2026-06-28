@@ -36,6 +36,10 @@ fwf_ut_guard_target || exit 1
 # ...and warn at launch if the personas' browser MCP is not wired (the wall trial
 # one hit). Fail-open — a warning, never a block. No-op for every other template.
 fwf_ut_browser_preflight
+# Cross-machine guard: warn (never block) if this box's fwf is behind the latest
+# release — flows like the discovery ticket path live in the templates and only
+# reach a box via `fwf upgrade`, so a stale box would silently run the old flow.
+fwf_version_skew_warn || true
 
 # Disk-pressure guard (#638): on a shared host a full disk fails not just builds
 # but PROD writes (data repo, TTS cache) — it's what wedged the v0.22.0 release.

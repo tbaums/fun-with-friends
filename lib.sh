@@ -344,6 +344,43 @@ fwf_ut_browser_preflight() {
   return 0
 }
 
+# Cross-machine version-skew warning (fail-open, throttled). fwf flows live in the
+# templates, which ship in the repo — so a box only has the latest flow (e.g.
+# discovery tickets) if its install is current. `fwf upgrade` propagates it, but
+# that is opt-in, so a forgotten box would silently run a stale flow. This warns
+# (never blocks) at launch when the local VERSION is behind the latest release.
+# Throttled to one network check / 12h via a tmp cache; offline/unauth → silent.
+# Self-contained (finds VERSION next to this lib) and ALWAYS returns 0.
+fwf_version_skew_warn() {
+  command -v gh >/dev/null 2>&1 || return 0
+  local libdir cur repo latest cache now ts age
+  libdir="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || return 0
+  cur="$(cat "$libdir/VERSION" 2>/dev/null)" || return 0
+  [ -n "$cur" ] || return 0
+  repo="${FWF_UPGRADE_REPO:-tbaums/fun-with-friends}"
+  cache="${TMPDIR:-/tmp}/.fwf-latest-release"
+  now="$(date +%s 2>/dev/null || echo 0)"
+  latest=""
+  if [ -f "$cache" ] && [ -f "$cache.ts" ]; then
+    ts="$(cat "$cache.ts" 2>/dev/null || echo 0)"
+    age=$(( now - ts ))
+    if [ "$age" -ge 0 ] && [ "$age" -lt 43200 ]; then latest="$(cat "$cache" 2>/dev/null || echo '')"; fi
+  fi
+  if [ -z "$latest" ]; then
+    latest="$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null || echo '')"
+    if [ -n "$latest" ]; then
+      printf '%s' "$latest" >"$cache" 2>/dev/null || true
+      printf '%s' "$now"    >"$cache.ts" 2>/dev/null || true
+    fi
+  fi
+  [ -n "$latest" ] || return 0
+  if [ "v$cur" != "$latest" ]; then
+    printf '⚠️  fwf v%s on this box, but v%s is released — newer flows (e.g. discovery tickets) need an upgrade here.\n' "$cur" "${latest#v}" >&2
+    printf "    run 'fwf upgrade', then 'fwf resume' (or 'fwf respawn <role>') to re-arm running panes on the new templates.\n" >&2
+  fi
+  return 0
+}
+
 # Prod-target refusal for the user-testing factory (issue #42): a trial must run
 # only against an isolated scratch/UAT instance, never production. Fail-closed
 # ALLOW-LIST — anything that is not obviously a throwaway target is refused, so a
