@@ -11,6 +11,24 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-27
+
+### Added
+- **Discovery / exploration flow** (code e423ee7, docs e423ee7) — a new
+  `discovery` label and path for tickets whose deliverable is a written proposal
+  (an investigation plus a build-or-no-go recommendation), not code. An
+  implementer that claims a `discovery` ticket produces
+  `docs/proposals/<n>-<slug>.md` instead of code; QA gates the proposal's
+  substance (grounded estimates, an actionable recommendation), not tests, and
+  the proposal doc satisfies the docs definition of done. A GV "scoped" sign-off
+  on a discovery ticket routes it to the flow — drop the `product-wip` gate, KEEP
+  the `discovery` label so an impl produces the proposal — instead of being
+  re-gated into product-wip limbo. The PM labels explorations `discovery` at
+  draft; a proposal that recommends building spawns a new build ticket. Fixes the
+  loop where a scoped, approved exploration had no role to produce it and stalled.
+  (`FWF_DISCOVERY_LABEL`, default `discovery`; `config.sh`/`lib.sh`; the `dev`
+  PM/GV/implementer/QA/captain templates; README "Roles".)
+
 ## [0.16.1] - 2026-06-27
 
 ### Changed
