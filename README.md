@@ -130,6 +130,18 @@ re-injected every tick.
   feedback, wait while a PR is in review, or claim the next issue once one
   merges — never stalling idle. The captain can pre-assign with `ASSIGNED
   implN` comments when releasing a batch.
+- **Discovery / exploration tickets** (`discovery` label): not every ticket is a
+  code build. When the question is *should we / how would we / is it worth it*,
+  the PM drafts a **discovery** ticket whose deliverable is a written **proposal**
+  (`docs/proposals/<n>-<slug>.md` — an investigation plus a build-or-no-go
+  recommendation), not code. The GV signs it off as *correctly scoped* — which is
+  **not** "build it"; the go-ahead drops the `product-wip` gate but keeps
+  `discovery`, so an implementer picks it up and **produces the proposal** instead
+  of mis-building it as code (QA gates the proposal's substance, not tests). A
+  proposal that recommends building spawns a new build ticket through the normal
+  flow. This is the path for GV-signed-but-not-buildable tickets, so a scoped,
+  approved exploration no longer stalls in `product-wip` limbo with no role to
+  produce it.
 - **QA1–3** (paired by branch prefix): review only `implN/*` PRs, run the fast
   gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`);
   they also **request changes on a behavior-changing PR whose diff didn't update
@@ -231,6 +243,7 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
 (base name; `FWF_COORD_SESSION`/`FWF_BUILD_SESSION` derive from it),
 `FWF_QA_INTERVAL`, `FWF_CONDUCTOR_INTERVAL`, `FWF_PM_INTERVAL`, `FWF_GV_INTERVAL`,
 `FWF_CAPTAIN_INTERVAL`, `FWF_IMPL_INTERVAL`, `FWF_WIP_LABEL`, `FWF_HOLD_LABEL`,
+`FWF_DISCOVERY_LABEL` (default `discovery`),
 `FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors — plus the
 sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
 `FWF_TEMPLATE`) from the next section. Role prompts are the source of truth and
