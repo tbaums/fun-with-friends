@@ -11,6 +11,18 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-06-28
+
+### Added
+- **Auto version-skew warning at launch** (code 75e13f1, docs 75e13f1) — `fwf up`
+  now warns (never blocks) when the box's install is behind the latest release,
+  pointing at `fwf upgrade` + respawn. fwf flows (e.g. the discovery ticket path)
+  live in the templates, which only reach a machine via `fwf upgrade`, so a
+  forgotten box would silently run a stale flow; this makes that visible.
+  Self-contained (VERSION via `BASH_SOURCE`), throttled to one network check /
+  12h, fail-open (offline/unauth/no-`gh` → silent). (`lib.sh` `fwf_version_skew_warn`,
+  `fwf-up.sh` preflight, README "Roles" cross-machine note.)
+
 ## [0.17.0] - 2026-06-27
 
 ### Added
