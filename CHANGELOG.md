@@ -11,6 +11,21 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-28
+
+### Added
+- **Cost/loop GV gates + incident protocol** (#59/#60/#61, code 8c5216d, docs 8c5216d)
+  — hardening from the transom narration incident (a working cache's hit-storm log
+  was misread as a metered drain and escalated). `gv.tmpl` gains two review lenses:
+  RUNTIME COST & BLAST RADIUS (bound any metered/external call or background loop
+  with a content+version cache AND a fail-closed breaker; require real-vs-cache-hit
+  observability, a verified deploy-plumbed kill switch, and a canary before
+  default-ON — #59 + the kill-switch half of #60) and COMPLETE THE FIX (a regression
+  fix must test EVERY reported symptom before its parent closes — #61). New
+  `docs/INCIDENT_PROTOCOL.md`: verify ground truth before alarming (a log/counter is
+  a proxy — confirm real resource use), then stop the bleeding first on a CONFIRMED
+  drain (#60); `captain.tmpl` prod-monitoring duty points at it.
+
 ## [0.17.1] - 2026-06-28
 
 ### Added
