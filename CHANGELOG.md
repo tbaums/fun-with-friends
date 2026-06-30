@@ -11,8 +11,10 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-06-30
+
 ### Added
-- **9-archetype persona library + deep sweep mode** (#47). Expands the
+- **9-archetype persona library + deep sweep mode** (#47, code a42e2af, docs a42e2af). Expands the
   `user-testing` template from 3 persona archetypes to 9 (power user,
   slow-network / low-end device, returning user, privacy-conscious skeptic,
   international / non-native-English user, and accessibility user join the
