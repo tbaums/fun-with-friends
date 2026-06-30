@@ -11,8 +11,10 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-06-30
+
 ### Added
-- **Prebuilt dash release binaries** (#63, code 215e4d1, docs 215e4d1) — `fwf dash`
+- **Prebuilt dash release binaries** (#63, code 7ff60da, docs 7ff60da) — `fwf dash`
   no longer runs `cargo build` on first use. `fwf-dash.sh` resolves a binary in
   order: `FWF_DASH_BIN` → cached arch+version binary → release-asset download
   (sha256-verified against the published checksums file before it's made
