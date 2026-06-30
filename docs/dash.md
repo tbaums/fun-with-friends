@@ -2,7 +2,7 @@
 
 A compiled Rust + ratatui TUI (the `dash/` crate) that shows the factory at a
 glance and lets you act on the gated decisions without leaving the keyboard.
-`fwf dash` resolves the profile, builds the binary on first run (the gh-dash
+`fwf dash` resolves the profile, finds a runnable `fwf-dash` binary (the gh-dash
 model — a bash tool shelling out to a compiled dashboard), points it at the bash
 data/action layers, and execs it.
 
@@ -11,8 +11,41 @@ fwf dash                  # the only profile, or pass --profile NAME
 fwf --profile transom dash
 ```
 
-Requirements: `cargo` (to build the binary on first run; or set `FWF_DASH_BIN`
-to a prebuilt one) and `jq` (the data provider).
+Requirements: `jq` (the data provider). A Rust toolchain (`cargo`) is **not**
+required when a prebuilt binary is available for your platform — see *Binary
+resolution* below.
+
+## Binary resolution (issue #63)
+
+`fwf dash` resolves a runnable binary in this order, stopping at the first hit:
+
+1. **`FWF_DASH_BIN`** — if set, it's used verbatim (no download, no build). A
+   missing path surfaces a "no runnable binary" error rather than falling back.
+2. **Cached arch+version binary** — `~/.fun-with-friends/cache/dash/fwf-dash-<version>-<slug>`.
+   The cache key embeds the installed `VERSION`, so `fwf upgrade` automatically
+   re-resolves rather than running a stale binary.
+3. **Release asset download** — the matching prebuilt binary is downloaded from
+   the GitHub Release for this `VERSION`, **sha256-verified against the published
+   `fwf-dash-<version>-checksums.txt`**, cached, and run. A failed checksum or
+   missing asset is ignored and resolution falls through. Uses `curl` (or `wget`)
+   against the public release URL — no `gh`/token required.
+4. **Source build** — the original first-run behavior: `cargo build --release` in
+   `dash/`. This is the offline / unsupported-platform fallback and requires
+   `cargo`.
+
+The `<slug>` is derived from `uname -s`/`uname -m`:
+
+| Host | slug |
+|---|---|
+| macOS Apple Silicon | `darwin-arm64` |
+| macOS Intel | `darwin-x86_64` |
+| Linux x86_64 | `linux-x86_64` |
+| Linux arm64 | `linux-arm64` |
+
+Prebuilt binaries are produced and uploaded by the release workflow
+(`.github/workflows/release.yml`) when a `vX.Y.Z` tag is pushed. Trust is rooted
+in GitHub Releases over TLS plus the sha256 checksum (which guards against a
+corrupted/mismatched download); GPG signing is not done in v1.
 
 ## What it shows
 
@@ -76,7 +109,10 @@ place:
 | Var | Effect |
 |---|---|
 | `FWF_DASH_REFRESH` | auto-refresh seconds (default 5, floor 1) |
-| `FWF_DASH_BIN` | use a prebuilt binary; skip the first-run `cargo build` |
+| `FWF_DASH_BIN` | use this binary verbatim; skip download + build entirely |
+| `FWF_DASH_CACHE_DIR` | where downloaded binaries are cached (default `~/.fun-with-friends/cache/dash`) |
+| `FWF_DASH_NO_DOWNLOAD` | skip the release-asset download step (cache/source only) |
+| `FWF_DASH_RELEASE_BASE` | base URL for release assets (test seam; default GitHub) |
 | `FWF_DASH_DRYRUN` | actions print their constructed command instead of running |
 | `FWF_DASH_STALE_SECS` | how old `status.json` may be before it's `stale` (default 90) |
 

@@ -11,11 +11,22 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Added
+- **Prebuilt dash release binaries** (#63, code 215e4d1, docs 215e4d1) — `fwf dash`
+  no longer runs `cargo build` on first use. `fwf-dash.sh` resolves a binary in
+  order: `FWF_DASH_BIN` → cached arch+version binary → release-asset download
+  (sha256-verified against the published checksums file before it's made
+  executable, then cached under `~/.fun-with-friends/cache/dash` keyed by
+  VERSION+os-arch) → source `cargo build` fallback. Identical offline. The
+  release workflow cross-compiles `fwf-dash` for darwin-arm64/darwin-x86_64/
+  linux-x86_64/linux-arm64 on native runners and uploads them + a checksums
+  asset. Also fixes a latent bug where `fwf-dash.sh` error paths emitted
+  `die: command not found` (it sources lib.sh, which doesn't define `die`).
+
 ## [0.19.0] - 2026-06-30
 
 ### Fixed
 - **Implementer self-recovers bounced/conflicting PRs (no idle-deadlock)** (#49, code 770cb0e, docs 770cb0e) — the implementer loop treated an open PR as "idle, awaiting review" and never re-engaged when qa requested changes or `staging` advanced under it (PR went CONFLICTING/DIRTY), deadlocking until a human hand-rebased. It now acts on new-information-since-last-push: rebase onto staging, re-run the full gate, verify the diff still carries the change, push if green; bounded escalation (escalate to captain + stop after a non-trivial conflict / red gate / 2 failed attempts) kills re-push thrash; self-recovery is logged distinctly from idle.
-
 
 ## [0.18.0] - 2026-06-28
 

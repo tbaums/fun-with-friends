@@ -661,6 +661,97 @@ assert_contains "detail renders the thread via the cache" "$DD_DETAIL" "#5 · st
 case "$DD_DETAIL" in *"detail unavailable"*) bad "detail must not be 'unavailable' when the cache has repo context";; *) ok "detail is not 'unavailable'";; esac
 
 # --------------------------------------------------------------------------
+# fwf dash BINARY RESOLVER (#63): FWF_DASH_BIN → cached arch+version binary →
+# verified release-asset download → source `cargo build` fallback. Fully
+# hermetic: a stubbed PATH (curl/cargo), a fake release tree served via a
+# file:// FWF_DASH_RELEASE_BASE, FWF_DASH_CACHE_DIR + FWF_DASH_CRATE seams so we
+# never touch the network, the real cache, or the real crate. Each fake "binary"
+# just prints a tag so we can prove WHICH resolution path produced it.
+section "dash resolver (#63): resolution order + checksum verify + offline fallback"
+DVER="$(cat "$ROOT/VERSION")"
+# Host slug, same mapping the resolver uses.
+case "$(uname -s)" in
+  Darwin) case "$(uname -m)" in arm64|aarch64) DSLUG=darwin-arm64;; x86_64) DSLUG=darwin-x86_64;; *) DSLUG="";; esac;;
+  Linux)  case "$(uname -m)" in x86_64|amd64) DSLUG=linux-x86_64;; aarch64|arm64) DSLUG=linux-arm64;; *) DSLUG="";; esac;;
+  *) DSLUG="";;
+esac
+dsha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
+mkdashbin() { printf '#!/usr/bin/env bash\necho "DASH tag=%s"\n' "$2" > "$1"; chmod +x "$1"; }
+# Stub PATH: real coreutils + jq stub (so the jq check passes) + a curl that
+# resolves file:// URLs out of our fake release tree. cargo is stubbed per-case.
+DBIN="$TMP/dashstub"; mkdir -p "$DBIN"
+for t in bash env uname mktemp awk cat cp mv chmod mkdir rm dirname sha256sum shasum; do
+  r="$(command -v "$t" 2>/dev/null)" && ln -sf "$r" "$DBIN/$t"
+done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$DBIN/jq"; chmod +x "$DBIN/jq"
+cat > "$DBIN/curl" <<'CURL'
+#!/usr/bin/env bash
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; file://*) url="${1#file://}"; shift;; *) shift;; esac; done
+[ -f "$url" ] || exit 22; cp "$url" "$out"
+CURL
+chmod +x "$DBIN/curl"
+DEMPTY="$TMP/dash-empty-crate"; mkdir -p "$DEMPTY/target/release"   # crate seam w/ no prebuilt binary
+# Fake release tree: <base>/v<ver>/{asset,checksums}
+DREL="$TMP/dash-release"; DASSET="fwf-dash-${DVER}-${DSLUG}"
+mkdir -p "$DREL/v$DVER"; mkdashbin "$DREL/v$DVER/$DASSET" downloaded
+( cd "$DREL/v$DVER" && dsha "$DASSET" > "fwf-dash-${DVER}-checksums.txt" )
+drun() { env -i HOME="$TMP/dhome" PATH="$DBIN:/usr/bin:/bin" TMPDIR="$TMP" FWF_PROFILE=example "$@" bash "$ROOT/fwf-dash.sh" 2>&1; }
+
+if [ -z "$DSLUG" ]; then
+  printf '  skip dash resolver (unsupported host arch)\n'
+else
+  # 1. FWF_DASH_BIN wins verbatim — no download, no cache written.
+  mkdashbin "$TMP/dexplicit" explicit
+  D1="$(drun FWF_DASH_BIN="$TMP/dexplicit" FWF_DASH_CACHE_DIR="$TMP/dc1" FWF_DASH_RELEASE_BASE="file://$DREL")"
+  assert_contains "resolver: FWF_DASH_BIN runs verbatim" "$D1" "DASH tag=explicit"
+  [ -d "$TMP/dc1" ] && bad "resolver: FWF_DASH_BIN must not populate cache" || ok "resolver: FWF_DASH_BIN writes no cache"
+
+  # 2. FWF_DASH_BIN missing → error, never falls back to build.
+  D2="$(drun FWF_DASH_BIN="$TMP/nope" FWF_DASH_CACHE_DIR="$TMP/dc2")"
+  assert_contains "resolver: missing FWF_DASH_BIN errors" "$D2" "no runnable binary"
+  case "$D2" in *"building from source"*) bad "resolver: missing FWF_DASH_BIN must not build";; *) ok "resolver: missing FWF_DASH_BIN does not build";; esac
+
+  # 3. Cached arch+version binary used, no download.
+  mkdir -p "$TMP/dc3"; mkdashbin "$TMP/dc3/fwf-dash-${DVER}-${DSLUG}" cache
+  D3="$(drun FWF_DASH_CACHE_DIR="$TMP/dc3" FWF_DASH_RELEASE_BASE="file://$TMP/untouched")"
+  assert_contains "resolver: cached binary runs" "$D3" "DASH tag=cache"
+
+  # 4. Download → sha256 verify → cache → run.
+  D4="$(drun FWF_DASH_CACHE_DIR="$TMP/dc4" FWF_DASH_RELEASE_BASE="file://$DREL")"
+  assert_contains "resolver: verified download runs" "$D4" "DASH tag=downloaded"
+  [ -x "$TMP/dc4/$DASSET" ] && ok "resolver: download is cached" || bad "resolver: download not cached"
+
+  # 5. Tampered asset (checksum mismatch) → refuse + fall through to source.
+  DREL5="$TMP/dash-release5"; mkdir -p "$DREL5/v$DVER"
+  mkdashbin "$DREL5/v$DVER/$DASSET" good
+  ( cd "$DREL5/v$DVER" && dsha "$DASSET" > "fwf-dash-${DVER}-checksums.txt" )
+  printf 'tampered\n' >> "$DREL5/v$DVER/$DASSET"
+  printf '#!/usr/bin/env bash\necho CARGO-RAN >&2\n' > "$DBIN/cargo"; chmod +x "$DBIN/cargo"
+  D5="$(drun FWF_DASH_CACHE_DIR="$TMP/dc5" FWF_DASH_CRATE="$DEMPTY" FWF_DASH_RELEASE_BASE="file://$DREL5")"
+  assert_contains "resolver: checksum mismatch refused" "$D5" "checksum mismatch"
+  assert_contains "resolver: tamper falls through to source build" "$D5" "building from source"
+  [ -x "$TMP/dc5/$DASSET" ] && bad "resolver: tampered asset must not be cached" || ok "resolver: tampered asset not cached"
+
+  # 6. No matching asset + cargo present → source build attempted.
+  D6="$(drun FWF_DASH_CACHE_DIR="$TMP/dc6" FWF_DASH_CRATE="$DEMPTY" FWF_DASH_RELEASE_BASE="file://$TMP/no-release")"
+  assert_contains "resolver: no asset → source build" "$D6" "building from source"
+  assert_contains "resolver: cargo actually invoked"  "$D6" "CARGO-RAN"
+
+  # 7. No cargo + no prebuilt → clean die (proves die is defined; #63 latent bug).
+  rm -f "$DBIN/cargo"
+  D7="$(drun FWF_DASH_CACHE_DIR="$TMP/dc7" FWF_DASH_CRATE="$DEMPTY" FWF_DASH_RELEASE_BASE="file://$TMP/no-release")"
+  assert_contains "resolver: helpful die when no cargo" "$D7" "cargo isn't installed"
+  case "$D7" in *"command not found"*) bad "resolver: die must be defined (no 'command not found')";; *) ok "resolver: die is defined";; esac
+
+  # 8. FWF_DASH_NO_DOWNLOAD bypasses the download even when an asset exists.
+  printf '#!/usr/bin/env bash\necho CARGO-RAN >&2\n' > "$DBIN/cargo"; chmod +x "$DBIN/cargo"
+  D8="$(drun FWF_DASH_CACHE_DIR="$TMP/dc8" FWF_DASH_CRATE="$DEMPTY" FWF_DASH_NO_DOWNLOAD=1 FWF_DASH_RELEASE_BASE="file://$DREL")"
+  assert_contains "resolver: NO_DOWNLOAD bypasses download" "$D8" "building from source"
+  rm -f "$DBIN/cargo"
+fi
+
+# --------------------------------------------------------------------------
 section "user-testing template (issue #42) — roster + source-blind personas"
 UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
 assert_contains "templates lists user-testing" "$("$ROOT/fwf" templates)" "user-testing"
