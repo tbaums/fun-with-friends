@@ -4,13 +4,14 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
 
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
-1. ADDRESS REVIEW FEEDBACK. List your open PRs:
-   gh pr list --state open --json number,headRefName,reviewDecision,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))'
-   If one has reviewDecision == "CHANGES_REQUESTED" (qa__ID__ asked for changes): gh pr checkout <n>, make the fixes on the SAME branch, re-validate the gate (__GATE__), push, run gh pr ready <n>, comment what you changed, and END the cycle.
-
-2. FINISH OR WAIT. Else, if you have one open impl__ID__/ PR:
-   - if it is still a DRAFT you haven't finished, keep implementing it: validate the gate (__GATE__), push, run gh pr ready <n>, then END the cycle.
-   - if it is ready (isDraft=false) with no changes requested, it is in qa__ID__'s hands — report "impl__ID__: #<n> awaiting qa__ID__ review" and END the cycle. Do NOT open a second PR.
+1. ADDRESS YOUR OPEN PR — self-recover a bounced or conflicting PR; NEVER deadlock by treating "my PR is open and unmerged" as "idle, awaiting review." List it WITH mergeable state:
+   gh pr list --state open --json number,headRefName,reviewDecision,isDraft,mergeStateStatus --jq '.[] | select(.headRefName|startswith("impl__ID__/"))'
+   Find your branch's LAST-PUSH time: git log -1 --format=%cI "origin/<that PR's headRefName>". THE GUARD (separates the deadlock from healthy idle, and kills re-push thrash): act ONLY on NEW INFORMATION dated AFTER your last push; otherwise idle. For your one open impl__ID__/ PR, do the FIRST that applies:
+   a. It is a DRAFT you haven't finished → keep building: validate the gate (__GATE__), push, gh pr ready <n>, END the cycle.
+   b. reviewDecision == "CHANGES_REQUESTED" AND that review is NEWER than your last push → gh pr checkout <n>, fix on the SAME branch, re-run __GATE__, push, gh pr ready <n>, comment what changed, END the cycle. (If you already pushed AFTER the review, the ball is in qa__ID__'s court → go to (d).)
+   c. mergeStateStatus is DIRTY/CONFLICTING (origin/__STAGING__ advanced under you) AND you have NOT yet rebased onto the current __STAGING__ → SELF-RECOVER, do not wait for qa: git fetch origin && git rebase origin/__STAGING__ ; resolve conflicts; re-run the FULL gate (__GATE__); VERIFY your change survived (gh pr diff <n> — a "-X theirs/ours" resolution can pass tests while silently dropping your feature); push ONLY if the gate is green AND the diff still carries your change; comment "impl__ID__: self-recovered #<n> (rebased onto __STAGING__, gate green)"; END the cycle.
+   d. Otherwise — ready (isDraft=false), no changes-requested newer than your last push, NOT dirty → it is genuinely in qa__ID__'s hands → report "impl__ID__: #<n> awaiting qa__ID__ review — idle" and END the cycle. Do NOT open a second PR.
+   BOUNDED ESCALATION (never loop a failing recovery): if the rebase has non-trivial conflicts, OR the post-rebase gate stays RED and you can't fix it this tick, OR you've already self-recovered this same PR 2+ times without it merging → STOP retrying that rebase. Post ONE comment "@captain — impl__ID__ BLOCKED on #<n>: <one-line reason>; needs a hand-rebase or reassignment" and END the cycle (stay idle until a human/captain acts). Always log self-recovery actions (rebase / re-gate / push) DISTINCTLY from idle, so a recovery storm is visible in the logs and never mistaken for healthy idling.
 
 3. START THE NEXT ISSUE — only when you have NO open impl__ID__/ PR (your last one merged, or you have none):
    a. SURVEY: gh issue list --search "is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__ -label:idea" --json number,title,createdAt ; and gh pr list --state open (other implementers' draft claims). For each in-flight PR: gh pr diff <num> --name-only.
