@@ -11,6 +11,12 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-30
+
+### Fixed
+- **Implementer self-recovers bounced/conflicting PRs (no idle-deadlock)** (#49, code 770cb0e, docs 770cb0e) — the implementer loop treated an open PR as "idle, awaiting review" and never re-engaged when qa requested changes or `staging` advanced under it (PR went CONFLICTING/DIRTY), deadlocking until a human hand-rebased. It now acts on new-information-since-last-push: rebase onto staging, re-run the full gate, verify the diff still carries the change, push if green; bounded escalation (escalate to captain + stop after a non-trivial conflict / red gate / 2 failed attempts) kills re-push thrash; self-recovery is logged distinctly from idle.
+
+
 ## [0.18.0] - 2026-06-28
 
 ### Added
