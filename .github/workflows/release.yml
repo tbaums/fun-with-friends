@@ -5,10 +5,72 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write   # needed to create the GitHub Release
+  contents: write   # needed to create the GitHub Release and upload assets
 
 jobs:
+  # --------------------------------------------------------------------------
+  # Cross-compile the dash binary for the supported os/arch matrix and upload
+  # each as a release asset (issue #63), so `fwf dash` can download a prebuilt
+  # binary instead of running `cargo build` on first use. Each target builds on
+  # its native runner (no cross-linker), keeping the pure-Rust crate trivial.
+  dash-binaries:
+    name: dash binary (${{ matrix.slug }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: darwin-arm64,  runner: macos-14,         target: aarch64-apple-darwin }
+          - { slug: darwin-x86_64, runner: macos-13,         target: x86_64-apple-darwin }
+          - { slug: linux-x86_64,  runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu }
+          - { slug: linux-arm64,   runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    defaults:
+      run:
+        working-directory: dash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify tag matches VERSION
+        working-directory: .
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          file="$(cat VERSION)"
+          [ "$tag" = "$file" ] || { echo "::error::tag v$tag != VERSION ($file)"; exit 1; }
+
+      - name: Add Rust target
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Build (release, locked)
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Stage asset
+        working-directory: .
+        run: |
+          ver="$(cat VERSION)"
+          asset="fwf-dash-${ver}-${{ matrix.slug }}"
+          cp "dash/target/${{ matrix.target }}/release/fwf-dash" "$asset"
+          # Per-asset checksum line; collected into one checksums file by the
+          # release job. Use whichever sha256 tool the runner ships.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "${asset}.sha256"
+          else
+            shasum -a 256 "$asset" > "${asset}.sha256"
+          fi
+          cat "${asset}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-${{ matrix.slug }}
+          path: |
+            fwf-dash-*-${{ matrix.slug }}
+            fwf-dash-*-${{ matrix.slug }}.sha256
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
   release:
+    name: package + publish
+    needs: dash-binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -36,11 +98,37 @@ jobs:
         id: pkg
         run: echo "path=$(scripts/package.sh)" >> "$GITHUB_OUTPUT"
 
+      - name: Download dash binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dash-*
+          path: dash-assets
+          merge-multiple: true
+
+      - name: Assemble checksums file
+        id: assets
+        run: |
+          ver="$(cat VERSION)"
+          sums="fwf-dash-${ver}-checksums.txt"
+          # Collapse the per-arch *.sha256 lines into one published checksums
+          # file (the same name the resolver in fwf-dash.sh looks for).
+          cat dash-assets/*.sha256 > "dash-assets/$sums"
+          echo "----- $sums -----"
+          cat "dash-assets/$sums"
+          # Collect the binary asset paths (everything except the .sha256 lines).
+          {
+            echo "files<<EOF"
+            ls dash-assets/fwf-dash-${ver}-* | grep -v '\.sha256$'
+            echo "dash-assets/$sums"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             "${{ steps.pkg.outputs.path }}" \
+            ${{ steps.assets.outputs.files }} \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
