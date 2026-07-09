@@ -1,5 +1,10 @@
 # `fwf dash` — the status board + decision inbox
 
+![the fwf dash TUI: Activity tab with building/in-test/merged PRs and a detail pane](img/dash.png)
+
+*The dash rendered against sample data — the Activity landing tab plus the detail
+pane for the selected PR.*
+
 A compiled Rust + ratatui TUI (the `dash/` crate) that shows the factory at a
 glance and lets you act on the gated decisions without leaving the keyboard.
 `fwf dash` resolves the profile, finds a runnable `fwf-dash` binary (the gh-dash
