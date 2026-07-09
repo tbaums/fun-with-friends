@@ -89,7 +89,7 @@ jobs:
           echo "tag and VERSION agree: $file"
 
       - name: Lint
-        run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/example.sh test/run.sh
+        run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/example.sh templates/*/template.sh eval/run.sh test/run.sh
 
       - name: Functional tests
         run: bash test/run.sh

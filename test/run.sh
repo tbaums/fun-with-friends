@@ -155,7 +155,7 @@ assert_contains "resume --clear-only message" "$RES" "cleared STOP sentinel"
 
 section "floor lifecycle flags (issue #6) — no live tmux needed"
 # Isolated session names guarantee we never touch a real factory.
-# FWF_MIN_FREE_GB=0 disables the disk-pressure guard (#638) so these flag-logic
+# FWF_MIN_FREE_GB=0 disables the disk-pressure guard so these flag-logic
 # tests don't depend on the runner's free disk.
 FU_ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0"
 # up: unknown flag rejected before any tmux work
@@ -171,7 +171,7 @@ assert_contains "floor-only down names the comeback" "$DOWNOUT" "fwf up --floor-
 # help advertises the floor lifecycle
 assert_contains "help mentions --floor-only" "$("$ROOT/fwf" help)" "--floor-only"
 
-section "disk-pressure guard (issue #638) — refuses below the free-space floor"
+section "disk-pressure guard — refuses below the free-space floor"
 # An impossibly high floor must refuse before any tmux work; portable df runs.
 GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=999999 "$ROOT/fwf-up.sh" 2>&1)" && bad "guard refuses below floor" || ok "guard refuses below floor"
 assert_contains "guard names the shortfall" "$GUARDOUT" "REFUSING to start"

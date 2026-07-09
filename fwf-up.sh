@@ -41,7 +41,7 @@ fwf_ut_browser_preflight
 # reach a box via `fwf upgrade`, so a stale box would silently run the old flow.
 fwf_version_skew_warn || true
 
-# Disk-pressure guard (#638): on a shared host a full disk fails not just builds
+# Disk-pressure guard: on a shared host a full disk fails not just builds
 # but PROD writes too — it once wedged a release.
 # Refuse to bring up / cycle the floor below a free-space floor. The swarm's
 # shared CARGO_TARGET_DIR keeps steady state bounded; this is the backstop.

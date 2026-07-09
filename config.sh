@@ -58,6 +58,9 @@ GV_INTERVAL="${FWF_GV_INTERVAL:-3m}"               # how often the Grand Vizier 
 CAPTAIN_INTERVAL="${FWF_CAPTAIN_INTERVAL:-2m}"     # captain loop tick — surfaces pending human decisions every tick (also takes human input live)
 IMPL_INTERVAL="${FWF_IMPL_INTERVAL:-2m}"           # implementers loop too, so they advance after each handoff (no idle-waiting)
 CLAUDE_CMD="${FWF_CLAUDE_CMD:-claude --dangerously-skip-permissions}"
+# The bare claude binary (first token), captured BEFORE the `env` wrappers below
+# and in lib.sh mangle the first token — doctor and preflights probe this.
+FWF_CLAUDE_BIN="${CLAUDE_CMD%% *}"
 # Environment prepended to each claude launch. CLAUDE_CODE_FORCE_SYNC_OUTPUT=1
 # makes terminal redraws atomic (helps avoid dropped/garbled input under tmux).
 # Add CLAUDE_CODE_NO_FLICKER=1 for alt-screen isolation (changes scrollback), or

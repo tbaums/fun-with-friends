@@ -132,11 +132,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 ## [0.14.0] - 2026-06-24
 
 ### Added
-- **Disk-pressure guard in `fwf up`** (#638): refuses to bring up / cycle the
+- **Disk-pressure guard in `fwf up`**: refuses to bring up / cycle the
   floor when free space is below `FWF_MIN_FREE_GB` (default `50`, set `0` to
   disable). A full disk on a shared host fails not just builds but prod writes —
   it wedged a release.
-- **Shared `CARGO_TARGET_DIR` support** (#638): a profile can export one shared
+- **Shared `CARGO_TARGET_DIR` support**: a profile can export one shared
   Rust target dir so all worktrees compile into a single cache instead of each
   carrying a multi-GB `target/`. An internal profile uses it (override via
   `FWF_CARGO_TARGET_DIR`). Dependencies dedupe; only first-party crates rebuild

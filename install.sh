@@ -21,6 +21,15 @@ choose_bin() {
 
 BIN="$(choose_bin "$@")"
 mkdir -p "$BIN"
+BIN="$(cd "$BIN" && pwd)"   # absolutize so the PATH advice below is usable
+
+# Re-installing over our own (or any) symlink is fine; a regular file named fwf
+# is somebody else's binary — don't silently destroy it.
+if [ -e "$BIN/fwf" ] && [ ! -L "$BIN/fwf" ]; then
+  echo "install: $BIN/fwf exists and is not a symlink — refusing to overwrite it." >&2
+  echo "install: remove it, or pick another dir: ./install.sh <dir>" >&2
+  exit 1
+fi
 ln -sf "$SRC" "$BIN/fwf"
 echo "installed: $BIN/fwf -> $SRC"
 

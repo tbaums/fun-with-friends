@@ -188,8 +188,9 @@ doctor() {
   _doctor_one tmux   "tmux is required for the grid"            || ok=1
   _doctor_one git    "git is required (worktrees)"              || ok=1
   _doctor_one gh     "GitHub CLI is required (issues + PRs)"    || ok=1
-  # claude may be the first token of a custom FWF_CLAUDE_CMD
-  local claude_bin; claude_bin="${CLAUDE_CMD%% *}"
+  # the bare binary from a custom FWF_CLAUDE_CMD — NOT ${CLAUDE_CMD%% *}, which
+  # is 'env' once config.sh/lib.sh prepend their PATH/env wrappers
+  local claude_bin; claude_bin="${FWF_CLAUDE_BIN:-${CLAUDE_CMD%% *}}"
   _doctor_one "$claude_bin" "Claude Code CLI is required in each pane" || ok=1
 
   if command -v gh >/dev/null 2>&1; then

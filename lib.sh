@@ -330,7 +330,7 @@ fwf_ut_browser_mcp_registered() {
 fwf_ut_browser_preflight() {
   [ "$FWF_TEMPLATE" = "user-testing" ] || return 0
   fwf_ut_browser_mcp_registered && return 0
-  local claude_bin; claude_bin="${CLAUDE_CMD%% *}"
+  local claude_bin; claude_bin="${FWF_CLAUDE_BIN:-${CLAUDE_CMD%% *}}"
   if [ "${FWF_UT_SETUP_BROWSER:-0}" = "1" ] && command -v npx >/dev/null 2>&1 && command -v "$claude_bin" >/dev/null 2>&1; then
     echo "fwf user-testing: installing the Playwright browser MCP (browser=$UT_BROWSER)…" >&2
     npx playwright install "$UT_BROWSER" 1>&2 || true

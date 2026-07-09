@@ -111,7 +111,8 @@ re-injected every tick.
   `product-wip` (hidden from implementers) via back-and-forth, and on a loop
   refines those drafts from new comments. A draft isn't *ready* until the **grand
   vizier signs off** on it; then an explicit go-ahead removes the label and the
-  issue enters the implementer queue.
+  issue enters the implementer queue. (A third label, `idea`, parks a ticket
+  you want kept for later — every role skips it until you remove the label.)
 - **GV — the grand vizier** (loop): the factory's strategic critic and
   idea-honer. It **hardens every PM spec** for real-user value, maintainability,
   and execution risk — posting concrete `GV-CHANGES` until it's top-notch, then a
