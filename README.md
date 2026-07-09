@@ -175,7 +175,7 @@ its single-port suite never collides.
 
 ## Factory templates
 
-The pipeline above is the **dev** template — one of five shipped factory
+The pipeline above is the **dev** template — one of six shipped factory
 designs. A template re-aims every role's prompt (and optionally the topology)
 while reusing all the machinery: tmux grid, branch ladder, labels, floor
 lifecycle, stop/resume.
@@ -186,7 +186,8 @@ lifecycle, stop/resume.
 | `refactor` | behavior-preserving structural improvement — characterize-first refactorers, behavior-contract verifiers, a planner that ranks debt by churn×complexity, a captain that sequences instead of parallelizing | [docs/refactor-factory.md](docs/refactor-factory.md) |
 | `ideation` | ranked idea portfolios under `ideas/` — stance-diverse generators, feasibility-hardening critics, a synthesizer that clusters and ranks pairwise into `PORTFOLIO.md` | [docs/ideation-factory.md](docs/ideation-factory.md) |
 | `dev-sre` | dev + a dedicated prod-ops (SRE) pane; the captain does zero ops while it runs | [docs/captain-split.md](docs/captain-split.md) |
-| `user-testing` | ranked usability findings — 3 source-blind personas drive a real browser like whacky humans, a researcher dedupes their diaries into a top-10 report graded against ground truth, a captain gates what graduates | [docs/user-testing.md](docs/user-testing.md) |
+| `user-testing` | ranked usability findings — 3 source-blind personas (9 in deep-sweep mode) drive a real browser like whacky humans, a researcher dedupes their diaries into a top-10 report graded against ground truth, a captain gates what graduates | [docs/user-testing.md](docs/user-testing.md) |
+| `validate` | a defensible GO / KILL / PIVOT verdict on a posited business+product idea — falsification dossier under `validation/<slug>/`, curated `VERDICT.md` | [docs/validate-factory.md](docs/validate-factory.md) |
 
 ```bash
 fwf templates                       # list what's shipped
@@ -273,6 +274,9 @@ fwf down [--purge|--floor-only]                     kill both sessions (--purge:
 fwf issues <create|list|view|edit|comment|close|reopen|export>
                                                     the local issue tracker (--issues local):
                                                     gh-shaped CLI over a markdown store
+fwf dash                                            read-only status board + decision inbox (Rust
+                                                    TUI; prebuilt binary auto-downloaded on first
+                                                    run — docs/dash.md)
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
@@ -294,7 +298,10 @@ one profile present it's selected automatically.
                      refactor (behavior-preserving refactoring factory; see
                      docs/refactor-factory.md), ideation (idea-portfolio factory;
                      see docs/ideation-factory.md), dev-sre (dev + a dedicated
-                     prod-ops pane; see docs/captain-split.md). A template can
+                     prod-ops pane; see docs/captain-split.md), user-testing
+                     (source-blind persona usability trials; see
+                     docs/user-testing.md), validate (GO/KILL/PIVOT idea
+                     validation; see docs/validate-factory.md). A template can
                      declare EXTRA roles (FWF_EXTRA_ROLES) and inherit prompts
                      from a base (FWF_TEMPLATE_BASE). List them: fwf templates
 --pairs N            number of implementer/QA pairs (default 3; refactor: 2)
@@ -338,7 +345,6 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   carrying its own multi-GB compile cache, a profile can export a shared
   `CARGO_TARGET_DIR` so every tree builds into one dir — dependencies (the bulk)
   dedupe to a single copy; only first-party crates rebuild on branch switches.
-  The `transom` profile does this (`#638`), overridable via `FWF_CARGO_TARGET_DIR`.
   Watch for cargo's build-lock serializing concurrent builds across panes.
 - **Disk-pressure guard:** `fwf up` refuses to start (or cycle the floor) when
   free space is below `FWF_MIN_FREE_GB` (default `50`, set `0` to disable). On a
@@ -356,8 +362,8 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
 ## Learn more
 
 - **[Tutorial](docs/tutorial.md)** — hands-on walkthrough of everything: first
-  factory, day-to-day driving, floor lifecycle, sizing/models, all four
-  templates, authoring your own template, evals, the container sandbox.
+  factory, day-to-day driving, floor lifecycle, sizing/models, the shipped
+  factory templates, authoring your own template, evals, the container sandbox.
 - [docs/refactor-factory.md](docs/refactor-factory.md) — the refactoring
   factory's design and research basis.
 - [docs/ideation-factory.md](docs/ideation-factory.md) — the ideation factory's
@@ -366,13 +372,21 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   the `dev-sre` variant.
 - [docs/eval-harness.md](docs/eval-harness.md) — how `fwf eval` works and how
   to add scenarios.
+- [docs/user-testing.md](docs/user-testing.md) — the user-testing factory:
+  personas, quick vs deep sweeps, target-app guardrails.
+- [docs/validate-factory.md](docs/validate-factory.md) — the validate factory's
+  design and research basis.
+- [docs/dash.md](docs/dash.md) — the `fwf dash` status board: what it shows,
+  keys, binary resolution.
+- [docs/gh-read-cache.md](docs/gh-read-cache.md) — the GitHub read cache that
+  keeps a floor from hammering the API.
 - [docs/containers.md](docs/containers.md) — the containerization design and
   `fwf shell`.
 
 ## Development
 
 ```bash
-bash test/run.sh        # functional suite (122 tests): detection, profiles, dispatcher,
+bash test/run.sh        # functional suite (~370 tests): detection, profiles, dispatcher,
                         # floor lifecycle, sizing/models, templates, eval harness
 shellcheck -S warning fwf *.sh lib/*.sh profiles/example.sh templates/*/template.sh eval/run.sh test/run.sh
 ```

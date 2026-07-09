@@ -8,7 +8,7 @@ data/action layers, and execs it.
 
 ```
 fwf dash                  # the only profile, or pass --profile NAME
-fwf --profile transom dash
+fwf --profile myapp dash
 ```
 
 Requirements: `jq` (the data provider). A Rust toolchain (`cargo`) is **not**
@@ -31,7 +31,8 @@ resolution* below.
    against the public release URL — no `gh`/token required.
 4. **Source build** — the original first-run behavior: `cargo build --release` in
    `dash/`. This is the offline / unsupported-platform fallback and requires
-   `cargo`.
+   `cargo` — and a git-clone install (the release tarball doesn't ship the
+   `dash/` crate source).
 
 The `<slug>` is derived from `uname -s`/`uname -m`:
 
@@ -54,11 +55,13 @@ a running swarm:
 
 | Field | Derived from |
 |---|---|
+| activity | open/merged PRs against the integration targets: BUILDING / IN TEST·REVIEW / MERGED (the landing tab) |
 | roles | tmux pane liveness (`@l` label + current command): live / idle / down |
 | pipeline | git branch deltas in the target repo (`staging +N ahead · …`) |
 | decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you |
 | issues | every open issue (gated ones marked 🔒) |
 | prod | the captain's `status.json` overlay when fresh, else `—` |
+| ⛔ CAPTAIN NEEDS YOU | a full-width banner when the captain pane is blocked on you (read from the captain pane) |
 
 The header's provenance stamp says where prod/pipeline came from: `status.json`
 (fresh overlay, green), `stale` (overlay too old, amber), or `derived` (gray).
@@ -67,7 +70,7 @@ The header's provenance stamp says where prod/pipeline came from: `status.json`
 
 | Key | Action |
 |---|---|
-| `1` `2` `3` · `Tab` / `Shift-Tab` · `[` `]` | switch section (Roles / Decisions / Issues) |
+| `1` `2` `3` `4` · `Tab` / `Shift-Tab` · `[` `]` | switch section (Activity / Roles / Decisions / Issues) |
 | `j` `k` · `↑` `↓` | move the list cursor |
 | `g` `G` | first / last row |
 | `PgUp` `PgDn` · `Ctrl-u` `Ctrl-d` · wheel | scroll the detail preview |
@@ -79,10 +82,11 @@ Actions (the verb depends on the active section):
 
 | Section | Key | Action |
 |---|---|---|
-| Decisions | `y` / `n` | approve (un-gate + go-ahead) / reject — **confirms first** |
+| Decisions | `y` / `x` | approve (un-gate + go-ahead) / reject — **confirms first** |
 | Decisions, Issues | `c` | comment — opens an inline text field |
 | Decisions, Issues | `o` | open in the browser (gh) / shows the detail (local) |
 | Roles | `r` / `s` | respawn the role / stop the whole swarm — **confirms first** |
+| anywhere | `n` `p` | scroll the detail / PR preview |
 | anywhere | `t` | send a line to the captain pane (text field) |
 
 `y` un-gates by removing the `product-wip` label and posting the standard

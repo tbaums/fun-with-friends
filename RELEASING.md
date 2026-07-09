@@ -8,7 +8,11 @@ Releases are cut from `main` and published automatically by
 [`.github/workflows/release.yml`](.github/workflows/release.yml): pushing a
 matching tag verifies `tag == VERSION`, lints (`shellcheck -S warning`), runs the
 functional suite, builds a tarball with [`scripts/package.sh`](scripts/package.sh),
-and creates a GitHub Release with the tarball attached and auto-generated notes.
+cross-compiles prebuilt `fwf-dash` binaries for all four supported platforms
+(darwin-arm64/x86_64, linux-arm64/x86_64), and creates a GitHub Release with the
+tarball, the dash binaries, and `fwf-dash-<ver>-checksums.txt` attached (plus
+auto-generated notes). `fwf dash` depends on those assets for prebuilt
+resolution — see [docs/dash.md](docs/dash.md).
 
 ## Cut a release
 
@@ -34,9 +38,10 @@ and creates a GitHub Release with the tarball attached and auto-generated notes.
    gh run watch
    ```
    If `tag != VERSION` it fails fast — fix `VERSION`, re-tag, push again.
-7. **Verify** the published release and the artifact:
+7. **Verify** the published release and the artifacts (the tarball AND the five
+   `fwf-dash-*` assets — binaries + checksums):
    ```bash
-   gh release view vX.Y.Z
+   gh release view vX.Y.Z            # expect fwf-X.Y.Z.tar.gz + 4 fwf-dash binaries + checksums
    gh release download vX.Y.Z -p '*.tar.gz' -D /tmp/rel
    tar -C /tmp/rel -xzf /tmp/rel/fwf-X.Y.Z.tar.gz
    /tmp/rel/fwf-X.Y.Z/fwf doctor
@@ -61,11 +66,11 @@ git push origin :refs/tags/vX.Y.Z
 gh release delete vX.Y.Z --yes   # if the release was already published
 ```
 
-## When GitHub Actions is unavailable (billing/credits)
+## When GitHub Actions is unavailable
 
-When Actions can't run (jobs die in seconds with a billing annotation), the
-tag-triggered release workflow won't publish anything. Cut the release
-manually — same gates, run locally:
+When Actions can't run (an outage, or jobs fail immediately with an annotation
+before any step executes), the tag-triggered release workflow won't publish
+anything. Cut the release manually — same gates, run locally:
 
 1. Validate exactly what CI would: `bash test/run.sh` (includes shellcheck).
 2. Put **`[skip ci]`** in the release commit message (and every commit/PR
@@ -76,4 +81,8 @@ manually — same gates, run locally:
    gh release create vX.Y.Z dist/fwf-X.Y.Z.tar.gz --generate-notes \
      --title "vX.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## /p' CHANGELOG.md)
    ```
+   Note: this publishes **only the tarball** — the prebuilt `fwf-dash` binaries
+   come from the workflow's cross-compile matrix. Either cross-build and upload
+   them (plus the checksums file) by hand, or accept that `fwf dash` falls back
+   to a local `cargo build` for this release.
 4. Verify with step 7 above.

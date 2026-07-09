@@ -58,7 +58,8 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   dash                   Read-only status board (Rust + ratatui TUI): roles,
                          pipeline, prod, and the human-gated decision list.
                          Derived-first, so it works with the factory parked.
-                         Builds the binary on first run (needs cargo + jq).
+                         Downloads a prebuilt binary on first run (needs jq;
+                         cargo only as an offline/unsupported-platform fallback).
   captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
   respawn <role>         Hot-swap one pane:
                          implN | qaN | conductor | pm | gv | captain.
@@ -79,7 +80,7 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          Persist any of these in a profile via FWF_PAIRS /
                          FWF_MODEL / FWF_MODEL_<ROLE>.
   issues <cmd> [...]     The LOCAL issue tracker (--issues local): a gh-shaped
-                         CLI (create/list/view/edit/comment/close/export) over
+                         CLI (create/list/view/edit/comment/close/reopen/export) over
                          a markdown store outside any repo. 'fwf issues help'.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
@@ -89,6 +90,7 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
 
 UTILITIES
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
+       [--judge-model M]
                          Role-level model eval: render the role's production
                          prompt, run scenario fixtures through each model, and
                          LLM-judge the responses against per-scenario rubrics

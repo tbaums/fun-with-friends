@@ -150,7 +150,7 @@ fi
 command -v jq >/dev/null 2>&1 || _dash_die "jq is required for the data provider (brew install jq)."
 
 # The renderer shells out to these — the read-only provider on its refresh timer,
-# the action layer on a y/n/c/o/r/s/t keypress. Export both (and let the resolved
+# the action layer on a y/x/c/o/r/s/t keypress. Export both (and let the resolved
 # FWF_PROFILE flow through) so they resolve the same factory the binary renders.
 export FWF_DASH_DATA="$DIR/fwf-dash-data.sh"
 export FWF_DASH_ACT="$DIR/fwf-dash-act.sh"

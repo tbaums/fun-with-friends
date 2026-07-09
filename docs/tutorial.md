@@ -324,7 +324,8 @@ templates/<name>/
 ```
 
 `fwf up --template <name>` validates at launch that all six roles resolve;
-`fwf templates` lists every directory it finds.
+`fwf templates` lists every template directory it finds (underscore-prefixed
+addenda like `_local-issues` excluded).
 
 **Inherit instead of copying.** Override only what differs:
 
@@ -364,6 +365,8 @@ are treated as floor: they die on `down --floor-only`, the captain survives.
 | `__COORD_SESSION__` / `__BUILD_SESSION__` | the tmux session names |
 | `__PM_INTERVAL__` | the PM's loop interval |
 | `__DEVUI__` | the live-dev hint (with `__DATA__` expanded) |
+| `__DISCOVERY_LABEL__` | the discovery-flow label |
+| `__UT_APP_URL__` / `__UT_ROOT__` / `__UT_PERSONA_PANES__` / `__UT_PERSONA_COUNT__` | user-testing template only: target app URL, output root, persona roster |
 
 **Keep the harness contract.** Whatever your roles do, preserve these
 behaviors from the shipped prompts — the machinery depends on them: the STOP

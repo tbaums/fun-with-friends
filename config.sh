@@ -82,7 +82,7 @@ FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
 # Where worktrees live, and run-state (the e2e lock).
 # WT_BASE defaults to $HOME for backward-compat, but a generated profile (from
-# `fwf init <url>`) overrides it to that repo's workspace dir so eight worktrees
+# `fwf init <url>`) overrides it to that repo's workspace dir so ten worktrees
 # don't pile up in your home directory.
 WT_BASE="${FWF_WT_BASE:-$HOME}"
 FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"

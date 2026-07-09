@@ -21,7 +21,7 @@ cp fwf-*.sh "$DEST/"   # ALL engine scripts — a glob so a new fwf-*.sh can't b
 cp lib/detect.sh lib/profile.sh "$DEST/lib/"
 cp profiles/example.sh "$DEST/profiles/"        # generic template only
 cp prompts/*.txt "$DEST/prompts/"               # shared assets (role prompts live in templates/)
-cp -R templates "$DEST/templates"               # factory design templates (dev/refactor/ideation/dev-sre)
+cp -R templates "$DEST/templates"               # factory design templates (all shipped designs)
 cp -R docs "$DEST/docs"
 cp containers/Dockerfile "$DEST/containers/"
 cp -R eval/run.sh eval/scenarios "$DEST/eval/"  # harness + shipped scenarios (not results/)
