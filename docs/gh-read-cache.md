@@ -4,7 +4,7 @@ The factory's coordination bus is the GitHub API. Ten agents each polling
 `gh issue list` / `gh pr list` every 1–2 minutes use **GraphQL** — a 5,000-point/hr
 bucket with tight secondary limits — and drain it in minutes, stalling the floor
 (and any human `gh` you run shares the same pool). This is the bus failure that
-`#57` (and the agent-SDLC validation) is about.
+`#57` is about.
 
 ## What it does
 

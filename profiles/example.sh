@@ -44,7 +44,7 @@ UT_APP_URL="${FWF_UT_APP_URL:-}"
 #   UT_APP_URL_2="http://localhost:3942"
 #   UT_APP_URL_3="http://localhost:3943"
 # Browser engine the personas' Playwright MCP drives (default firefox — the
-# trial-validated, Jamie's-browser default). See docs/user-testing.md to wire it.
+# trial-validated default). See docs/user-testing.md to wire it.
 UT_BROWSER="${FWF_UT_BROWSER:-firefox}"
 
 # Optional: factory design, issue backend, floor sizing, per-role models.

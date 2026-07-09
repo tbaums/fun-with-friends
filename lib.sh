@@ -292,7 +292,7 @@ fwf_ut_app_url() { # $1=persona id (empty -> shared)
 }
 
 # The browser engine the personas' Playwright MCP drives. Defaults to FIREFOX —
-# trial one validated on Firefox, and it is Jamie's browser. Override with UT_BROWSER.
+# trial one validated on Firefox. Override with UT_BROWSER.
 UT_BROWSER="${UT_BROWSER:-firefox}"
 # The exact one-time setup that wired the browser MCP for trial one — echoed by
 # the preflight and documented in docs/user-testing.md.

@@ -1,6 +1,6 @@
 # Incident protocol (operator / captain)
 
-Hard-won from the transom narration incident (2026-06-28). Two rules, in order.
+Hard-won from a real narration-judge incident (2026-06-28). Two rules, in order.
 
 ## 1. Verify ground truth BEFORE you alarm
 

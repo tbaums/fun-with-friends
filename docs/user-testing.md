@@ -6,8 +6,8 @@ browser like real humans (not like an LLM writing tests); the researcher dedupes
 their diaries into a ranked **top-10** findings report; the captain grades the
 trial against ground truth and gates which findings graduate to real tickets.
 
-Trial one validated this template against transom (10 real findings filed,
-75% canary recall). This runbook codifies the exact setup that worked so a trial
+Trial one validated this template against a real application (10 real findings
+filed, 75% canary recall). This runbook codifies the exact setup that worked so a trial
 never re-hits the wall trial one hit — personas with no browser.
 
 > **Personas are source-blind by construction.** They get NO worktree — only a
@@ -26,8 +26,8 @@ npx playwright install firefox
 claude mcp add playwright -s user -- npx -y @playwright/mcp@latest --headless --isolated --browser firefox
 ```
 
-- **Firefox is the default** (`UT_BROWSER=firefox`) — trial one validated on it
-  and it is Jamie's browser. To use another engine, set `UT_BROWSER=chromium`
+- **Firefox is the default** (`UT_BROWSER=firefox`) — trial one validated on
+  it. To use another engine, set `UT_BROWSER=chromium`
   (or `webkit`) and substitute it in BOTH commands above.
 - `--isolated` gives each browser session a throwaway profile (no cookies/state
   carried between runs); `--headless` keeps it off-screen.

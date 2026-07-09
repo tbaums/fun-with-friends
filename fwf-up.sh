@@ -42,7 +42,7 @@ fwf_ut_browser_preflight
 fwf_version_skew_warn || true
 
 # Disk-pressure guard (#638): on a shared host a full disk fails not just builds
-# but PROD writes (data repo, TTS cache) — it's what wedged the v0.22.0 release.
+# but PROD writes too — it once wedged a release.
 # Refuse to bring up / cycle the floor below a free-space floor. The swarm's
 # shared CARGO_TARGET_DIR keeps steady state bounded; this is the backstop.
 # Tunable via FWF_MIN_FREE_GB (set 0 to disable).

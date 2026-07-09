@@ -803,7 +803,7 @@ assert_contains "captain gates graduation"          "$CAP" "GATE WHAT GRADUATES"
 section "user-testing prod-target refusal (issue #42)"
 UTG() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; ${2:-} fwf_ut_guard_target"; }
 UTG "http://localhost:3939" 2>/dev/null            && ok "loopback target allowed"   || bad "loopback target allowed"
-UTG "https://transom-uat.internal/app" 2>/dev/null && ok "uat host allowed"           || bad "uat host allowed"
+UTG "https://myapp-uat.internal/app" 2>/dev/null   && ok "uat host allowed"           || bad "uat host allowed"
 UTG "https://app.example.com" 2>/dev/null          && bad "prod-looking host refused" || ok "prod-looking host refused"
 UTG "" 2>/dev/null                                 && bad "empty target refused"       || ok "empty target refused"
 UTG "https://app.example.com" "FWF_UT_ALLOW_TARGET=1" 2>/dev/null && ok "human override allows it" || bad "human override allows it"

@@ -51,7 +51,7 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ### Added
 - **Cost/loop GV gates + incident protocol** (#59/#60/#61, code 8c5216d, docs 8c5216d)
-  — hardening from the transom narration incident (a working cache's hit-storm log
+  — hardening from an internal narration incident (a working cache's hit-storm log
   was misread as a metered drain and escalated). `gv.tmpl` gains two review lenses:
   RUNTIME COST & BLAST RADIUS (bound any metered/external call or background loop
   with a content+version cache AND a fail-closed breaker; require real-vs-cache-hit
@@ -138,7 +138,7 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
   it wedged a release.
 - **Shared `CARGO_TARGET_DIR` support** (#638): a profile can export one shared
   Rust target dir so all worktrees compile into a single cache instead of each
-  carrying a multi-GB `target/`. The `transom` profile uses it (override via
+  carrying a multi-GB `target/`. An internal profile uses it (override via
   `FWF_CARGO_TARGET_DIR`). Dependencies dedupe; only first-party crates rebuild
   on branch switches.
 

@@ -178,7 +178,7 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r##"{
-        "profile":"transom","template":"dev","parked":true,
+        "profile":"myapp","template":"dev","parked":true,
         "prod":"v0.16.0 ✓","pipeline":"staging +3 ahead","stamp":"status.json",
         "generated_at":"12:04:31",
         "roles":[{"role":"impl1","state":"live","detail":"#441 auth"},
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn parses_a_full_snapshot() {
         let d = parse(SAMPLE.as_bytes()).expect("parse");
-        assert_eq!(d.profile, "transom");
+        assert_eq!(d.profile, "myapp");
         assert!(d.parked);
         assert_eq!(d.stamp, "status.json");
         assert_eq!(d.roles.len(), 2);
