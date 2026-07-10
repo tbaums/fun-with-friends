@@ -44,7 +44,8 @@ DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"
 # lib.sh) — that is the single source of truth.
 _fwf_persisted_socket=""
 [ -f "$FWF_TMUX_SOCKET_FILE" ] && _fwf_persisted_socket="$(cat "$FWF_TMUX_SOCKET_FILE" 2>/dev/null || true)"
-_fwf_ambient_socket="${TMUX%%,*}"   # our OWN socket, if any — used ONLY by the absent-field fallback below
+_fwf_ambient_socket="${TMUX-}"      # our OWN socket, if any — used ONLY by the absent-field fallback below
+_fwf_ambient_socket="${_fwf_ambient_socket%%,*}"
 unset TMUX   # never let our own socket leak into a query by accident
 
 _fwf_sock_probe() { # $1 = socket path ("" = default) → rc 0 if $BUILD_SESSION lives there
