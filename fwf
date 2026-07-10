@@ -326,7 +326,7 @@ case "$cmd" in
     latest="$(gh api "repos/$upgrade_repo/releases/latest" --jq .tag_name 2>/dev/null || true)"
     if [ -z "$latest" ]; then
       echo "fwf upgrade: could not query the latest release of $upgrade_repo (gh api failed — offline? unauthenticated?)." >&2
-      [ -d "$FWF_DIR/.git" ] && echo "  your install is a git clone — 'git -C $FWF_DIR pull --ff-only' upgrades it regardless." >&2
+      [ -e "$FWF_DIR/.git" ] && echo "  your install is a git clone — 'git -C $FWF_DIR pull --ff-only' upgrades it regardless." >&2
       exit 1
     fi
     echo "fwf: installed $current · latest release ${latest#v}"

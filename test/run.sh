@@ -366,6 +366,18 @@ assert_contains "upgrade-available reported" "$UPA" "upgrade available"
 UPF="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$ROOT/fwf" upgrade --check 2>&1)" && bad "gh failure exits nonzero" || ok "gh failure exits nonzero"
 assert_contains "gh failure hints at clone pull" "$UPF" "pull --ff-only"
 
+# regression (issue #71): a git *worktree* has .git as a FILE (gitdir: …), not
+# a dir — and every fwf-self swarm role runs from a worktree.  Build a
+# standalone install whose .git is a file and assert the clone-pull hint still
+# fires.  Goes RED on the old `[ -d ]` check even in a plain-clone CI run
+# (where $ROOT/.git is a real dir and the assertion above can't catch it).
+WT71="$TMP/wt71"; mkdir -p "$WT71/lib"
+cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WT71/"
+cp "$ROOT/lib/detect.sh" "$ROOT/lib/profile.sh" "$WT71/lib/"
+printf 'gitdir: /some/repo/.git/worktrees/wt71\n' > "$WT71/.git"
+UPWT="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$WT71/fwf" upgrade --check 2>&1)"
+assert_contains "worktree (.git file) still hints at clone pull" "$UPWT" "pull --ff-only"
+
 # end-to-end TARBALL upgrade: old extracted install -> stubbed latest release
 bash "$ROOT/scripts/package.sh" >/dev/null
 TARBALL="$ROOT/dist/fwf-$REALV.tar.gz"
