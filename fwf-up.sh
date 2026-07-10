@@ -99,6 +99,7 @@ fi
 mkdir -p "$FWF_RUN"
 rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
 printf '%s\n' "$FWF_TEMPLATE" > "$FWF_RUN/template"   # persist the running template so read-only tools (the dash) resolve it, not the dev default (#51)
+fwf_persist_tmux_socket "$(fwf_tmux_socket_value)"    # learn the launch socket (#62) so the dash queries the right tmux server, not just "default"
 # (Re)write the gh shim the panes' PATH points at: the REST+ETag read cache in
 # every mode, plus the fail-closed write guard in local mode (#34/#57). Idempotent,
 # and `fwf up` must never depend on provision having been recent.

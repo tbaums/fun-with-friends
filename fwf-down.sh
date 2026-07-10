@@ -48,6 +48,7 @@ for s in "$COORD_SESSION" "$BUILD_SESSION"; do
 done
 rmdir "$E2E_LOCK" 2>/dev/null || true
 rm -f "$FWF_RUN/template"   # clear the persisted running-template marker (#51) so it can't go stale once the factory is down
+rm -f "$FWF_TMUX_SOCKET_FILE"   # clear the persisted launch-socket marker (#62) alongside it
 
 if [ "$purge" = 1 ]; then
   echo "purging worktrees and impl dev-data…"

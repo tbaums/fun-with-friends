@@ -577,6 +577,30 @@ fwf_find_pane() { # $1=session  $2=label-token
   return 1
 }
 
+# --- launch-socket persistence (issue #62, supersedes #57) ------------------
+# The factory's tmux sessions land on whatever socket $TMUX pointed to when
+# `fwf up`/`fwf respawn` launched them — a bare `tmux new-session`/`split-window`
+# inherits the caller's socket, so a factory started inside `tmux -L mysock` (or
+# `-S <path>`) never ends up on the default socket. A read-only tool (the dash)
+# can't assume default; it must LEARN the launch socket. fwf up/respawn are the
+# single source of truth: they persist it here, and fwf-dash-data.sh reads it
+# back instead of guessing (see docs/dash.md).
+#
+# $TMUX is "socket_path,pid,session_id" — only the socket-path field (before
+# the first comma) is ever persisted or queried; pid/session_id are noise.
+# $TMUX unset (factory launched outside any tmux) persists the literal marker
+# "default" — never an empty string, which could later resolve to a garbage
+# `tmux -S ''`.
+FWF_STATE_DIR="$FWF_RUN/state/$PROFILE"
+FWF_TMUX_SOCKET_FILE="$FWF_STATE_DIR/tmux_socket"
+fwf_tmux_socket_value() {   # echoes what should be persisted, from the CURRENT $TMUX
+  if [ -n "${TMUX:-}" ]; then printf '%s\n' "${TMUX%%,*}"; else printf '%s\n' default; fi
+}
+fwf_persist_tmux_socket() {   # $1 = value to persist (a socket path, or "default")
+  mkdir -p "$FWF_STATE_DIR"
+  printf '%s\n' "$1" > "$FWF_TMUX_SOCKET_FILE"
+}
+
 # Clear whatever is sitting in the pane's Claude composer before we type into it,
 # so a stale/half-typed buffer doesn't garble the next prompt (the "wedged buffer"
 # problem). Ctrl+U is the TUI's reliable line-clear; we repeat it to drain
