@@ -47,7 +47,8 @@ dash_slug() {
     Darwin)
       case "$arch" in
         arm64|aarch64) echo "darwin-arm64";;
-        x86_64)        echo "darwin-x86_64";;
+        # Intel Mac (x86_64) has no prebuilt: empty slug ⇒ skip the doomed
+        # download and fall straight to the source-build path with a clear note.
       esac;;
     Linux)
       case "$arch" in

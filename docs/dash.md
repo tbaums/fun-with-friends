@@ -37,16 +37,21 @@ resolution* below.
 4. **Source build** — the original first-run behavior: `cargo build --release` in
    `dash/`. This is the offline / unsupported-platform fallback and requires
    `cargo` — and a git-clone install (the release tarball doesn't ship the
-   `dash/` crate source).
+   `dash/` crate source). **Intel Macs (`x86_64`) land here**: they are not a
+   prebuilt target (see below), so `fwf dash` builds from source on first run,
+   or prints a clear "install Rust / set `FWF_DASH_BIN`" message if `cargo`
+   is absent — it never attempts a doomed download.
 
-The `<slug>` is derived from `uname -s`/`uname -m`:
+The `<slug>` is derived from `uname -s`/`uname -m`. Prebuilt targets:
 
 | Host | slug |
 |---|---|
 | macOS Apple Silicon | `darwin-arm64` |
-| macOS Intel | `darwin-x86_64` |
 | Linux x86_64 | `linux-x86_64` |
 | Linux arm64 | `linux-arm64` |
+
+macOS Intel (`x86_64`) is **not** a prebuilt target — `fwf dash` builds it from
+source (step 4 above).
 
 Prebuilt binaries are produced and uploaded by the release workflow
 (`.github/workflows/release.yml`) when a `vX.Y.Z` tag is pushed. Trust is rooted

@@ -21,7 +21,6 @@ jobs:
       matrix:
         include:
           - { slug: darwin-arm64,  runner: macos-14,         target: aarch64-apple-darwin }
-          - { slug: darwin-x86_64, runner: macos-13,         target: x86_64-apple-darwin }
           - { slug: linux-x86_64,  runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu }
           - { slug: linux-arm64,   runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
     defaults:

@@ -671,7 +671,7 @@ section "dash resolver (#63): resolution order + checksum verify + offline fallb
 DVER="$(cat "$ROOT/VERSION")"
 # Host slug, same mapping the resolver uses.
 case "$(uname -s)" in
-  Darwin) case "$(uname -m)" in arm64|aarch64) DSLUG=darwin-arm64;; x86_64) DSLUG=darwin-x86_64;; *) DSLUG="";; esac;;
+  Darwin) case "$(uname -m)" in arm64|aarch64) DSLUG=darwin-arm64;; *) DSLUG="";; esac;;  # Intel Mac: no prebuilt (empty slug)
   Linux)  case "$(uname -m)" in x86_64|amd64) DSLUG=linux-x86_64;; aarch64|arm64) DSLUG=linux-arm64;; *) DSLUG="";; esac;;
   *) DSLUG="";;
 esac
