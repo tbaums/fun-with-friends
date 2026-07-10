@@ -19,16 +19,39 @@ single-flight cache** (`fwf-ghcache.sh`):
    per-topic REST fetch** off the **core** bucket (separate from GraphQL), with an
    `If-None-Match` conditional request, so an unchanged poll returns `304` for free.
    Every list variant (per-label, per-base, projection, `--jq`) filters that one
-   snapshot locally.
-3. **Safe fallback** — anything not provably REST-equivalent (`--search`,
-   `--comments`, closed/merged state, an unmapped `--json` field, or a refresh
-   error) falls back to a single-flight cache of real-`gh` output. Still collapsed;
-   never wrong. Mutations are untouched (and in `--issues local` mode still
-   fail-closed via the same shim, per `#34`).
+   snapshot locally. Three enumerated `--search` patterns filter the same
+   canonical open-set snapshot (below). `issue/pr view --json …` (+ `comments`)
+   and `pr diff --name-only` are likewise served from per-resource REST+ETag
+   fetches, each keyed and ETag'd separately from the list-level snapshot.
+3. **Safe fallback** — anything not provably REST-equivalent (an unrecognized
+   `--search` string, an unmapped `--json` field, closed/merged state, any other
+   `view`/`diff` flag, or a refresh error) falls back to a single-flight cache of
+   real-`gh` output. Still collapsed; never wrong — an unrecognized query FAILS
+   SAFE to real `gh`/GraphQL rather than risk serving the wrong issue/PR set.
+   Mutations are untouched (and in `--issues local` mode still fail-closed via
+   the same shim, per `#34`).
 
-Net effect: the per-cycle list polls that drained thousands of GraphQL points/hr
-drop to **~zero** (REST + 304s), and the dash reads the same snapshot instead of
-re-draining the budget.
+### `--search` translation
+
+Only the exact literal token patterns the templates emit are translated —
+built from `is:open`, `is:closed`, `label:<x>`, `-label:<x>` — filtered
+locally over the same canonical open-set snapshot `list` uses. Any other
+`--search` string (`author:`, `sort:`, free text, a date qualifier, `#123`,
+…) is not modeled and falls straight through to the safe fallback. A test
+(`test/run.sh`) re-greps `templates/` for every literal `--search "…"` string
+built entirely from the recognized vocabulary and pins that set, so a
+template edit that adds a new one goes RED until this cache is taught it.
+
+### `pr diff --name-only`
+
+Served from `/repos/{owner}/{repo}/pulls/{n}/files`, following **every**
+page (30/page) — a truncated file list would make a role wrongly conclude a
+file was untouched. Any other `pr diff` flag (a real patch, `--color`, …)
+falls back to real `gh`.
+
+Net effect: the per-cycle list, view, search, and diff-file-name polls that
+drained thousands of GraphQL points/hr drop to **~zero** (REST + 304s), and the
+dash reads the same snapshot instead of re-draining the budget.
 
 ## Tuning
 
@@ -40,12 +63,18 @@ re-draining the budget.
 
 ## Notes
 
-- The cache output is byte-identical to `gh` for the list/view shapes the templates
-  and dash use (verified against live `gh` across issue/PR list projections, label
-  filters, `--jq`, and `reviewDecision`). `reviewDecision` is computed from REST
-  reviews and matches `gh` for repos without required-review branch protection
-  (the factory's norm); under such protection it reports `""` rather than
-  `REVIEW_REQUIRED`, which the gate logic treats identically (both ≠ `APPROVED`).
-- `issue view` / `pr view` use the safe single-flight fallback (still collapsed);
-  serving them from REST too is a future refinement — the per-cycle *list* polls
-  were the drain.
+- The cache output is byte-identical to `gh` for the list/view/comments shapes the
+  templates and dash use (verified against live `gh` across issue/PR list
+  projections, label filters, `--jq`, `reviewDecision`, and view/comments). A
+  `--json comments` call is never served a stale comment-less body from an
+  earlier comment-less call of the same issue/PR — the base resource and its
+  comments are cached in separate, independently-ETag'd files, keyed by
+  resource identity alone, and the field projection is recomputed from those
+  raw files on every call rather than cached. `reviewDecision` is computed from
+  REST reviews and matches `gh` for repos without required-review branch
+  protection (the factory's norm); under such protection it reports `""` rather
+  than `REVIEW_REQUIRED`, which the gate logic treats identically (both ≠
+  `APPROVED`).
+- Comment fields with no REST equivalent (`isMinimized`, `minimizedReason`,
+  `reactionGroups`, `viewerDidAuthor` — GraphQL-only concepts) default to the
+  common case (unminimized, not-the-viewer) rather than being omitted.
