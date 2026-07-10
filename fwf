@@ -82,6 +82,11 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
   issues <cmd> [...]     The LOCAL issue tracker (--issues local): a gh-shaped
                          CLI (create/list/view/edit/comment/close/reopen/export) over
                          a markdown store outside any repo. 'fwf issues help'.
+  pr-review-state <pr>   Authoritative qa<->impl review state for a PR on a
+                         shared GH account, from sentinel PR comments (not
+                         the review-decision API, which is unusable there):
+                         CHANGES_REQUESTED <branch|none> | AWAITING_REVIEW |
+                         APPROVED | NONE. See docs/tutorial.md.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
   down [--purge|--floor-only]
@@ -382,6 +387,7 @@ case "$cmd" in
     ;;
   issues)    engine fwf-issues.sh "$@";;
   dash)      engine fwf-dash.sh "$@";;
+  pr-review-state) engine fwf-pr-review-state.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

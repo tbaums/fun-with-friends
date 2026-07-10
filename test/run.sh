@@ -1161,6 +1161,137 @@ assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
 case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
 
 # --------------------------------------------------------------------------
+section "fwf pr-review-state (issue #82) — qa<->impl deadlock on a shared GH account"
+# A fake `gh` that answers `pr view` from a fixture file, so the helper's
+# thread-parsing rules are exercised without any network/gh dependency.
+PRSTUB="$TMP/pr-review-stub"; mkdir -p "$PRSTUB"
+cat > "$PRSTUB/gh" <<'EOS'
+#!/usr/bin/env bash
+[ "${PRS_FAIL:-0}" = 1 ] && exit 1
+case "${1:-} ${2:-}" in
+  "pr view") cat "$PRS_FIXTURE"; exit 0;;
+  *) exit 1;;
+esac
+EOS
+chmod +x "$PRSTUB/gh"
+PRSDIR="$TMP/pr-review-fixtures"; mkdir -p "$PRSDIR"
+PRS() { PATH="$PRSTUB:$PATH" PRS_FIXTURE="$1" FWF_PROFILE=example "$ROOT/fwf" pr-review-state 83 2>&1; }
+
+# (a) qa's plain-comment change-request, no formal review — this is the exact
+# #81 deadlock: the old "trust reviewDecision" behavior would idle here.
+cat > "$PRSDIR/a-plain-comment.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfix the thing","createdAt":"2026-07-10T10:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T09:00:00Z"}]}
+EOS
+assert_eq "plain qa comment (no formal review) is recognized as a change request" \
+  "CHANGES_REQUESTED none" "$(PRS "$PRSDIR/a-plain-comment.json")"
+
+cat > "$PRSDIR/a-with-branch.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nrepro at qa1/repro-83","createdAt":"2026-07-10T10:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T09:00:00Z"}]}
+EOS
+assert_eq "named repro branch is extracted from the sentinel comment" \
+  "CHANGES_REQUESTED qa1/repro-83" "$(PRS "$PRSDIR/a-with-branch.json")"
+
+# (b) busy-loop guard: impl already answered (posted IMPL-ADDRESSED after the
+# request) — a second cycle must idle, not re-fix.
+cat > "$PRSDIR/b-addressed.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfix the thing","createdAt":"2026-07-10T10:00:00Z"},
+             {"body":"IMPL-ADDRESSED: #83 abc123","createdAt":"2026-07-10T11:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T10:55:00Z"}]}
+EOS
+assert_eq "impl's IMPL-ADDRESSED after the request flips to AWAITING_REVIEW (busy-loop guard)" \
+  "AWAITING_REVIEW" "$(PRS "$PRSDIR/b-addressed.json")"
+assert_eq "qa reads the SAME AWAITING_REVIEW state as its cue to re-review (closes the bilateral deadlock)" \
+  "AWAITING_REVIEW" "$(PRS "$PRSDIR/b-addressed.json")"
+
+# (c) amend/rebase robustness: IMPL-ADDRESSED comment is newer than the
+# request, but the head commit's committedDate is STALE (older than the
+# request) — as after an amend/rebase/cherry-pick. Primary signal must be the
+# IMPL-ADDRESSED comment timestamp, not the commit date, or this misreads as
+# an unanswered request (a mini re-deadlock).
+cat > "$PRSDIR/c-amend-stale-commit.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfix the thing","createdAt":"2026-07-10T10:00:00Z"},
+             {"body":"IMPL-ADDRESSED: #83 def456","createdAt":"2026-07-10T12:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T05:00:00Z"}]}
+EOS
+assert_eq "IMPL-ADDRESSED comment timestamp (not a stale amended committedDate) resolves AWAITING_REVIEW" \
+  "AWAITING_REVIEW" "$(PRS "$PRSDIR/c-amend-stale-commit.json")"
+
+# Negative control for (c): same stale-old push time, but with NO
+# IMPL-ADDRESSED comment at all — the push-time fallback is genuinely older
+# than the request, so it must correctly stay CHANGES_REQUESTED (proves the
+# fallback isn't just always-AWAITING_REVIEW).
+cat > "$PRSDIR/c-no-impl-addressed.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfix the thing","createdAt":"2026-07-10T10:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T05:00:00Z"}]}
+EOS
+assert_eq "with no IMPL-ADDRESSED comment, an older push time leaves the request active" \
+  "CHANGES_REQUESTED none" "$(PRS "$PRSDIR/c-no-impl-addressed.json")"
+
+# (d) self-trigger guard: impl's own comments must never produce
+# CHANGES_REQUESTED — disambiguation is marker-exclusivity + column-0, not
+# GH comment author (identical for every role on this shared account).
+cat > "$PRSDIR/d-impl-addressed-only.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"IMPL-ADDRESSED: #83 abc123","createdAt":"2026-07-10T10:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T09:00:00Z"}]}
+EOS
+assert_eq "an IMPL-ADDRESSED comment alone never self-triggers a change request" \
+  "AWAITING_REVIEW" "$(PRS "$PRSDIR/d-impl-addressed-only.json")"
+
+cat > "$PRSDIR/d-quoted-not-column0.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"impl1: saw a stray QA-CHANGES-REQUESTED string in a log line, ignoring it","createdAt":"2026-07-10T10:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T09:00:00Z"}]}
+EOS
+assert_eq "a QA-* string not at column 0 is not treated as a sentinel" \
+  "AWAITING_REVIEW" "$(PRS "$PRSDIR/d-quoted-not-column0.json")"
+
+# (e) QA-APPROVED supersedes an earlier request; a later fresh request
+# re-activates the fix path (last-sentinel-wins).
+cat > "$PRSDIR/e-approved.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfix","createdAt":"2026-07-10T10:00:00Z"},
+             {"body":"IMPL-ADDRESSED: #83 abc","createdAt":"2026-07-10T11:00:00Z"},
+             {"body":"QA-APPROVED: #83","createdAt":"2026-07-10T12:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T10:55:00Z"}]}
+EOS
+assert_eq "a later QA-APPROVED resolves APPROVED" "APPROVED" "$(PRS "$PRSDIR/e-approved.json")"
+
+cat > "$PRSDIR/e-reactivated.json" <<'EOS'
+{"state":"OPEN","mergedAt":null,
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfirst round","createdAt":"2026-07-10T10:00:00Z"},
+             {"body":"IMPL-ADDRESSED: #83 abc","createdAt":"2026-07-10T11:00:00Z"},
+             {"body":"QA-CHANGES-REQUESTED: #83\nsecond round, still broken","createdAt":"2026-07-10T12:00:00Z"}],
+ "commits":[{"committedDate":"2026-07-10T10:55:00Z"}]}
+EOS
+assert_eq "a fresh QA-CHANGES-REQUESTED after IMPL-ADDRESSED re-activates the fix path" \
+  "CHANGES_REQUESTED none" "$(PRS "$PRSDIR/e-reactivated.json")"
+
+# (f) merged/closed short-circuit ahead of any comment parsing.
+cat > "$PRSDIR/f-merged.json" <<'EOS'
+{"state":"MERGED","mergedAt":"2026-07-10T13:00:00Z",
+ "comments":[{"body":"QA-CHANGES-REQUESTED: #83\nfix","createdAt":"2026-07-10T10:00:00Z"}],
+ "commits":[]}
+EOS
+assert_eq "a merged PR is APPROVED even with an unanswered request in the thread" \
+  "APPROVED" "$(PRS "$PRSDIR/f-merged.json")"
+
+cat > "$PRSDIR/f-closed.json" <<'EOS'
+{"state":"CLOSED","mergedAt":null,"comments":[],"commits":[]}
+EOS
+assert_eq "a closed-unmerged PR is NONE" "NONE" "$(PRS "$PRSDIR/f-closed.json")"
+
+assert_eq "an unresolvable PR (gh failure) is NONE, never a false positive" \
+  "NONE" "$(PATH="$PRSTUB:$PATH" PRS_FAIL=1 FWF_PROFILE=example "$ROOT/fwf" pr-review-state 83 2>&1)"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
