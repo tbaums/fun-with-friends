@@ -282,6 +282,8 @@ fwf down [--purge|--floor-only]                     kill both sessions (--purge:
 fwf issues <create|list|view|edit|comment|close|reopen|export>
                                                     the local issue tracker (--issues local):
                                                     gh-shaped CLI over a markdown store
+fwf pr-review-state <pr>                            authoritative qa<->impl review state for a PR from
+                                                    sentinel comments, not reviewDecision (docs/tutorial.md)
 fwf dash                                            read-only status board + decision inbox (Rust
                                                     TUI; prebuilt binary auto-downloaded on first
                                                     run — docs/dash.md)

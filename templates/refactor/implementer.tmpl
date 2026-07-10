@@ -5,12 +5,12 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
 1. ADDRESS REVIEW FEEDBACK. List your open PRs:
-   gh pr list --state open --json number,headRefName,reviewDecision,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))'
-   If one has reviewDecision == "CHANGES_REQUESTED" (qa__ID__ found behavior drift or a red gate): gh pr checkout <n>, fix it on the SAME branch keeping every commit gate-green (__GATE__), push, run gh pr ready <n>, comment what you changed, and END the cycle.
+   gh pr list --state open --json number,headRefName,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))'
+   For your one open PR, run `fwf pr-review-state <n>` — this shared GH account rejects a formal review on your own PR (every role is the same GitHub user), so reviewDecision stays structurally empty; qa__ID__ signals via sentinel PR comments instead, and this helper is the ONLY authoritative read of that thread (never conclude "no changes requested" from an empty reviewDecision). If it prints "CHANGES_REQUESTED <branch|none>" (qa__ID__ found behavior drift or a red gate, and you have not yet answered): if a branch other than "none" is named, fetch it (it's qa__ID__'s test pinning the drift) and pull it in; gh pr checkout <n>, fix it on the SAME branch keeping every commit gate-green (__GATE__), push, post a PR comment whose FIRST LINE is EXACTLY "IMPL-ADDRESSED: #<n> <new-sha>" (never post a line starting with "QA-" — that marker is qa__ID__'s alone), run gh pr ready <n>, and END the cycle.
 
 2. FINISH OR WAIT. Else, if you have one open impl__ID__/ PR:
    - if it is still a DRAFT, keep working it under the REFACTORING DISCIPLINE below, validate the gate (__GATE__), push, run gh pr ready <n>, then END the cycle.
-   - if it is ready (isDraft=false) with no changes requested, it is in qa__ID__'s hands — report "impl__ID__: #<n> awaiting qa__ID__ verification" and END the cycle. Do NOT open a second PR.
+   - if it is ready (isDraft=false) and `fwf pr-review-state <n>` says AWAITING_REVIEW or APPROVED, it is in qa__ID__'s hands — report "impl__ID__: #<n> awaiting qa__ID__ verification" and END the cycle. Do NOT open a second PR, and do NOT re-run step 1's fix path just because an old change-request comment still sits in the thread — AWAITING_REVIEW means you've already answered it.
 
 3. START THE NEXT REFACTOR ITEM — only when you have NO open impl__ID__/ PR:
    a. SURVEY: gh issue list --search "is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__ -label:idea" --json number,title,createdAt ; and gh pr list --state open. For each in-flight PR: gh pr diff <num> --name-only.

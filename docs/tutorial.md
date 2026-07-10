@@ -110,6 +110,33 @@ abandoned. When the captain releases a *batch*, it pre-assigns with
 `ASSIGNED implN` comments so the batch doesn't stampede. If you see those
 comments in your issues, that's the machinery working.
 
+**PR review state on a shared account.** Every role in a factory authenticates
+as the *same* GitHub user, so `gh pr review --approve` / `--request-changes`
+on an impl's own PR is rejected as self-review — and `reviewDecision` /
+`mergeStateStatus`-for-review stay structurally empty as a result. qa and
+impl instead signal review state with sentinel PR **comments**, whose first
+line (column 0) is one of:
+
+| Sentinel (first line of the comment) | Posted by | Meaning |
+|---|---|---|
+| `QA-CHANGES-REQUESTED: #<pr>` | qa | a request qa hasn't withdrawn; may name a `qaN/repro-<pr>` branch |
+| `QA-APPROVED: #<pr>` | qa | gate/behavior verified — the review, since a formal approve would fail |
+| `IMPL-ADDRESSED: #<pr> <sha>` | impl | "I responded to the latest request with this commit" |
+
+Disambiguation is **marker-based, not author-based** — the GH comment author
+is identical for every role here, so it carries no information. impl must
+never post a line starting with `QA-` at column 0; that exclusivity, plus
+counting a sentinel only at the start of a comment (a `QA-*` string quoted
+mid-line doesn't count), is what stops an agent from self-triggering its own
+fix path. `fwf pr-review-state <pr>` is the one place that parses this
+thread — both role prompts just run it and obey the output (`CHANGES_REQUESTED
+<branch|none>` / `AWAITING_REVIEW` / `APPROVED` / `NONE`) instead of
+hand-parsing prose, so the rules (last-sentinel-wins, a request is "active"
+only if newer than impl's last `IMPL-ADDRESSED`) live in one tested place. A
+qa role with an open `QA-CHANGES-REQUESTED` re-reviews as soon as the helper
+reports `AWAITING_REVIEW`, rather than idling on it — this is what keeps the
+deadlock from just relocating to the re-review handoff.
+
 **Fixing a wedged agent.** A pane stuck on a crash or a garbled buffer:
 
 ```bash
@@ -373,8 +400,11 @@ behaviors from the shipped prompts — the machinery depends on them: the STOP
 check (commit WIP, cancel loop, idle when `__STOPFILE__` exists), one PR in
 flight per worker, never pushing shared branches directly, never merging your
 own PR, the atomic CLAIM protocol if workers self-select work, and
-communicating through issues rather than tmux. Steal liberally from
-`templates/dev/` — the prompts are the documentation.
+communicating through issues rather than tmux. If your roles review each
+other's PRs, use `fwf pr-review-state` and the `QA-*`/`IMPL-ADDRESSED`
+sentinel-comment convention (see "PR review state on a shared account"
+above) instead of `reviewDecision` — it's empty on a shared account. Steal
+liberally from `templates/dev/` — the prompts are the documentation.
 
 **Test it** the cheap way before burning tokens: render every role through
 the real path —

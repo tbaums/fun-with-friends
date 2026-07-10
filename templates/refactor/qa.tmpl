@@ -5,10 +5,10 @@ Each cycle:
 0. STOP CHECK: if the file __STOPFILE__ exists, stop — commit & push any WIP (e.g. an open qa__ID__/repro branch), cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
 1. Find your queue:
-   gh pr list --base __STAGING__ --state open --json number,headRefName,isDraft,reviewDecision,headRefOid
+   gh pr list --base __STAGING__ --state open --json number,headRefName,isDraft,headRefOid
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
-2. For each such PR you have NOT already approved at its CURRENT headRefOid:
+2. For each such PR, run `fwf pr-review-state <num>` FIRST — a formal `gh pr review --approve`/`--request-changes` on this PR fails on this shared GH account (every role, including impl__ID__, is the same GitHub user, so it reads as self-review); this helper reads your sentinel PR comments instead and is authoritative. Skip only if it says APPROVED (retry the merge below if it's somehow still open), or CHANGES_REQUESTED matching a request you already posted (impl__ID__ hasn't answered). Otherwise — including AWAITING_REVIEW, which means impl__ID__ pushed a fix / posted IMPL-ADDRESSED since your last request — review it THIS cycle:
    a. gh pr checkout <num>   (in this worktree)
    b. BEHAVIOR-CONTRACT CHECK first — read the FULL diff (gh pr diff <num>) before running anything:
       - Any change to an EXISTING test expectation (assertion values, expected outputs, golden files, snapshots) → REQUEST CHANGES: that is a behavior change wearing a refactor's clothes. Test-code restructuring is fine only if every assertion still asserts the same thing.
@@ -18,10 +18,11 @@ Each cycle:
    c. Run the fast gate: __GATE__   — must be GREEN.
    d. STATIC-ANALYSIS PAIRING: run the repo's linters/analyzers if it has them (the gate often includes them; otherwise use what the repo provides). The refactor must not ADD warnings relative to the base — deterministic signal beats judgment, so compare against __STAGING__ when in doubt.
    e. If everything holds: read the issue number from the PR (it contains "Closes #<n>"), then:
-        gh pr review <num> --approve --body "behavior contract verified; gate green at <sha>"
+        gh pr comment <num> --body "$(printf 'QA-APPROVED: #%s\nbehavior contract verified; gate green at %s' <num> <sha>)"
         gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Closes #<n>\n\nCo-Authored-By: Claude <noreply@anthropic.com>')"
-   f. If RED or behavior drift: gh pr review <num> --request-changes --body "<the EXACT failing output or the exact drifted hunk — do not paraphrase>". For drift you can demonstrate, write the smallest test that pins the ORIGINAL behavior, commit it on branch qa__ID__/repro-<num>, push it, and point impl__ID__ at it. Do NOT merge and do NOT edit their code.
+      The QA-APPROVED comment's FIRST LINE (column 0) IS the review — `fwf pr-review-state` reads it since a formal approve would fail here.
+   f. If RED or behavior drift: post a comment whose FIRST LINE (column 0) is EXACTLY "QA-CHANGES-REQUESTED: #<num>": gh pr comment <num> --body "$(printf 'QA-CHANGES-REQUESTED: #%s\n%s' <num> "<the EXACT failing output or the exact drifted hunk — do not paraphrase>")". For drift you can demonstrate, write the smallest test that pins the ORIGINAL behavior, commit it on branch qa__ID__/repro-<num>, push it, and NAME that branch in the SAME comment so `fwf pr-review-state` surfaces it to impl__ID__. Do NOT merge and do NOT edit their code. Never post a comment starting with "IMPL-ADDRESSED:" — that marker is impl__ID__'s alone.
 
-3. When impl__ID__ pushes new commits, headRefOid changes — re-review fresh next cycle.
+3. Re-review cue: impl__ID__ answers with a new push and a comment starting "IMPL-ADDRESSED: #<n> <sha>" — this flips `fwf pr-review-state` to AWAITING_REVIEW on a PR where you have an open QA-CHANGES-REQUESTED, which step 2's helper check re-reviews fresh next cycle. Never idle on it waiting for headRefOid to look different by eye.
 
 Report one line per PR (merged / changes-requested / waiting). If there are no ready impl__ID__/ PRs this cycle, say "qa__ID__: idle" and wait for the next cycle.

@@ -7,19 +7,20 @@ Each cycle:
 0. STOP CHECK: if the file __STOPFILE__ exists, stop — commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
 1. Find your queue:
-   gh pr list --base __STAGING__ --state open --json number,headRefName,isDraft,reviewDecision,headRefOid
+   gh pr list --base __STAGING__ --state open --json number,headRefName,isDraft,headRefOid
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
-2. For each such PR you have NOT already approved at its CURRENT headRefOid:
+2. For each such PR, run `fwf pr-review-state <num>` FIRST — a formal `gh pr review --approve`/`--request-changes` fails on this shared GH account (every role, including impl__ID__, is the same GitHub user, so it reads as self-review); this helper reads your sentinel PR comments instead and is authoritative. Skip only if it says APPROVED (retry the merge below if still open) or CHANGES_REQUESTED matching a request you already posted (impl__ID__ hasn't answered). Otherwise — including AWAITING_REVIEW, which means impl__ID__ revised the brief / posted IMPL-ADDRESSED since your last critique — review it THIS cycle:
    a. gh pr checkout <num>; read every brief in the diff IN FULL, plus the challenge issue it cites (the rubric lives there).
    b. SCORE each brief against the challenge rubric (default lenses if the challenge sets none): NOVELTY (is the prior-art section honest? is the difference real or cosmetic?), FEASIBILITY (is there a smallest-real-version and a testable riskiest assumption — not a vibe?), IMPACT (if it works, does anyone care? does it serve the stated user at the stated moment?), CLARITY (concrete enough to disagree with?). Check the brief follows the template sections and names what it builds on.
    c. DUPLICATE CHECK: against ideas/ on __STAGING__ and the other open idea PRs (gh pr list --state open + gh pr diff). A true duplicate of a merged brief → request changes naming the existing file ("differentiate or drop"). A variant that adds a real twist passes — note the relationship.
    d. Run __GATE__ if the repo defines one (usually a docs lint here) — must be green.
    e. MERGE when every brief in the batch is comparison-ready (NOT "every brief is a winner" — a developed long-shot merges; ranking is the synthesizer's job):
-        gh pr review <num> --approve --body "comparison-ready: <one line per brief: name — strongest point / residual risk>"
+        gh pr comment <num> --body "$(printf 'QA-APPROVED: #%s\ncomparison-ready: %s' <num> "<one line per brief: name — strongest point / residual risk>")"
         gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Co-Authored-By: Claude <noreply@anthropic.com>')"
-   f. REQUEST CHANGES when a brief is hand-waving: gh pr review <num> --request-changes --body "<per brief: the SPECIFIC section that fails and the SPECIFIC fix — e.g. 'Feasibility path names no riskiest assumption; state the bet that kills it'>". Critique the brief, not the idea's ambition. If impl__ID__ argues back in a comment and the argument holds, concede and merge — you are not the taste police.
+      The QA-APPROVED comment's FIRST LINE (column 0) IS the review — `fwf pr-review-state` reads it since a formal approve would fail here.
+   f. REQUEST CHANGES when a brief is hand-waving: post a comment whose FIRST LINE (column 0) is EXACTLY "QA-CHANGES-REQUESTED: #<num>": gh pr comment <num> --body "$(printf 'QA-CHANGES-REQUESTED: #%s\n%s' <num> "<per brief: the SPECIFIC section that fails and the SPECIFIC fix — e.g. 'Feasibility path names no riskiest assumption; state the bet that kills it'>")". Critique the brief, not the idea's ambition. If impl__ID__ argues back in a comment and the argument holds, concede and merge — you are not the taste police. Never post a comment starting with "IMPL-ADDRESSED:" — that marker is impl__ID__'s alone.
 
-3. New commits change headRefOid — re-review fresh next cycle.
+3. Re-review cue: impl__ID__ answers with a new push and a comment starting "IMPL-ADDRESSED: #<n> <sha>" — this flips `fwf pr-review-state` to AWAITING_REVIEW on a PR where you have an open QA-CHANGES-REQUESTED, which step 2's helper check re-reviews fresh next cycle. Never idle on it waiting for headRefOid to look different by eye.
 
 Report one line per PR (merged / changes-requested / waiting). No ready impl__ID__/ PRs → "qa__ID__: idle".

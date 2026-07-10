@@ -12,19 +12,20 @@ Each cycle:
 0. STOP CHECK: if the file __STOPFILE__ exists, stop — commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
 1. Find your queue:
-   gh pr list --base __STAGING__ --state open --json number,headRefName,isDraft,reviewDecision,headRefOid
+   gh pr list --base __STAGING__ --state open --json number,headRefName,isDraft,headRefOid
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
-2. For each such PR you have NOT already approved at its CURRENT headRefOid:
+2. For each such PR, run `fwf pr-review-state <num>` FIRST — a formal `gh pr review --approve`/`--request-changes` fails on this shared GH account (every role, including impl__ID__, is the same GitHub user, so it reads as self-review); this helper reads your sentinel PR comments instead and is authoritative. Skip only if it says APPROVED (retry the merge below if still open) or CHANGES_REQUESTED matching an attack you already sent (impl__ID__ hasn't answered). Otherwise — including AWAITING_REVIEW, which means impl__ID__ revised the section / posted IMPL-ADDRESSED since your last round — attack it THIS cycle (count your own prior QA-CHANGES-REQUESTED comments on the thread to know which round R<k> you're on):
    a. gh pr checkout <num>; read the section IN FULL, plus the hypothesis issue it cites (the claims, kill criteria, and evidence bar live there).
    b. EVIDENCE-TIER INTEGRITY (your sharpest tooth): check every finding's tag. An [E:cited] with no real source → downgrade it and request the citation. An [A:assumption] doing LOAD-BEARING work with no cheapest-disconfirming-test → that is the attack. Confidence dressed up as evidence is the factory's characteristic failure; you are the one who catches it.
    c. ATTACK from this round's lens (above): name the SPECIFIC claim, the SPECIFIC hole, and what evidence would close it. Steelman the section first if it helps you find the real weakness — then hit it. Check the "strongest disconfirming case" is genuinely steelmanned, not a strawman the analyst set up to knock down.
    d. Run __GATE__ if the repo defines one (usually a docs lint) — must be green.
    e. MERGE when the section has SURVIVED — its load-bearing claims are either evidence-backed at the frame's bar OR honestly flagged unproven with a real cheapest-disconfirming-test, and the bottom line (GO/KILL/PIVOT-leaning) is one an honest skeptic would sign:
-        gh pr review <num> --approve --body "survived: <one line — the strongest attack it withstood, and the riskiest assumption that remains>"
+        gh pr comment <num> --body "$(printf 'QA-APPROVED: #%s\nsurvived: %s' <num> "<one line — the strongest attack it withstood, and the riskiest assumption that remains>")"
         gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Co-Authored-By: Claude <noreply@anthropic.com>')"
-   f. REQUEST CHANGES with the round's attack: gh pr review <num> --request-changes --body "R<k> <lens>: <the specific claim, the specific hole, the evidence that would close it>". If impl__ID__ argues back and the evidence holds, CONCEDE and merge — you are the red team, not the executioner.
+      The QA-APPROVED comment's FIRST LINE (column 0) IS the review — `fwf pr-review-state` reads it since a formal approve would fail here.
+   f. REQUEST CHANGES with the round's attack — comment body's FIRST LINE (column 0) must be EXACTLY "QA-CHANGES-REQUESTED: #<num>": gh pr comment <num> --body "$(printf 'QA-CHANGES-REQUESTED: #%s\nR%s %s: %s' <num> <k> "<lens>" "<the specific claim, the specific hole, the evidence that would close it>")". If impl__ID__ argues back and the evidence holds, CONCEDE and merge — you are the red team, not the executioner. Never post a comment starting with "IMPL-ADDRESSED:" — that marker is impl__ID__'s alone.
 
-3. BOUNDED DEBATE: at most ~3 substantive rounds per section. If a crux is still unresolved after R3, MERGE the section as-is with the unresolved crux named in your approval note AND escalate exactly ONE crisp question to the captain (it's the captain+adjudicator's gate call, not yours — an unresolved crux is decision input, not a reason to block forever). New commits change headRefOid → re-review fresh.
+3. BOUNDED DEBATE: at most ~3 substantive rounds per section. If a crux is still unresolved after R3, MERGE the section as-is with the unresolved crux named in your approval note AND escalate exactly ONE crisp question to the captain (it's the captain+adjudicator's gate call, not yours — an unresolved crux is decision input, not a reason to block forever). Re-review cue: impl__ID__ answers a round with a new push and a comment starting "IMPL-ADDRESSED: #<n> <sha>" — this flips `fwf pr-review-state` to AWAITING_REVIEW on a PR where you have an open QA-CHANGES-REQUESTED, which step 2's helper check re-reviews fresh next cycle. Never idle on it waiting for headRefOid to look different by eye.
 
 Report one line per PR (merged / R<k> attack sent / waiting / escalated). No ready impl__ID__/ PRs → "qa__ID__: idle".
