@@ -1,0 +1,16 @@
+┌ Decisions — awaiting you ──────────────┐┌ Detail · loading thread… ──────────────────────────────┐
+│▌ #101 Adopt golden render tests for the││### Why                                                 │
+│      GATED                             ││Golden tests catch layout drift unit tests miss.        │
+│                                        ││- keeps the header honest                               │
+│                                        ││- keeps blockquotes legible                             │
+│                                        ││                                                        │
+│                                        ││> GATED — needs a captain sign-off before this un-gates │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘

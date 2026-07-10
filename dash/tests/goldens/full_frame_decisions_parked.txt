@@ -1,0 +1,30 @@
+┌ fwf dash ────────────────────────────────────────────────────────────────────────────────────────┐
+│profile fwf-self  ·  dev  ⏸ PARKED                                                                │
+│prod https://example.test/prod   pipeline staging → integration → main   [stale]   ⟳ 2026-01-01 00│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+  1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)
+┌ Decisions — awaiting you ──────────────┐┌ Detail · loading thread… ──────────────────────────────┐
+│▌ #101 Adopt golden render tests for the││### Why                                                 │
+│      GATED                             ││Golden tests catch layout drift unit tests miss.        │
+│                                        ││- keeps the header honest                               │
+│                                        ││- keeps blockquotes legible                             │
+│                                        ││                                                        │
+│                                        ││> GATED — needs a captain sign-off before this un-gates │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+ 1-4 tab  j/k move  y approve  x reject  c comment  o open  t captain  ? help  q quit

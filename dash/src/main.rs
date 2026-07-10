@@ -1510,6 +1510,7 @@ fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
 
     fn test_app() -> App {
         let (rtx, _r) = mpsc::channel();
@@ -2005,5 +2006,333 @@ mod tests {
         let outcome = run_action("/no/such/fwf-dash-act.sh", &action, None);
         assert!(!outcome.ok);
         assert!(!outcome.message.is_empty());
+    }
+
+    // --- render/golden snapshots (#54) ---------------------------------------
+    //
+    // TestBackend-driven text goldens for the main render paths. Each golden
+    // renders at an explicit fixed Rect from a static fixture (no timestamps,
+    // live provenance, or wall-clock in the buffer) so a golden that varied
+    // run-to-run — worse than no golden at all — can't happen here. The two
+    // known styling regressions (#50 blockquote contrast, #51 header template)
+    // are pinned by explicit style assertions alongside the goldens, so a
+    // blind re-bless of a full-buffer golden can't silently reintroduce them.
+    //
+    // To re-bless an intentional layout/content change, regenerate the goldens
+    // and review the diff like any other change:
+    //   UPDATE_GOLDEN=1 cargo test --locked <test name>
+    // (see dash/tests/goldens/README.md).
+
+    fn golden_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/goldens")
+            .join(format!("{name}.txt"))
+    }
+
+    fn buffer_to_text(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area;
+        (0..area.height)
+            .map(|y| {
+                let row: String = (0..area.width)
+                    .map(|x| {
+                        buf.cell((area.x + x, area.y + y))
+                            .map(ratatui::buffer::Cell::symbol)
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect();
+                row.trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn assert_golden(name: &str, rendered: &str) {
+        let path = golden_path(name);
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::create_dir_all(path.parent().expect("golden dir"))
+                .expect("create goldens dir");
+            std::fs::write(&path, format!("{rendered}\n")).expect("write golden");
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!(
+                "missing golden {path:?} — run `UPDATE_GOLDEN=1 cargo test {name}` to create it, then review the diff (see dash/tests/goldens/README.md)"
+            )
+        });
+        assert_eq!(
+            format!("{rendered}\n"),
+            expected,
+            "render golden mismatch for `{name}` — if this change is intentional, re-bless with `UPDATE_GOLDEN=1 cargo test {name}` and review the diff (see dash/tests/goldens/README.md)"
+        );
+    }
+
+    fn render_buffer(
+        width: u16,
+        height: u16,
+        draw: impl FnOnce(&mut Frame),
+    ) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal.draw(draw).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buf: &ratatui::buffer::Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| {
+                buf.cell((x, y))
+                    .map(ratatui::buffer::Cell::symbol)
+                    .unwrap_or(" ")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn act_item_titled(
+        pr: i64,
+        issue: &str,
+        base: &str,
+        checks: &str,
+        when: &str,
+        role: &str,
+        title: &str,
+    ) -> data::ActivityItem {
+        data::ActivityItem {
+            pr,
+            role: role.into(),
+            issue: issue.into(),
+            base: base.into(),
+            checks: checks.into(),
+            when: when.into(),
+            title: title.into(),
+        }
+    }
+
+    /// A static, fully-populated fixture — no timestamps or live data, so every
+    /// golden built from it renders identically on every run and machine.
+    fn golden_fixture() -> Dashboard {
+        Dashboard {
+            profile: "fwf-self".into(),
+            template: "dev".into(),
+            parked: false,
+            prod: "https://example.test/prod".into(),
+            pipeline: "staging → integration → main".into(),
+            stamp: "status.json".into(),
+            generated_at: "2026-01-01 00:00:00".into(),
+            roles: vec![
+                data::Role {
+                    role: "impl1".into(),
+                    state: "live".into(),
+                    detail: "building #62".into(),
+                },
+                data::Role {
+                    role: "qa1".into(),
+                    state: "idle".into(),
+                    detail: String::new(),
+                },
+                data::Role {
+                    role: "impl2".into(),
+                    state: "down".into(),
+                    detail: "crashed".into(),
+                },
+            ],
+            decisions: vec![data::Decision {
+                id: "101".into(),
+                title: "Adopt golden render tests for the dash, guarding #50/#51".into(),
+                flags: "GATED".into(),
+                body: "### Why\nGolden tests catch layout drift unit tests miss.\n\
+- keeps the header honest\n\
+- keeps blockquotes legible\n\
+\n\
+> GATED — needs a captain sign-off before this un-gates"
+                    .into(),
+            }],
+            issues: vec![data::Issue {
+                number: 54,
+                title: "dash tests: render/golden snapshots via ratatui TestBackend".into(),
+                gated: false,
+                body: "Golden/snapshot coverage for the main render paths.".into(),
+            }],
+            activity: data::Activity {
+                building: vec![act_item_titled(
+                    101,
+                    "54",
+                    "staging",
+                    "run",
+                    "",
+                    "impl3",
+                    "dash render golden snapshot tests via ratatui TestBackend, covering every main render path",
+                )],
+                in_test: vec![act_item_titled(
+                    97, "50", "staging", "pass", "", "qa2", "fix low-contrast blockquote styling",
+                )],
+                merged: vec![act_item_titled(
+                    90, "40", "staging", "pass", "07-01 09:00", "impl2", "fwf dash milestone 1",
+                )],
+                to_main: vec![],
+            },
+            needs_you: data::NeedsYou {
+                active: true,
+                summary: "decision #101 awaiting you".into(),
+            },
+        }
+    }
+
+    fn golden_app(tab: Tab) -> App {
+        let mut app = test_app();
+        app.feed = Feed::Ok(golden_fixture());
+        app.tab = tab;
+        app
+    }
+
+    #[test]
+    fn golden_header_shows_profile_template_and_provenance() {
+        let app = golden_app(Tab::Activity);
+        let area = Rect::new(0, 0, 90, 4);
+        let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
+        assert_golden("header_running", &buffer_to_text(&buf));
+    }
+
+    // #51 pin: at the render level (through the real widget pipeline, not just
+    // the string that gets pushed into the span), the header must show the
+    // running template's name.
+    #[test]
+    fn render_level_header_shows_the_running_template() {
+        let app = golden_app(Tab::Activity);
+        let area = Rect::new(0, 0, 90, 4);
+        let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
+        let template = app.feed.dashboard().unwrap().template.clone();
+        assert!(
+            buffer_to_text(&buf).contains(&template),
+            "header must show the running template (#51)"
+        );
+    }
+
+    #[test]
+    fn golden_header_parked_and_stale_provenance() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.parked = true;
+            d.stamp = "stale".into();
+        }
+        let area = Rect::new(0, 0, 90, 4);
+        let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
+        assert_golden("header_parked_stale", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_tabs_show_counts_per_section() {
+        let app = golden_app(Tab::Decisions);
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| render_tabs(f, area, &app));
+        assert_golden("tabs_with_counts", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_needs_you_banner() {
+        let app = golden_app(Tab::Activity);
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_needs_banner(f, area, &app)
+        });
+        assert_golden("needs_you_banner", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_activity_list_with_detail() {
+        let mut app = golden_app(Tab::Activity);
+        let area = Rect::new(0, 0, 100, 16);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_activity(f, area, &mut app)
+        });
+        assert_golden("activity_list_with_detail", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_decisions_detail_pane_markdownish() {
+        let mut app = golden_app(Tab::Decisions);
+        let area = Rect::new(0, 0, 100, 16);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_list_with_preview(f, area, &mut app, Tab::Decisions)
+        });
+        assert_golden("decisions_detail_markdownish", &buffer_to_text(&buf));
+    }
+
+    // #50 pin: at the render level (through the real widget/paragraph pipeline,
+    // not just the markdownish() unit), the rendered blockquote row must never
+    // use DarkGray — that's the near-invisible regression #50 fixed.
+    #[test]
+    fn render_level_blockquote_is_not_darkgray_in_the_detail_pane() {
+        let mut app = golden_app(Tab::Decisions);
+        let area = Rect::new(0, 0, 100, 16);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_list_with_preview(f, area, &mut app, Tab::Decisions)
+        });
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .split(area);
+        let detail = cols[1];
+
+        let mut saw_blockquote_marker = false;
+        for y in detail.y..detail.y + detail.height {
+            let text = row_text(&buf, detail, y);
+            if !text.contains("GATED") {
+                continue;
+            }
+            for x in detail.x..detail.x + detail.width {
+                let cell = buf.cell((x, y)).expect("in bounds");
+                if cell.symbol() == ">" {
+                    saw_blockquote_marker = true;
+                }
+                assert_ne!(
+                    cell.fg,
+                    Color::DarkGray,
+                    "blockquote row must not render DarkGray anywhere (#50): row = {text:?}"
+                );
+            }
+        }
+        assert!(
+            saw_blockquote_marker,
+            "expected the fixture's blockquote row to actually render in the detail pane"
+        );
+    }
+
+    #[test]
+    fn golden_confirm_overlay() {
+        let area = Rect::new(0, 0, 80, 24);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_confirm(f, area, "Approve decision #101?")
+        });
+        assert_golden("confirm_overlay", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_input_overlay() {
+        let area = Rect::new(0, 0, 80, 24);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_input(f, area, "Comment on #54:", "looks good")
+        });
+        assert_golden("input_overlay", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_full_frame_activity_tab_with_needs_you_banner() {
+        let mut app = golden_app(Tab::Activity);
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        assert_golden("full_frame_activity_needs_you", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn golden_full_frame_decisions_tab_parked_stale_no_banner() {
+        let mut app = golden_app(Tab::Decisions);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.parked = true;
+            d.stamp = "stale".into();
+            d.needs_you.active = false;
+        }
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        assert_golden("full_frame_decisions_parked", &buffer_to_text(&buf));
     }
 }
