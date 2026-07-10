@@ -1630,6 +1630,209 @@ mod tests {
         assert!(matches!(app.overlay, Overlay::Input { .. }));
     }
 
+    // --- on_key coverage (#55) ----------------------------------------------
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn scroll_preview_via_n_p_and_ctrl_d_u_clamps_at_zero() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.scroll[app.tab.index()], 3);
+        app.on_key(key_ctrl('d'));
+        assert_eq!(app.scroll[app.tab.index()], 13);
+        app.on_key(key(KeyCode::Char('p')));
+        assert_eq!(app.scroll[app.tab.index()], 10);
+        app.on_key(key_ctrl('u'));
+        assert_eq!(app.scroll[app.tab.index()], 0);
+        // Further negative presses clamp at 0 rather than underflowing.
+        app.on_key(key(KeyCode::Char('p')));
+        assert_eq!(app.scroll[app.tab.index()], 0);
+        app.on_key(key_ctrl('u'));
+        assert_eq!(app.scroll[app.tab.index()], 0);
+    }
+
+    #[test]
+    fn reject_opens_a_confirm_not_a_fire() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            decisions: vec![data::Decision {
+                id: "44".into(),
+                title: "t".into(),
+                flags: String::new(),
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Decisions;
+        app.on_key(key(KeyCode::Char('x')));
+        match &app.overlay {
+            Overlay::Confirm { action, .. } => {
+                assert_eq!(action.verb, "reject");
+                assert_eq!(action.target, "44");
+            }
+            _ => panic!("reject should open a confirm overlay"),
+        }
+    }
+
+    #[test]
+    fn number_keys_jump_directly_to_section() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::Char('3')));
+        assert!(matches!(app.tab, Tab::Decisions));
+        app.on_key(key(KeyCode::Char('4')));
+        assert!(matches!(app.tab, Tab::Issues));
+        app.on_key(key(KeyCode::Char('2')));
+        assert!(matches!(app.tab, Tab::Roles));
+        app.on_key(key(KeyCode::Char('1')));
+        assert!(matches!(app.tab, Tab::Activity));
+    }
+
+    #[test]
+    fn tab_key_and_brackets_cycle_sections() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::Tab));
+        assert!(matches!(app.tab, Tab::Roles));
+        app.on_key(key(KeyCode::Char(']')));
+        assert!(matches!(app.tab, Tab::Decisions));
+        app.on_key(key(KeyCode::BackTab));
+        assert!(matches!(app.tab, Tab::Roles));
+        app.on_key(key(KeyCode::Char('[')));
+        assert!(matches!(app.tab, Tab::Activity));
+    }
+
+    #[test]
+    fn ctrl_r_sends_a_refresh_request_and_sets_status() {
+        let (rtx, rrx) = mpsc::channel();
+        let (atx, _a) = mpsc::channel();
+        let (dtx, _d) = mpsc::channel();
+        let mut app = App::new(rtx, atx, dtx);
+        app.on_key(key_ctrl('r'));
+        assert!(rrx.try_recv().is_ok(), "Ctrl-r should request a refresh");
+        assert!(!app.status.as_ref().unwrap().is_err);
+    }
+
+    #[test]
+    fn help_overlay_opens_and_only_dismiss_keys_close_it() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::Char('?')));
+        assert!(matches!(app.overlay, Overlay::Help));
+        app.on_key(key(KeyCode::Char('z'))); // any other key: stays open
+        assert!(matches!(app.overlay, Overlay::Help));
+        app.on_key(key(KeyCode::Char('q'))); // dismiss
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(!app.should_quit, "dismissing help must not also quit");
+    }
+
+    #[test]
+    fn quit_keys_set_should_quit() {
+        let mut app = test_app();
+        app.on_key(key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+
+        let mut app2 = test_app();
+        app2.on_key(key(KeyCode::Esc));
+        assert!(app2.should_quit);
+
+        let mut app3 = test_app();
+        app3.on_key(key_ctrl('c'));
+        assert!(app3.should_quit);
+    }
+
+    #[test]
+    fn cancel_from_confirm_with_n_or_esc_clears_overlay_without_firing() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            decisions: vec![data::Decision {
+                id: "1".into(),
+                title: "t".into(),
+                flags: String::new(),
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Decisions;
+        app.begin_action("approve");
+        assert!(matches!(app.overlay, Overlay::Confirm { .. }));
+        app.on_key(key(KeyCode::Char('n')));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(!app.busy, "declining must not spawn the action");
+        assert_eq!(app.status.as_ref().unwrap().message, "cancelled");
+
+        app.begin_action("approve");
+        app.on_key(key(KeyCode::Esc));
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn cancel_from_input_with_esc_clears_overlay_without_firing() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            issues: vec![data::Issue {
+                number: 3,
+                title: "i".into(),
+                gated: false,
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Issues;
+        app.begin_action("comment");
+        assert!(matches!(app.overlay, Overlay::Input { .. }));
+        app.on_key(key(KeyCode::Esc));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(!app.busy);
+        assert_eq!(app.status.as_ref().unwrap().message, "cancelled");
+    }
+
+    #[test]
+    fn input_overlay_types_chars_and_backspaces() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            issues: vec![data::Issue {
+                number: 3,
+                title: "i".into(),
+                gated: false,
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Issues;
+        app.begin_action("comment");
+        app.on_key(key(KeyCode::Char('h')));
+        app.on_key(key(KeyCode::Char('i')));
+        app.on_key(key(KeyCode::Backspace));
+        match &app.overlay {
+            Overlay::Input { buffer, .. } => assert_eq!(buffer, "h"),
+            _ => panic!("expected the input overlay to stay open while typing"),
+        }
+    }
+
+    #[test]
+    fn input_overlay_enter_with_empty_buffer_is_skipped_not_fired() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            issues: vec![data::Issue {
+                number: 3,
+                title: "i".into(),
+                gated: false,
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Issues;
+        app.begin_action("comment");
+        app.on_key(key(KeyCode::Enter));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(app.status.as_ref().unwrap().message, "empty — skipped");
+        assert!(!app.busy);
+    }
+
     // --- Activity-tab formatting (#53) -------------------------------------
     fn act_item(
         pr: i64,
@@ -1694,5 +1897,113 @@ mod tests {
         assert!(s.contains("issue:  #42"));
         assert!(s.contains("checks: pass"));
         assert!(s.contains("merged: 06-18 12:34"));
+    }
+
+    // --- run_action execution (#55) -----------------------------------------
+    // A stub script standing in for `fwf-dash-act.sh`, so these cover the Rust
+    // execution + status-handling path only — the act layer's command shape is
+    // covered by the bash tests.
+    static STUB_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn write_stub(body: &str) -> std::path::PathBuf {
+        let n = STUB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "fwf-dash-test-stub-{}-{}.sh",
+            std::process::id(),
+            n
+        ));
+        std::fs::write(&path, body).expect("write stub script");
+        path
+    }
+
+    #[test]
+    fn run_action_success_reports_the_last_stdout_line() {
+        let path = write_stub("#!/bin/bash\necho ignored\necho \"did $1 $2\"\nexit 0\n");
+        let action = Action {
+            verb: "approve",
+            target: "42".into(),
+        };
+        let outcome = run_action(path.to_str().unwrap(), &action, None);
+        assert!(outcome.ok);
+        assert_eq!(outcome.message, "did approve 42");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_action_failure_reports_the_last_stderr_line() {
+        let path = write_stub("#!/bin/bash\necho boom >&2\nexit 1\n");
+        let action = Action {
+            verb: "reject",
+            target: "9".into(),
+        };
+        let outcome = run_action(path.to_str().unwrap(), &action, None);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.message, "boom");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_action_success_with_no_stdout_falls_back_to_verb_target() {
+        let path = write_stub("#!/bin/bash\nexit 0\n");
+        let action = Action {
+            verb: "open",
+            target: "7".into(),
+        };
+        let outcome = run_action(path.to_str().unwrap(), &action, None);
+        assert!(outcome.ok);
+        assert_eq!(outcome.message, "open 7 ✓");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_action_failure_with_no_stderr_falls_back_to_a_generic_message() {
+        let path = write_stub("#!/bin/bash\nexit 1\n");
+        let action = Action {
+            verb: "respawn",
+            target: "impl1".into(),
+        };
+        let outcome = run_action(path.to_str().unwrap(), &action, None);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.message, "respawn failed");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_action_passes_text_as_a_trailing_arg() {
+        let path = write_stub("#!/bin/bash\necho \"args: $1 $2 $3\"\n");
+        let action = Action {
+            verb: "comment",
+            target: "5".into(),
+        };
+        let outcome = run_action(path.to_str().unwrap(), &action, Some("hello world"));
+        assert!(outcome.ok);
+        assert_eq!(outcome.message, "args: comment 5 hello world");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_action_omits_the_target_arg_when_empty() {
+        let path = write_stub("#!/bin/bash\necho \"argc=$#\"\n");
+        let action = Action {
+            verb: "stop",
+            target: String::new(),
+        };
+        let outcome = run_action(path.to_str().unwrap(), &action, None);
+        assert_eq!(outcome.message, "argc=1");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_action_reports_a_missing_script_without_panicking() {
+        // bash itself is found, but the script path isn't — this exercises the
+        // exit-status-failure branch (not the Command::output Err branch, which
+        // only fires if `bash` itself can't be spawned).
+        let action = Action {
+            verb: "open",
+            target: "1".into(),
+        };
+        let outcome = run_action("/no/such/fwf-dash-act.sh", &action, None);
+        assert!(!outcome.ok);
+        assert!(!outcome.message.is_empty());
     }
 }
