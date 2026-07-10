@@ -147,6 +147,29 @@ CAPTAIN="$("$ROOT/fwf" --profile example captain --print 2>&1)"
 assert_contains "captain --print renders prompt" "$CAPTAIN" "CAPTAIN"
 assert_contains "captain resolves placeholders"  "$CAPTAIN" "staging"
 
+section "--profile works in any position (issue #69)"
+# --profile AFTER the subcommand must resolve identically to before it.
+CAPTAIN_POST="$("$ROOT/fwf" captain --profile example --print 2>&1)"
+assert_eq "--profile after subcommand matches before" "$CAPTAIN" "$CAPTAIN_POST"
+# --profile=NAME (equals form) after the subcommand too.
+CAPTAIN_EQ="$("$ROOT/fwf" captain --profile=example --print 2>&1)"
+assert_eq "--profile=NAME after subcommand matches before" "$CAPTAIN" "$CAPTAIN_EQ"
+# a second profile present + no --profile/FWF_PROFILE -> the improved error
+# names both the flag (any position) and the FWF_PROFILE env alternative.
+# (No leading dot: list_profiles()'s `*.sh` glob must actually SEE this one,
+# unlike the hidden `.__name.sh` fixtures used elsewhere in this file, which
+# are only ever referenced explicitly and must stay invisible to it.)
+cat > "$ROOT/profiles/__multitest.sh" <<'EOF'
+FWF_REPO="/nonexistent"; WT_PREFIX="mt"; WT_BASE="/tmp/mt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+MULTI="$(env -u FWF_PROFILE "$ROOT/fwf" captain --print 2>&1)" && bad "multiple profiles errors without --profile" \
+  || ok "multiple profiles errors without --profile"
+assert_contains "error names --profile (any position)" "$MULTI" "--profile NAME (any position)"
+assert_contains "error names FWF_PROFILE alternative"   "$MULTI" "FWF_PROFILE=NAME"
+rm -f "$ROOT/profiles/__multitest.sh"
+
 section "dispatcher: resume --clear-only clears the sentinel"
 RUNDIR="$TMP/run"; mkdir -p "$RUNDIR"; : > "$RUNDIR/STOP"
 RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf" --profile example resume --clear-only 2>&1)"

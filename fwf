@@ -36,6 +36,7 @@ fwf — fun-with-friends multi-agent dev swarm
 
 USAGE
   fwf [--profile NAME] <command> [args]
+  fwf <command> [--profile NAME] [args]     (either position works)
 
 GETTING STARTED
   suggest <description>  Describe what you're trying to do; get a factory
@@ -138,7 +139,7 @@ resolve_profile() {
   if [ "$count" = "0" ]; then
     die "no profiles yet — run 'fwf init <git-url>' or 'fwf start <git-url>' first."
   fi
-  echo "fwf: multiple profiles exist — pass --profile NAME:" >&2
+  echo "fwf: multiple profiles exist — pass --profile NAME (any position) or set FWF_PROFILE=NAME:" >&2
   printf '  %s\n' $names >&2
   exit 1
 }
@@ -299,6 +300,21 @@ while [ $# -gt 0 ]; do
 done
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
+
+# --profile also works AFTER the subcommand (issue #69), like the runtime
+# flags below — scan every remaining arg for every command (not just the
+# runtime-flag subset), so 'fwf dash --profile NAME' works the same as
+# 'fwf --profile NAME dash'.
+_post_profile_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --profile)   [ $# -ge 2 ] || die "--profile needs a value"; export FWF_PROFILE="$2"; shift 2;;
+    --profile=*) export FWF_PROFILE="${1#*=}"; shift;;
+    *) _post_profile_args+=("$1"); shift;;
+  esac
+done
+set -- ${_post_profile_args[@]+"${_post_profile_args[@]}"}
+
 # Runtime sizing/model flags are honored on the commands that launch or re-arm
 # agents (and provision, which sizes the worktree set).
 case "$cmd" in

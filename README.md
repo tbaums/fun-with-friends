@@ -287,7 +287,8 @@ fwf doctor | profiles | templates | version | help  (version also: -v, --version
 ```
 
 Use `--profile NAME` (or `FWF_PROFILE=NAME`) to pick among profiles; with only
-one profile present it's selected automatically.
+one profile present it's selected automatically. `--profile` works either
+before or after the subcommand (`fwf --profile NAME up` or `fwf up --profile NAME`).
 
 ### Sizing, models, and factory templates
 
