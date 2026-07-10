@@ -388,6 +388,10 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   keys, binary resolution.
 - [docs/gh-read-cache.md](docs/gh-read-cache.md) — the GitHub read cache that
   keeps a floor from hammering the API.
+- [docs/shared-account.md](docs/shared-account.md) — running every role on
+  one GitHub account: why formal PR reviews don't work, and the
+  `QA-CHANGES-REQUESTED`/`QA-APPROVED`/`IMPL-ADDRESSED` marker protocol
+  (`fwf pr-review-state`) that replaces them.
 - [docs/containers.md](docs/containers.md) — the containerization design and
   `fwf shell`.
 
