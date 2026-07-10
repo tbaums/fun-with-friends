@@ -12,6 +12,12 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 # Role prompts resolve via fwf_tmpl_path (template, falling back to its base).
 
+# Re-capture the launch socket (#62) if respawn runs inside tmux — harmless
+# when it's unchanged. If respawn runs OUTSIDE tmux (e.g. a script/cron with no
+# $TMUX), leave whatever `fwf up` already persisted in place rather than
+# blanking it to the "default" marker — the factory itself hasn't moved.
+[ -n "${TMUX:-}" ] && fwf_persist_tmux_socket "$(fwf_tmux_socket_value)"
+
 role="${1:-}"
 case "$role" in
   impl[1-9]|impl[1-9][0-9]) tmpl=implementer; id="${role#impl}"; interval="$IMPL_INTERVAL";    sess="$BUILD_SESSION";;

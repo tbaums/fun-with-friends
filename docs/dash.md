@@ -146,3 +146,32 @@ falls back to the derived values. Shape:
                  { "kind": "release", "id": "REL", "gv": "GV ✓✓", "title": "v0.7.0", "body": "…" } ]
 }
 ```
+
+### Launch-socket resolution (issue #62, supersedes #57)
+
+The factory's tmux sessions land on whatever socket `$TMUX` pointed to when
+`fwf up` (or `fwf respawn`) launched them — a bare `tmux new-session`/
+`split-window` inherits the caller's socket, so a factory started inside
+`tmux -L mysock` (or `-S <path>`) never ends up on the *default* socket. The
+dash's own `$TMUX` isn't a reliable proxy either — the dash binary can be
+displayed inside a completely different tmux (e.g. a separate socket used
+purely for mouse-wheel forwarding).
+
+So `fwf up`/`fwf start` (and `fwf respawn`) persist the launch socket as the
+single source of truth, and `fwf-dash-data.sh` reads it back instead of
+guessing:
+
+- **Field:** `FWF_TMUX_SOCKET` — either a socket path, or the literal marker
+  `default` (meaning "run tmux with no `-S` flag"; never an empty string).
+- **File:** `~/.fun-with-friends/state/<profile>/tmux_socket` (next to
+  `status.json`, one value per line).
+- **`fwf respawn`** re-captures the socket from its own `$TMUX` when it has
+  one; if it runs outside tmux (e.g. from a script/cron), it leaves the
+  persisted value untouched rather than blanking it.
+- **Migration:** a factory started before this field existed has no
+  `tmux_socket` file. The dash falls back to probing its own `$TMUX` socket
+  first, then the default socket, and uses whichever actually has the
+  factory's sessions — so an already-running factory keeps working with no
+  restart required.
+- **Teardown:** `fwf down` (full, non-`--floor-only`) clears the file
+  alongside the running-template marker.

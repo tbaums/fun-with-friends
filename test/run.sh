@@ -661,6 +661,65 @@ assert_contains "detail renders the thread via the cache" "$DD_DETAIL" "#5 · st
 case "$DD_DETAIL" in *"detail unavailable"*) bad "detail must not be 'unavailable' when the cache has repo context";; *) ok "detail is not 'unavailable'";; esac
 
 # --------------------------------------------------------------------------
+# fwf dash: persist-the-launch-socket (#62, supersedes #57) — RED when the
+# dash reads the wrong tmux socket. No real tmux touched anywhere: a stub
+# `tmux` on PATH answers has-session/list-panes/show/display-message from a
+# tiny fixture DB keyed by socket ("-S <path>", or "default" with no -S).
+section "dash data (#62): \$TMUX capture parses only the socket-path field"
+assert_eq "comma-form \$TMUX -> parsed path only (never the raw string)" "/priv/tmux-501/concierge" \
+  "$(TMUX='/priv/tmux-501/concierge,10269,0' FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_tmux_socket_value")"
+assert_eq "unset \$TMUX -> literal 'default' marker (never an empty string)" "default" \
+  "$(env -u TMUX FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_tmux_socket_value")"
+PERSISTRUN="$TMP/run62persist"
+assert_eq "fwf_persist_tmux_socket writes FWF_TMUX_SOCKET to the documented per-profile state file" "default" \
+  "$(env -u TMUX FWF_RUN_DIR="$PERSISTRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_persist_tmux_socket \"\$(fwf_tmux_socket_value)\"" >/dev/null; cat "$PERSISTRUN/state/example/tmux_socket" 2>/dev/null)"
+
+section "dash data (#62): roles_json queries the PERSISTED socket, not the default/ambient one"
+SOCKDB="$TMP/tmux62db"
+mkdir -p "$SOCKDB/log.d"
+SOCKPATH="$TMP/fakesock/mysock"
+SOCKKEY="$(printf '%s' "$SOCKPATH" | tr -c 'A-Za-z0-9_' '_')"
+mkdir -p "$SOCKDB/sessions/$SOCKKEY" "$SOCKDB/panes/$SOCKKEY" "$SOCKDB/labels" "$SOCKDB/cmds"
+: > "$SOCKDB/sessions/$SOCKKEY/fwf-test62-build"
+printf '%%1\n' > "$SOCKDB/panes/$SOCKKEY/fwf-test62-build"
+printf 'IMPL1 · any issue -> instant draft PR · impl1/*\n' > "$SOCKDB/labels/%1"
+printf 'claude\n' > "$SOCKDB/cmds/%1"
+STUBBIN="$TMP/tmux62bin"; mkdir -p "$STUBBIN"
+cat > "$STUBBIN/tmux" <<'STUB'
+#!/usr/bin/env bash
+db="${FAKE_TMUX_DB:?}"
+sock=""
+if [ "$1" = "-S" ]; then sock="$2"; shift 2; fi
+key="$(printf '%s' "${sock:-default}" | tr -c 'A-Za-z0-9_' '_')"
+case "$1" in
+  has-session)      [ -f "$db/sessions/$key/$3" ] && exit 0 || exit 1 ;;
+  list-panes)       cat "$db/panes/$key/$3" 2>/dev/null; exit 0 ;;
+  show)             cat "$db/labels/$4" 2>/dev/null; exit 0 ;;
+  display-message)  cat "$db/cmds/$4" 2>/dev/null; exit 0 ;;
+  capture-pane)      exit 0 ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$STUBBIN/tmux"
+DASHENV="FAKE_TMUX_DB=$SOCKDB PATH=$STUBBIN:$PATH FWF_PROFILE=example FWF_BUILD_SESSION=fwf-test62-build FWF_PAIRS=1"
+
+UPRUN="$TMP/run62up"; mkdir -p "$UPRUN/state/example"
+printf '%s\n' "$SOCKPATH" > "$UPRUN/state/example/tmux_socket"
+UPROLES="$(env $DASHENV FWF_RUN_DIR="$UPRUN" TMUX='/some/other/wrapper-sock,999,0' bash -c "source '$DD'; roles_json")"
+assert_eq "role launched on a non-default socket reads UP once the socket is persisted" "live" \
+  "$(printf '%s' "$UPROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
+
+NOFILERUN="$TMP/run62nofile"; mkdir -p "$NOFILERUN"
+NOFILEROLES="$(env $DASHENV FWF_RUN_DIR="$NOFILERUN" bash -c "source '$DD'; roles_json")"
+assert_eq "same fixture with NO persisted socket and no ambient \$TMUX reads DOWN (proves the UP above came from reading the persisted socket, not luck — this is what 'unset TMUX' regresses to)" "down" \
+  "$(printf '%s' "$NOFILEROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
+
+FALLBACKRUN="$TMP/run62fallback"; mkdir -p "$FALLBACKRUN"
+FALLBACKROLES="$(env $DASHENV FWF_RUN_DIR="$FALLBACKRUN" TMUX="$SOCKPATH,555,0" bash -c "source '$DD'; roles_json")"
+assert_eq "absent-field migration fallback: no persisted socket yet, but the CURRENT \$TMUX has the sessions -> UP with no restart needed" "live" \
+  "$(printf '%s' "$FALLBACKROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
+
+# --------------------------------------------------------------------------
 # fwf dash BINARY RESOLVER (#63): FWF_DASH_BIN → cached arch+version binary →
 # verified release-asset download → source `cargo build` fallback. Fully
 # hermetic: a stubbed PATH (curl/cargo), a fake release tree served via a

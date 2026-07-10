@@ -26,17 +26,51 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FWF_USE_RUNNING_TEMPLATE=1
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
-# The factory lives on tmux's DEFAULT socket (fwf launches it with plain tmux).
-# The dash binary may be displayed inside a DIFFERENT tmux (e.g. a separate
-# socket, to get mouse-wheel forwarding), which would otherwise point our role
-# detection at the wrong server and show every role "down". Detach from the host
-# tmux so pane liveness is always read off the factory's server.
-unset TMUX
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq is required for fwf dash"}'; exit 1; }
 
-STATE_DIR="$FWF_RUN/state/$PROFILE"
+STATE_DIR="$FWF_STATE_DIR"
 STATUS_JSON="$STATE_DIR/status.json"
 DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"
+
+# --- resolve the factory's tmux socket (issue #62, supersedes #57) ----------
+# The factory lands on whatever socket $TMUX pointed to when `fwf up`/`fwf
+# respawn` launched it — NOT necessarily the default socket (e.g. the whole
+# factory was started inside `tmux -L mysock`). The dash binary may ALSO be
+# displayed inside a completely different tmux (e.g. a separate socket used
+# purely for mouse-wheel forwarding), so blindly trusting our OWN $TMUX would
+# be exactly as wrong as blindly unsetting it — either can point role
+# detection at a server the factory was never on, showing every role "down".
+# Learn the socket fwf up/respawn persisted instead (fwf_persist_tmux_socket,
+# lib.sh) — that is the single source of truth.
+_fwf_persisted_socket=""
+[ -f "$FWF_TMUX_SOCKET_FILE" ] && _fwf_persisted_socket="$(cat "$FWF_TMUX_SOCKET_FILE" 2>/dev/null || true)"
+_fwf_ambient_socket="${TMUX%%,*}"   # our OWN socket, if any — used ONLY by the absent-field fallback below
+unset TMUX   # never let our own socket leak into a query by accident
+
+_fwf_sock_probe() { # $1 = socket path ("" = default) → rc 0 if $BUILD_SESSION lives there
+  if [ -n "$1" ]; then command tmux -S "$1" has-session -t "$BUILD_SESSION" 2>/dev/null
+  else command tmux has-session -t "$BUILD_SESSION" 2>/dev/null; fi
+}
+FWF_TMUX_SOCK=""
+case "$_fwf_persisted_socket" in
+  "")   # Absent-field fallback (migration — a factory started before this
+        # change has no persisted socket yet): probe our own ambient socket
+        # first, then the default socket; use whichever actually has the
+        # sessions, so an already-running factory recovers with NO restart.
+        if [ -n "$_fwf_ambient_socket" ] && _fwf_sock_probe "$_fwf_ambient_socket"; then
+          FWF_TMUX_SOCK="$_fwf_ambient_socket"
+        fi ;;
+  default) FWF_TMUX_SOCK="" ;;
+  *) FWF_TMUX_SOCK="$_fwf_persisted_socket" ;;
+esac
+unset _fwf_persisted_socket _fwf_ambient_socket
+
+# Every tmux call below — including lib.sh's fwf_find_pane — goes through this
+# shadow, so pane queries transparently target the resolved factory socket.
+tmux() {
+  if [ -n "$FWF_TMUX_SOCK" ]; then command tmux -S "$FWF_TMUX_SOCK" "$@"
+  else command tmux "$@"; fi
+}
 
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true; }
 status_fresh() {
