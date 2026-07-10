@@ -25,6 +25,18 @@ GATE_CMD='make test'              # fast gate QA runs before merging to staging 
 BUILD_CMD='true'                  # warm-build per worktree at provision (use 'true' if none)
 E2E_CMD='true'                    # full e2e the conductor runs before promoting to integration ('true' = none)
 E2E_SETUP_CMD=''                  # one-time e2e dep install in the conductor tree (e.g. 'npx playwright install')
+# Reap-scoping warning (issue #65): fwf runs N parallel worktrees on ONE box.
+# If E2E_CMD's harness does its own "reap stale processes" pass at startup
+# (many Playwright/Cypress globalSetups do, matching on fixed ports or a
+# relative path), that reap MUST scope any pkill/port-kill to the invoking
+# worktree's own path/identity — otherwise it can kill a SIBLING worktree's
+# healthy, in-flight e2e server just because it happens to share the same
+# fixed port. This bit implementers and conductor both (see the shared e2e
+# lock, __LOCK__, in config.sh) — the lock only serializes fwf-known e2e
+# runs, it can't protect against a harness reaping a process it doesn't know
+# is a different worktree's.
+
+
 
 # Live-dev hint shown to implementers. Use __DATA__ for this tree's dev-data dir
 # (only meaningful if you define data_dir() below).

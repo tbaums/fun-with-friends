@@ -464,7 +464,7 @@ slices — floor-in-container and throwaway e2e containers — designed in
 | An agent "isn't doing anything" | normal between loop ticks (1–5 min), or waiting on a dependency | read its pane; check the captain's status table before poking |
 | Two PRs for one issue | a worker skipped the claim protocol | the captain closes the newer one; it also reminds the offender |
 | `CLAIM implN` comments piling up in issues | the atomic-claim mutex at work | nothing — that's the fix, not the bug |
-| e2e never runs / "e2e busy" forever | a stale lock from a killed conductor | `rmdir ~/.fun-with-friends/e2e.lock` |
+| e2e never runs / "e2e busy" forever | a role holding the lock died (issue #65) | usually self-recovers on the next acquire attempt (dead-PID check); if the holder is stamped from a different host and still under the ~30m backstop, `rm -rf ~/.fun-with-friends/e2e.lock` (NOT `rmdir` — the dir now holds a holder-identity stamp file) |
 | Everything idles immediately after `fwf up` | stale STOP sentinel | `fwf resume --clear-only` (a fresh `fwf up` also clears it) |
 | Agents still looping after you wanted quiet | you attached and typed into a worker pane | don't; `fwf stop` for a graceful halt |
 | CI red on GitHub | check the annotation — billing/credit failures kill jobs in ~2s with zero steps | trust `bash test/run.sh` locally |

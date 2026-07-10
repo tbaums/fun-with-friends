@@ -981,6 +981,65 @@ assert_contains "captain lists impl9 in deep sweep" "$(DEEPR 'fwf_render "$(fwf_
 assert_contains "researcher reads 9 streams (deep)" "$(DEEPR 'fwf_render "$(fwf_tmpl_path pm)" ""')" "9 streams"
 
 # --------------------------------------------------------------------------
+# e2e lock (#65): liveness-aware acquire/release, shared by every role (not
+# just the conductor). No real processes are killed here — a "dead" holder is
+# simulated with a PID number no OS actually hands out, and a "live" holder is
+# simulated by stamping OUR OWN pid (so kill -0 on it is trivially true for as
+# long as this test script runs) — hermetic, no real tmux/gh/kill touched.
+section "e2e lock (#65): liveness-aware acquire/release shared across every role"
+E2ERUN="$TMP/e2e65"
+cat > "$TMP/e2e-lock-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  symmetry)
+    fwf_e2e_lock_acquire testrole && echo ACQUIRED
+    [ -f "$E2E_LOCK/owner" ] && echo STAMPED
+    grep -q '^role=testrole$' "$E2E_LOCK/owner" && echo ROLEOK
+    fwf_e2e_lock_release
+    [ -d "$E2E_LOCK" ] && echo STILLTHERE || echo RELEASED
+    ;;
+  dead)
+    # pre-stamp with a PID no OS hands out (way past any real pid_max) + an old timestamp
+    mkdir -p "$E2E_LOCK"
+    printf 'role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\n' \
+      "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$E2E_LOCK/owner"
+    rc=0; fwf_e2e_lock_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    grep -q '^role=impl9$' "$E2E_LOCK/owner" 2>/dev/null && echo NEWOWNER
+    ;;
+  live)
+    # pre-stamp with OUR OWN pid (this very process — alive for the whole call)
+    # and a timestamp already past the (deliberately tiny, for a fast test) stale backstop
+    mkdir -p "$E2E_LOCK"
+    printf 'role=selfheld\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 9999 ))" > "$E2E_LOCK/owner"
+    rc=0; fwf_e2e_lock_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+esac
+EOSCRIPT
+
+SYM_OUT="$(FWF_RUN_DIR="$E2ERUN/sym" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-lock-drive.sh" symmetry)"
+assert_contains "acquire succeeds and returns 0"        "$SYM_OUT" "ACQUIRED"
+assert_contains "acquire writes a holder-identity stamp" "$SYM_OUT" "STAMPED"
+assert_contains "stamp carries the caller's role label"  "$SYM_OUT" "ROLEOK"
+assert_contains "release removes the lock dir"           "$SYM_OUT" "RELEASED"
+case "$SYM_OUT" in *STILLTHERE*) bad "release must remove the lock dir";; esac
+
+DEAD_OUT="$(FWF_RUN_DIR="$E2ERUN/dead" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-lock-drive.sh" dead)"
+assert_contains "dead-PID holder is named and broken"    "$DEAD_OUT" "breaking it"
+assert_contains "dead-PID lock is re-acquired, not deadlocked" "$DEAD_OUT" "RC=0"
+assert_contains "the new stamp overwrites the dead one"  "$DEAD_OUT" "NEWOWNER"
+
+LIVE_OUT="$(FWF_RUN_DIR="$E2ERUN/live" FWF_E2E_LOCK_STALE_SECS=1 FWF_E2E_LOCK_TIMEOUT=2 FWF_E2E_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-lock-drive.sh" live)"
+assert_contains "a blocked wait names the current holder" "$LIVE_OUT" "waiting on the e2e lock (held by selfheld)"
+assert_contains "acquire times out rather than hanging"   "$LIVE_OUT" "timed out"
+assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
+case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

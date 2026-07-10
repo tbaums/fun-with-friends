@@ -37,5 +37,11 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       - Run mobile specs on the REAL mobile-safari/WebKit lane (filename must match `mobile*.spec.ts`), not chromium-emulated.
       - iOS gotcha: any focusable input/textarea/select must be font-size >= 16px on mobile, or iOS auto-zooms (and stays zoomed) on focus.
       - A test only counts if it goes RED when the thing is visibly broken — prove it (break it locally → red → fix → green; note it in the PR). Prefer also capturing a screenshot and confirming it looks right.
+   g. E2E SELF-VERIFICATION LOCK (issue #65): most e2e/browser harnesses (including step f's Playwright-driven checks) bind FIXED, single ports — the same ones the conductor's __E2E__ run uses — so fwf runs N parallel worktrees on one box, your local run and a sibling's (or the conductor's) can collide and kill each other's server mid-run. A quick __GATE__-only check does NOT need this — only a run that shares __E2E__'s ports does. When you run one, go through the SAME lock the conductor uses, as ONE shell invocation (the trap and its liveness stamp are only valid for that one process's lifetime — splitting acquire/run/release across separate tool calls releases early):
+      source ./lib.sh
+      trap 'fwf_e2e_lock_release' EXIT
+      fwf_e2e_lock_acquire impl__ID__ || { echo "impl__ID__: e2e busy, deferring self-verification to next cycle"; exit 0; }
+      <run your e2e/browser self-verification here>
+      Do not rmdir/rm __LOCK__ directly — that bypasses the trap and the liveness stamp a dead-holder recovery depends on.
 
 Hard rules: never claim an issue labeled "__WIP_LABEL__" or "__HOLD_LABEL__"; ONE issue = one branch = one PR, and at most one PR in flight at a time; never push to __STAGING__, __INTEGRATION__, or __DEFAULT__ directly; every PR body contains "Closes #<num>"; a behavior-changing PR MUST update its own docs in the same PR (qa__ID__ rejects otherwise); stay in this worktree; never merge your own PR — qa__ID__ merges into __STAGING__, the conductor e2e-promotes to __INTEGRATION__, and a human releases __INTEGRATION__ to __DEFAULT__. Live UI if you need it: __DEVUI__

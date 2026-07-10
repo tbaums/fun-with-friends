@@ -172,7 +172,14 @@ re-injected every tick.
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
 The e2e lock (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`) serializes e2e so
-its single-port suite never collides.
+its single-port suite never collides — and it's shared by every role, not just
+the conductor: implementers acquire the same lock for their own local e2e
+self-verification runs before marking a PR ready (issue #65), since those
+share the same fixed ports. The lock dir carries a holder-identity stamp
+(role/PID/host/worktree/timestamp) so a role that dies mid-hold is recovered
+automatically — a live holder is never reclaimed no matter how long it runs,
+only a confirmed-dead one is broken immediately (`fwf_e2e_lock_acquire` /
+`fwf_e2e_lock_release` in `lib.sh`).
 
 ## Factory templates
 
