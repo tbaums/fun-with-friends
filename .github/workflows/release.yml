@@ -105,7 +105,6 @@ jobs:
           merge-multiple: true
 
       - name: Assemble checksums file
-        id: assets
         run: |
           ver="$(cat VERSION)"
           sums="fwf-dash-${ver}-checksums.txt"
@@ -114,20 +113,23 @@ jobs:
           cat dash-assets/*.sha256 > "dash-assets/$sums"
           echo "----- $sums -----"
           cat "dash-assets/$sums"
-          # Collect the binary asset paths (everything except the .sha256 lines).
-          {
-            echo "files<<EOF"
-            ls dash-assets/fwf-dash-${ver}-* | grep -v '\.sha256$'
-            echo "dash-assets/$sums"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ver="$(cat VERSION)"
+          # Collect the dash assets to attach: the per-arch binaries plus the
+          # combined checksums file (everything under dash-assets/ that ISN'T a
+          # per-arch *.sha256 line). Gather into an array so paths are passed as
+          # distinct argv entries — NOT via a multiline `${{ }}` interpolation,
+          # which splits across shell lines and mis-runs the paths as commands.
+          assets=()
+          while IFS= read -r f; do assets+=("$f"); done \
+            < <(ls dash-assets/fwf-dash-"$ver"-* | grep -v '\.sha256$')
+          echo "attaching ${#assets[@]} dash assets: ${assets[*]}"
           gh release create "$GITHUB_REF_NAME" \
             "${{ steps.pkg.outputs.path }}" \
-            ${{ steps.assets.outputs.files }} \
+            "${assets[@]}" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
