@@ -11,6 +11,42 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-07-09
+
+Customer-readiness release: safety, docs, and small fixes from a pre-send review.
+No feature or behavior-contract changes to the factory itself.
+
+### Fixed
+- **`fwf doctor` no longer reports a missing Claude CLI as "all good"; `install.sh`
+  guardrails** (code 1ca588e, docs 1ca588e) — doctor probed `${CLAUDE_CMD%% *}`,
+  which is always `env` once `config.sh`/`lib.sh` prepend their env/PATH wrappers,
+  so an absent `claude` still passed. It now captures `FWF_CLAUDE_BIN` at
+  assignment and probes that (same fix in the user-testing browser preflight).
+  `install.sh` absolutizes the target dir so the PATH hint is usable with a
+  relative argument, and refuses to overwrite a non-symlink `fwf` (re-installing
+  over a symlink stays idempotent). Also aligns `release.yml`'s shellcheck file
+  set with `ci.yml`.
+
+### Changed
+- **Internal references removed for public/customer use** (code 4e4b5d2, docs
+  4e4b5d2) — genericized a private project name, a personal browser-preference
+  aside, and a foreign tracker's issue refs across docs, code comments, and the
+  test/dash fixtures. No runtime behavior change.
+- **Shipped role prompts genericized** (code fdef5ea, docs fdef5ea) — the `dev`
+  and `user-testing` templates no longer cite one app's doc set, its version
+  history, or a named internal postmortem; the underlying review lenses (UI
+  container-vs-viewport check, RUNTIME COST & BLAST RADIUS, the canary class) are
+  unchanged, so no behavioral contract moved.
+
+### Documentation
+- **Docs synced to v0.21.0 reality** (code 47f7026, docs 47f7026) — README lists
+  all six shipped templates and documents `fwf dash` + the `idea` label; `dash.md`
+  matches the Activity-tab redesign (keys `1`–`4`, `x` to reject); `RELEASING.md`
+  covers the prebuilt dash binaries; stale help text/flags and the test-count
+  figure corrected.
+- **`fwf dash` screenshot on sample data** (code 0f36f55, docs 0f36f55) — a real
+  render of the TUI against dummy fixtures added to the top of `docs/dash.md`.
+
 ## [0.21.0] - 2026-06-30
 
 ### Added
