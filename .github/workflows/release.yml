@@ -122,8 +122,9 @@ jobs:
           # Collect the dash assets to attach: the per-arch binaries plus the
           # combined checksums file (everything under dash-assets/ that ISN'T a
           # per-arch *.sha256 line). Gather into an array so paths are passed as
-          # distinct argv entries — NOT via a multiline `${{ }}` interpolation,
-          # which splits across shell lines and mis-runs the paths as commands.
+          # distinct argv entries, rather than interpolating a multiline workflow
+          # output into the command (that splits across shell lines and mis-runs
+          # the paths as commands).
           assets=()
           while IFS= read -r f; do assets+=("$f"); done \
             < <(ls dash-assets/fwf-dash-"$ver"-* | grep -v '\.sha256$')
