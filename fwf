@@ -89,6 +89,10 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          --floor-only kills only the floor, captain left running).
 
 UTILITIES
+  pr-review-state <pr>   Print the authoritative qa<->impl review state for a
+                         PR on a shared-account swarm (CHANGES_REQUESTED
+                         <branch|none> | AWAITING_REVIEW | APPROVED | NONE) —
+                         see docs/shared-account.md.
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -382,6 +386,7 @@ case "$cmd" in
     ;;
   issues)    engine fwf-issues.sh "$@";;
   dash)      engine fwf-dash.sh "$@";;
+  pr-review-state) engine fwf-pr-review-state.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

@@ -103,6 +103,12 @@ required (a hard gate on PM drafts); `GV-SIGNOFF:` = strategically sound,
 ready for your decision. The GV *thinks*; it never *authorizes* — releases
 and anything irreversible still come to you.
 
+**qa's two markers.** Every role shares one GitHub identity, so a qaN pane
+can't formally `--request-changes` on implN's own PR — it posts
+`QA-CHANGES-REQUESTED:`/`QA-APPROVED:` comments instead (implN acknowledges
+with `IMPL-ADDRESSED:`), read via `fwf pr-review-state <pr>`. See
+[docs/shared-account.md](shared-account.md) for the full protocol.
+
 **Claims, races, and assignments.** Implementers claim atomically: a
 `CLAIM implN` comment, then a re-check that the first claim in the thread is
 theirs — losers yield instantly, a claim older than 15 minutes with no PR is

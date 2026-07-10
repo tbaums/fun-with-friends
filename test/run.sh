@@ -1161,6 +1161,53 @@ assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
 case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
 
 # --------------------------------------------------------------------------
+# fwf pr-review-state (#82): the shared-account qa<->impl handshake. Every
+# role authenticates as one GitHub user, so the formal review-decision API is
+# permanently empty here (#81's deadlock) — qa signals via a plain QA-* comment
+# instead. Drives the REAL helper (never a decoy grep) with stubbed
+# prs_comments/prs_meta fixtures, pinning: column-0-only sentinels, last-wins,
+# the busy-loop guard, amend/rebase robustness, and the self-trigger guard.
+PRS="$ROOT/fwf-pr-review-state.sh"
+prs_state() { # $1=comments-json  $2=state  $3=lastCommitAt
+  FWF_PROFILE=example bash -c "
+    source '$PRS'
+    prs_comments() { printf '%s' '$1'; }
+    prs_meta() { printf '%s' '{\"state\":\"$2\",\"lastCommitAt\":\"$3\"}'; }
+    main 84"
+}
+
+section "pr-review-state (#82): plain QA-CHANGES-REQUESTED comment is recognized (RED on the old empty-review-decision behavior)"
+assert_eq "no IMPL-ADDRESSED yet, newer than last push -> CHANGES_REQUESTED + repro branch" \
+  "CHANGES_REQUESTED qa1/repro-84" \
+  "$(prs_state '[{"body":"QA-CHANGES-REQUESTED: #84\n\nsee qa1/repro-84","createdAt":"2026-07-10T16:00:00Z"}]' OPEN 2026-07-10T15:00:00Z)"
+
+section "pr-review-state (#82): busy-loop guard — impl's IMPL-ADDRESSED idles the NEXT cycle instead of re-fixing"
+assert_eq "IMPL-ADDRESSED newer than the QA-CHANGES-REQUESTED comment -> AWAITING_REVIEW" \
+  "AWAITING_REVIEW" \
+  "$(prs_state '[{"body":"QA-CHANGES-REQUESTED: #84\n\nsee qa1/repro-84","createdAt":"2026-07-10T16:00:00Z"},{"body":"IMPL-ADDRESSED: #84 abc123","createdAt":"2026-07-10T16:05:00Z"}]' OPEN 2026-07-10T16:04:00Z)"
+
+section "pr-review-state (#82): amend/rebase robustness — committedDate predating the push must not misread a real response as unanswered"
+assert_eq "IMPL-ADDRESSED comment (not the amended commit's committedDate) is the primary addressed signal" \
+  "AWAITING_REVIEW" \
+  "$(prs_state '[{"body":"QA-CHANGES-REQUESTED: #84","createdAt":"2026-07-10T16:00:00Z"},{"body":"IMPL-ADDRESSED: #84 def456","createdAt":"2026-07-10T16:10:00Z"}]' OPEN 2026-07-10T15:30:00Z)"
+
+section "pr-review-state (#82): self-trigger guard — a QA-* string not at column 0 never counts"
+assert_eq "IMPL-ADDRESSED comment quoting QA-CHANGES-REQUESTED mid-line stays AWAITING_REVIEW" \
+  "AWAITING_REVIEW" \
+  "$(prs_state '[{"body":"IMPL-ADDRESSED: #84 abc\n\nsaw your QA-CHANGES-REQUESTED and fixed it","createdAt":"2026-07-10T16:00:00Z"}]' OPEN 2026-07-10T15:00:00Z)"
+
+section "pr-review-state (#82): last-sentinel-wins + merged/closed"
+assert_eq "a later QA-APPROVED supersedes an earlier QA-CHANGES-REQUESTED" \
+  "APPROVED" \
+  "$(prs_state '[{"body":"QA-CHANGES-REQUESTED: #84","createdAt":"2026-07-10T16:00:00Z"},{"body":"IMPL-ADDRESSED: #84 abc","createdAt":"2026-07-10T16:05:00Z"},{"body":"QA-APPROVED: #84","createdAt":"2026-07-10T16:10:00Z"}]' OPEN 2026-07-10T16:04:00Z)"
+assert_eq "a merged PR resolves to APPROVED regardless of thread contents" \
+  "APPROVED" "$(prs_state '[]' MERGED 2026-07-10T15:00:00Z)"
+
+section "pr-review-state (#82): no request / bad input"
+assert_eq "no QA-* sentinel at all -> AWAITING_REVIEW" "AWAITING_REVIEW" "$(prs_state '[]' OPEN 2026-07-10T15:00:00Z)"
+assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "source '$PRS'; main abc")"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
