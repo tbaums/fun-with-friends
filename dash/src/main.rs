@@ -1249,7 +1249,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let key = Style::default().fg(Color::Cyan);
     // Action hints depend on the active section.
     let actions: &[(&str, &str)] = match app.tab {
-        Tab::Activity => &[("n/p", "scroll PR"), ("Ctrl-r", "refresh")],
+        Tab::Activity => &[("n/p", "scroll PR")],
         Tab::Decisions => &[
             ("y", "approve"),
             ("x", "reject"),
@@ -1264,6 +1264,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("tab ", dim),
         Span::styled(" j/k ", key),
         Span::styled("move ", dim),
+        Span::styled(" Ctrl-r ", key),
+        Span::styled("refresh ", dim),
     ];
     for (k, label) in actions {
         spans.push(Span::styled(format!(" {k} "), key));
@@ -1716,6 +1718,25 @@ mod tests {
         app.on_key(key_ctrl('r'));
         assert!(rrx.try_recv().is_ok(), "Ctrl-r should request a refresh");
         assert!(!app.status.as_ref().unwrap().is_err);
+    }
+
+    // #80 pin: Ctrl-r is a global binding (handled unconditionally in on_key,
+    // see the test above), so its footer hint must show on every tab, not
+    // just Activity.
+    #[test]
+    fn footer_shows_the_refresh_hint_on_every_tab() {
+        for tab in Tab::ALL {
+            let mut app = test_app();
+            app.tab = tab;
+            let area = Rect::new(0, 0, 90, 1);
+            let buf = render_buffer(area.width, area.height, |f| render_footer(f, area, &app));
+            let text = buffer_to_text(&buf);
+            assert!(
+                text.contains("Ctrl-r") && text.contains("refresh"),
+                "{} footer should advertise the global Ctrl-r refresh binding, got: {text:?}",
+                tab.title()
+            );
+        }
     }
 
     #[test]
