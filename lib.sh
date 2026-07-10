@@ -601,6 +601,82 @@ fwf_persist_tmux_socket() {   # $1 = value to persist (a socket path, or "defaul
   printf '%s\n' "$1" > "$FWF_TMUX_SOCKET_FILE"
 }
 
+# --- e2e lock (issue #65) ----------------------------------------------------
+# Serializes EVERY e2e-equivalent run across the whole floor — not just
+# conductor-vs-conductor, but implementer self-verification too — since most
+# e2e harnesses bind fixed, single ports and fwf runs N parallel worktrees on
+# one box. The lock dir carries a holder-identity stamp (role, pid, host,
+# worktree, acquire time) so a role that dies mid-hold is recovered instead of
+# wedging every future e2e run on the floor.
+#
+# Liveness is authoritative and beats age: a live same-host holder is NEVER
+# reclaimed no matter how long it has held the lock (parallel-worktree
+# contention makes full suites routinely exceed 15 minutes) — only a
+# same-host holder with a confirmed-dead PID is broken immediately. A holder
+# stamped from a different host, or with an unparseable stamp, is
+# "indeterminate" — liveness can't be checked, so it falls back to the age
+# backstop (FWF_E2E_LOCK_STALE_SECS) so the floor can't wedge forever.
+FWF_E2E_LOCK_TIMEOUT="${FWF_E2E_LOCK_TIMEOUT:-900}"        # bounded wait for a live/indeterminate-but-fresh holder
+FWF_E2E_LOCK_POLL="${FWF_E2E_LOCK_POLL:-5}"                # seconds between "waiting on" polls
+FWF_E2E_LOCK_STALE_SECS="${FWF_E2E_LOCK_STALE_SECS:-1800}" # ~30m backstop, ONLY for indeterminate liveness
+
+_fwf_e2e_owner_field() { # $1=field  $2=owner-file → value, or empty (never errors)
+  [ -f "$2" ] || return 0
+  awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$2" 2>/dev/null
+}
+
+# rc 0 = alive (same host, pid alive) — NEVER reclaim
+# rc 1 = dead (same host, pid confirmed dead) — reclaim immediately
+# rc 2 = indeterminate (different host, or stamp missing/unparseable) — age backstop applies
+_fwf_e2e_owner_liveness() { # $1=owner-file
+  local f="$1" host pid
+  [ -f "$f" ] || return 2
+  host="$(_fwf_e2e_owner_field host "$f")"
+  pid="$(_fwf_e2e_owner_field pid "$f")"
+  [ -n "$host" ] && [ -n "$pid" ] || return 2
+  [ "$host" = "$(hostname)" ] || return 2
+  kill -0 "$pid" 2>/dev/null && return 0
+  return 1
+}
+
+# $1 = holder label (e.g. "conductor", "impl2") → rc 0 acquired, 1 timed out.
+# ALWAYS pair with a trap to fwf_e2e_lock_release so a killed/failed holder
+# never leaves the lock behind: trap 'fwf_e2e_lock_release' EXIT
+fwf_e2e_lock_acquire() {
+  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" owner="$E2E_LOCK/owner" waited=0 rc ts now holder
+  mkdir -p "$(dirname "$E2E_LOCK")" 2>/dev/null   # so a missing $FWF_RUN can't masquerade as "lock held"
+  while true; do
+    if mkdir "$E2E_LOCK" 2>/dev/null; then
+      printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+        "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$owner"
+      return 0
+    fi
+    _fwf_e2e_owner_liveness "$owner"; rc=$?
+    holder="$(_fwf_e2e_owner_field role "$owner")"
+    if [ "$rc" = 1 ]; then
+      echo "fwf: e2e lock held by dead PID $(_fwf_e2e_owner_field pid "$owner") (${holder:-unknown}) — breaking it" >&2
+      rm -rf "$E2E_LOCK"; continue
+    elif [ "$rc" = 2 ]; then
+      ts="$(_fwf_e2e_owner_field acquired "$owner")"; now="$(date +%s)"
+      if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
+        echo "fwf: e2e lock indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
+        rm -rf "$E2E_LOCK"; continue
+      fi
+    fi
+    if [ "$waited" -ge "$FWF_E2E_LOCK_TIMEOUT" ]; then
+      echo "fwf: $label timed out after ${FWF_E2E_LOCK_TIMEOUT}s waiting on the e2e lock (held by ${holder:-unknown})" >&2
+      return 1
+    fi
+    echo "fwf: $label waiting on the e2e lock (held by ${holder:-unknown})…" >&2
+    sleep "$FWF_E2E_LOCK_POLL"
+    waited=$(( waited + FWF_E2E_LOCK_POLL ))
+  done
+}
+
+fwf_e2e_lock_release() {
+  rm -rf "$E2E_LOCK"
+}
+
 # Clear whatever is sitting in the pane's Claude composer before we type into it,
 # so a stale/half-typed buffer doesn't garble the next prompt (the "wedged buffer"
 # problem). Ctrl+U is the TUI's reliable line-clear; we repeat it to drain

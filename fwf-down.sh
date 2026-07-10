@@ -38,7 +38,7 @@ if [ "$floor_only" = 1 ]; then
       *) tmux kill-pane -t "$p" 2>/dev/null && echo "killed pane '${l:-unlabeled}' in '$COORD_SESSION'";;
     esac
   done
-  rmdir "$E2E_LOCK" 2>/dev/null || true
+  rm -rf "$E2E_LOCK"
   echo "floor is down; the captain pane (if any) is untouched in '$COORD_SESSION'. Bring the floor back with: fwf up --floor-only"
   exit 0
 fi
@@ -46,7 +46,7 @@ fi
 for s in "$COORD_SESSION" "$BUILD_SESSION"; do
   if tmux kill-session -t "$s" 2>/dev/null; then echo "killed tmux session '$s'"; else echo "no tmux session '$s'"; fi
 done
-rmdir "$E2E_LOCK" 2>/dev/null || true
+rm -rf "$E2E_LOCK"
 rm -f "$FWF_RUN/template"   # clear the persisted running-template marker (#51) so it can't go stale once the factory is down
 rm -f "$FWF_TMUX_SOCKET_FILE"   # clear the persisted launch-socket marker (#62) alongside it
 
