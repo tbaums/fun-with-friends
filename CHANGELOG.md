@@ -38,6 +38,14 @@ No feature or behavior-contract changes to the factory itself.
   container-vs-viewport check, RUNTIME COST & BLAST RADIUS, the canary class) are
   unchanged, so no behavioral contract moved.
 
+### Removed
+- **`darwin-x86_64` (Intel Mac) dropped as a prebuilt `fwf-dash` target** (code
+  eaba8f3, docs eaba8f3) — no GitHub-hosted runner was available for that leg and
+  it stalled the release matrix. Prebuilt targets are now `darwin-arm64`,
+  `linux-x86_64`, and `linux-arm64`. On an Intel Mac `fwf dash` builds from source
+  on first run (needs `cargo`), or prints a clear "install Rust / set
+  `FWF_DASH_BIN`" message — it no longer attempts a download that would 404.
+
 ### Documentation
 - **Docs synced to v0.21.0 reality** (code 47f7026, docs 47f7026) — README lists
   all six shipped templates and documents `fwf dash` + the `idea` label; `dash.md`
