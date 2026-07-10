@@ -16,7 +16,15 @@ Each cycle:
    git switch __STAGING__ && git pull --ff-only
    Run the FULL e2e suite: __E2E__
 
-4. If e2e is GREEN, promote staging into integration:
+4. If e2e is GREEN, run the pre-promotion UX gate (issue #46) BEFORE promoting:
+   __UT_GATE_CMD__
+   This is fully self-contained: it no-ops (exit 0) if this profile has no UX gate configured, the daily trial budget is spent, or the staged diff doesn't touch UI — its own log line on stderr says which. Read its exit code:
+   - 0: no gate ran (or nothing to report) — promote normally (go to 4b), no mention needed.
+   - 2: it ran and found no blockers — promote normally (go to 4b), but mention its printed report path (last line of stdout) in your promotion report so a human can skim it.
+   - 3: it ran and found BLOCKER-severity findings — do NOT promote. Comment on the most recent PR(s) in the batch (git log --oneline origin/__INTEGRATION__..origin/__STAGING__) with the blocker count + the report path, tagging @captain for a human call (mirror step 5's pattern below). Release the lock and report; wait for the next cycle rather than retrying the trial immediately (the daily cap already prevents a re-run today).
+   - 4: the trial's own infrastructure failed (app never came up, provisioning/launch failed) — this is a gate-tooling problem, not a code problem: promote normally (go to 4b), but say loudly in your report that the UX gate itself needs a human look.
+
+4b. Promote staging into integration:
    git switch __INTEGRATION__ && git pull --ff-only && git merge --ff-only __STAGING__ && git push origin __INTEGRATION__
    This makes __INTEGRATION__ a clean, e2e-passed release source. Do NOT merge or push to __DEFAULT__. Release the lock. Report what just advanced to __INTEGRATION__ (git log --oneline shows the "Closes #<n>" lines, which will auto-close once a human promotes __INTEGRATION__ to __DEFAULT__).
 

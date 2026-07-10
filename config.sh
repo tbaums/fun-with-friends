@@ -83,6 +83,14 @@ DISCOVERY_LABEL="${FWF_DISCOVERY_LABEL:-discovery}"
 # How long fwf-up / fwf-respawn wait for claude to boot in a pane before sending a prompt.
 FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
+# Pre-promotion UX gate (issue #46): the conductor can run a quick user-testing
+# trial (#42/#47) against the staged build before ff-merging staging into
+# integration. Opt-in per profile (UT_GATE_PROFILE/_UI_GLOB/_APP_CMD unset =
+# disabled, see profiles/example.sh) AND cost-bounded here:
+FWF_UT_GATE_DAILY_CAP="${FWF_UT_GATE_DAILY_CAP:-2}"    # max gate trials/day (fail-closed: cap hit -> skip, never blocks promotion)
+FWF_UT_GATE_DISABLE="${FWF_UT_GATE_DISABLE:-0}"        # deploy-plumbed kill switch: 1 = never run the gate, regardless of profile config
+UT_GATE_TIMEOUT="${FWF_UT_GATE_TIMEOUT:-1800}"          # seconds fwf-ut-gate.sh lets the nested quick-gate trial run before forcing teardown
+
 # Where worktrees live, and run-state (the e2e lock).
 # WT_BASE defaults to $HOME for backward-compat, but a generated profile (from
 # `fwf init <url>`) overrides it to that repo's workspace dir so ten worktrees
@@ -94,6 +102,7 @@ FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
 FWF_WORKSPACE_BASE="${FWF_WORKSPACE_BASE:-$FWF_RUN/workspaces}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
 STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it commit WIP, cancel their loop, and idle
+UT_GATE_BUDGET_FILE="$FWF_RUN/ut-gate-budget"   # UX gate (issue #46): "<date> <count-so-far>", read/bumped by fwf-ut-gate.sh
 
 # Per-worktree dev data. Default to no-ops so a profile for a repo with no dev
 # data can omit them entirely; a profile may override these to seed an

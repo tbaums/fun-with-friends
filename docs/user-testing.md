@@ -177,6 +177,86 @@ For a deep sweep, set `UT_APP_URL_1` through `UT_APP_URL_9` so each archetype dr
 
 ---
 
+## Conductor-triggered pre-promotion gate (issue #46)
+
+Everything above is the manual, human-attended trial. The **dev** template's
+conductor (README.md's pipeline) can ALSO run a quick gate automatically,
+right before it ff-merges `staging` into `integration` — no human attaches to
+it. This works with zero changes to the trial mechanics above: a persona with
+an empty/missing `goals.md` already invents its own first-use goal from the
+landing page (`templates/user-testing/implementer.tmpl`), and the researcher
+rewrites `findings-report.md` from diaries every loop tick regardless of
+whether a captain is present — so an unattended trial produces a real report
+on its own.
+
+**Opt-in, per profile.** Unset (the default) = the gate never runs; nothing
+about the dev pipeline changes. To wire it up, add to your target's profile
+(next to the rest of the `UT_*` knobs — see `profiles/example.sh`):
+
+```bash
+UT_GATE_PROFILE="example-ut"                      # a hand-authored user-testing profile (section 2 above) — REQUIRE a WT_PREFIX distinct from your main profile's, so the nested trial's pm/captain worktrees never collide with the live factory's own pm/captain worktrees
+UT_GATE_UI_GLOB='\.(tsx?|jsx?|vue|css|scss)$|/(ui|views|components)/'   # extended-regex; the staged diff must match at least one path, or the gate skips (cost control — don't run a 25min trial on a backend-only change)
+UT_GATE_APP_CMD='./scripts/serve-staged.sh'       # boots a THROWAWAY instance of the staged build; MUST print its URL as the first stdout line once ready, then keep running in the foreground until killed
+```
+
+`UT_GATE_APP_CMD` runs from the conductor's own worktree, which is already
+checked out on the staged, e2e-green commit (conductor.tmpl step 3) — so
+whatever you point it at is exactly the code about to be promoted. A minimal
+contract-satisfying script for a Node app might be:
+
+```bash
+#!/usr/bin/env bash
+npm run build >&2
+npm run preview -- --port 0 > /tmp/serve.out 2>&1 &
+until grep -qo 'http://[^ ]*' /tmp/serve.out 2>/dev/null; do sleep 0.5; done
+grep -o 'http://[^ ]*' /tmp/serve.out | head -1
+wait
+```
+
+**What happens on a UI-touching promotion.** The conductor runs
+`fwf-ut-gate.sh` (baked into its prompt as a literal, already-resolved
+command — never a bare env-var reference, since a tmux pane's shell doesn't
+inherit the conductor's `FWF_PROFILE`). It:
+1. Skips immediately (exit 0) if the gate isn't configured, the deploy kill
+   switch is on (`FWF_UT_GATE_DISABLE=1`), the staged diff doesn't match
+   `UT_GATE_UI_GLOB`, or today's trial budget (`FWF_UT_GATE_DAILY_CAP`,
+   default 2/day) is spent. Each skip logs WHY on stderr — a real run and a
+   skip never look the same in the logs.
+2. Boots `UT_GATE_APP_CMD`, captures its URL, and launches a **quick-gate**
+   trial (`FWF_UT_MODE=quick`, forced regardless of ambient env — a deep
+   sweep would blow the budget this gate exists to bound) against it, under
+   its own isolated `TMUX_TMPDIR` **and its own isolated `FWF_RUN_DIR`** —
+   the trial gets a private STOP sentinel / e2e-lock / findings root, so it
+   can never cross-signal the live factory (in particular: this is why the
+   gate tears the trial down with a bare `fwf down`, never `fwf stop` — that
+   command's STOP sentinel is a single path shared by every role in the
+   OUTER factory, conductor included).
+3. Waits up to `FWF_UT_GATE_TIMEOUT` seconds (default 1800 ≈ the quick gate's
+   ~25min plus buffer), then reads `findings-report.md` for its severity mix
+   and tears everything down (app process, nested tmux server, worktrees).
+4. Exits 0 (skipped), 2 (ran, no blockers — promote normally, but the
+   conductor mentions the report path in its promotion note for human
+   review), 3 (ran, **blocker**-severity findings — the conductor does NOT
+   promote; it comments the blocker count + report path on the batch's PR(s)
+   tagging the captain for a human call), or 4 (the trial's own
+   infrastructure failed — fail OPEN: promote normally, but log loudly so a
+   human looks at the gate itself, not the shipped code).
+
+**Cost bound (non-negotiable — see `templates/dev/gv.tmpl`'s "RUNTIME COST &
+BLAST RADIUS" bar).** The gate is OFF by default (a canary, not a fleet-wide
+default-on), fails CLOSED on budget (`FWF_UT_GATE_DAILY_CAP`), and has a
+deploy-plumbed kill switch (`FWF_UT_GATE_DISABLE=1`) independent of any
+profile edit. Every skip is observable (a distinct stderr log line per
+reason), so a quiet day never reads the same as a broken gate.
+
+**Known simplification.** Severity parsing is a loose text match ("severity"
++ "blocker" co-occurring on one line, case-insensitive) against the
+researcher's markdown, not a structured field — a first-pass signal only. The
+findings report itself is always linked in the conductor's note, so a human
+can verify before trusting the blocker count for anything consequential.
+
+---
+
 ## Knobs (all user-testing-only; no-ops elsewhere)
 
 | knob | default | meaning |
@@ -191,3 +271,14 @@ For a deep sweep, set `UT_APP_URL_1` through `UT_APP_URL_9` so each archetype dr
 Models default to Sonnet for personas (cheap, impulsive, more user-like) and Opus
 for the researcher (synthesis quality); override per role with the usual
 `FWF_MODEL_*` machinery.
+
+### Conductor gate knobs (dev template only; issue #46)
+
+| knob | default | meaning |
+|------|---------|---------|
+| `UT_GATE_PROFILE` | — (unset = gate disabled) | name of a hand-authored user-testing profile the gate launches |
+| `UT_GATE_UI_GLOB` | — (unset = gate disabled) | extended-regex; the staged diff must match a path for the gate to run |
+| `UT_GATE_APP_CMD` | — (unset = gate disabled) | boots a throwaway instance of the staged build; prints its URL as the first stdout line |
+| `FWF_UT_GATE_DAILY_CAP` | `2` | max gate trials/day (fail-closed — cap hit skips, never blocks promotion) |
+| `FWF_UT_GATE_DISABLE` | `0` | `1` → deploy-plumbed kill switch, overrides any profile config |
+| `FWF_UT_GATE_TIMEOUT` | `1800` | seconds the gate lets the nested trial run before forcing teardown |

@@ -922,6 +922,98 @@ assert_contains "captain lists impl9 in deep sweep" "$(DEEPR 'fwf_render "$(fwf_
 assert_contains "researcher reads 9 streams (deep)" "$(DEEPR 'fwf_render "$(fwf_tmpl_path pm)" ""')" "9 streams"
 
 # --------------------------------------------------------------------------
+section "conductor pre-promotion UX gate (issue #46) — pure decision helpers"
+UTGATE() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+# unconfigured by default: profiles/example.sh ships every UT_GATE_* knob empty
+UTGATE 'fwf_ut_gate_configured' && bad "gate unconfigured by default" || ok "gate unconfigured by default"
+assert_contains "skip reason names the knobs" "$(UTGATE 'fwf_ut_gate_skip_reason')" "not configured"
+GATECFG='UT_GATE_PROFILE=ex-ut UT_GATE_UI_GLOB="\.tsx\$" UT_GATE_APP_CMD="true"'
+UTGATE "$GATECFG fwf_ut_gate_configured" && ok "gate configured when all three knobs set" || bad "gate configured when all three knobs set"
+assert_eq "configured skip reason" "configured" "$(UTGATE "$GATECFG fwf_ut_gate_skip_reason")"
+# the deploy-plumbed kill switch beats a fully-configured profile
+UTGATE "$GATECFG FWF_UT_GATE_DISABLE=1 fwf_ut_gate_configured" && bad "kill switch disables the gate" || ok "kill switch disables the gate"
+assert_contains "disabled skip reason names the switch" "$(UTGATE "$GATECFG FWF_UT_GATE_DISABLE=1 fwf_ut_gate_skip_reason")" "FWF_UT_GATE_DISABLE=1"
+# __UT_GATE_CMD__ bakes a literal, absolute invocation (never a bare env-var
+# reference — a pane's shell doesn't inherit FWF_PROFILE)
+CONREND="$(UTGATE "$GATECFG fwf_render \"\$(fwf_tmpl_path conductor)\" ''")"
+assert_contains "configured: bakes a real fwf-ut-gate.sh invocation" "$CONREND" "FWF_PROFILE=example"
+assert_contains "configured: names the gate script"                  "$CONREND" "fwf-ut-gate.sh"
+UNCONFREND="$(UTGATE 'fwf_render "$(fwf_tmpl_path conductor)" ""')"
+assert_contains "unconfigured: renders a harmless no-op" "$UNCONFREND" "true # UX gate not configured"
+case "$UNCONFREND" in *fwf-ut-gate.sh*) bad "unconfigured must not name the gate script";; *) ok "unconfigured must not name the gate script";; esac
+
+section "conductor UX gate — diff-scope trigger (UT_GATE_UI_GLOB)"
+GT() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; UT_GATE_UI_GLOB='$1'; printf '%s\n' \"\$1\" | fwf_ut_gate_diff_triggered" _ "$2"; }
+GT '\.tsx$' 'src/ui/App.tsx'          && ok "matching UI path triggers"       || bad "matching UI path triggers"
+GT '\.tsx$' 'README.md'               && bad "non-matching path stays quiet" || ok "non-matching path stays quiet"
+GT ''       'src/ui/App.tsx'          && bad "empty glob never triggers"     || ok "empty glob never triggers"
+GT '\.css$' 'a/b.go
+src/x.css'                            && ok "one UI path among several still triggers" || bad "one UI path among several still triggers"
+GT '\.tsx$' ''                        && bad "empty diff never triggers"     || ok "empty diff never triggers"
+
+section "conductor UX gate — daily trial budget (cost control)"
+BUDR="$TMP/ut-gate-budget-run"
+GB() { FWF_PROFILE=example FWF_RUN_DIR="$BUDR" bash -c "source '$ROOT/lib.sh'; $1"; }
+GB 'fwf_ut_gate_budget_ok' && ok "fresh budget file: under cap"        || bad "fresh budget file: under cap"
+GB 'fwf_ut_gate_budget_bump'
+GB 'fwf_ut_gate_budget_ok' && ok "1/2 trials today: still under cap"   || bad "1/2 trials today: still under cap"
+GB 'fwf_ut_gate_budget_bump'
+GB 'fwf_ut_gate_budget_ok' && bad "2/2 trials today: cap reached (fail-closed)" || ok "2/2 trials today: cap reached (fail-closed)"
+assert_contains "budget file records today + count" "$(cat "$BUDR/ut-gate-budget" 2>/dev/null)" "$(date +%Y-%m-%d) 2"
+GB 'FWF_UT_GATE_DAILY_CAP=5 fwf_ut_gate_budget_ok' && ok "raising the cap allows more trials" || bad "raising the cap allows more trials"
+printf '2000-01-01 9\n' > "$BUDR/ut-gate-budget"
+GB 'fwf_ut_gate_budget_ok' && ok "a stale (yesterday) date resets the counter" || bad "a stale (yesterday) date resets the counter"
+
+section "conductor UX gate — findings-report.md severity parsing"
+FR="$TMP/gate-findings-report.md"
+cat > "$FR" <<'EOF'
+1. Saving silently does nothing for 3s
+   - Severity: blocker
+   - Persona(s): impl1
+2. Small tap target on the share icon
+   - **Severity:** minor friction
+3. Confirm dialog has no keyboard focus trap
+   - Severity: blocker
+EOF
+assert_eq "counts 2 blockers of 3 total findings" "2 3" "$(UTGATE "fwf_ut_gate_parse_findings '$FR'")"
+assert_eq "missing report reads as 0 0 (fail-closed)" "0 0" "$(UTGATE "fwf_ut_gate_parse_findings '$TMP/no-such-report.md'")"
+printf 'no findings this trial\n' > "$TMP/gate-empty-report.md"
+assert_eq "report with no severity lines reads as 0 0" "0 0" "$(UTGATE "fwf_ut_gate_parse_findings '$TMP/gate-empty-report.md'")"
+
+section "fwf-ut-gate.sh — early skip paths (never spawns tmux/app/network)"
+UTGF="$TMP/ut-gate-fixture"; mkdir -p "$UTGF"
+git init -q --bare "$UTGF/origin.git"
+git clone -q "$UTGF/origin.git" "$UTGF/repo" 2>/dev/null
+( cd "$UTGF/repo" && git config user.email t@t.co && git config user.name t \
+  && echo hi > README && git add -A && git commit -qm init && git branch -M main \
+  && git branch staging && git branch integration && git push -q origin main staging integration )
+( cd "$UTGF/repo" && git switch -q staging && echo ui > src-ui.tsx && git add -A \
+  && git commit -qm "touch ui" && git push -q origin staging )
+cat > "$ROOT/profiles/.__utgate.sh" <<EOF
+FWF_REPO="$UTGF/repo"; WT_PREFIX="utg"; WT_BASE="$UTGF/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+UT_APP_URL="http://localhost:3939"
+EOF
+UGRUN="$UTGF/run"
+( cd "$UTGF/repo" && FWF_RUN_DIR="$UGRUN" FWF_PROFILE=.__utgate "$ROOT/fwf-ut-gate.sh" >/dev/null 2>"$UTGF/skip.log" )
+assert_eq "unconfigured profile: exit 0 (skip)" "0" "$?"
+assert_contains "unconfigured skip reason logged" "$(cat "$UTGF/skip.log")" "not configured"
+cat >> "$ROOT/profiles/.__utgate.sh" <<EOF
+UT_GATE_PROFILE="doesnotmatter-ut"; UT_GATE_UI_GLOB="nomatch-anywhere"; UT_GATE_APP_CMD="true"
+EOF
+( cd "$UTGF/repo" && FWF_RUN_DIR="$UGRUN" FWF_PROFILE=.__utgate "$ROOT/fwf-ut-gate.sh" >/dev/null 2>"$UTGF/nodiff.log" )
+assert_eq "configured but no matching diff: exit 0 (skip)" "0" "$?"
+assert_contains "no-UI-diff skip reason logged" "$(cat "$UTGF/nodiff.log")" "does not touch UI"
+sed -i.bak 's/nomatch-anywhere/\\.tsx\$/' "$ROOT/profiles/.__utgate.sh"
+mkdir -p "$UGRUN"
+printf '%s 1\n' "$(date +%Y-%m-%d)" > "$UGRUN/ut-gate-budget"   # today's cap already spent
+( cd "$UTGF/repo" && FWF_RUN_DIR="$UGRUN" FWF_UT_GATE_DAILY_CAP=1 FWF_PROFILE=.__utgate "$ROOT/fwf-ut-gate.sh" >/dev/null 2>"$UTGF/budget.log" )
+assert_eq "UI-touching diff but budget exhausted: exit 0 (skip)" "0" "$?"
+assert_contains "budget-exhausted skip reason logged" "$(cat "$UTGF/budget.log")" "budget exhausted"
+rm -f "$ROOT/profiles/.__utgate.sh" "$ROOT/profiles/.__utgate.sh.bak"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

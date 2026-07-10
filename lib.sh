@@ -428,6 +428,94 @@ fwf_ut_guard_target() {
   return "$rc"
 }
 
+# --- Conductor-triggered pre-promotion UX gate (issue #46) ------------------
+# Pure decision helpers, kept out of fwf-ut-gate.sh so the functional test
+# suite can exercise them directly (no tmux/browser/process spawning needed).
+# The gate is opt-in and fails CLOSED on every ambiguity: unconfigured, over
+# budget, or disabled all mean "skip the gate, let e2e-green promotion proceed
+# unblocked" — never "hold promotion because the GATE itself couldn't run".
+
+# True if this profile has wired up the gate (all three knobs set) AND the
+# deploy-plumbed kill switch is off. False (rc 1) means fwf-ut-gate.sh must
+# no-op — the caller is expected to say why via fwf_ut_gate_skip_reason.
+fwf_ut_gate_configured() {
+  [ "${FWF_UT_GATE_DISABLE:-0}" != "1" ] || return 1
+  [ -n "${UT_GATE_PROFILE:-}" ] && [ -n "${UT_GATE_UI_GLOB:-}" ] && [ -n "${UT_GATE_APP_CMD:-}" ]
+}
+# One-line, human-readable reason the gate is (or would be) skipped, for the
+# conductor's cycle report — so "gate never runs" is visible in logs, not a
+# silent no-op that reads the same as "gate ran and found nothing" (the GV
+# observability bar: distinguish a real run from a skip, always).
+fwf_ut_gate_skip_reason() {
+  if [ "${FWF_UT_GATE_DISABLE:-0}" = "1" ]; then echo "disabled (FWF_UT_GATE_DISABLE=1)"; return; fi
+  if [ -z "${UT_GATE_PROFILE:-}" ] || [ -z "${UT_GATE_UI_GLOB:-}" ] || [ -z "${UT_GATE_APP_CMD:-}" ]; then
+    echo "not configured for this profile (set UT_GATE_PROFILE/_UI_GLOB/_APP_CMD to enable)"; return
+  fi
+  echo "configured"
+}
+# True if the changed paths (one per line, e.g. `git diff --name-only`) touch
+# UI per UT_GATE_UI_GLOB. Empty input never triggers.
+fwf_ut_gate_diff_triggered() { # stdin = changed paths, one per line
+  [ -n "${UT_GATE_UI_GLOB:-}" ] || return 1
+  grep -qE "$UT_GATE_UI_GLOB"
+}
+# Daily trial budget (cost control — the trial-1 lesson: a busy factory must
+# not run 20 trials/day). State is "<YYYY-MM-DD> <count>" in UT_GATE_BUDGET_FILE,
+# reset automatically when the date rolls over. rc 0 = under cap, may run.
+fwf_ut_gate_budget_ok() {
+  local today count=0 line
+  today="$(date +%Y-%m-%d)"
+  if [ -f "$UT_GATE_BUDGET_FILE" ]; then
+    line="$(cat "$UT_GATE_BUDGET_FILE" 2>/dev/null)"
+    [ "${line%% *}" = "$today" ] && count="${line#* }"
+  fi
+  case "$count" in ''|*[!0-9]*) count=0;; esac
+  [ "$count" -lt "${FWF_UT_GATE_DAILY_CAP:-2}" ]
+}
+# Record that a trial ran today (call only after fwf_ut_gate_budget_ok passed).
+fwf_ut_gate_budget_bump() {
+  local today count=0 line
+  today="$(date +%Y-%m-%d)"
+  if [ -f "$UT_GATE_BUDGET_FILE" ]; then
+    line="$(cat "$UT_GATE_BUDGET_FILE" 2>/dev/null)"
+    [ "${line%% *}" = "$today" ] && count="${line#* }"
+  fi
+  case "$count" in ''|*[!0-9]*) count=0;; esac
+  mkdir -p "$(dirname "$UT_GATE_BUDGET_FILE")"
+  printf '%s %d\n' "$today" "$((count + 1))" > "$UT_GATE_BUDGET_FILE"
+}
+# Parse a trial-one findings-report.md (format: templates/user-testing/pm.tmpl)
+# for its severity mix. Prints "<blockers> <total>" (both integers). A missing
+# or empty report reads as "0 0" — fail-closed toward "nothing to hold on".
+# Deliberately loose (co-occurrence of "severity" and "blocker" on one line,
+# case-insensitive) rather than anchored to exact markdown punctuation — the
+# researcher is an LLM writing prose/markdown, not a fixed-format emitter, and
+# this is a first-pass signal: the report itself is always linked/attached so
+# a human can verify, never acted on blind.
+fwf_ut_gate_parse_findings() { # $1 = path to findings-report.md
+  local f="$1" blockers=0 total=0 sevlines
+  if [ -f "$f" ]; then
+    sevlines="$(grep -Ei 'severity' "$f" 2>/dev/null || true)"
+    # grep -c ALWAYS prints a count (0 or more) even on no-match; it just exits
+    # non-zero, so no `|| echo 0` fallback here (that would double-print "0").
+    total="$(printf '%s\n' "$sevlines" | grep -Ec .)"
+    blockers="$(printf '%s\n' "$sevlines" | grep -Eic 'blocker')"
+  fi
+  printf '%d %d\n' "$blockers" "$total"
+}
+# The LITERAL command the conductor's rendered prompt runs for __UT_GATE_CMD__
+# (same idiom as __E2E__/__GATE__: bake an absolute, self-contained command
+# into the prompt text, not a shell-env-dependent reference — a pane's shell
+# is not guaranteed to inherit FWF_PROFILE). A no-op ("true ...") when the
+# gate isn't configured, so the substitution is always safe to run verbatim.
+fwf_ut_gate_cmd() {
+  if fwf_ut_gate_configured; then
+    printf 'FWF_PROFILE=%s "%s/fwf-ut-gate.sh"' "$PROFILE" "$FWF_LIB_DIR"
+  else
+    printf 'true # UX gate not configured for this profile (%s)' "$(fwf_ut_gate_skip_reason)"
+  fi
+}
+
 # The canonical set of looped roles, one per line, in launch/arm order. Single
 # source of truth — fwf-up delivers prompts to these and fwf-resume re-arms them.
 fwf_all_roles() {
@@ -475,6 +563,7 @@ $(cat "$addendum")"
   text="${text//__GATE__/$GATE_CMD}"
   text="${text//__E2E__/$E2E_CMD}"
   text="${text//__LOCK__/$E2E_LOCK}"
+  text="${text//__UT_GATE_CMD__/$(fwf_ut_gate_cmd)}"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
   text="${text//__UT_ROOT__/$(fwf_ut_root)}"          # user-testing: shared evidence + findings-report root

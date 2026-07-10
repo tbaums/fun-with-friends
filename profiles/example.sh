@@ -47,6 +47,16 @@ UT_APP_URL="${FWF_UT_APP_URL:-}"
 # trial-validated default). See docs/user-testing.md to wire it.
 UT_BROWSER="${FWF_UT_BROWSER:-firefox}"
 
+# Conductor-triggered pre-promotion UX gate (issue #46) — OPTIONAL, opt-in per
+# repo. When all three are set, the conductor runs a quick user-testing trial
+# against the staged build before promoting staging->integration: blocker
+# findings hold the promotion (surfaced for a human call); non-blocker findings
+# ride along attached to the promotion report. Leave any of these unset (the
+# default) to skip the gate entirely — see docs/user-testing.md#conductor-gate.
+UT_GATE_PROFILE="${FWF_UT_GATE_PROFILE:-}"   # name of a hand-authored user-testing profile (e.g. "example-ut", see docs/user-testing.md#2) the gate launches
+UT_GATE_UI_GLOB="${FWF_UT_GATE_UI_GLOB:-}"   # extended-regex (grep -E); if any path in the staged diff matches, the batch is UI-touching and the gate runs (e.g. '\.(tsx?|jsx?|vue|css)$|/(ui|views|components)/')
+UT_GATE_APP_CMD=''                           # boots a throwaway app instance serving the STAGED build; contract: print ONLY its URL as the first stdout line once ready, then keep running in the foreground until killed
+
 # Optional: factory design, issue backend, floor sizing, per-role models.
 # CLI flags (fwf up --template T --issues B --pairs N --impl-model M …) and
 # env vars beat these profile defaults — keep the ${VAR:-default} shape.
