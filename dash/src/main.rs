@@ -1247,7 +1247,30 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
     let dim = Style::default().fg(Color::DarkGray);
     let key = Style::default().fg(Color::Cyan);
-    // Action hints depend on the active section.
+    // Footer layout: a persistent GLOBAL segment that renders on every tab —
+    // nav (1-4 tab, j/k move) plus always-available bindings (Ctrl-r refresh,
+    // t captain, ? help, q quit) — bracketing a CONTEXTUAL segment of
+    // tab-specific actions. The global bindings must never be clipped (#80:
+    // Ctrl-r is global, so its hint shows everywhere); when the row is too
+    // narrow to hold everything, contextual actions are dropped from the end
+    // first so the global hints (incl. "q quit") always stay on screen.
+    let global_left = vec![
+        Span::styled(" 1-4 ", key),
+        Span::styled("tab ", dim),
+        Span::styled(" j/k ", key),
+        Span::styled("move ", dim),
+        Span::styled(" Ctrl-r ", key),
+        Span::styled("refresh ", dim),
+    ];
+    let global_right = vec![
+        Span::styled(" t ", key),
+        Span::styled("captain ", dim),
+        Span::styled(" ? ", key),
+        Span::styled("help ", dim),
+        Span::styled(" q ", key),
+        Span::styled("quit", dim),
+    ];
+    // Contextual action hints depend on the active section.
     let actions: &[(&str, &str)] = match app.tab {
         Tab::Activity => &[("n/p", "scroll PR")],
         Tab::Decisions => &[
@@ -1259,24 +1282,31 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         Tab::Issues => &[("c", "comment"), ("o", "open")],
         Tab::Roles => &[("r", "respawn"), ("s", "stop")],
     };
-    let mut spans = vec![
-        Span::styled(" 1-4 ", key),
-        Span::styled("tab ", dim),
-        Span::styled(" j/k ", key),
-        Span::styled("move ", dim),
-        Span::styled(" Ctrl-r ", key),
-        Span::styled("refresh ", dim),
-    ];
+
+    let span_w = |s: &Span| s.content.chars().count();
+    let global_w: usize = global_left.iter().map(span_w).sum::<usize>()
+        + global_right.iter().map(span_w).sum::<usize>();
+    let budget = (area.width as usize).saturating_sub(global_w);
+
+    // Fit as many contextual hints as the width between the global segments
+    // allows; stop at the first one that would overflow.
+    let mut contextual: Vec<Span> = Vec::new();
+    let mut used = 0usize;
     for (k, label) in actions {
-        spans.push(Span::styled(format!(" {k} "), key));
-        spans.push(Span::styled(format!("{label} "), dim));
+        let k_span = Span::styled(format!(" {k} "), key);
+        let l_span = Span::styled(format!("{label} "), dim);
+        let w = span_w(&k_span) + span_w(&l_span);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        contextual.push(k_span);
+        contextual.push(l_span);
     }
-    spans.push(Span::styled(" t ", key));
-    spans.push(Span::styled("captain ", dim));
-    spans.push(Span::styled(" ? ", key));
-    spans.push(Span::styled("help ", dim));
-    spans.push(Span::styled(" q ", key));
-    spans.push(Span::styled("quit", dim));
+
+    let mut spans = global_left;
+    spans.extend(contextual);
+    spans.extend(global_right);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -1737,6 +1767,22 @@ mod tests {
                 tab.title()
             );
         }
+    }
+
+    // #80 repro (qa1): the persistent Ctrl-r segment must not crowd out
+    // existing hints — at a realistic 100-col width the Decisions footer
+    // clips "q quit" down to "q qui", silently dropping the final "t".
+    #[test]
+    fn footer_does_not_clip_existing_hints_at_full_width() {
+        let mut app = test_app();
+        app.tab = Tab::Decisions;
+        let area = Rect::new(0, 0, 100, 1);
+        let buf = render_buffer(area.width, area.height, |f| render_footer(f, area, &app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("q quit"),
+            "Decisions footer should show the full, un-clipped quit hint at a realistic 100-col width, got: {text:?}"
+        );
     }
 
     #[test]
