@@ -27,4 +27,4 @@
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
- 1-4 tab  j/k move  y approve  x reject  c comment  o open  t captain  ? help  q quit
+ 1-4 tab  j/k move  Ctrl-r refresh  y approve  x reject  c comment  t captain  ? help  q quit

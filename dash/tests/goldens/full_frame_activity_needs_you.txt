@@ -27,4 +27,4 @@
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
- 1-4 tab  j/k move  n/p scroll PR  Ctrl-r refresh  t captain  ? help  q quit
+ 1-4 tab  j/k move  Ctrl-r refresh  n/p scroll PR  t captain  ? help  q quit
