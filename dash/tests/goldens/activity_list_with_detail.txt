@@ -1,0 +1,16 @@
+┌ Activity — factory motion ─────────────┐┌ Detail · loading PR… ──────────────────────────────────┐
+│▌BUILDING                               ││PR #101  → staging                                      │
+│   #54 ● dash render golden snapshot tes││dash render golden snapshot tests via ratatui           │
+│                                        ││TestBackend, covering every main render path            │
+│ IN TEST / REVIEW                       ││                                                        │
+│   #50 ✓ fix low-contrast blockquote sty││role:   impl3                                           │
+│                                        ││issue:  #54                                             │
+│ MERGED (recent)                        ││checks: run                                             │
+│   #40 →staging 07-01 09:00 fwf dash mil││                                                        │
+│                                        ││(loading PR detail…)                                    │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘

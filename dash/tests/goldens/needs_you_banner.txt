@@ -1,0 +1,1 @@
+ ⛔  CAPTAIN NEEDS YOU — decision #101 awaiting you  · attach: tmux attach -t friends-coord

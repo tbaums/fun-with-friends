@@ -118,6 +118,28 @@ place:
   `--dry-run`, and what the hermetic tests assert on). In local-issues mode
   writes route to `fwf-issues.sh` and never reach gh.
 
+### Tests
+
+`cd dash && cargo test` runs the full Rust suite: `App`/key-handling/action
+unit tests plus render/golden snapshots (issue #54) that render the main
+screens (header, tabs, activity list, detail pane, needs-you banner, confirm
+and input overlays) via `ratatui::backend::TestBackend` at a fixed size from a
+static fixture, and compare against the stored text goldens under
+`dash/tests/goldens/`. The two known styling regressions — #50 (blockquote
+must not be `DarkGray`) and #51 (header must show the running template) — are
+pinned by explicit style assertions alongside the goldens, so a blind re-bless
+can't silently reintroduce them.
+
+To re-bless a golden after an intentional layout/content change:
+
+```sh
+cd dash
+UPDATE_GOLDEN=1 cargo test golden_   # or a specific test name
+git diff tests/goldens/              # review before committing
+```
+
+See `dash/tests/goldens/README.md` for details.
+
 ### Environment
 
 | Var | Effect |
