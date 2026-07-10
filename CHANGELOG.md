@@ -11,6 +11,30 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-07-10
+
+Factory-reliability and dash-polish release: a shared-account impl↔qa review
+deadlock fix, and a dash keybinding-discoverability fix. No user-facing feature
+or behavior-contract changes.
+
+### Fixed
+- **dash: `Ctrl-r` refresh is now discoverable on every tab** (#80, code
+  9d3dbd1, docs none — internal) — the `Ctrl-r` refresh binding is global (it
+  works on all tabs), but only the Activity tab's footer advertised it. The hint
+  is now consistent across tabs, so the feature isn't hidden on Roles/Decisions/
+  Issues. (Test goldens updated; the binding was already covered by a test.)
+- **Shared-account impl↔qa change-request deadlock** (#82, code 88d82cd, docs
+  88d82cd) — when all factory roles authenticate as one shared GitHub identity,
+  `gh pr review --request-changes` is rejected ("can't request changes on your
+  own PR"), so qa posts change-requests as plain PR comments. The implementer
+  loop, reading only the formal review API / `mergeStateStatus` (always empty on
+  a shared account), treated the PR as un-reviewed and went idle while qa waited
+  — a bilateral deadlock. Introduces a structured `QA-CHANGES-REQUESTED` /
+  `QA-APPROVED` sentinel-comment protocol (mirroring the proven `GV-*`
+  convention), an `fwf-pr-review-state.sh` helper, and `docs/shared-account.md`;
+  implementers now treat the latest qa sentinel as authoritative and never infer
+  "no changes requested" from an empty review API.
+
 ## [0.21.2] - 2026-07-10
 
 Factory-reliability and dash-correctness release: a dash socket-tracking bugfix,
