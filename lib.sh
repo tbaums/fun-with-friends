@@ -143,14 +143,14 @@ fwf_install_ghguard() {
   # cache dir) keep it self-contained in non-login panes.
   cat > "$FWF_GHGUARD_DIR/gh" <<GHGUARD
 #!/usr/bin/env sh
-# fwf gh shim (#57 sibling): (a) REST+ETag read cache for the hot list/view
+# fwf gh shim (#57/#58): (a) REST+ETag read cache for the hot list/view/diff
 # polls in all modes; (b) in local mode, the fail-closed write guard (#34).
 REAL_GH="${real_gh:-gh}"
 CACHE="$FWF_LIB_DIR/fwf-ghcache.sh"
 export FWF_REAL_GH="\$REAL_GH" FWF_GHCACHE_DIR="$FWF_GHCACHE_DIR" FWF_REPO="$FWF_REPO" FWF_GHCACHE_REPO="$slug" FWF_GHCACHE_TTL="$FWF_GHCACHE_TTL"
 _t="\${1:-}"; _v="\${2:-}"
 case "\$_t \$_v" in
-  "issue list"|"pr list"|"issue view"|"pr view")
+  "issue list"|"pr list"|"issue view"|"pr view"|"pr diff")
     shift 2; exec "\$CACHE" serve "\$_t" "\$_v" "\$@" ;;
 esac
 GHGUARD

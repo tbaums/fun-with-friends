@@ -567,6 +567,115 @@ assert_eq "ghcache reshapes canonical offline" '9,7' "$(GHC serve issue list --j
 assert_eq "ghcache --label filter offline"    '9'   "$(GHC serve issue list --label bug --json number --jq '[.[].number]|@csv')"
 assert_eq "ghcache projects gh-shaped labels"  '[{"labels":[{"id":"L1","name":"bug","description":"d","color":"c"}],"number":9}]' "$(GHC serve issue list --label bug --json number,labels)"
 
+# fwf-ghcache.sh (#58): `--search` translation over the SAME canonical open-set
+# snapshot list uses — only the recognized is:open/label:/-label: vocabulary.
+SROOT="$TMP/ghcache-search"; mkdir -p "$SROOT/x__y"
+printf '%s' '[
+ {"number":1,"title":"A","body":"","state":"open","html_url":"u","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]},
+ {"number":2,"title":"B","body":"","state":"open","html_url":"u","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L2","name":"product-wip","description":"","color":"c"}],"assignees":[]},
+ {"number":3,"title":"C","body":"","state":"open","html_url":"u","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L3","name":"release-hold","description":"","color":"c"}],"assignees":[]},
+ {"number":4,"title":"D","body":"","state":"open","html_url":"u","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L4","name":"idea","description":"","color":"c"}],"assignees":[]},
+ {"number":5,"title":"E","body":"","state":"open","html_url":"u","created_at":"2026-01-05T00:00:00Z","updated_at":"2026-01-05T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L5a","name":"product-wip","description":"","color":"c"},{"node_id":"L5b","name":"release-hold","description":"","color":"c"}],"assignees":[]}
+]' > "$SROOT/x__y/issues.json"
+touch "$SROOT/x__y/issues.ts"
+GHCS() { FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+assert_eq "search: is:open (qa queue pattern)" "1,2,3,4,5" "$(GHCS serve issue list --search "is:open" --json number --jq '[.[].number]|sort|@csv')"
+assert_eq "search: is:open -label:product-wip -label:release-hold -label:idea (implementer survey)" "1" "$(GHCS serve issue list --search "is:open -label:product-wip -label:release-hold -label:idea" --json number --jq '[.[].number]|sort|@csv')"
+assert_eq "search: is:open -label:product-wip -label:release-hold (pm/captain queued)" "1,4" "$(GHCS serve issue list --search "is:open -label:product-wip -label:release-hold" --json number --jq '[.[].number]|sort|@csv')"
+assert_eq "search: is:open label:release-hold (pm held-issues list)" "3,5" "$(GHCS serve issue list --search "is:open label:release-hold" --json number --jq '[.[].number]|sort|@csv')"
+
+# Fail-safe (#58 GV item 2, highest priority): an off-list --search string
+# (author:, sort:, free text, a date qualifier, …) MUST fall through to real
+# gh, never to a best-effort/empty translated result. A fake `gh` that prints
+# a distinguishable sentinel proves the fallback path actually ran.
+FAKEGH_SENTINEL="$TMP/fakegh-sentinel"
+printf '#!/usr/bin/env bash\necho "REAL-GH-FALLBACK-RAN: $*"\n' > "$FAKEGH_SENTINEL"; chmod +x "$FAKEGH_SENTINEL"
+FALLBACK_OUT="$(FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_SENTINEL" bash "$ROOT/fwf-ghcache.sh" serve issue list --search "author:someone" --json number 2>/dev/null)"
+assert_contains "search: unrecognized token FAILS SAFE to real gh (not a translated snapshot)" "$FALLBACK_OUT" "REAL-GH-FALLBACK-RAN"
+
+# Re-grep-at-build fixture (#58 spec): pin the exact set of --search literals
+# built ENTIRELY from the recognized vocabulary (is:open/is:closed/label:x/
+# -label:x) that templates/ actually emit today. If a template edit adds a
+# new vocab-only pattern, this goes RED until fwf-ghcache.sh (and this pinned
+# list) is updated to serve it — it must never silently mistranslate instead.
+# NOTE: the case/while below is wrapped in a named function rather than
+# inlined directly in a `$(...)` — bash 3.2 (macOS's /bin/bash, which this
+# suite must stay clean under) fails to parse a `case` nested inside a
+# `while` when that whole construct sits literally inside a command
+# substitution ("syntax error near unexpected token `newline'"). A function
+# call inside `$(...)` sidesteps it.
+_search_literals_in_templates() {
+  grep -rhoE -- '--search "[^"]*"' "$ROOT/templates" 2>/dev/null \
+    | sed -E 's/^--search "//; s/"$//' | sort -u | while IFS= read -r s; do
+        local vok=1 tok
+        for tok in $s; do
+          case "$tok" in
+            is:open|is:closed|label:*|-label:*) ;;
+            *) vok=0;;
+          esac
+        done
+        [ "$vok" = 1 ] && printf '%s\n' "$s"
+      done
+}
+FOUND_SEARCH="$(_search_literals_in_templates)"
+EXPECT_SEARCH="$(printf '%s\n' \
+  'is:open' \
+  'is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__' \
+  'is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__ -label:idea' \
+  'is:open label:__HOLD_LABEL__' | sort)"
+assert_eq "search: recognized --search literals in templates match the pinned/tested set" "$EXPECT_SEARCH" "$FOUND_SEARCH"
+
+# fwf-ghcache.sh (#58): `issue/pr view --json …` REST reshape, byte-exact vs
+# the GraphQL shape, plus cache-key correctness for comments.
+VROOT="$TMP/ghcache-view"; mkdir -p "$VROOT/x__y/views"
+printf '%s' '{"number":20,"title":"Fix the thing","body":"body text","state":"open","html_url":"https://github.com/x/y/issues/20","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"alice"},"labels":[{"node_id":"L1","name":"bug","description":"d","color":"c"}],"assignees":[{"login":"bob"}]}' > "$VROOT/x__y/views/issue-20.json"
+touch "$VROOT/x__y/views/issue-20.ts"
+printf '%s' '{"number":30,"title":"Add feature","body":"pr body","state":"open","draft":false,"merged_at":null,"head":{"ref":"impl2/foo","sha":"abc123"},"base":{"ref":"staging"},"html_url":"https://github.com/x/y/pull/30","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"carol"}}' > "$VROOT/x__y/views/pr-30.json"
+touch "$VROOT/x__y/views/pr-30.ts"
+GHV() { FWF_GHCACHE_DIR="$VROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+assert_eq "view: issue --json title,body byte-exact" '{"body":"body text","title":"Fix the thing"}' "$(GHV serve issue view 20 --json title,body)"
+assert_eq "view: issue --json labels byte-exact vs GraphQL shape" '{"labels":[{"id":"L1","name":"bug","description":"d","color":"c"}]}' "$(GHV serve issue view 20 --json labels)"
+assert_eq "view: pr --json title,isDraft,headRefName byte-exact" '{"headRefName":"impl2/foo","isDraft":false,"title":"Add feature"}' "$(GHV serve pr view 30 --json title,isDraft,headRefName)"
+assert_eq "view: 404/unfetchable resource falls through, not a wrong empty result" "" "$(GHV serve issue view 999 --json title)"
+
+# Cache-key correctness (#58 GV item 3): a comment-less call must NOT poison
+# a later --json comments call of the SAME #N with a stale comment-less body
+# — the base resource and comments are cached in separate files, keyed by
+# resource identity alone, never by the requested --json field set.
+assert_eq "view: comment-less call" '{"title":"Fix the thing"}' "$(GHV serve issue view 20 --json title)"
+[ ! -f "$VROOT/x__y/views/20-comments.json" ] && ok "comments not fetched until actually requested" || bad "comments not fetched until actually requested"
+printf '%s' '[{"id":111,"user":{"login":"dave"},"author_association":"CONTRIBUTOR","body":"CLAIM impl2","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","html_url":"https://github.com/x/y/issues/20#issuecomment-111"}]' > "$VROOT/x__y/views/20-comments.json"
+touch "$VROOT/x__y/views/20-comments.ts"
+assert_eq "view: --json comments after a comment-less call is NOT stale" "CLAIM impl2" "$(GHV serve issue view 20 --json comments --jq '[.comments[].body][0]')"
+assert_eq "view: comments shaped byte-exact (REST-unavailable GraphQL-only fields default sanely)" \
+  '{"comments":[{"id":"111","author":{"login":"dave"},"authorAssociation":"CONTRIBUTOR","body":"CLAIM impl2","createdAt":"2026-01-03T00:00:00Z","includesCreatedEdit":false,"isMinimized":false,"minimizedReason":"","reactionGroups":[],"url":"https://github.com/x/y/issues/20#issuecomment-111","viewerDidAuthor":false}]}' \
+  "$(GHV serve issue view 20 --json comments)"
+
+# fwf-ghcache.sh (#58): `pr diff --name-only` follows ALL pages of
+# /pulls/{n}/files (30/page) — a >30-file PR must not come back truncated,
+# or a role wrongly concludes an untouched file was never touched.
+FAKEGH_DIFF="$TMP/fakegh-diff"
+cat > "$FAKEGH_DIFF" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "api" ]; then
+  page="${2##*page=}"; page="${page%%&*}"
+  case "$page" in
+    1) jq -nc '[range(1;31) | {filename: ("file"+(.|tostring)+".txt")}]';;
+    2) jq -nc '[range(31;36) | {filename: ("file"+(.|tostring)+".txt")}]';;
+    *) echo '[]';;
+  esac
+  exit 0
+fi
+echo "REAL-GH-DIFF-FALLBACK: $*"
+EOF
+chmod +x "$FAKEGH_DIFF"
+DROOT="$TMP/ghcache-diff"; mkdir -p "$DROOT/x__y"
+DIFFOUT="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/fwf-ghcache.sh" serve pr diff 55 --name-only 2>/dev/null)"
+assert_eq "pr diff --name-only: full >30-file list, not truncated to page 1" "35" "$(printf '%s\n' "$DIFFOUT" | grep -c .)"
+assert_contains "pr diff --name-only: includes a page-2 file (proves pagination ran)" "$DIFFOUT" "file35.txt"
+DIFFOUT2="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/fwf-ghcache.sh" serve pr diff 55 --patch 2>/dev/null)"
+assert_contains "pr diff (no --name-only) is not modeled, falls back to real gh" "$DIFFOUT2" "REAL-GH-DIFF-FALLBACK"
+
 section "pane recovery helpers (issue #36)"
 RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"
 assert_contains "dev impl label canonical" "$RL_DEV" "IMPL2 · any issue → instant draft PR · impl2/*"
