@@ -11,6 +11,44 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-07-10
+
+Factory-reliability and dash-correctness release: a dash socket-tracking bugfix,
+an upgrade-hint fix for worktree installs, broader gh-cache REST routing, e2e
+lock coverage across every role, and substantially broadened dash test coverage.
+No new user-facing features or behavior-contract changes.
+
+### Fixed
+- **`fwf dash` no longer shows every role as "down" when the factory runs on a
+  non-default tmux socket** (#62, code 586221e, docs 586221e) — the launch socket
+  is now persisted at `fwf up` and read back by the dash/data layer, so a factory
+  started inside a named-socket tmux is tracked correctly. Supersedes the "pin to
+  the default socket" alternative (#57), which is closed as not-taken.
+- **`fwf upgrade` now shows the git-pull hint for worktree installs** (#71, code
+  8eab975, docs none — internal) — the checkout probe used `[ -d .git ]`, which is
+  false in a worktree (where `.git` is a file), so worktree installs silently took
+  the tarball path. It now uses `[ -e .git ]`; covered by a regression test in
+  `test/run.sh`.
+
+### Changed
+- **`gh` read-cache routes `issue view` / `pr view` (and common `--search`) through
+  the REST API** (#58, code 8ec8ec7, docs 8ec8ec7) — pushes residual GraphQL usage
+  toward zero on the hot read paths, reducing rate-limit pressure for factory runs.
+  Backwards compatible; no change to command surface.
+- **`e2e.lock` is now acquired and released by every role, not just the
+  conductor** (#65, code 43b2f21, docs 43b2f21) — an implementer's own local e2e
+  run could previously kill a sibling worktree's server mid-test. All roles now
+  coordinate through the shared lock. (Per-worktree ports deferred as a separate
+  design item.)
+
+### Internal
+- **Dash render/golden snapshot tests via ratatui `TestBackend`** (#54, code
+  b5ac220, docs b5ac220) — golden snapshots for headers, tabs, overlays, and full
+  frames guard the dash UI against unintended rendering regressions.
+- **Broadened dash `on_key` coverage and `run_action` execution tests** (#55, code
+  3cbf362, docs none — internal) — direct unit coverage of key handling and action
+  dispatch in `dash/src/main.rs`.
+
 ## [0.21.1] - 2026-07-09
 
 Customer-readiness release: safety, docs, and small fixes from a pre-send review.
