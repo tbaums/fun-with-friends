@@ -1510,6 +1510,8 @@ fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
 
     fn test_app() -> App {
         let (rtx, _r) = mpsc::channel();
@@ -1694,5 +1696,351 @@ mod tests {
         assert!(s.contains("issue:  #42"));
         assert!(s.contains("checks: pass"));
         assert!(s.contains("merged: 06-18 12:34"));
+    }
+
+    // --- render-level golden tests (#54) ------------------------------------
+    // These drive the real `ui()` entry point through a ratatui TestBackend, so
+    // they guard layout + styling regressions a pure logic test (like
+    // `markdownish_blockquote_is_legible_not_darkgray` above) can't catch —
+    // e.g. a widget that silently drops a style override at draw time.
+
+    fn render(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| ui(f, app)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// First cell whose symbol exactly matches `needle` (a single glyph/char),
+    /// so a style assertion can target it without hand-computing layout math.
+    fn find_cell(buf: &Buffer, needle: &str) -> (u16, u16) {
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf.cell((x, y)).unwrap().symbol() == needle {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("no cell with symbol {needle:?} in:\n{}", buffer_text(buf));
+    }
+
+    #[test]
+    fn header_shows_profile_running_template_and_green_provenance() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            profile: "myapp".into(),
+            template: "dev".into(),
+            parked: false,
+            prod: "v0.16.0".into(),
+            pipeline: "staging +3 ahead".into(),
+            stamp: "status.json".into(),
+            generated_at: "12:04:31".into(),
+            ..Default::default()
+        });
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("myapp"), "{text}");
+        assert!(
+            text.contains("dev"),
+            "shows the running template (#51): {text}"
+        );
+        assert!(text.contains("running"), "{text}");
+        assert!(text.contains("v0.16.0"), "{text}");
+        assert!(text.contains("staging +3 ahead"), "{text}");
+        assert!(text.contains("[status.json]"), "{text}");
+
+        let (x, y) = find_cell(&buf, "[");
+        assert_eq!(
+            buf.cell((x, y)).unwrap().fg,
+            Color::Green,
+            "status.json provenance is green"
+        );
+    }
+
+    #[test]
+    fn header_shows_parked_banner_and_amber_stale_provenance() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            profile: "myapp".into(),
+            template: "dev".into(),
+            parked: true,
+            stamp: "stale".into(),
+            ..Default::default()
+        });
+        let buf = render(&mut app, 100, 20);
+        assert!(buffer_text(&buf).contains("PARKED"));
+
+        let (x, y) = find_cell(&buf, "⏸");
+        let c = buf.cell((x, y)).unwrap();
+        assert_eq!(c.bg, Color::Yellow);
+        assert_eq!(c.fg, Color::Black);
+
+        let (x, y) = find_cell(&buf, "[");
+        assert_eq!(
+            buf.cell((x, y)).unwrap().fg,
+            Color::Yellow,
+            "stale provenance is amber"
+        );
+    }
+
+    #[test]
+    fn tabs_show_counts_and_highlight_only_the_selected_section() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            roles: vec![data::Role {
+                role: "impl1".into(),
+                state: "live".into(),
+                detail: String::new(),
+            }],
+            decisions: vec![
+                data::Decision {
+                    id: "1".into(),
+                    title: "a".into(),
+                    flags: String::new(),
+                    body: String::new(),
+                },
+                data::Decision {
+                    id: "2".into(),
+                    title: "b".into(),
+                    flags: String::new(),
+                    body: String::new(),
+                },
+                data::Decision {
+                    id: "3".into(),
+                    title: "c".into(),
+                    flags: String::new(),
+                    body: String::new(),
+                },
+            ],
+            issues: vec![data::Issue {
+                number: 1,
+                title: "x".into(),
+                gated: false,
+                body: String::new(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Decisions;
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("Activity (0)"), "{text}");
+        assert!(text.contains("Roles (1)"), "{text}");
+        assert!(text.contains("Decisions (3)"), "{text}");
+        assert!(text.contains("Issues (1)"), "{text}");
+
+        let (dx, dy) = find_cell(&buf, "D"); // leads "Decisions" — the selected tab
+        assert_eq!(
+            buf.cell((dx, dy)).unwrap().bg,
+            Color::Cyan,
+            "selected tab is highlighted"
+        );
+        let (ax, ay) = find_cell(&buf, "A"); // leads "Activity" — not selected
+        assert_ne!(
+            buf.cell((ax, ay)).unwrap().bg,
+            Color::Cyan,
+            "unselected tab keeps the plain background"
+        );
+    }
+
+    #[test]
+    fn needs_you_banner_renders_only_when_active() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            needs_you: data::NeedsYou {
+                active: true,
+                summary: "release #12 waiting".into(),
+            },
+            ..Default::default()
+        });
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("CAPTAIN NEEDS YOU"), "{text}");
+        assert!(text.contains("release #12 waiting"), "{text}");
+        let (x, y) = find_cell(&buf, "⛔");
+        assert_eq!(buf.cell((x, y)).unwrap().bg, Color::Red);
+
+        let mut quiet = test_app();
+        quiet.feed = Feed::Ok(Dashboard::default());
+        let buf2 = render(&mut quiet, 100, 20);
+        assert!(!buffer_text(&buf2).contains("CAPTAIN NEEDS YOU"));
+    }
+
+    #[test]
+    fn roles_list_colors_live_and_down_glyphs_distinctly() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            roles: vec![
+                data::Role {
+                    role: "impl1".into(),
+                    state: "live".into(),
+                    detail: "#441 auth".into(),
+                },
+                data::Role {
+                    role: "qa1".into(),
+                    state: "down".into(),
+                    detail: String::new(),
+                },
+            ],
+            ..Default::default()
+        });
+        app.tab = Tab::Roles;
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("impl1"), "{text}");
+        assert!(text.contains("qa1"), "{text}");
+        assert!(text.contains("#441 auth"), "{text}");
+
+        let (x, y) = find_cell(&buf, "●");
+        assert_eq!(
+            buf.cell((x, y)).unwrap().fg,
+            Color::Green,
+            "live role glyph is green"
+        );
+        let (x, y) = find_cell(&buf, "○");
+        assert_eq!(
+            buf.cell((x, y)).unwrap().fg,
+            Color::DarkGray,
+            "down role glyph is dim"
+        );
+    }
+
+    #[test]
+    fn decisions_detail_pane_blockquote_is_not_darkgray_at_render_time() {
+        // Render-level pin for #50: the widget tree must actually paint the
+        // blockquote legibly, not just build a Line with the right Style (the
+        // markdownish_blockquote_is_legible_not_darkgray test above covers
+        // that narrower case).
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            decisions: vec![data::Decision {
+                id: "384".into(),
+                title: "un-gate: KB".into(),
+                flags: "GV OK".into(),
+                body: "> GATED do not implement\nplain follow-up line".into(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Decisions;
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("#384"), "{text}");
+        assert!(text.contains("un-gate: KB"), "{text}");
+        assert!(text.contains("GATED do not implement"), "{text}");
+
+        let (x, y) = find_cell(&buf, ">");
+        let c = buf.cell((x, y)).unwrap();
+        assert_ne!(
+            c.fg,
+            Color::DarkGray,
+            "blockquote must stay legible: {text}"
+        );
+        assert!(c.modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn issues_list_shows_gated_lock_and_detail_body() {
+        let mut app = test_app();
+        app.feed = Feed::Ok(Dashboard {
+            issues: vec![data::Issue {
+                number: 42,
+                title: "fwf dash".into(),
+                gated: true,
+                body: "why: the shape".into(),
+            }],
+            ..Default::default()
+        });
+        app.tab = Tab::Issues;
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("#42"), "{text}");
+        assert!(text.contains("fwf dash"), "{text}");
+        assert!(text.contains("🔒"), "{text}");
+        assert!(text.contains("why: the shape"), "{text}");
+    }
+
+    #[test]
+    fn activity_list_groups_building_and_merged_rows() {
+        let mut app = test_app(); // default tab is Activity
+        app.feed = Feed::Ok(Dashboard {
+            activity: data::Activity {
+                building: vec![data::ActivityItem {
+                    pr: 7,
+                    role: "impl1".into(),
+                    issue: "42".into(),
+                    base: "staging".into(),
+                    checks: "run".into(),
+                    when: String::new(),
+                    title: "wip work".into(),
+                }],
+                in_test: vec![],
+                merged: vec![data::ActivityItem {
+                    pr: 8,
+                    role: String::new(),
+                    issue: "40".into(),
+                    base: "staging".into(),
+                    checks: String::new(),
+                    when: "06-18 12:34".into(),
+                    title: "shipped work".into(),
+                }],
+                to_main: vec![],
+            },
+            ..Default::default()
+        });
+        let buf = render(&mut app, 100, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("BUILDING"), "{text}");
+        assert!(text.contains("MERGED (recent)"), "{text}");
+        assert!(text.contains("#42"), "{text}");
+        assert!(text.contains("wip work"), "{text}");
+        assert!(text.contains("#40"), "{text}");
+        assert!(text.contains("shipped work"), "{text}");
+        assert!(text.contains("→staging 06-18 12:34"), "{text}");
+    }
+
+    #[test]
+    fn confirm_overlay_shows_the_prompt_and_yn_hints() {
+        let mut app = test_app();
+        app.overlay = Overlay::Confirm {
+            action: Action {
+                verb: "approve",
+                target: "337".into(),
+            },
+            prompt: "Approve #337?  un-gates + posts the go-ahead".into(),
+        };
+        let buf = render(&mut app, 100, 40);
+        let text = buffer_text(&buf);
+        assert!(text.contains("Approve #337?"), "{text}");
+        assert!(text.contains("Confirm"), "{text}");
+        assert!(text.contains("yes"), "{text}");
+        assert!(text.contains("no / Esc"), "{text}");
+    }
+
+    #[test]
+    fn input_overlay_shows_the_typed_buffer() {
+        let mut app = test_app();
+        app.overlay = Overlay::Input {
+            action: Action {
+                verb: "comment",
+                target: "9".into(),
+            },
+            prompt: "Comment on #9".into(),
+            buffer: "looks good".into(),
+        };
+        let buf = render(&mut app, 100, 40);
+        let text = buffer_text(&buf);
+        assert!(text.contains("Comment on #9"), "{text}");
+        assert!(text.contains("looks good"), "{text}");
+        assert!(text.contains("Enter send"), "{text}");
     }
 }
