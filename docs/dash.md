@@ -13,8 +13,12 @@ data/action layers, and execs it.
 
 ```
 fwf dash                  # the only profile, or pass --profile NAME
+fwf dash --profile myapp
 fwf --profile myapp dash
 ```
+
+`--profile` (and `--profile=NAME`) work before or after the subcommand —
+whichever position you naturally reach for (issue #69).
 
 Requirements: `jq` (the data provider). A Rust toolchain (`cargo`) is **not**
 required when a prebuilt binary is available for your platform — see *Binary

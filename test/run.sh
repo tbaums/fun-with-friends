@@ -147,6 +147,50 @@ CAPTAIN="$("$ROOT/fwf" --profile example captain --print 2>&1)"
 assert_contains "captain --print renders prompt" "$CAPTAIN" "CAPTAIN"
 assert_contains "captain resolves placeholders"  "$CAPTAIN" "staging"
 
+section "--profile position-independence (issue #69)"
+# Two throwaway VISIBLE profiles (list_profiles globs *.sh with no dotglob,
+# so a leading-dot name like the .__persist.sh fixtures above would stay
+# invisible and never trigger real ambiguity) force the "multiple profiles
+# exist" case so we can prove which one --profile actually selected.
+cat > "$ROOT/profiles/zzflagtest-a.sh" <<EOF
+FWF_REPO="$TMP/x"; WT_PREFIX="flaga"; WT_BASE="$TMP"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+FWF_ISSUES=local
+EOF
+cat > "$ROOT/profiles/zzflagtest-b.sh" <<EOF
+FWF_REPO="$TMP/x"; WT_PREFIX="flagb"; WT_BASE="$TMP"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+FWF_ISSUES=local
+EOF
+# with multiple profiles present, no --profile anywhere is genuinely ambiguous
+AMBIG="$("$ROOT/fwf" captain --print 2>&1)"
+case "$AMBIG" in *"multiple profiles exist"*) ok "ambiguous profile rejected";; *) bad "ambiguous profile rejected" "$AMBIG";; esac
+assert_contains "ambiguity error names both positions" "$AMBIG" "before OR after the command"
+assert_contains "ambiguity error names FWF_PROFILE"    "$AMBIG" "FWF_PROFILE=NAME"
+# pre-subcommand --profile still works (regression, #7-style)
+PRE="$("$ROOT/fwf" --profile zzflagtest-b captain --print 2>&1)"
+assert_contains "pre-subcommand --profile resolves" "$PRE" "CAPTAIN"
+# post-subcommand --profile on a parse_runtime_flags command (captain)
+POST_RTF="$("$ROOT/fwf" captain --profile zzflagtest-b --print 2>&1)"
+assert_contains "post-subcommand --profile (runtime-flags cmd)" "$POST_RTF" "CAPTAIN"
+# post-subcommand --profile=NAME spelling
+POST_EQ="$("$ROOT/fwf" captain --profile=zzflagtest-b --print 2>&1)"
+assert_contains "post-subcommand --profile=NAME" "$POST_EQ" "CAPTAIN"
+# post-subcommand --profile on a bare `engine()` command NOT in the
+# runtime-flags list (issues/dash/pr-review-state/stop) — the exact repro
+# from #69 (`fwf dash --profile NAME`); `issues list` needs no gh/tmux.
+DASHLIKE="$("$ROOT/fwf" issues --profile zzflagtest-b list 2>&1)"
+case "$DASHLIKE" in *"multiple profiles exist"*) bad "post-subcommand --profile on bare engine cmd" "$DASHLIKE";; *) ok "post-subcommand --profile on bare engine cmd";; esac
+# last --profile wins when given in both positions with different values
+FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf" --profile zzflagtest-a issues --profile zzflagtest-b create --title probe >/dev/null 2>&1
+LASTWINS="$(FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf" --profile zzflagtest-b issues list 2>&1)"
+assert_contains "last --profile (post) wins over pre" "$LASTWINS" "probe"
+NOTINA="$(FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf" --profile zzflagtest-a issues list 2>&1)"
+case "$NOTINA" in *probe*) bad "last-wins: earlier profile untouched" "$NOTINA";; *) ok "last-wins: earlier profile untouched";; esac
+rm -f "$ROOT/profiles/zzflagtest-a.sh" "$ROOT/profiles/zzflagtest-b.sh"
+
 section "dispatcher: resume --clear-only clears the sentinel"
 RUNDIR="$TMP/run"; mkdir -p "$RUNDIR"; : > "$RUNDIR/STOP"
 RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf" --profile example resume --clear-only 2>&1)"
