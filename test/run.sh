@@ -1751,6 +1751,103 @@ assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
 rm -f "$ROOT/profiles/.__usage.sh"
 
 # --------------------------------------------------------------------------
+section "fwf-budget-check.sh (#96, Ticket B of #70): the WRITER — hermetic, isolated fixture"
+BC="$ROOT/fwf-budget-check.sh"
+BT="$TMP/budget"; mkdir -p "$BT/wt" "$BT/claude-projects"
+cat > "$ROOT/profiles/.__budget.sh" <<EOF
+FWF_REPO="$BT/repo"; WT_PREFIX="bt"; WT_BASE="$BT/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+BCWD="$BT/wt/bt-impl1"; BSLUG="${BCWD//\//-}"; BSLUG="${BSLUG//./-}"
+BPROJ="$BT/claude-projects/$BSLUG"
+budget_run() { # $1=FWF_TOKEN_BUDGET (may be empty) $2=extra env (may be empty)
+  env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" \
+    FWF_PAIRS=1 FWF_TOKEN_BUDGET="${1:-}" ${2:-} "$BC"
+}
+hold_file() { cat "$BT/run/BUDGET_HOLD" 2>/dev/null || true; }
+
+section "fwf-budget-check.sh: bootstrap — a role that has NEVER produced usage is 0 tokens, not a hold"
+budget_run 1000
+[ -z "$(hold_file)" ] && ok "no hold at t=0 (unknown-with-no-prior-data is not a fail-closed trigger)" \
+  || bad "no hold at t=0" "$(hold_file)"
+
+section "fwf-budget-check.sh: over budget -> HOLD"
+mkdir -p "$BPROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":600,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":500}}}' > "$BPROJ/s1.jsonl"
+budget_run 1000
+assert_contains "HOLD written when total >= budget" "$(hold_file)" "HOLD"
+assert_contains "HOLD names the lift command" "$(hold_file)" "fwf usage --clear-hold"
+
+section "fwf-budget-check.sh: WARN at threshold, below budget — does not pause"
+# Fresh run dir + a smaller total than the HOLD test above, so this lands in
+# the WARN band (>=80% of budget, <100%) without also tripping HOLD.
+rm -rf "$BT/run3" "$BPROJ"
+mkdir -p "$BPROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":450,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":400}}}' > "$BPROJ/s1.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run3" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
+WARNHOLD="$(cat "$BT/run3/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "WARN written at >=80% and <100% of budget" "$WARNHOLD" "WARN"
+case "$WARNHOLD" in *HOLD*) bad "WARN must not also say HOLD";; *) ok "WARN is textually distinct from HOLD";; esac
+
+section "fwf-budget-check.sh: unlimited (no budget configured) clears any stale hold"
+mkdir -p "$BT/run4"; printf 'HOLD — stale leftover\n' > "$BT/run4/BUDGET_HOLD"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run4" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET="" "$BC"
+[ -f "$BT/run4/BUDGET_HOLD" ] && bad "unlimited clears a stale hold" || ok "unlimited clears a stale hold"
+
+section "fwf-budget-check.sh: a role whose reader broke (stale, not unknown) fails CLOSED, distinct from a real HOLD"
+mkdir -p "$BT/run5/state/.__budget/usage-cache"
+jq -n '{files:{}, last_success_epoch:1000000000, totals:{input:100,cache_creation:0,cache_read:0,output:100}, model:"claude-sonnet-5"}' \
+  > "$BT/run5/state/.__budget/usage-cache/impl1.json"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run5" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects-missing" FWF_PAIRS=1 FWF_TOKEN_BUDGET=100000000 "$BC"
+FAILCLOSED="$(cat "$BT/run5/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "fail-closed UNKNOWN written when a role's reader broke" "$FAILCLOSED" "UNKNOWN"
+assert_contains "fail-closed message says FAIL-CLOSED"                    "$FAILCLOSED" "FAIL-CLOSED"
+assert_contains "fail-closed message says NOT over budget (never confused with a real HOLD)" "$FAILCLOSED" "NOT over budget"
+assert_contains "fail-closed message names the broken role"               "$FAILCLOSED" "impl1"
+
+section "fwf-budget-check.sh: dispatches via the fwf CLI"
+CLIRC=0
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run6" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" budget-check >/dev/null 2>&1 || CLIRC=$?
+[ "$CLIRC" = 0 ] && ok "'fwf budget-check' dispatches and exits 0 with no budget configured" \
+  || bad "'fwf budget-check' dispatches and exits 0" "exit $CLIRC"
+
+rm -f "$ROOT/profiles/.__budget.sh"
+
+section "BUDGET CHECK step-0 (issue #96): every REAL role-loop template carries it (composed/rendered, not a naive per-file grep)"
+# Every template dir under templates/ EXCEPT _local-issues/ (an addendum
+# fragment composed onto a base template's already-checked prompt — it has no
+# loop of its own, so it is correctly excluded, not missing coverage).
+for tdir in templates/*/; do
+  t="$(basename "$tdir")"
+  [ "$t" = "_local-issues" ] && continue
+  for tmplfile in "$tdir"*.tmpl; do
+    [ -e "$tmplfile" ] || continue
+    role="$(basename "$tmplfile" .tmpl)"
+    rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$tmplfile' 1" 2>/dev/null || true)"
+    case "$rendered" in
+      *"STOP CHECK"*)
+        case "$rendered" in
+          *"BUDGET CHECK"*) ok "$t/$role: BUDGET CHECK present (composed/rendered)";;
+          *) bad "$t/$role: BUDGET CHECK present (composed/rendered)" "template has a loop (STOP CHECK) but no BUDGET CHECK";;
+        esac
+        ;;
+      *) : ;;  # no STOP CHECK -> not a looped role prompt (nothing to require here)
+    esac
+  done
+done
+# The _local-issues addenda are one-line fragments with no loop of their own —
+# confirm they do NOT independently need the check (they compose onto a base
+# .tmpl that already has it, verified above).
+for f in templates/_local-issues/*.tmpl; do
+  [ -e "$f" ] || continue
+  case "$(cat "$f")" in
+    *"STOP CHECK"*) bad "_local-issues/$(basename "$f"): addenda should have no loop of their own" ;;
+    *) ok "_local-issues/$(basename "$f"): correctly has no independent loop (composes onto a base that's already covered)" ;;
+  esac
+done
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

@@ -4,6 +4,8 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
 
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
+0b. BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
+
 1. ADDRESS YOUR OPEN PR — self-recover a bounced or conflicting PR; NEVER deadlock by treating "my PR is open and unmerged" as "idle, awaiting review." List it WITH mergeable state:
    gh pr list --state open --json number,headRefName,isDraft,mergeStateStatus --jq '.[] | select(.headRefName|startswith("impl__ID__/"))'
    REVIEW SIGNAL (issue #82): the formal review-decision field is USELESS on this shared account — every role authenticates as the same GitHub user, so qa__ID__ can never `gh pr review --request-changes` your PR, and the field stays permanently empty. qa__ID__ instead posts a PLAIN comment whose first line is exactly `QA-CHANGES-REQUESTED: #<n>` or `QA-APPROVED: #<n>`. Get the authoritative state with `fwf pr-review-state <n>` (see docs/shared-account.md) — NEVER conclude "no changes requested" from an empty reviewDecision/mergeStateStatus. THE GUARD (separates the deadlock from healthy idle, and kills re-push thrash): act ONLY on NEW INFORMATION; otherwise idle. For your one open impl__ID__/ PR, do the FIRST that applies:
