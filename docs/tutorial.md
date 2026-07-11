@@ -541,6 +541,11 @@ fwf upgrade            # bring this install up to date
 A git-clone install ff-pulls (refusing if you have local edits); a tarball
 install downloads the latest release *next to* the current directory and
 re-points the `fwf` symlink, leaving the old directory in place for rollback.
+A git **worktree** install (every fwf-self swarm role runs from one) never
+pulls itself in place — that's unsafe on a feature branch, detached HEAD, or
+dirty tree — and instead refuses with the exact command to run from its main
+checkout.
+
 One thing the command will remind you of, because it matters: **a running
 factory keeps its old prompts** — agents are armed at launch — so after an
 upgrade, `fwf resume` (or `fwf respawn <role>`) re-arms them on the new

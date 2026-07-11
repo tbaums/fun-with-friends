@@ -120,6 +120,26 @@ EOF
 
 die() { echo "fwf: $*" >&2; exit 1; }
 
+# A linked git worktree has .git as a FILE ("gitdir: <repo>/.git/worktrees/<n>"),
+# never a directory — unlike a plain clone (dir) or a tarball extract (absent).
+# Pulling a worktree in place is unsafe (it may be on a feature branch,
+# detached HEAD, or dirty), so `upgrade` must never treat one as a plain-clone
+# pull. Detection is pure text parsing of the gitdir-file (no `git` call), so
+# it still works when the worktree's linked repo can't be resolved.
+#
+# Echoes the worktree's main checkout root and returns 0 if $1/.git is a
+# worktree gitdir-file whose target we can parse; returns 1 (nothing echoed)
+# if $1/.git is a plain directory, absent, or an unrecognized gitdir-file shape.
+fwf_worktree_main_root() {
+  local dir="$1" link
+  [ -f "$dir/.git" ] || return 1
+  link="$(sed -n 's/^gitdir: *//p' "$dir/.git")"
+  case "$link" in
+    */.git/worktrees/*) echo "${link%/.git/worktrees/*}"; return 0;;
+    *) return 1;;
+  esac
+}
+
 # --- profile helpers --------------------------------------------------------
 profiles_dir() { echo "$FWF_DIR/profiles"; }
 
@@ -330,7 +350,16 @@ case "$cmd" in
     latest="$(gh api "repos/$upgrade_repo/releases/latest" --jq .tag_name 2>/dev/null || true)"
     if [ -z "$latest" ]; then
       echo "fwf upgrade: could not query the latest release of $upgrade_repo (gh api failed — offline? unauthenticated?)." >&2
-      [ -e "$FWF_DIR/.git" ] && echo "  your install is a git clone — 'git -C $FWF_DIR pull --ff-only' upgrades it regardless." >&2
+      if [ -d "$FWF_DIR/.git" ]; then
+        echo "  your install is a git clone — 'git -C $FWF_DIR pull --ff-only' upgrades it regardless." >&2
+      elif [ -e "$FWF_DIR/.git" ]; then
+        wt_main="$(fwf_worktree_main_root "$FWF_DIR" || true)"
+        if [ -n "$wt_main" ]; then
+          echo "  your install is a git worktree — run 'fwf upgrade' (or 'git -C $wt_main pull --ff-only') from $wt_main instead." >&2
+        else
+          echo "  your install links to a git checkout via .git, but its target couldn't be resolved — find that checkout and run 'fwf upgrade' from there." >&2
+        fi
+      fi
       exit 1
     fi
     echo "fwf: installed $current · latest release ${latest#v}"
@@ -341,6 +370,19 @@ case "$cmd" in
         || die "upgrade: the clone at $FWF_DIR has local changes — commit or stash them first."
       git -C "$FWF_DIR" pull --ff-only || die "upgrade: git pull --ff-only failed (diverged from origin?)"
       echo "fwf: upgraded $current -> $(cat "$FWF_DIR/VERSION") (git pull in $FWF_DIR)."
+    elif [ -e "$FWF_DIR/.git" ]; then
+      # .git exists but isn't a plain directory — a linked worktree (the normal
+      # case for every fwf-self swarm role) or something unresolvable. Either
+      # way, pulling THIS checkout in place is unsafe (feature branch / detached
+      # HEAD / dirty), so refuse with guidance instead of guessing.
+      wt_main="$(fwf_worktree_main_root "$FWF_DIR" || true)"
+      if [ -n "$wt_main" ]; then
+        die "upgrade: $FWF_DIR is a git worktree, not the main checkout — upgrading it in place would be unsafe.
+  Run 'fwf upgrade' from $wt_main instead (equivalent: git -C $wt_main pull --ff-only)."
+      else
+        die "upgrade: $FWF_DIR/.git exists but isn't a plain git directory, and its target couldn't be resolved — refusing to guess.
+  Find the git checkout this install links to and run 'fwf upgrade' from there."
+      fi
     else
       base="$(dirname "$FWF_DIR")"
       newdir="$base/fwf-${latest#v}"
