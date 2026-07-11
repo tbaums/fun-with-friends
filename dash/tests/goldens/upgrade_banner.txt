@@ -1,0 +1,1 @@
+ ⬆ fwf v0.22.0 available (running 0.21.3) — run 'fwf upgrade'

@@ -709,6 +709,15 @@ fn ui(f: &mut Frame, app: &mut App) {
         .dashboard()
         .map(|d| d.needs_you.active)
         .unwrap_or(false);
+    // A yellow "upgrade available" banner (issue #94) — visually distinct from
+    // the red needs-you banner (different colour scheme, not just adjacent) so
+    // the two are never mistaken for each other. Stacks below needs-you: a
+    // blocked-on-you decision stays the first thing the eye hits.
+    let upgrade = app
+        .feed
+        .dashboard()
+        .map(|d| d.upgrade.available)
+        .unwrap_or(false);
 
     let mut constraints = vec![
         Constraint::Length(4), // header
@@ -716,6 +725,9 @@ fn ui(f: &mut Frame, app: &mut App) {
     ];
     if needs {
         constraints.push(Constraint::Length(1)); // needs-you banner
+    }
+    if upgrade {
+        constraints.push(Constraint::Length(1)); // upgrade-available banner
     }
     constraints.push(Constraint::Min(3)); // body
     constraints.push(Constraint::Length(1)); // footer / legend / status
@@ -731,6 +743,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     i += 1;
     if needs {
         render_needs_banner(f, chunks[i], app);
+        i += 1;
+    }
+    if upgrade {
+        render_upgrade_banner(f, chunks[i], app);
         i += 1;
     }
     render_body(f, chunks[i], app);
@@ -763,6 +779,26 @@ fn render_needs_banner(f: &mut Frame, area: Rect, app: &App) {
         Style::default()
             .bg(Color::Red)
             .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(para, area);
+}
+
+/// The upgrade-available banner (issue #94) — shown only when `upgrade.available`,
+/// full-width below the tabs (and below the needs-you banner, if both are active).
+/// Yellow/black — a deliberately different colour scheme from the red/white
+/// needs-you banner so the two are never confused for one another.
+fn render_upgrade_banner(f: &mut Frame, area: Rect, app: &App) {
+    let (current, latest) = app
+        .feed
+        .dashboard()
+        .map(|d| (d.upgrade.current.clone(), d.upgrade.latest.clone()))
+        .unwrap_or_default();
+    let text = format!(" ⬆ fwf {latest} available (running {current}) — run 'fwf upgrade' ");
+    let para = Paragraph::new(text).style(
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
             .add_modifier(Modifier::BOLD),
     );
     f.render_widget(para, area);
@@ -2273,6 +2309,7 @@ mod tests {
                 summary: "decision #101 awaiting you".into(),
             },
             floor_idle: data::FloorIdle::default(),
+            upgrade: data::UpgradeAvailable::default(),
         }
     }
 
@@ -2352,6 +2389,84 @@ mod tests {
             render_needs_banner(f, area, &app)
         });
         assert_golden("needs_you_banner", &buffer_to_text(&buf));
+    }
+
+    // issue #94: the upgrade-available banner.
+    #[test]
+    fn golden_upgrade_banner() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.upgrade = data::UpgradeAvailable {
+                available: true,
+                current: "0.21.3".into(),
+                latest: "v0.22.0".into(),
+            };
+        }
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_upgrade_banner(f, area, &app)
+        });
+        assert_golden("upgrade_banner", &buffer_to_text(&buf));
+    }
+
+    // Real-content check (this repo's own hard lesson: a test that seeds short
+    // stub data can't catch overflow that only appears with realistic content).
+    // A long version string must not wrap or overflow the header row width.
+    #[test]
+    fn golden_full_frame_activity_tab_with_upgrade_banner_long_version() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.needs_you.active = false;
+            d.upgrade = data::UpgradeAvailable {
+                available: true,
+                current: "0.21.3-dev.20260710+deadbeef".into(),
+                latest: "v0.22.0-rc.1+cafef00d".into(),
+            };
+        }
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        for (i, row) in text.lines().enumerate() {
+            assert!(
+                row.chars().count() <= 100,
+                "row {i} overflows the 100-col terminal width: {row:?}"
+            );
+        }
+        assert_golden("full_frame_activity_upgrade_long_version", &text);
+    }
+
+    // Both banners can be active at once (a blocked decision AND a stale
+    // install aren't mutually exclusive) — needs-you stays first; neither
+    // banner should push the other off-screen or overlap.
+    #[test]
+    fn golden_full_frame_both_banners_active() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.upgrade = data::UpgradeAvailable {
+                available: true,
+                current: "0.21.3".into(),
+                latest: "v0.22.0".into(),
+            };
+        }
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        assert_golden("full_frame_both_banners", &buffer_to_text(&buf));
+    }
+
+    // The banner must NOT render when up to date — the golden fixture's default
+    // `upgrade: UpgradeAvailable::default()` (available: false) already covers
+    // this implicitly for every other full-frame golden, but assert it directly.
+    #[test]
+    fn golden_full_frame_no_upgrade_banner_when_up_to_date() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.needs_you.active = false;
+            assert!(!d.upgrade.available, "fixture default must be up to date");
+        }
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            !text.contains("fwf upgrade"),
+            "no upgrade banner should render when up to date"
+        );
     }
 
     #[test]

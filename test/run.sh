@@ -654,7 +654,7 @@ assert_contains "gh failure hints at clone pull" "$UPF" "pull --ff-only"
 # standalone install whose .git is a file.
 WT71="$TMP/wt71"; mkdir -p "$WT71/lib"
 cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WT71/"
-cp "$ROOT/lib/detect.sh" "$ROOT/lib/profile.sh" "$WT71/lib/"
+cp "$ROOT/lib"/*.sh "$WT71/lib/"
 printf 'gitdir: /some/repo/.git/worktrees/wt71\n' > "$WT71/.git"
 
 # issue #78: pulling a worktree IN PLACE is unsafe (feature branch / detached
@@ -681,7 +681,7 @@ assert_contains "online worktree refusal names fwf upgrade"           "$UPWTONLI
 # which would extract a release right on top of an existing git checkout.
 WTDANGLE="$TMP/wtdangle"; mkdir -p "$WTDANGLE/lib"
 cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WTDANGLE/"
-cp "$ROOT/lib/detect.sh" "$ROOT/lib/profile.sh" "$WTDANGLE/lib/"
+cp "$ROOT/lib"/*.sh "$WTDANGLE/lib/"
 printf 'not a gitdir line\n' > "$WTDANGLE/.git"
 DANGLE="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$WTDANGLE/fwf" upgrade 2>&1)" \
   && bad "dangling .git refuses (exit nonzero)" "$DANGLE" \
@@ -827,6 +827,95 @@ NCVALIMPL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/li
 case "$NCVALIMPL" in *"git switch staging &&"*) bad "analyst: never checks out local staging";; *) ok "analyst: never checks out local staging";; esac
 NCQA="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
 assert_contains "qa: told never to check out shared staging" "$NCQA" "NEVER \`git switch\`/\`git checkout\` the shared staging"
+
+section "fwf startup upgrade-staleness check (issue #94, from the #79 proposal) — hermetic, stubbed gh"
+VSSTUB="$TMP/vsstub"; mkdir -p "$VSSTUB"
+cat > "$VSSTUB/gh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  api)
+    [ -n "${VS_CALL_LOG:-}" ] && echo x >> "$VS_CALL_LOG"
+    [ "${VS_HANG:-0}" = 1 ] && sleep 300
+    [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
+    echo "${FAKE_LATEST:-v0.0.0}";;
+  *) exit 1;;
+esac
+EOS
+chmod +x "$VSSTUB/gh"
+vs_run() { PATH="$VSSTUB:$PATH" FWF_RUN_DIR="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $2"; }
+
+# (a) local == latest -> no warning
+VSRUN="$TMP/vs-a"; mkdir -p "$VSRUN/upgrade-check"
+printf 'v%s' "$REALV" > "$VSRUN/upgrade-check/latest"; printf '%s' "$(date +%s)" > "$VSRUN/upgrade-check/ts"
+VSA="$(vs_run "$VSRUN" 'fwf_version_skew_check')"
+[ -z "$VSA" ] && ok "(a) local == latest: no warning" || bad "(a) local == latest: no warning" "got [$VSA]"
+
+# (b) local > cached-latest (maintainer-ahead / just-released box) -> no warning
+VSRUN="$TMP/vs-b"; mkdir -p "$VSRUN/upgrade-check"
+printf 'v0.0.1' > "$VSRUN/upgrade-check/latest"; printf '%s' "$(date +%s)" > "$VSRUN/upgrade-check/ts"
+VSB="$(vs_run "$VSRUN" 'fwf_version_skew_check')"
+[ -z "$VSB" ] && ok "(b) local > cached-latest: no backwards-upgrade warning" || bad "(b) local > cached-latest: no backwards-upgrade warning" "got [$VSB]"
+
+# (c) local < latest -> warning fires, on all three surfaces
+VSRUN="$TMP/vs-c"; mkdir -p "$VSRUN/upgrade-check"
+printf 'v99.0.0' > "$VSRUN/upgrade-check/latest"; printf '%s' "$(date +%s)" > "$VSRUN/upgrade-check/ts"
+VSC="$(vs_run "$VSRUN" 'fwf_version_skew_check')"
+assert_eq "(c) local < latest: check reports cur|latest" "$REALV|v99.0.0" "$VSC"
+VSC_WARN="$(vs_run "$VSRUN" 'fwf_version_skew_warn' 2>&1)"
+assert_contains "(c) fwf-up warning fires" "$VSC_WARN" "v99.0.0 is released"
+VSC_DOC="$(vs_run "$VSRUN" 'fwf_doctor_version_line')"
+assert_contains "(c) doctor line fires" "$VSC_DOC" "OUT OF DATE"
+
+# cache location: must be under $FWF_RUN/upgrade-check, never $TMPDIR. The
+# refresh that creates the dir is detached (that's the whole point — see
+# never-block below), so give it a moment to land before asserting on it.
+VSRUN="$TMP/vs-loc"
+TMPDIR="$TMP/vs-loc-tmpdir" vs_run "$VSRUN" 'fwf_version_skew_check' >/dev/null
+sleep 1
+[ -d "$VSRUN/upgrade-check" ] && ok "cache created under \$FWF_RUN" || bad "cache created under \$FWF_RUN"
+[ -e "$TMP/vs-loc-tmpdir/.fwf-latest-release" ] && bad "cache NOT written under \$TMPDIR" || ok "cache NOT written under \$TMPDIR"
+
+# never-block: gh hangs -> fwf_version_skew_check still returns near-instantly
+VSRUN="$TMP/vs-hang"
+VS_START="$(date +%s)"
+VS_HANG=1 vs_run "$VSRUN" 'fwf_version_skew_check' >/dev/null 2>&1
+VS_ELAPSED=$(( $(date +%s) - VS_START ))
+[ "$VS_ELAPSED" -lt 5 ] && ok "never-block: returns instantly even with gh hung" || bad "never-block: returns instantly even with gh hung" "took ${VS_ELAPSED}s"
+pkill -f "sleep 300" >/dev/null 2>&1 || true   # reap the stub's detached hung refresh
+
+# doctor could-not-check: ts past 3x the staleness window reads as could-not-check,
+# never as up-to-date (a dead checker must be visibly distinct)
+VSRUN="$TMP/vs-stale"; mkdir -p "$VSRUN/upgrade-check"
+printf 'v99.0.0' > "$VSRUN/upgrade-check/latest"
+printf '%s' "$(( $(date +%s) - 43200*4 ))" > "$VSRUN/upgrade-check/ts"
+VS_STALE_DOC="$(vs_run "$VSRUN" 'fwf_doctor_version_line')"
+assert_contains "doctor: stale ts reports could-not-check, not stale data" "$VS_STALE_DOC" "could not check"
+
+# per-version silence: acked == latest silences; an older ack (or a newer
+# release than the ack) re-arms
+VSRUN="$TMP/vs-ack"; mkdir -p "$VSRUN/upgrade-check"
+printf 'v99.0.0' > "$VSRUN/upgrade-check/latest"; printf '%s' "$(date +%s)" > "$VSRUN/upgrade-check/ts"
+VS_ACKED="$(FWF_ACK_VERSION=v99.0.0 vs_run "$VSRUN" 'fwf_version_skew_check')"
+[ -z "$VS_ACKED" ] && ok "silence: ack of current latest suppresses the warning" || bad "silence: ack of current latest suppresses the warning" "got [$VS_ACKED]"
+VS_REARMED="$(FWF_ACK_VERSION=v98.0.0 vs_run "$VSRUN" 'fwf_version_skew_check')"
+assert_eq "silence: a newer release re-arms despite an older ack" "$REALV|v99.0.0" "$VS_REARMED"
+
+# full kill switch: disables the check ENTIRELY — no cache read/write, no network
+VSRUN="$TMP/vs-killswitch"
+VS_SKIP="$(FWF_SKIP_VERSION_CHECK=1 vs_run "$VSRUN" 'fwf_version_skew_check')"
+[ -z "$VS_SKIP" ] && ok "kill switch: no warning" || bad "kill switch: no warning"
+[ -e "$VSRUN/upgrade-check" ] && bad "kill switch: no cache dir touched at all" || ok "kill switch: no cache dir touched at all"
+
+# single-flight: N concurrent stale-triggered refreshes make AT MOST ONE gh call
+VSRUN="$TMP/vs-singleflight"
+VS_CALLS="$TMP/vs-call-log"; : > "$VS_CALLS"
+( VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
+  VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
+  VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
+  wait )
+sleep 1
+VS_CALL_COUNT="$(wc -l < "$VS_CALLS" | tr -d ' ')"
+[ "$VS_CALL_COUNT" -le 1 ] && ok "single-flight: >=3 concurrent refreshes make <=1 gh call" || bad "single-flight: >=3 concurrent refreshes make <=1 gh call" "made $VS_CALL_COUNT calls"
 
 section "profile persistence of template/issues + per-template identity (issues #30/#31)"
 cat > "$ROOT/profiles/.__persist.sh" <<EOF

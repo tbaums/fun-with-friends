@@ -29,6 +29,7 @@ unset _src _dir
 source "$FWF_DIR/config.sh"
 source "$FWF_DIR/lib/detect.sh"
 source "$FWF_DIR/lib/profile.sh"
+source "$FWF_DIR/lib/version_check.sh"
 
 usage() {
   cat <<'EOF'
@@ -240,6 +241,7 @@ doctor() {
   fi
   printf '  workspace : %s\n' "$FWF_WORKSPACE_BASE"
   printf '  run dir   : %s\n' "$FWF_RUN"
+  fwf_doctor_version_line
   [ "$ok" = 0 ] && echo "  -> all good." || echo "  -> fix the items above before launching."
   return "$ok"
 }

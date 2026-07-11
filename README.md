@@ -378,6 +378,19 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
   release. Authorize the PM to "lift the freeze" afterward.
+- **Upgrade staleness check:** `fwf up` and `fwf doctor` check (never blocking —
+  the network call, if any, always runs detached in the background) whether a
+  newer fwf release exists and warn if you're behind. `fwf doctor` reports one
+  of three states: up to date, out of date (with the upgrade command), or
+  *could not check* (a dead/unreachable checker never masquerades as "you're
+  current"). The check surfaces on the `fwf dash` header too — see
+  `docs/dash.md`. Cache lives at `$FWF_RUN/upgrade-check/` (shared across every
+  profile on the machine), refreshed at most once per `FWF_VERSION_CHECK_WINDOW`
+  seconds (default 12h). `FWF_ACK_VERSION=vX.Y.Z` silences the banner/warning
+  for that specific release only — a newer release re-arms it even if you
+  acknowledged an earlier one. `FWF_SKIP_VERSION_CHECK=1` is the full kill
+  switch for offline/air-gapped use — it disables the check entirely (no cache
+  read, no network, ever), not just the banner.
 
 ## Learn more
 
