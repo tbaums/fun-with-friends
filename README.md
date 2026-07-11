@@ -293,8 +293,11 @@ fwf upgrade [--check]                               self-upgrade to the latest r
 fwf doctor | profiles | templates | version | help  (version also: -v, --version)
 ```
 
-Use `--profile NAME` (or `FWF_PROFILE=NAME`) to pick among profiles; with only
-one profile present it's selected automatically.
+Use `--profile NAME` (or `--profile=NAME`, or `FWF_PROFILE=NAME`) to pick among
+profiles; with only one profile present it's selected automatically. `--profile`
+works before OR after the subcommand (`fwf --profile NAME dash` and
+`fwf dash --profile NAME` both work) — if given in both spots, the later one
+wins.
 
 ### Sizing, models, and factory templates
 
