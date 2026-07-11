@@ -368,15 +368,43 @@ assert_contains "gh failure hints at clone pull" "$UPF" "pull --ff-only"
 
 # regression (issue #71): a git *worktree* has .git as a FILE (gitdir: …), not
 # a dir — and every fwf-self swarm role runs from a worktree.  Build a
-# standalone install whose .git is a file and assert the clone-pull hint still
-# fires.  Goes RED on the old `[ -d ]` check even in a plain-clone CI run
-# (where $ROOT/.git is a real dir and the assertion above can't catch it).
+# standalone install whose .git is a file.
 WT71="$TMP/wt71"; mkdir -p "$WT71/lib"
 cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WT71/"
 cp "$ROOT/lib/detect.sh" "$ROOT/lib/profile.sh" "$WT71/lib/"
 printf 'gitdir: /some/repo/.git/worktrees/wt71\n' > "$WT71/.git"
+
+# issue #78: pulling a worktree IN PLACE is unsafe (feature branch / detached
+# HEAD / dirty) — a worktree install must be pointed at its main checkout
+# instead, never advised (or made) to pull itself. Covers both the offline
+# hint (fwf:329) and the online upgrade dispatch (fwf:335). Goes RED on the
+# old `[ -e ]`-only offline hint / `[ -d ]`-only dispatch, which both treated
+# this worktree as either "plain clone, pull it" or "no .git, tarball over it."
 UPWT="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$WT71/fwf" upgrade --check 2>&1)"
-assert_contains "worktree (.git file) still hints at clone pull" "$UPWT" "pull --ff-only"
+assert_contains "offline+worktree points at the main checkout" "$UPWT" "/some/repo"
+case "$UPWT" in
+  *"-C $WT71"*) bad "offline+worktree must not advise pulling the worktree itself" ;;
+  *)            ok "offline+worktree must not advise pulling the worktree itself" ;;
+esac
+
+UPWTONLINE="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$WT71/fwf" upgrade 2>&1)" \
+  && bad "online worktree upgrade refuses (exit nonzero)" "$UPWTONLINE" \
+  || ok "online worktree upgrade refuses (exit nonzero)"
+assert_contains "online worktree refusal points at the main checkout" "$UPWTONLINE" "/some/repo"
+assert_contains "online worktree refusal names fwf upgrade"           "$UPWTONLINE" "fwf upgrade"
+
+# dangling/unresolvable .git (present, not a dir, not a recognized worktree
+# gitdir shape): refuse — never silently fall through to the tarball path,
+# which would extract a release right on top of an existing git checkout.
+WTDANGLE="$TMP/wtdangle"; mkdir -p "$WTDANGLE/lib"
+cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WTDANGLE/"
+cp "$ROOT/lib/detect.sh" "$ROOT/lib/profile.sh" "$WTDANGLE/lib/"
+printf 'not a gitdir line\n' > "$WTDANGLE/.git"
+DANGLE="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$WTDANGLE/fwf" upgrade 2>&1)" \
+  && bad "dangling .git refuses (exit nonzero)" "$DANGLE" \
+  || ok "dangling .git refuses (exit nonzero)"
+assert_contains "dangling .git refusal does not silently tarball" "$DANGLE" "refusing to guess"
+[ -e "$WTDANGLE/fwf-99.0.0" ] && bad "dangling .git must not extract a tarball" || ok "dangling .git must not extract a tarball"
 
 # end-to-end TARBALL upgrade: old extracted install -> stubbed latest release
 bash "$ROOT/scripts/package.sh" >/dev/null
