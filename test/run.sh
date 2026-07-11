@@ -140,6 +140,28 @@ assert_contains "help mentions start" "$("$ROOT/fwf" help)" "start <url|path>"
 # bare runner with no tmux/gh/claude) — assert it RAN, not that it returned 0.
 DOC="$("$ROOT/fwf" doctor 2>&1 || true)"
 assert_contains "doctor runs" "$DOC" "workspace :"
+
+section "fwf doctor: usage-schema smoke-test (#95) — catches Claude Code transcript drift before it silently under-reports"
+DT="$TMP/doctor-usage"; mkdir -p "$DT/pwd" "$DT/claude-projects"
+DSLUG_DIR="$(cd "$DT/pwd" && pwd)"; DSLUG="${DSLUG_DIR//\//-}"; DSLUG="${DSLUG//./-}"
+doctor_usage() { ( cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf" doctor 2>&1 || true ) | grep "usage schema"; }
+assert_contains "no transcript dir yet -> skip, not a false pass/fail" "$(doctor_usage)" "skip (no Claude Code transcript dir"
+mkdir -p "$DT/claude-projects/$DSLUG"
+printf '{"type":"user","message":{}}\n' > "$DT/claude-projects/$DSLUG/s.jsonl"
+assert_contains "transcript dir but no assistant line yet -> skip, not a false pass" "$(doctor_usage)" "no assistant-type line found"
+printf '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":1}}}\n' >> "$DT/claude-projects/$DSLUG/s.jsonl"
+assert_contains "matching schema -> ok" "$(doctor_usage)" "usage schema: ok"
+printf '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"totally_different_field":1}}}\n' > "$DT/claude-projects/$DSLUG/s.jsonl"
+DRIFT="$(doctor_usage)"
+assert_contains "drifted schema -> WARNING, names the expected shape" "$DRIFT" "WARNING"
+assert_contains "drift warning names the fields fwf usage reads" "$DRIFT" "message.usage.{input,output}_tokens"
+# Differential, not absolute: doctor's exit also reflects unrelated checks
+# (tmux/git/gh/claude presence) that vary by environment, so compare the SAME
+# environment with vs. without the drifted transcript rather than asserting
+# a specific exit code.
+EXIT_NO_TRANSCRIPT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects-none" "$ROOT/fwf" doctor >/dev/null 2>&1; echo $?)"
+EXIT_WITH_DRIFT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf" doctor >/dev/null 2>&1; echo $?)"
+assert_eq "schema drift is informational only — doesn't change doctor's exit code" "$EXIT_NO_TRANSCRIPT" "$EXIT_WITH_DRIFT"
 # profiles lists at least the example template shipped in the repo
 assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
 # captain --print renders the CAPTAIN prompt with placeholders resolved
