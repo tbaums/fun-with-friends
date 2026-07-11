@@ -130,6 +130,24 @@ assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
 assert_contains "claim is verified after post" "$IMPL_RUN" "RE-CHECK you won"
 assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
 
+section "implementer resumes its own in-flight draft, never idles behind it (#99 Fix 1)"
+assert_contains "dev: claim-only draft is a resume target"     "$IMPL_RUN" "RESUME it"
+assert_contains "dev: checks out own branch before resuming"   "$IMPL_RUN" "starts on the wrong branch with no memory of the claim"
+assert_contains "dev: bounded escalation on a stalled draft"   "$IMPL_RUN" "2+ consecutive cycles"
+assert_contains "dev: escalation posts the @captain BLOCKED comment" "$IMPL_RUN" "stalled with no progress"
+for t in refactor ideation validate; do
+  TR="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/implementer.tmpl' 2")"
+  assert_contains "$t: claim-only draft is a resume target"   "$TR" "RESUME it"
+  assert_contains "$t: checks out own branch before resuming" "$TR" "starts on the wrong branch with no memory of the claim"
+  assert_contains "$t: bounded escalation on a stalled draft" "$TR" "2+ consecutive cycles"
+done
+# dev-sre has no own implementer.tmpl (FWF_TEMPLATE_BASE=dev) — confirm it
+# actually inherits dev's, so the Fix 1 language reaches it too.
+assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
+  "$([ -f "$ROOT/templates/dev-sre/implementer.tmpl" ] && echo present)"
+DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
+assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
+
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
 assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
