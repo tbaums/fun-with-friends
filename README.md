@@ -289,7 +289,9 @@ fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
 fwf upgrade [--check]                               self-upgrade to the latest release (git clones
-                                                    ff-pull; tarball installs download + re-link)
+                                                    ff-pull; tarball installs download + re-link;
+                                                    worktree installs refuse-with-guidance to their
+                                                    main checkout — never pulled in place)
 fwf doctor | profiles | templates | version | help  (version also: -v, --version)
 ```
 
