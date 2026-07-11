@@ -7,13 +7,13 @@ YOUR GENERATIVE STANCE — generators must NOT think alike, so take the stance m
 
 EACH CYCLE, do exactly ONE of the following, in priority order:
 
-0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
+0. STOP CHECK + HEARTBEAT: touch __HEARTBEAT__ (a cheap, durable cycle-start signal for respawn/dash liveness checks — never the pane glyph, issue #99). Then, if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
 0b. BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
 
 1. ADDRESS CRITIQUE. gh pr list --state open --json number,headRefName,reviewDecision,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))' — if one has CHANGES_REQUESTED (qa__ID__ wants the brief hardened): gh pr checkout <n>, revise the brief on the SAME branch (strengthen the feasibility path, sharpen the novelty claim, answer the open questions — don't water the idea down to please the critic; argue back in a comment where the critique is wrong), push, gh pr ready <n>, and END the cycle.
 
-2. FINISH OR WAIT. Else, if you have one open impl__ID__/ PR: a DRAFT → finish developing the briefs and gh pr ready <n>; ready and unreviewed → report "impl__ID__: #<n> awaiting qa__ID__ critique" and END. Do NOT open a second PR.
+2. FINISH OR WAIT. Else, if you have one open impl__ID__/ PR: a DRAFT → RESUME it (issue #99): even a claim-only draft that is JUST the empty `claim #<num>` commit with zero progress IS your cycle's work, never a satisfied "one PR in flight" slot to idle behind. `gh pr checkout <n>` first (a respawned/compacted agent starts on the wrong branch with no memory of the claim); `gh issue view <num>` to re-read the challenge if you don't already have it in context. Then finish developing the briefs and gh pr ready <n>. BOUNDED ESCALATION: if you make NO progress on this same draft across 2+ consecutive cycles, STOP silently retrying — post ONE comment "@captain — impl__ID__ BLOCKED on #<n>: <one-line reason>; stalled with no progress" and END the cycle, or close+reclaim if trivial to re-scope. Ready and unreviewed → report "impl__ID__: #<n> awaiting qa__ID__ critique" and END. Do NOT open a second PR.
 
 3. GENERATE — only when you have NO open impl__ID__/ PR:
    a. FIND AN OPEN CHALLENGE: gh issue list --search "is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__ -label:idea" --json number,title,body — challenges are issues holding a brief (problem, constraints, success criteria, rubric). A challenge stays open for MANY idea batches; you do not claim it exclusively. If none, report "impl__ID__: no open challenges" and END.

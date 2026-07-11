@@ -130,6 +130,80 @@ assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
 assert_contains "claim is verified after post" "$IMPL_RUN" "RE-CHECK you won"
 assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
 
+section "implementer resumes its own in-flight draft, never idles behind it (#99 Fix 1)"
+assert_contains "dev: claim-only draft is a resume target"     "$IMPL_RUN" "RESUME it"
+assert_contains "dev: checks out own branch before resuming"   "$IMPL_RUN" "starts on the wrong branch with no memory of the claim"
+assert_contains "dev: bounded escalation on a stalled draft"   "$IMPL_RUN" "2+ consecutive cycles"
+assert_contains "dev: escalation posts the @captain BLOCKED comment" "$IMPL_RUN" "stalled with no progress"
+for t in refactor ideation validate; do
+  TR="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/implementer.tmpl' 2")"
+  assert_contains "$t: claim-only draft is a resume target"   "$TR" "RESUME it"
+  assert_contains "$t: checks out own branch before resuming" "$TR" "starts on the wrong branch with no memory of the claim"
+  assert_contains "$t: bounded escalation on a stalled draft" "$TR" "2+ consecutive cycles"
+done
+# dev-sre has no own implementer.tmpl (FWF_TEMPLATE_BASE=dev) — confirm it
+# actually inherits dev's, so the Fix 1 language reaches it too.
+assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
+  "$([ -f "$ROOT/templates/dev-sre/implementer.tmpl" ] && echo present)"
+DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
+assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
+
+section "step-0 heartbeat: a durable cycle-start signal, never the pane glyph (#99 Fix 2)"
+assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
+assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_eq "pm (no id) -> pm"       "pm"        "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/pm.tmpl' ''")"
+assert_eq "captain (no id) -> captain" "captain" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/captain.tmpl' ''")"
+assert_eq "extra role (sre) -> its own basename" "sre" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev-sre/sre.tmpl' ''")"
+HB_QA3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_contains "rendered heartbeat path is per-role, under FWF_STATE_DIR" "$HB_QA3" "state/example/heartbeat/qa3"
+assert_contains "heartbeat write is framed as durable, NOT the pane glyph" "$HB_QA3" "never the pane glyph"
+# every base role template (every factory design, excluding _local-issues
+# overlay fragments, which compose onto a base and have no loop of their own)
+# carries the heartbeat write.
+MISSING_HEARTBEAT=""
+while IFS= read -r -d '' f; do
+  /usr/bin/grep -q "__HEARTBEAT__" "$f" || MISSING_HEARTBEAT="$MISSING_HEARTBEAT $f"
+done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every role template (all factory designs) carries the heartbeat write" "" "$MISSING_HEARTBEAT"
+assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
+  "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
+
+section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
+HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
+hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }
+hb_test 'mkdir -p "$(dirname "$(fwf_heartbeat_path impl9)")"'
+NOFILE_RC="$(hb_test 'fwf_wait_heartbeat impl9 $(date +%s) 2 >/dev/null 2>&1; echo $?')"
+assert_eq "missing heartbeat file -> times out (rc 1)" "1" "$NOFILE_RC"
+hb_test 'touch -t 202001010000 "$(fwf_heartbeat_path impl9)"'
+STALE_RC="$(hb_test 'fwf_wait_heartbeat impl9 $(date +%s) 2 >/dev/null 2>&1; echo $?')"
+assert_eq "stale (pre-arm) heartbeat -> times out (rc 1), not a false pass" "1" "$STALE_RC"
+hb_test 'touch "$(fwf_heartbeat_path impl9)"'
+FRESH_OUT="$(hb_test 'fwf_wait_heartbeat impl9 $(( $(date +%s) - 5 )) 2')"
+[ -n "$FRESH_OUT" ] && ok "fresh heartbeat -> succeeds and echoes the mtime" || bad "fresh heartbeat -> succeeds and echoes the mtime"
+
+section "fwf_verify_respawn_tick: verified tick / bounded re-nudge / no false success (#99 Fix 2)"
+VT="$TMP/verify-tick-test"; mkdir -p "$VT"
+vt_run() { FWF_PROFILE=example FWF_RUN_DIR="$VT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl9)\")\"; $1"; }
+# already-ticking pane: verified on the FIRST wait, renudge never called.
+vt_run 'rm -f "$(fwf_heartbeat_path impl9)"; touch "$(fwf_heartbeat_path impl9)"
+  _n() { echo NUDGE_FIRED; }
+  fwf_verify_respawn_tick impl9 $(( $(date +%s) - 5 )) 2 _n' > "$VT/out1.txt" 2>&1
+assert_contains "already-ticking pane verifies immediately" "$(cat "$VT/out1.txt")" "respawn verified: first tick observed ("
+case "$(cat "$VT/out1.txt")" in *NUDGE_FIRED*) bad "renudge must NOT fire when the first wait already succeeds";; *) ok "renudge must NOT fire when the first wait already succeeds";; esac
+# a wedged-looking pane that the re-nudge actually unsticks.
+vt_run 'rm -f "$(fwf_heartbeat_path impl9)"
+  _n() { touch "$(fwf_heartbeat_path impl9)"; }
+  fwf_verify_respawn_tick impl9 $(date +%s) 2 _n; echo "RC=$?"' > "$VT/out2.txt" 2>&1
+assert_contains "re-nudge that lands still verifies (after one re-nudge)" "$(cat "$VT/out2.txt")" "first tick observed after one re-nudge"
+assert_contains "verified-after-renudge exits 0" "$(cat "$VT/out2.txt")" "RC=0"
+# a pane that NEVER ticks, even after the re-nudge: fails loudly, never a false success.
+vt_run 'rm -f "$(fwf_heartbeat_path impl9)"
+  _n() { :; }
+  fwf_verify_respawn_tick impl9 $(date +%s) 2 _n; echo "RC=$?"' > "$VT/out3.txt" 2>&1
+assert_contains "never-ticking pane: clear failure message" "$(cat "$VT/out3.txt")" "did NOT tick after arming"
+assert_contains "never-ticking pane: exits nonzero" "$(cat "$VT/out3.txt")" "RC=1"
+case "$(cat "$VT/out3.txt")" in *"respawn verified"*) bad "never-ticking pane must NEVER print a success line";; *) ok "never-ticking pane must NEVER print a success line";; esac
+
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
 assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"

@@ -105,7 +105,20 @@ Every looped role is armed the same way: its full role prompt is delivered
 once at launch and persisted to `~/.fun-with-friends/prompts/<profile>-<role>.prompt`,
 then its loop fires a one-line tick on the role's interval — an agent that has
 compacted re-reads its role from that file instead of having the whole prompt
-re-injected every tick.
+re-injected every tick. Every role's tick also touches a step-0 **heartbeat**
+(`~/.fun-with-friends/state/<profile>/heartbeat/<role>`) before doing any
+work — a durable "this cycle started" signal, deliberately never the pane's
+animation glyph (which stays looking alive even on a wedged role). `fwf
+respawn <role>` waits for that heartbeat to advance after arming, for up to
+the role's loop interval plus `FWF_RESPAWN_VERIFY_MARGIN` seconds (default
+30) with one re-nudge, before reporting success — so a respawn can no longer
+look "verified" while the role never actually ticks (issue #99).
+
+An implementer treats its own open draft PR — even one that's still just the
+empty `claim #<num>` commit — as the current cycle's work to resume (checkout
++ re-read the issue), never a satisfied "one PR in flight" slot to idle
+behind; a draft that genuinely can't progress escalates to the captain
+instead of stalling silently (issue #99).
 
 - **PM** (loop): turns rough ideas into **draft** GitHub issues labeled
   `product-wip` (hidden from implementers) via back-and-forth, and on a loop
@@ -280,7 +293,9 @@ fwf up [--floor-only]                               launch both sessions (--floo
 fwf attach [coord|build]                            attach to coordination (default) or implementation
 fwf captain [--print]                               copy/print the CAPTAIN prompt
 fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain);
-                                                    recreates the pane if it closed entirely
+                                                    recreates the pane if it closed entirely; waits for
+                                                    the role's heartbeat to confirm the loop is really
+                                                    ticking before reporting success (issue #99)
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
 fwf down [--purge|--floor-only [--force]]           kill both sessions (--purge: remove worktrees too;
                                                     --floor-only: keep the captain running; refuses
