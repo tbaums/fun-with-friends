@@ -431,6 +431,14 @@ $(cat "$addendum")"
   fi
   devui="${DEV_UI_HINT//__DATA__/$(data_dir "impl$id")}"
   text="${text//__ID__/$id}"
+  # issue #99: bake the CURRENT profile/run-dir as literals — the agent's own
+  # shell (a tmux pane) has no guarantee of inheriting fresh FWF_PROFILE /
+  # FWF_RUN_DIR env (tmux gives new panes the SERVER's original env, not the
+  # invoking client's), so a bare `source ./lib.sh` in the heartbeat-touch
+  # instruction would silently default to the wrong profile/run dir and the
+  # heartbeat would never land where fwf-respawn.sh is actually looking.
+  text="${text//__PROFILE__/$PROFILE}"
+  text="${text//__RUN_DIR__/$FWF_RUN}"
   text="${text//__STAGING__/$STAGING_BRANCH}"
   text="${text//__INTEGRATION__/$INTEGRATION_BRANCH}"
   text="${text//__DEFAULT__/$DEFAULT_BRANCH}"

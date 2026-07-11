@@ -63,12 +63,19 @@ else
   CP="$(fwf_create_role_pane "$role")" || exit 1
   echo "created pane $CP for $role"
 fi
+# issue #99: capture the OLD heartbeat before ANY launch — fwf_ensure_claude
+# below is itself what starts the agent, so it can produce the very first
+# heartbeat touch. Capturing before_hb after it (as an earlier version of
+# this script did) means that first touch is mistaken for the pre-existing
+# state, and verification silently waits for a SECOND tick instead — which a
+# healthy-but-slow first cycle may not produce inside the window at all,
+# defeating the whole point of this check.
+before_hb="$(fwf_heartbeat_epoch "$role")"
 fwf_ensure_claude "$CP" "$(fwf_claude_cmd "$role")" || echo "warning: claude did not come up in $role pane $CP"
 sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
-before_hb="$(fwf_heartbeat_epoch "$role")"
 fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
 # issue #85: respawning any FLOOR role (i.e. not the captain, which --floor-only
 # never tears down) means the floor is no longer idle — clear any logged IDLE.
