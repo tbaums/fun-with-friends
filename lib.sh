@@ -601,6 +601,48 @@ fwf_persist_tmux_socket() {   # $1 = value to persist (a socket path, or "defaul
   printf '%s\n' "$1" > "$FWF_TMUX_SOCKET_FILE"
 }
 
+# --- floor-lifecycle event log (issue #85) -----------------------------------
+# Single source of truth for BOTH the dash's live floor state and the
+# after-the-fact audit trail — no second file that can disagree with this one.
+# A crash never appends to this log, so "the last event is floor-down" cleanly
+# means "deliberately idled by fwf-down.sh --floor-only", not "gone".
+# Append-only TSV, capped at the last N lines so it cannot grow unbounded.
+FWF_FLOOR_LOG="$FWF_STATE_DIR/floor-events.log"
+FWF_FLOOR_LOG_CAP=200
+
+# $1=event ("floor-down"|"floor-up")  $2=actor  $3=reason (may be empty)
+fwf_floor_event() {
+  local event="$1" actor="$2" reason="${3:-}" ts epoch tmp
+  mkdir -p "$FWF_STATE_DIR"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  epoch="$(date +%s)"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$epoch" "$event" "$actor" "$reason" >> "$FWF_FLOOR_LOG"
+  if [ "$(wc -l < "$FWF_FLOOR_LOG")" -gt "$FWF_FLOOR_LOG_CAP" ]; then
+    tmp="$(mktemp "${FWF_FLOOR_LOG}.XXXXXX")"
+    tail -n "$FWF_FLOOR_LOG_CAP" "$FWF_FLOOR_LOG" > "$tmp" && mv "$tmp" "$FWF_FLOOR_LOG"
+  fi
+}
+
+# Echoes "active\tsince\treason\tactor" (TSV, one line). active is "true" only
+# when the LAST logged event is floor-down with no later floor-up — a missing
+# log, or a log whose last event is floor-up, both read as not-idle. Read-only;
+# the dash's live-pane precedence (a role with a live pane is never shown
+# idle) lives in the caller, not here.
+fwf_floor_idle_state() {
+  local last ts ev actor reason
+  if [ ! -f "$FWF_FLOOR_LOG" ]; then printf 'false\t\t\t\n'; return 0; fi
+  last="$(tail -n1 "$FWF_FLOOR_LOG")"
+  ts="$(printf '%s' "$last" | cut -f1)"
+  ev="$(printf '%s' "$last" | cut -f3)"
+  actor="$(printf '%s' "$last" | cut -f4)"
+  reason="$(printf '%s' "$last" | cut -f5)"
+  if [ "$ev" = "floor-down" ]; then
+    printf 'true\t%s\t%s\t%s\n' "$ts" "$reason" "$actor"
+  else
+    printf 'false\t\t\t\n'
+  fi
+}
+
 # --- e2e lock (issue #65) ----------------------------------------------------
 # Serializes EVERY e2e-equivalent run across the whole floor — not just
 # conductor-vs-conductor, but implementer self-verification too — since most

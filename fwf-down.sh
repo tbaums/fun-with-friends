@@ -6,18 +6,23 @@
 # BUILD session plus the PM/GV panes of the coordination session — leaving the
 # captain pane and its session/context completely untouched, so the captain can
 # idle the expensive floor and later bring it back with 'fwf up --floor-only'.
+# Logs a floor-down event (issue #85) so the dash can show a deliberate idle
+# as distinct from a crash, and so there's an audit trail once the panes are
+# gone: --actor NAME (default "captain"), --reason "TEXT" (default below).
 #
-# Usage: [FWF_PROFILE=example] fwf-down.sh [--purge | --floor-only]
+# Usage: [FWF_PROFILE=example] fwf-down.sh [--purge | --floor-only [--actor NAME] [--reason TEXT]]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 
-floor_only=0; purge=0
-for a in "$@"; do
-  case "$a" in
-    --floor-only|--keep-captain) floor_only=1;;
-    --purge) purge=1;;
-    *) echo "usage: fwf-down.sh [--purge | --floor-only]" >&2; exit 1;;
+floor_only=0; purge=0; actor="captain"; reason="queue empty; nothing in flight"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --floor-only|--keep-captain) floor_only=1; shift;;
+    --purge) purge=1; shift;;
+    --actor) actor="$2"; shift 2;;
+    --reason) reason="$2"; shift 2;;
+    *) echo "usage: fwf-down.sh [--purge | --floor-only [--actor NAME] [--reason TEXT]]" >&2; exit 1;;
   esac
 done
 if [ "$floor_only" = 1 ] && [ "$purge" = 1 ]; then
@@ -39,6 +44,7 @@ if [ "$floor_only" = 1 ]; then
     esac
   done
   rm -rf "$E2E_LOCK"
+  fwf_floor_event floor-down "$actor" "$reason"
   echo "floor is down; the captain pane (if any) is untouched in '$COORD_SESSION'. Bring the floor back with: fwf up --floor-only"
   exit 0
 fi

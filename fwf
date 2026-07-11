@@ -84,9 +84,10 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          a markdown store outside any repo. 'fwf issues help'.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
-  down [--purge|--floor-only]
+  down [--purge|--floor-only [--actor NAME] [--reason TEXT]]
                          Kill both tmux sessions (--purge also removes worktrees;
-                         --floor-only kills only the floor, captain left running).
+                         --floor-only kills only the floor, captain left running,
+                         and logs why — 'fwf dash' shows IDLE, not crashed).
 
 UTILITIES
   pr-review-state <pr>   Print the authoritative qa<->impl review state for a
