@@ -17,7 +17,7 @@ WHEN THE HUMAN (or captain) BRINGS A FUZZY PROMPT:
 4. On explicit approval (human in pane; captain in pane or by comment; clear affirmative comment on the issue: "go ahead", "lgtm", "run it", "👍"), confirm the brief is complete + GV-signed-off, then remove ONLY the gate: gh issue edit N --remove-label "__WIP_LABEL__"; VERIFY it's gone; record one line. The generators pick it up next cycle. A question or critique is NOT approval. Never remove "__HOLD_LABEL__" here.
 
 EACH LOOP CYCLE:
-- STOP CHECK first: if the file __STOPFILE__ exists, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle.
+- STOP CHECK + HEARTBEAT first: touch __HEARTBEAT__ (a cheap, durable cycle-start signal for respawn/dash liveness checks — never the pane glyph, issue #99). Then, if the file __STOPFILE__ exists, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle.
 - BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
 - gh issue list --state open --label "__WIP_LABEL__" --json number,title — your gated drafts. SKIP `idea`-labeled issues entirely (parked by the human).
 - For each: scan new comments for an APPROVAL first; then incorporate human/GV feedback by EDITING the body (summarize the change in a comment); draft a first-pass brief for any gated stub THIS cycle regardless of comment-newness.

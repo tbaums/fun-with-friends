@@ -148,6 +148,26 @@ assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
 DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
 assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
 
+section "step-0 heartbeat: a durable cycle-start signal, never the pane glyph (#99 Fix 2)"
+assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
+assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_eq "pm (no id) -> pm"       "pm"        "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/pm.tmpl' ''")"
+assert_eq "captain (no id) -> captain" "captain" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/captain.tmpl' ''")"
+assert_eq "extra role (sre) -> its own basename" "sre" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev-sre/sre.tmpl' ''")"
+HB_QA3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_contains "rendered heartbeat path is per-role, under FWF_STATE_DIR" "$HB_QA3" "state/example/heartbeat/qa3"
+assert_contains "heartbeat write is framed as durable, NOT the pane glyph" "$HB_QA3" "never the pane glyph"
+# every base role template (every factory design, excluding _local-issues
+# overlay fragments, which compose onto a base and have no loop of their own)
+# carries the heartbeat write.
+MISSING_HEARTBEAT=""
+while IFS= read -r -d '' f; do
+  /usr/bin/grep -q "__HEARTBEAT__" "$f" || MISSING_HEARTBEAT="$MISSING_HEARTBEAT $f"
+done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every role template (all factory designs) carries the heartbeat write" "" "$MISSING_HEARTBEAT"
+assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
+  "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
+
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
 assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"

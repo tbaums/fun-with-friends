@@ -408,6 +408,19 @@ fwf_all_roles() {
   fwf_extra_names
 }
 
+# The canonical role tag for a template file + id — "implementer"+"2" ->
+# "impl2", "qa"+"1" -> "qa1", anything else (pm/gv/captain/conductor, or an
+# extra-role template like sre.tmpl) -> its own basename, which IS the role
+# tag by convention (issue #99, Fix 2's heartbeat path).
+fwf_role_tag_for_tmpl() { # $1=template-file $2=id (may be empty)
+  local base; base="$(basename "$1" .tmpl)"
+  case "$base" in
+    implementer) echo "impl$2";;
+    qa)          echo "qa$2";;
+    *)           echo "$base";;
+  esac
+}
+
 # Render a prompt template into a single line, substituting placeholders.
 # Uses bash substitution (not sed) so command strings with && / are safe.
 #
@@ -420,7 +433,8 @@ fwf_all_roles() {
 # is appended BEFORE substitution, so addenda are written in the same gh-shaped
 # conventions and stay uniform with the main prompt.
 fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
-  local tmpl="$1" id="${2:-}" text devui addendum _utp _utn=0 _utpanes=""
+  local tmpl="$1" id="${2:-}" text devui addendum _utp _utn=0 _utpanes="" role_tag
+  role_tag="$(fwf_role_tag_for_tmpl "$tmpl" "$id")"
   text="$(cat "$tmpl")"
   if [ "$FWF_ISSUES" = "local" ]; then
     addendum="$FWF_LIB_DIR/templates/_local-issues/$(basename "$tmpl")"
@@ -440,6 +454,7 @@ $(cat "$addendum")"
   text="${text//__PM_INTERVAL__/$PM_INTERVAL}"
   text="${text//__STOPFILE__/$STOP_FILE}"
   text="${text//__BUDGET_HOLD_FILE__/$BUDGET_HOLD_FILE}"
+  text="${text//__HEARTBEAT__/$FWF_STATE_DIR/heartbeat/$role_tag}"
   text="${text//__COORD_SESSION__/$COORD_SESSION}"
   text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"
