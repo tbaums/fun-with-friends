@@ -292,6 +292,9 @@ fwf issues <create|list|view|edit|comment|close|reopen|export>
 fwf dash                                            read-only status board + decision inbox (Rust
                                                     TUI; prebuilt binary auto-downloaded on first
                                                     run — docs/dash.md)
+fwf usage                                           per-role token usage + an estimated $ equivalent,
+                                                    read from each role's own Claude Code session
+                                                    transcripts (read-only; also a dash tab)
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
@@ -410,7 +413,7 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
 - [docs/validate-factory.md](docs/validate-factory.md) — the validate factory's
   design and research basis.
 - [docs/dash.md](docs/dash.md) — the `fwf dash` status board: what it shows,
-  keys, binary resolution.
+  keys, binary resolution, and the per-role token/$ Usage tab (`fwf usage`).
 - [docs/gh-read-cache.md](docs/gh-read-cache.md) — the GitHub read cache that
   keeps a floor from hammering the API.
 - [docs/shared-account.md](docs/shared-account.md) — running every role on

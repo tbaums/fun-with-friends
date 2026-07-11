@@ -103,7 +103,7 @@ The header's provenance stamp says where prod/pipeline came from: `status.json`
 
 | Key | Action |
 |---|---|
-| `1` `2` `3` `4` · `Tab` / `Shift-Tab` · `[` `]` | switch section (Activity / Roles / Decisions / Issues) |
+| `1` `2` `3` `4` `5` · `Tab` / `Shift-Tab` · `[` `]` | switch section (Activity / Roles / Decisions / Issues / Usage) |
 | `j` `k` · `↑` `↓` | move the list cursor |
 | `g` `G` | first / last row |
 | `PgUp` `PgDn` · `Ctrl-u` `Ctrl-d` · wheel | scroll the detail preview |
@@ -126,6 +126,33 @@ Actions (the verb depends on the active section):
 go-ahead, so the captain reacts on its next tick exactly as if you'd typed in
 the issue. Actions run on a worker thread; the result shows in a colour-coded
 status line and the board refreshes.
+
+## Usage tab (issue #95)
+
+A 5th, read-only section: per-role token usage + an estimated $ equivalent,
+summed from each role's own Claude Code session transcripts. On its own data
+thread and a slower default refresh (`FWF_USAGE_REFRESH`, default 60s) than
+the rest of the board, since summing transcripts is a heavier read than the
+gh/tmux-derived data above — `Ctrl-r` forces both to refresh together.
+
+Each role shows one of three states, never collapsed to two:
+
+| State | Meaning | Shown as |
+|---|---|---|
+| FRESH | this poll read the role's transcripts successfully | the live token/$ figures |
+| STALE | a prior good read exists, but this poll couldn't refresh it | `⚠ STALE (Ns ago)` + the **last-good** figures (never a frozen blank) |
+| UNKNOWN | never successfully read (missing dir / no data yet) | `⚠ UNKNOWN` and `-` throughout (never `$0`, which would misread as confirmed no-spend) |
+
+The $ figures are an **engineering proxy** — fwf panes run under a Claude
+subscription session, not a metered API key, so this is "API-cost-equivalent
+spend," not a reading of the account's actual rolling-window usage. That
+caveat is always visible in the tab (and in `fwf usage`'s CLI output). See
+`docs/proposals/70-token-usage-budget.md` for the full design rationale;
+`fwf doctor` includes a smoke-test that catches a Claude Code transcript
+format drift before it would silently under-report here.
+
+For a terminal-only view of the same data (no TUI needed): `fwf usage` — a
+per-role table plus a factory total, printed once and exited (see `fwf help`).
 
 ## Architecture
 
@@ -174,6 +201,9 @@ See `dash/tests/goldens/README.md` for details.
 | `FWF_DASH_RELEASE_BASE` | base URL for release assets (test seam; default GitHub) |
 | `FWF_DASH_DRYRUN` | actions print their constructed command instead of running |
 | `FWF_DASH_STALE_SECS` | how old `status.json` may be before it's `stale` (default 90) |
+| `FWF_USAGE_REFRESH` | Usage tab auto-refresh seconds (default 60, floor 5) |
+| `FWF_USAGE_STALE_SECS` | how old a role's last successful usage read may be before it's `STALE` (default 180) |
+| `FWF_CLAUDE_PROJECTS_DIR` | override for Claude Code's `~/.claude/projects` (test seam) |
 
 ### `status.json` (optional captain overlay)
 

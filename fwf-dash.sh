@@ -155,6 +155,7 @@ command -v jq >/dev/null 2>&1 || _dash_die "jq is required for the data provider
 # FWF_PROFILE flow through) so they resolve the same factory the binary renders.
 export FWF_DASH_DATA="$DIR/fwf-dash-data.sh"
 export FWF_DASH_ACT="$DIR/fwf-dash-act.sh"
+export FWF_USAGE_DATA="$DIR/fwf-usage-data.sh"
 
 # Mouse-wheel scroll in the detail pane needs the host tmux to forward wheel
 # events to the alt-screen TUI, which only happens when that session has

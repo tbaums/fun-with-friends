@@ -140,6 +140,28 @@ assert_contains "help mentions start" "$("$ROOT/fwf" help)" "start <url|path>"
 # bare runner with no tmux/gh/claude) — assert it RAN, not that it returned 0.
 DOC="$("$ROOT/fwf" doctor 2>&1 || true)"
 assert_contains "doctor runs" "$DOC" "workspace :"
+
+section "fwf doctor: usage-schema smoke-test (#95) — catches Claude Code transcript drift before it silently under-reports"
+DT="$TMP/doctor-usage"; mkdir -p "$DT/pwd" "$DT/claude-projects"
+DSLUG_DIR="$(cd "$DT/pwd" && pwd)"; DSLUG="${DSLUG_DIR//\//-}"; DSLUG="${DSLUG//./-}"
+doctor_usage() { ( cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf" doctor 2>&1 || true ) | grep "usage schema"; }
+assert_contains "no transcript dir yet -> skip, not a false pass/fail" "$(doctor_usage)" "skip (no Claude Code transcript dir"
+mkdir -p "$DT/claude-projects/$DSLUG"
+printf '{"type":"user","message":{}}\n' > "$DT/claude-projects/$DSLUG/s.jsonl"
+assert_contains "transcript dir but no assistant line yet -> skip, not a false pass" "$(doctor_usage)" "no assistant-type line found"
+printf '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":1}}}\n' >> "$DT/claude-projects/$DSLUG/s.jsonl"
+assert_contains "matching schema -> ok" "$(doctor_usage)" "usage schema: ok"
+printf '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"totally_different_field":1}}}\n' > "$DT/claude-projects/$DSLUG/s.jsonl"
+DRIFT="$(doctor_usage)"
+assert_contains "drifted schema -> WARNING, names the expected shape" "$DRIFT" "WARNING"
+assert_contains "drift warning names the fields fwf usage reads" "$DRIFT" "message.usage.{input,output}_tokens"
+# Differential, not absolute: doctor's exit also reflects unrelated checks
+# (tmux/git/gh/claude presence) that vary by environment, so compare the SAME
+# environment with vs. without the drifted transcript rather than asserting
+# a specific exit code.
+EXIT_NO_TRANSCRIPT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects-none" "$ROOT/fwf" doctor >/dev/null 2>&1; echo $?)"
+EXIT_WITH_DRIFT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf" doctor >/dev/null 2>&1; echo $?)"
+assert_eq "schema drift is informational only — doesn't change doctor's exit code" "$EXIT_NO_TRANSCRIPT" "$EXIT_WITH_DRIFT"
 # profiles lists at least the example template shipped in the repo
 assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
 # captain --print renders the CAPTAIN prompt with placeholders resolved
@@ -1625,6 +1647,108 @@ assert_eq "a merged PR resolves to APPROVED regardless of thread contents" \
 section "pr-review-state (#82): no request / bad input"
 assert_eq "no QA-* sentinel at all -> AWAITING_REVIEW" "AWAITING_REVIEW" "$(prs_state '[]' OPEN 2026-07-10T15:00:00Z)"
 assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "source '$PRS'; main abc")"
+
+# --------------------------------------------------------------------------
+# fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed
+# from FAKE Claude Code project dirs — never touches the real
+# ~/.claude/projects (FWF_CLAUDE_PROJECTS_DIR override) or the real run dir
+# (FWF_RUN_DIR override).
+UD="$ROOT/fwf-usage-data.sh"
+UT="$TMP/usage"; mkdir -p "$UT/wt" "$UT/claude-projects"
+cat > "$ROOT/profiles/.__usage.sh" <<EOF
+FWF_REPO="$UT/repo"; WT_PREFIX="ut"; WT_BASE="$UT/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+# impl1's cwd -> project-dir slug, replicating fwf_role_cwd's wt_dir() shape
+# ($WT_BASE/$WT_PREFIX-impl1) and Claude Code's own slugification (every '/'
+# and '.' -> '-' — confirmed against this repo's own ~/.claude/projects/*).
+UCWD="$UT/wt/ut-impl1"
+USLUG="${UCWD//\//-}"; USLUG="${USLUG//./-}"
+UPROJ="$UT/claude-projects/$USLUG"
+usage_run() { FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$UD" 2>&1; }
+usage_role() { usage_run | jq -c '.roles[] | select(.role=="impl1")'; }
+
+section "fwf usage (#95): missing project dir -> UNKNOWN, never \$0/blank"
+assert_eq "no dir yet -> state unknown" "unknown" "$(usage_role | jq -r '.state')"
+assert_eq "unknown -> cost_usd is null, not 0" "null" "$(usage_role | jq -c '.cost_usd')"
+
+section "fwf usage (#95): sum-across-all-files (compaction: multiple session files)"
+mkdir -p "$UPROJ"
+printf '%s\n%s\n%s\n' \
+  '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"cache_creation_input_tokens":50,"cache_read_input_tokens":10,"output_tokens":20}}}' \
+  '{"type":"user","message":{}}' \
+  '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":30,"output_tokens":40}}}' \
+  > "$UPROJ/sessA.jsonl"
+printf '%s\n' \
+  '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}}' \
+  > "$UPROJ/sessB.jsonl"
+R1="$(usage_role)"
+assert_eq "state is fresh once readable" "fresh" "$(printf '%s' "$R1" | jq -r '.state')"
+assert_eq "input summed across BOTH files (not just newest)" "310" "$(printf '%s' "$R1" | jq -r '.tokens.input')"
+assert_eq "cache_creation summed"  "50" "$(printf '%s' "$R1" | jq -r '.tokens.cache_creation')"
+assert_eq "cache_read summed"      "40" "$(printf '%s' "$R1" | jq -r '.tokens.cache_read')"
+assert_eq "output summed"          "65" "$(printf '%s' "$R1" | jq -r '.tokens.output')"
+assert_eq "newest-file-only counting would under-report (RED if it did)" "310" \
+  "$(printf '%s' "$R1" | jq -r '.tokens.input')"   # 310 only reachable by summing BOTH files; sessB alone is 10
+
+section "fwf usage (#95): idempotent — re-running yields the same total (no double-count)"
+R2="$(usage_role)"
+assert_eq "re-run: same input total"          "$(printf '%s' "$R1" | jq -r '.tokens.input')" "$(printf '%s' "$R2" | jq -r '.tokens.input')"
+assert_eq "re-run: same output total"         "$(printf '%s' "$R1" | jq -r '.tokens.output')" "$(printf '%s' "$R2" | jq -r '.tokens.output')"
+
+section "fwf usage (#95): efficiency — an already-summed file is not fully re-read (byte-offset cache)"
+# In-place, SAME-LENGTH poison of the already-cached prefix (100/200 -> 999,
+# same digit count so the file's byte length — and thus the cached offset —
+# doesn't shift). If the aggregator ever re-summed from byte 0 instead of the
+# cached offset, this poisoned prefix would inflate the total; if it truly
+# only reads new bytes, poisoning already-read history has NO effect.
+OLDINPUT="$(printf '%s' "$R1" | jq -r '.tokens.input')"
+content="$(cat "$UPROJ/sessA.jsonl")"
+content="${content//:100,/:999,}"
+content="${content//:200,/:999,}"
+printf '%s\n' "$content" > "$UPROJ/sessA.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' >> "$UPROJ/sessA.jsonl"
+R3="$(usage_role)"
+assert_eq "only the NEW appended line's tokens are added (poisoned history had zero effect)" \
+  "$((OLDINPUT + 7))" "$(printf '%s' "$R3" | jq -r '.tokens.input')"
+CACHEFILE="$UT/run/state/.__usage/usage-cache/impl1.json"
+assert_eq "cached offset for sessA equals its new (grown) size" "$(wc -c <"$UPROJ/sessA.jsonl" | tr -d ' ')" \
+  "$(jq -r '.files["sessA.jsonl"]' "$CACHEFILE")"
+
+section "fwf usage (#95): model/\$ mapping"
+assert_eq "known model -> expected \$ from the price table (310 in @ \$2.00/MTok + 50 cache-write @ \$2.50 + 40 cache-read @ \$0.20 + 65 out @ \$10.00, /1e6)" \
+  "0.001403" "$(printf '%s' "$R1" | jq -r '.cost_usd')"
+UD2CWD="$UT/wt/ut-impl2"; USLUG2="${UD2CWD//\//-}"; USLUG2="${USLUG2//./-}"
+UNKNOWN_MODEL_PROJ="$UT/claude-projects/$USLUG2"
+mkdir -p "$UNKNOWN_MODEL_PROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-totally-unknown","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$UNKNOWN_MODEL_PROJ/s.jsonl"
+UNKMODEL="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$UD" | jq -c '.roles[] | select(.role=="impl2")')"
+assert_eq "unpriced model -> cost_usd is null, never a wrong \$0" "null" "$(printf '%s' "$UNKMODEL" | jq -c '.cost_usd')"
+assert_eq "unpriced model's tokens are still shown (not hidden)" "100" "$(printf '%s' "$UNKMODEL" | jq -r '.tokens.input')"
+
+section "fwf usage (#95): proxy caveat is present in the payload"
+assert_contains "caveat names this as an estimate, not real account usage" "$(usage_run)" "not your account's actual rolling-window usage"
+
+section "fwf usage (#95): unreadable after a good read -> STALE with last-good numbers, not frozen/blank"
+rm -rf "$UPROJ"
+R4="$(usage_role)"
+assert_eq "dir removed -> state stale (not unknown — we HAD a good read)" "stale" "$(printf '%s' "$R4" | jq -r '.state')"
+assert_eq "stale keeps the last-good totals" "317" "$(printf '%s' "$R4" | jq -r '.tokens.input')"
+
+section "fwf usage (#95): CLI wiring — 'fwf usage' dispatches to fwf-usage.sh and renders the report"
+CLIOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "help mentions the usage command" "$("$ROOT/fwf" help)" "Per-role token usage"
+assert_contains "prints the profile"      "$CLIOUT" "profile .__usage"
+assert_contains "prints the impl1 row"    "$CLIOUT" "impl1"
+assert_contains "prints a TOTAL row"      "$CLIOUT" "TOTAL"
+assert_contains "prints the proxy caveat" "$CLIOUT" "not your account's actual rolling-window usage"
+assert_contains "STALE role renders the warning treatment, not a bare number" "$CLIOUT" "STALE"
+case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *) ok "no false \$0.0000 anywhere in the report";; esac
+STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
+assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
+
+rm -f "$ROOT/profiles/.__usage.sh"
 
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"

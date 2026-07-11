@@ -41,21 +41,28 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::{Frame, Terminal};
 
-use data::Dashboard;
+use data::{Dashboard, UsageData};
 
-/// The four sections of the board. Order matters: it is the 1/2/3/4 jump order
-/// and the Tab cycle order. Activity is first so it's the landing view — the
-/// "what's going on right now" overview.
+/// The five sections of the board. Order matters: it is the 1/2/3/4/5 jump
+/// order and the Tab cycle order. Activity is first so it's the landing view
+/// — the "what's going on right now" overview.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Activity,
     Roles,
     Decisions,
     Issues,
+    Usage,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Activity, Tab::Roles, Tab::Decisions, Tab::Issues];
+    const ALL: [Tab; 5] = [
+        Tab::Activity,
+        Tab::Roles,
+        Tab::Decisions,
+        Tab::Issues,
+        Tab::Usage,
+    ];
 
     fn index(self) -> usize {
         match self {
@@ -63,6 +70,7 @@ impl Tab {
             Tab::Roles => 1,
             Tab::Decisions => 2,
             Tab::Issues => 3,
+            Tab::Usage => 4,
         }
     }
 
@@ -72,6 +80,7 @@ impl Tab {
             Tab::Roles => "Roles",
             Tab::Decisions => "Decisions",
             Tab::Issues => "Issues",
+            Tab::Usage => "Usage",
         }
     }
 
@@ -101,6 +110,25 @@ impl Feed {
             Feed::Ok(d) => Some(d),
             Feed::Err(_, last) => last.as_ref(),
             Feed::Loading => None,
+        }
+    }
+}
+
+/// Same shape as `Feed`, for the separate usage-data provider (its own thread
+/// and refresh cadence — see the module doc on why it's not folded into
+/// `Dashboard`).
+enum UsageFeed {
+    Loading,
+    Ok(UsageData),
+    Err(String, Option<UsageData>),
+}
+
+impl UsageFeed {
+    fn usage(&self) -> Option<&UsageData> {
+        match self {
+            UsageFeed::Ok(u) => Some(u),
+            UsageFeed::Err(_, last) => last.as_ref(),
+            UsageFeed::Loading => None,
         }
     }
 }
@@ -149,14 +177,16 @@ struct Status {
 /// between sections preserves where you were.
 struct App {
     feed: Feed,
+    usage_feed: UsageFeed,
     tab: Tab,
-    cursors: [ListState; 4],
-    scroll: [u16; 4],
+    cursors: [ListState; 5],
+    scroll: [u16; 5],
     overlay: Overlay,
     status: Option<Status>,
     /// True while an action is shelling out — disables firing another.
     busy: bool,
     refresh: Sender<()>,
+    usage_refresh: Sender<()>,
     action_tx: Sender<ActionOutcome>,
     /// Requests the selected row's full thread (body + comments) from the detail worker.
     detail_tx: Sender<String>,
@@ -170,22 +200,25 @@ struct App {
 impl App {
     fn new(
         refresh: Sender<()>,
+        usage_refresh: Sender<()>,
         action_tx: Sender<ActionOutcome>,
         detail_tx: Sender<String>,
     ) -> App {
-        let mut cursors: [ListState; 4] = Default::default();
+        let mut cursors: [ListState; 5] = Default::default();
         for c in &mut cursors {
             c.select(Some(0));
         }
         App {
             feed: Feed::Loading,
+            usage_feed: UsageFeed::Loading,
             tab: Tab::Activity,
             cursors,
-            scroll: [0; 4],
+            scroll: [0; 5],
             overlay: Overlay::None,
             status: None,
             busy: false,
             refresh,
+            usage_refresh,
             action_tx,
             detail_tx,
             detail: None,
@@ -200,7 +233,7 @@ impl App {
     fn request_detail(&mut self) {
         let id = match self.tab {
             Tab::Activity | Tab::Decisions | Tab::Issues => self.selected_id(),
-            Tab::Roles => None,
+            Tab::Roles | Tab::Usage => None,
         };
         match id {
             Some(id) if id.chars().all(|c| c.is_ascii_digit()) => {
@@ -227,6 +260,9 @@ impl App {
 
     /// Number of rows in the active section's list, so cursor movement can clamp.
     fn row_count(&self) -> usize {
+        if self.tab == Tab::Usage {
+            return self.usage_feed.usage().map(|u| u.roles.len()).unwrap_or(0);
+        }
         match self.feed.dashboard() {
             None => 0,
             Some(d) => match self.tab {
@@ -234,6 +270,7 @@ impl App {
                 Tab::Roles => d.roles.len(),
                 Tab::Decisions => d.decisions.len(),
                 Tab::Issues => d.issues.len(),
+                Tab::Usage => unreachable!(),
             },
         }
     }
@@ -271,7 +308,7 @@ impl App {
             Tab::Activity => d.activity.flat().get(sel).map(|x| x.pr.to_string()),
             Tab::Decisions => d.decisions.get(sel).map(|x| x.id.clone()),
             Tab::Issues => d.issues.get(sel).map(|x| x.number.to_string()),
-            Tab::Roles => None,
+            Tab::Roles | Tab::Usage => None,
         }
     }
 
@@ -462,6 +499,7 @@ impl App {
             KeyCode::Char('?') => self.overlay = Overlay::Help,
             KeyCode::Char('r') if ctrl => {
                 let _ = self.refresh.send(());
+                let _ = self.usage_refresh.send(());
                 self.set_status("refreshing…", false);
             }
             // Section switching.
@@ -471,6 +509,7 @@ impl App {
             KeyCode::Char('2') => self.select_tab(Tab::Roles),
             KeyCode::Char('3') => self.select_tab(Tab::Decisions),
             KeyCode::Char('4') => self.select_tab(Tab::Issues),
+            KeyCode::Char('5') => self.select_tab(Tab::Usage),
             // List navigation.
             KeyCode::Char('j') | KeyCode::Down => self.move_cursor(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
@@ -556,16 +595,23 @@ fn main() -> Result<()> {
     // request. recv_timeout doubles as the timer and the Ctrl-r listener.
     let (data_tx, data_rx) = mpsc::channel::<Result<Dashboard, String>>();
     let (refresh_tx, refresh_rx) = mpsc::channel::<()>();
+    // Usage thread: a separate provider (fwf-usage-data.sh), a separate — and
+    // by default slower — refresh cadence, since summing every role's Claude
+    // Code transcripts is a heavier read than the gh/tmux-derived Dashboard.
+    let (usage_tx, usage_rx) = mpsc::channel::<Result<UsageData, String>>();
+    let (usage_refresh_tx, usage_refresh_rx) = mpsc::channel::<()>();
     let (action_tx, action_rx) = mpsc::channel::<ActionOutcome>();
     let (detail_req_tx, detail_req_rx) = mpsc::channel::<String>();
     let (detail_tx, detail_rx) = mpsc::channel::<(String, String)>();
     let interval = refresh_interval();
+    let usage_interval = usage_refresh_interval();
     thread::spawn(move || data_loop(data_tx, refresh_rx, interval));
+    thread::spawn(move || usage_data_loop(usage_tx, usage_refresh_rx, usage_interval));
     thread::spawn(move || detail_loop(detail_req_rx, detail_tx));
 
     let mut terminal = init_terminal().context("initializing the terminal")?;
-    let app = App::new(refresh_tx, action_tx, detail_req_tx);
-    let result = run(&mut terminal, app, data_rx, action_rx, detail_rx);
+    let app = App::new(refresh_tx, usage_refresh_tx, action_tx, detail_req_tx);
+    let result = run(&mut terminal, app, data_rx, usage_rx, action_rx, detail_rx);
     restore_terminal();
     result
 }
@@ -580,6 +626,17 @@ fn refresh_interval() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// `$FWF_USAGE_REFRESH` seconds between usage-tab auto-refreshes (default 60,
+/// floor 5) — deliberately slower than the main dash refresh (see above).
+fn usage_refresh_interval() -> Duration {
+    let secs = std::env::var("FWF_USAGE_REFRESH")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(5);
+    Duration::from_secs(secs)
+}
+
 fn data_loop(tx: Sender<Result<Dashboard, String>>, req: Receiver<()>, interval: Duration) {
     loop {
         if tx.send(data::fetch()).is_err() {
@@ -588,6 +645,21 @@ fn data_loop(tx: Sender<Result<Dashboard, String>>, req: Receiver<()>, interval:
         match req.recv_timeout(interval) {
             Ok(()) => {}                         // forced refresh: refetch now.
             Err(RecvTimeoutError::Timeout) => {} // tick: refetch.
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Same shape as `data_loop`, for the usage-data provider on its own (slower)
+/// cadence.
+fn usage_data_loop(tx: Sender<Result<UsageData, String>>, req: Receiver<()>, interval: Duration) {
+    loop {
+        if tx.send(data::fetch_usage()).is_err() {
+            return; // main thread (and terminal) is gone.
+        }
+        match req.recv_timeout(interval) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
     }
@@ -627,6 +699,7 @@ fn run(
     terminal: &mut Tui,
     mut app: App,
     data_rx: Receiver<Result<Dashboard, String>>,
+    usage_rx: Receiver<Result<UsageData, String>>,
     action_rx: Receiver<ActionOutcome>,
     detail_rx: Receiver<(String, String)>,
 ) -> Result<()> {
@@ -645,6 +718,22 @@ fn run(
                 }
             };
             // Keep the cursor in range if the row count shrank.
+            clamp_cursor(&mut app);
+        }
+
+        // Same drain, for the separate usage-data thread.
+        while let Ok(msg) = usage_rx.try_recv() {
+            app.usage_feed = match msg {
+                Ok(u) => UsageFeed::Ok(u),
+                Err(e) => {
+                    let last = match std::mem::replace(&mut app.usage_feed, UsageFeed::Loading) {
+                        UsageFeed::Ok(u) => Some(u),
+                        UsageFeed::Err(_, last) => last,
+                        UsageFeed::Loading => None,
+                    };
+                    UsageFeed::Err(e, last)
+                }
+            };
             clamp_cursor(&mut app);
         }
 
@@ -917,6 +1006,7 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
                 (Some(d), Tab::Roles) => d.roles.len(),
                 (Some(d), Tab::Decisions) => d.decisions.len(),
                 (Some(d), Tab::Issues) => d.issues.len(),
+                (_, Tab::Usage) => app.usage_feed.usage().map(|u| u.roles.len()).unwrap_or(0),
                 _ => 0,
             };
             Line::from(format!(" {} {} ({}) ", i + 1, t.title(), count))
@@ -935,6 +1025,22 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
+    if app.tab == Tab::Usage {
+        if app.usage_feed.usage().is_none() {
+            let msg = match &app.usage_feed {
+                UsageFeed::Err(e, _) => format!("✗ {e}"),
+                _ => "loading…".to_string(),
+            };
+            f.render_widget(
+                Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)),
+                area,
+            );
+            return;
+        }
+        render_usage(f, area, app);
+        return;
+    }
+
     if app.feed.dashboard().is_none() {
         let msg = match &app.feed {
             Feed::Err(e, _) => format!("✗ {e}"),
@@ -952,6 +1058,7 @@ fn render_body(f: &mut Frame, area: Rect, app: &mut App) {
         Tab::Roles => render_roles(f, area, app),
         Tab::Decisions => render_list_with_preview(f, area, app, Tab::Decisions),
         Tab::Issues => render_list_with_preview(f, area, app, Tab::Issues),
+        Tab::Usage => unreachable!(),
     }
 }
 
@@ -1173,6 +1280,122 @@ fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
     app.cursors[Tab::Roles.index()] = state;
 }
 
+/// Per-role token/$ usage (issue #95). One row per role; three visually
+/// distinct states (never collapsed to two — a stale/unreadable row must
+/// never look like a real, current number):
+///   FRESH   — a live token/$ figure.
+///   STALE   — "⚠ STALE (last read Ns ago)", the LAST-GOOD figures (not a
+///             frozen-looking plain number).
+///   UNKNOWN — "⚠ UNKNOWN" and "-" everywhere else (never $0/blank, which
+///             would read as "no spend / plenty of headroom").
+/// A trailing caveat line makes the proxy-vs-real-account-usage note visible
+/// without leaving the tab (also printed by the `fwf usage` CLI).
+fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
+    let u = app.usage_feed.usage().expect("checked by caller");
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    let role_w = 12usize;
+    let state_w = 20usize;
+    let model_w = (rows[1].width as usize)
+        .saturating_sub(role_w + state_w + 4 * 9 + 10 + 8)
+        .clamp(6, 24);
+
+    let items: Vec<ListItem> = u
+        .roles
+        .iter()
+        .map(|r| {
+            let (state_text, style) = match r.state.as_str() {
+                "fresh" => ("fresh".to_string(), Style::default().fg(Color::Green)),
+                "stale" => (
+                    format!("⚠ STALE ({}s ago)", r.age_secs.unwrap_or(0)),
+                    Style::default().fg(Color::Yellow),
+                ),
+                _ => (
+                    "⚠ UNKNOWN".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            };
+            let unknown = r.state == "unknown";
+            let model = r.model.as_deref().unwrap_or("-");
+            let fmt_tok = |n: i64| {
+                if unknown {
+                    "-".to_string()
+                } else {
+                    n.to_string()
+                }
+            };
+            let cost = match r.cost_usd {
+                Some(c) => format!("${c:.4}"),
+                None => "-".to_string(),
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{:<role_w$}", r.role),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("{state_text:<state_w$}"), style),
+                Span::raw(format!(
+                    "{:<model_w$}",
+                    truncate(model, model_w.saturating_sub(1))
+                )),
+                Span::raw(format!("{:>9}", fmt_tok(r.tokens.input))),
+                Span::raw(format!("{:>9}", fmt_tok(r.tokens.cache_creation))),
+                Span::raw(format!("{:>9}", fmt_tok(r.tokens.cache_read))),
+                Span::raw(format!("{:>9}", fmt_tok(r.tokens.output))),
+                Span::styled(format!("{cost:>10}"), Style::default().fg(Color::Cyan)),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let header = Paragraph::new(Line::from(Span::styled(
+        format!(
+            "  {:<role_w$}{:<state_w$}{:<model_w$}{:>9}{:>9}{:>9}{:>9}{:>10}",
+            "ROLE", "STATE", "MODEL", "INPUT", "CACHE-W", "CACHE-R", "OUTPUT", "EST-$"
+        ),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )));
+    f.render_widget(header, rows[0]);
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Usage "))
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)))
+        .highlight_symbol("▌");
+    let mut state = app.cursors[Tab::Usage.index()].clone();
+    f.render_stateful_widget(list, rows[1], &mut state);
+    app.cursors[Tab::Usage.index()] = state;
+
+    let total_cost = format!("${:.4}", u.total.cost_usd);
+    let total_line = Line::from(vec![
+        Span::styled(
+            format!("{:<role_w$}{:<state_w$}{:<model_w$}", "TOTAL", "", ""),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!("{:>9}", u.total.tokens.input)),
+        Span::raw(format!("{:>9}", u.total.tokens.cache_creation)),
+        Span::raw(format!("{:>9}", u.total.tokens.cache_read)),
+        Span::raw(format!("{:>9}", u.total.tokens.output)),
+        Span::styled(
+            format!("{total_cost:>10}"),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]);
+    let caveat = Line::from(Span::styled(
+        format!("note: {}", u.caveat),
+        Style::default().fg(Color::DarkGray),
+    ));
+    f.render_widget(Paragraph::new(vec![total_line, caveat]), rows[2]);
+}
+
 /// Decisions and Issues share a list-left / body-preview-right layout — the
 /// prior-art standard. The selected row's body renders (lightly markdown-styled)
 /// in the right pane and scrolls independently.
@@ -1243,7 +1466,7 @@ fn render_list_with_preview(f: &mut Frame, area: Rect, app: &mut App, tab: Tab) 
             let sel_id = d.issues.get(selected).map(|x| x.number.to_string());
             (items, " Issues — all open ", body, sel_id)
         }
-        Tab::Activity | Tab::Roles => unreachable!(),
+        Tab::Activity | Tab::Roles | Tab::Usage => unreachable!(),
     };
 
     let empty = items.is_empty();
@@ -1313,14 +1536,14 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let dim = Style::default().fg(Color::DarkGray);
     let key = Style::default().fg(Color::Cyan);
     // Footer layout: a persistent GLOBAL segment that renders on every tab —
-    // nav (1-4 tab, j/k move) plus always-available bindings (Ctrl-r refresh,
+    // nav (1-5 tab, j/k move) plus always-available bindings (Ctrl-r refresh,
     // t captain, ? help, q quit) — bracketing a CONTEXTUAL segment of
     // tab-specific actions. The global bindings must never be clipped (#80:
     // Ctrl-r is global, so its hint shows everywhere); when the row is too
     // narrow to hold everything, contextual actions are dropped from the end
     // first so the global hints (incl. "q quit") always stay on screen.
     let global_left = vec![
-        Span::styled(" 1-4 ", key),
+        Span::styled(" 1-5 ", key),
         Span::styled("tab ", dim),
         Span::styled(" j/k ", key),
         Span::styled("move ", dim),
@@ -1346,6 +1569,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         ],
         Tab::Issues => &[("c", "comment"), ("o", "open")],
         Tab::Roles => &[("r", "respawn"), ("s", "stop")],
+        Tab::Usage => &[],
     };
 
     let span_w = |s: &Span| s.content.chars().count();
@@ -1385,8 +1609,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         help_row(
-            "1 / 2 / 3 / 4",
-            "jump to Activity / Roles / Decisions / Issues",
+            "1 / 2 / 3 / 4 / 5",
+            "jump to Activity / Roles / Decisions / Issues / Usage",
         ),
         help_row("Tab / Shift-Tab  ·  [ ]", "next / previous section"),
         help_row("j / k  ·  ↓ / ↑", "move the list cursor"),
@@ -1431,6 +1655,16 @@ fn render_help(f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         help_row("r / s", "respawn the role / stop the swarm — confirms"),
+        Line::from(Span::styled(
+            "  Usage",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_row(
+            "(read-only)",
+            "per-role token/$ estimate — an engineering proxy, not real account usage",
+        ),
         Line::from(Span::styled(
             "  Anywhere",
             Style::default()
@@ -1611,17 +1845,19 @@ mod tests {
 
     fn test_app() -> App {
         let (rtx, _r) = mpsc::channel();
+        let (urtx, _ur) = mpsc::channel();
         let (atx, _a) = mpsc::channel();
         let (dtx, _d) = mpsc::channel();
-        App::new(rtx, atx, dtx)
+        App::new(rtx, urtx, atx, dtx)
     }
 
     #[test]
     fn tab_cycles_and_wraps() {
-        // Order: Activity → Roles → Decisions → Issues → (wrap) Activity.
+        // Order: Activity → Roles → Decisions → Issues → Usage → (wrap) Activity.
         assert!(matches!(Tab::Activity.cycle(1), Tab::Roles));
-        assert!(matches!(Tab::Issues.cycle(1), Tab::Activity));
-        assert!(matches!(Tab::Activity.cycle(-1), Tab::Issues));
+        assert!(matches!(Tab::Issues.cycle(1), Tab::Usage));
+        assert!(matches!(Tab::Usage.cycle(1), Tab::Activity));
+        assert!(matches!(Tab::Activity.cycle(-1), Tab::Usage));
     }
 
     #[test]
@@ -1807,11 +2043,16 @@ mod tests {
     #[test]
     fn ctrl_r_sends_a_refresh_request_and_sets_status() {
         let (rtx, rrx) = mpsc::channel();
+        let (urtx, urrx) = mpsc::channel();
         let (atx, _a) = mpsc::channel();
         let (dtx, _d) = mpsc::channel();
-        let mut app = App::new(rtx, atx, dtx);
+        let mut app = App::new(rtx, urtx, atx, dtx);
         app.on_key(key_ctrl('r'));
         assert!(rrx.try_recv().is_ok(), "Ctrl-r should request a refresh");
+        assert!(
+            urrx.try_recv().is_ok(),
+            "Ctrl-r should ALSO request a usage-data refresh"
+        );
         assert!(!app.status.as_ref().unwrap().is_err);
     }
 
@@ -2320,6 +2561,69 @@ mod tests {
         app
     }
 
+    /// One role per state (issue #95) — long-ish role/model names, LONG token
+    /// counts (multi-digit, not the toy single-digit values that'd hide an
+    /// overflow bug), so the three states have to stay visually distinct AND
+    /// fit the column widths under realistic content, not just short stubs.
+    fn golden_usage_fixture() -> data::UsageData {
+        data::UsageData {
+            caveat: "estimated $ equivalent — not your account's actual rolling-window usage"
+                .into(),
+            roles: vec![
+                data::UsageRole {
+                    role: "impl1".into(),
+                    state: "fresh".into(),
+                    age_secs: Some(0),
+                    model: Some("claude-sonnet-5".into()),
+                    tokens: data::UsageTokens {
+                        input: 1_234_567,
+                        cache_creation: 234_567,
+                        cache_read: 89_012,
+                        output: 345_678,
+                    },
+                    cost_usd: Some(12.3456),
+                },
+                data::UsageRole {
+                    role: "qa1".into(),
+                    state: "stale".into(),
+                    age_secs: Some(245),
+                    model: Some("claude-opus-4-8".into()),
+                    tokens: data::UsageTokens {
+                        input: 500_000,
+                        cache_creation: 10_000,
+                        cache_read: 5_000,
+                        output: 60_000,
+                    },
+                    cost_usd: Some(5.4321),
+                },
+                data::UsageRole {
+                    role: "pm".into(),
+                    state: "unknown".into(),
+                    age_secs: None,
+                    model: None,
+                    tokens: data::UsageTokens::default(),
+                    cost_usd: None,
+                },
+            ],
+            total: data::UsageTotals {
+                tokens: data::UsageTokens {
+                    input: 1_734_567,
+                    cache_creation: 244_567,
+                    cache_read: 94_012,
+                    output: 405_678,
+                },
+                cost_usd: 17.7777,
+            },
+        }
+    }
+
+    fn golden_app_with_usage(tab: Tab) -> App {
+        let mut app = test_app();
+        app.usage_feed = UsageFeed::Ok(golden_usage_fixture());
+        app.tab = tab;
+        app
+    }
+
     #[test]
     fn golden_header_shows_profile_template_and_provenance() {
         let app = golden_app(Tab::Activity);
@@ -2477,6 +2781,109 @@ mod tests {
             render_activity(f, area, &mut app)
         });
         assert_golden("activity_list_with_detail", &buffer_to_text(&buf));
+    }
+
+    // #95: the three usage states must render VISUALLY DISTINCT, at real
+    // column widths, with realistic (multi-digit, non-toy) token counts —
+    // and the layout must fit the area (no panic, no truncated-into-garbage
+    // content) at both a roomy and a narrow terminal width.
+    #[test]
+    fn golden_usage_tab_three_states() {
+        let mut app = golden_app_with_usage(Tab::Usage);
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        assert_golden("usage_tab_three_states", &buffer_to_text(&buf));
+    }
+
+    #[test]
+    fn usage_fresh_row_shows_a_live_figure_not_a_warning() {
+        let mut app = golden_app_with_usage(Tab::Usage);
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(text.contains("impl1"), "impl1's fresh row must render");
+        assert!(
+            text.contains("claude-sonnet-5") || text.contains("claude-son"),
+            "the fresh row's model must show (possibly truncated at this width)"
+        );
+        // The fresh row's own line must NOT carry the STALE/UNKNOWN warning glyph.
+        let fresh_line = text.lines().find(|l| l.contains("impl1")).unwrap();
+        assert!(
+            !fresh_line.contains('⚠'),
+            "a FRESH row must never carry the warning glyph: {fresh_line:?}"
+        );
+    }
+
+    #[test]
+    fn usage_stale_row_shows_the_warning_treatment_and_last_good_numbers() {
+        let mut app = golden_app_with_usage(Tab::Usage);
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let stale_line = text.lines().find(|l| l.contains("qa1")).unwrap();
+        assert!(
+            stale_line.contains("STALE"),
+            "a stale role must render the STALE treatment, not a bare number: {stale_line:?}"
+        );
+        assert!(
+            stale_line.contains("245"),
+            "the STALE row must name the age since the last good read: {stale_line:?}"
+        );
+        // Still shows the LAST-GOOD figures — never a frozen blank.
+        assert!(
+            stale_line.contains("500000") || stale_line.contains("500,000"),
+            "STALE must still show the last-good token figure, not blank: {stale_line:?}"
+        );
+    }
+
+    #[test]
+    fn usage_unknown_row_never_shows_a_false_zero_or_blank() {
+        let mut app = golden_app_with_usage(Tab::Usage);
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let unknown_line = text.lines().find(|l| l.contains("pm")).unwrap();
+        assert!(
+            unknown_line.contains("UNKNOWN"),
+            "an unread role must render UNKNOWN: {unknown_line:?}"
+        );
+        assert!(
+            !unknown_line.contains("$0.0000") && !unknown_line.contains(" 0 "),
+            "UNKNOWN must never render as a false $0 / bare zero (reads as confirmed no-spend): {unknown_line:?}"
+        );
+    }
+
+    #[test]
+    fn usage_caveat_is_visible_in_the_tab() {
+        let mut app = golden_app_with_usage(Tab::Usage);
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        assert!(
+            buffer_to_text(&buf).contains("not your account's actual rolling-window usage"),
+            "the proxy-vs-real-account-usage caveat must be visible in the tab, not just the CLI"
+        );
+    }
+
+    // A prior version of this table (fixed-width numeric columns with no
+    // truncation) would panic when the area was narrower than the sum of its
+    // column widths. Widths here are computed from the actual Rect (see
+    // model_w in render_usage), so this must not panic and the STATE column
+    // (leftmost after ROLE, carrying the FRESH/STALE/UNKNOWN signal) must
+    // still be visible even once numeric columns get clipped.
+    #[test]
+    fn usage_tab_does_not_panic_and_keeps_state_visible_at_narrow_width() {
+        let mut app = golden_app_with_usage(Tab::Usage);
+        let area = Rect::new(0, 0, 40, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("STALE"),
+            "STATE column must survive narrowing"
+        );
+        assert!(
+            text.contains("UNKNOWN"),
+            "STATE column must survive narrowing"
+        );
     }
 
     #[test]

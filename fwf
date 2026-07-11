@@ -98,6 +98,9 @@ UTILITIES
                          PR on a shared-account swarm (CHANGES_REQUESTED
                          <branch|none> | AWAITING_REVIEW | APPROVED | NONE) —
                          see docs/shared-account.md.
+  usage                  Per-role token usage + an estimated $ equivalent,
+                         read from each role's own Claude Code session
+                         transcripts (read-only; see dash's Usage tab too).
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -242,8 +245,47 @@ doctor() {
   printf '  workspace : %s\n' "$FWF_WORKSPACE_BASE"
   printf '  run dir   : %s\n' "$FWF_RUN"
   fwf_doctor_version_line
+  _doctor_usage_schema
   [ "$ok" = 0 ] && echo "  -> all good." || echo "  -> fix the items above before launching."
   return "$ok"
+}
+# `fwf usage` (issue #95) reads message.usage.*/message.model off THIS process's
+# own Claude Code transcript line shape — check it here so a Claude Code
+# version that changes that shape is caught by 'fwf doctor', not by `fwf
+# usage` silently under-reporting. Informational only (never fails doctor):
+# unlike tmux/git/gh, a schema drift only affects the optional usage report,
+# not whether the factory can launch.
+_doctor_usage_schema() {
+  local dir f sample
+  dir="${FWF_CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}/$(_fwf_usage_slug "$PWD")"
+  if [ ! -d "$dir" ]; then
+    echo "  usage schema: skip (no Claude Code transcript dir yet for $PWD)"
+    return 0
+  fi
+  command -v jq >/dev/null 2>&1 || { echo "  usage schema: skip (jq not installed)"; return 0; }
+  f="$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1)"
+  [ -n "$f" ] || { echo "  usage schema: skip (no transcript files yet)"; return 0; }
+  sample="$(jq -c 'select(.type=="assistant")' "$f" 2>/dev/null | head -1)"
+  if [ -z "$sample" ]; then
+    echo "  usage schema: no assistant-type line found yet in $(basename "$f") — nothing to check"
+    return 0
+  fi
+  if printf '%s' "$sample" | jq -e \
+       '.message.usage.input_tokens != null and .message.usage.output_tokens != null and .message.model != null' \
+       >/dev/null 2>&1; then
+    echo "  usage schema: ok (matches what 'fwf usage' expects)"
+  else
+    echo "  usage schema: WARNING — transcript line shape has drifted from what 'fwf usage' expects (message.usage.{input,output}_tokens / message.model) — see docs/proposals/70-token-usage-budget.md"
+  fi
+}
+# cwd -> Claude Code's project-dir slug: every '/' and '.' -> '-' (shared with
+# fwf-usage-data.sh's identical helper; kept local here so doctor has no
+# dependency on lib.sh/a resolved profile — it must run before either exists).
+_fwf_usage_slug() {
+  local s="$1"
+  s="${s//\//-}"
+  s="${s//./-}"
+  printf '%s' "$s"
 }
 _doctor_one() { # $1 = binary  $2 = why
   if command -v "$1" >/dev/null 2>&1; then
@@ -448,6 +490,7 @@ case "$cmd" in
   issues)    engine fwf-issues.sh "$@";;
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
+  usage)     engine fwf-usage.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never
