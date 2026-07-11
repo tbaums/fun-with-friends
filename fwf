@@ -98,6 +98,9 @@ UTILITIES
                          PR on a shared-account swarm (CHANGES_REQUESTED
                          <branch|none> | AWAITING_REVIEW | APPROVED | NONE) —
                          see docs/shared-account.md.
+  usage                  Per-role token usage + an estimated $ equivalent,
+                         read from each role's own Claude Code session
+                         transcripts (read-only; see dash's Usage tab too).
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -448,6 +451,7 @@ case "$cmd" in
   issues)    engine fwf-issues.sh "$@";;
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
+  usage)     engine fwf-usage.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

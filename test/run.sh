@@ -1713,6 +1713,19 @@ rm -rf "$UPROJ"
 R4="$(usage_role)"
 assert_eq "dir removed -> state stale (not unknown — we HAD a good read)" "stale" "$(printf '%s' "$R4" | jq -r '.state')"
 assert_eq "stale keeps the last-good totals" "317" "$(printf '%s' "$R4" | jq -r '.tokens.input')"
+
+section "fwf usage (#95): CLI wiring — 'fwf usage' dispatches to fwf-usage.sh and renders the report"
+CLIOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "help mentions the usage command" "$("$ROOT/fwf" help)" "Per-role token usage"
+assert_contains "prints the profile"      "$CLIOUT" "profile .__usage"
+assert_contains "prints the impl1 row"    "$CLIOUT" "impl1"
+assert_contains "prints a TOTAL row"      "$CLIOUT" "TOTAL"
+assert_contains "prints the proxy caveat" "$CLIOUT" "not your account's actual rolling-window usage"
+assert_contains "STALE role renders the warning treatment, not a bare number" "$CLIOUT" "STALE"
+case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *) ok "no false \$0.0000 anywhere in the report";; esac
+STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
+assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
+
 rm -f "$ROOT/profiles/.__usage.sh"
 
 # --------------------------------------------------------------------------
