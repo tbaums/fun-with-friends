@@ -89,6 +89,12 @@ respawning any floor role) clears it. The captain itself is excluded — it's
 the one role `--floor-only` never tears down, so a captain with no pane is
 always a real `down`.
 
+`fwf-down.sh --floor-only` also enforces a deterministic anti-thrash cooldown
+(issue #88): it refuses (nonzero exit, naming the remaining seconds) within
+`FWF_FLOOR_COOLDOWN` seconds (default 300) of the last logged floor-up, unless
+`--force` is passed — this is what actually bounds a down→up→down thrash
+cycle, since it cannot be defeated without `--force`.
+
 The header's provenance stamp says where prod/pipeline came from: `status.json`
 (fresh overlay, green), `stale` (overlay too old, amber), or `derived` (gray).
 

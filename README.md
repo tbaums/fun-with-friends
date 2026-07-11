@@ -169,7 +169,10 @@ re-injected every tick.
   **idle the whole floor** (`fwf down --floor-only`) without losing its own
   session, and bring it back (`fwf up --floor-only`) when work arrives — logged
   so `fwf dash` shows a calm **IDLE (captain)** state, never conflated with a
-  crash (see [`docs/dash.md`](docs/dash.md)). The
+  crash (see [`docs/dash.md`](docs/dash.md)). `fwf down --floor-only` refuses
+  to fire again within `FWF_FLOOR_COOLDOWN` seconds (default 300) of the last
+  floor-up unless `--force` is passed — the deterministic guard against
+  down→up→down token thrash. The
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
@@ -279,8 +282,10 @@ fwf captain [--print]                               copy/print the CAPTAIN promp
 fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain);
                                                     recreates the pane if it closed entirely
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
-fwf down [--purge|--floor-only]                     kill both sessions (--purge: remove worktrees too;
-                                                    --floor-only: keep the captain running)
+fwf down [--purge|--floor-only [--force]]           kill both sessions (--purge: remove worktrees too;
+                                                    --floor-only: keep the captain running; refuses
+                                                    within FWF_FLOOR_COOLDOWN secs of the last floor-up
+                                                    unless --force)
 fwf issues <create|list|view|edit|comment|close|reopen|export>
                                                     the local issue tracker (--issues local):
                                                     gh-shaped CLI over a markdown store

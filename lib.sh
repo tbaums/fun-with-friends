@@ -643,6 +643,37 @@ fwf_floor_idle_state() {
   fi
 }
 
+# --- floor-down cooldown guard (issue #88) -----------------------------------
+# The DETERMINISTIC anti-thrash bound: once the floor comes up, fwf-down.sh
+# --floor-only refuses to take it down again for FWF_FLOOR_COOLDOWN seconds —
+# script-enforced, not defeatable without --force. This is what actually
+# breaks the down->up->down thrash cycle; captain.tmpl's dwell guidance is
+# soft and only reduces how often a single premature down fires.
+FWF_FLOOR_COOLDOWN="${FWF_FLOOR_COOLDOWN:-300}"
+case "$FWF_FLOOR_COOLDOWN" in
+  ''|*[!0-9]*) echo "fwf: FWF_FLOOR_COOLDOWN must be a non-negative integer of seconds (got '$FWF_FLOOR_COOLDOWN')" >&2; exit 1;;
+esac
+
+# Echoes the epoch of the last logged floor-up event, or "" if none on record
+# (a fresh log, or one that has never seen an up — the first-ever down is
+# intentionally unguarded; see #88's edge cases).
+fwf_floor_last_up_epoch() {
+  [ -f "$FWF_FLOOR_LOG" ] || { printf ''; return 0; }
+  awk -F'\t' '$3=="floor-up"{e=$2} END{if (e != "") print e}' "$FWF_FLOOR_LOG"
+}
+
+# Echoes the remaining cooldown in seconds (0 if elapsed, or no prior floor-up
+# on record).
+fwf_floor_cooldown_remaining() {
+  local last_up now remaining
+  last_up="$(fwf_floor_last_up_epoch)"
+  [ -n "$last_up" ] || { printf '0'; return 0; }
+  now="$(date +%s)"
+  remaining=$(( FWF_FLOOR_COOLDOWN - (now - last_up) ))
+  [ "$remaining" -gt 0 ] || remaining=0
+  printf '%s' "$remaining"
+}
+
 # --- e2e lock (issue #65) ----------------------------------------------------
 # Serializes EVERY e2e-equivalent run across the whole floor — not just
 # conductor-vs-conductor, but implementer self-verification too — since most
