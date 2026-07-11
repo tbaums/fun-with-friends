@@ -1748,6 +1748,31 @@ case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *)
 STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
 assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
 
+section "fwf usage (#96): budget-enforcement ARMED/NOT ARMED surface (GV-signoff residual-risk fix)"
+NOBUDGET="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "no FWF_TOKEN_BUDGET -> NOT ARMED" "$NOBUDGET" "budget enforcement: NOT ARMED"
+assert_contains "no budget -> hold state none" "$NOBUDGET" "hold state: none"
+
+UNARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
+assert_contains "budget set but writer not running -> NOT ARMED (visibly, not silently, off)" "$UNARMED" "budget enforcement: NOT ARMED"
+assert_contains "unarmed message tells the operator how to fix it" "$UNARMED" "fwf up"
+
+env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+ARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
+assert_contains "writer running for this profile -> ARMED" "$ARMED" "budget enforcement: ARMED (ceiling 1000 tokens)"
+
+printf 'HOLD — 1200 tokens spent, budget is 1000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold\n' > "$UT/run/BUDGET_HOLD"
+HELDOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
+assert_contains "usage report surfaces the current hold state verbatim" "$HELDOUT" "hold state: HOLD — 1200 tokens spent"
+
+CLEAROUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage --clear-hold 2>&1)"
+assert_contains "--clear-hold confirms" "$CLEAROUT" "cleared"
+[ -f "$UT/run/BUDGET_HOLD" ] && bad "--clear-hold removes the hold file" || ok "--clear-hold removes the hold file"
+
+env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+
 rm -f "$ROOT/profiles/.__usage.sh"
 
 # --------------------------------------------------------------------------

@@ -1,9 +1,24 @@
 # Proposal: token-usage reporting + a hard token budget for factory runs (#70)
 
+**Status: SHIPPED.** Both recommended tickets have landed: Ticket A
+(token-usage reporting — `fwf usage`, the dash Usage tab) shipped as #95;
+Ticket B (hard budget enforcement — the `BUDGET_HOLD` sentinel, the
+`fwf-budget-check.sh` WRITER, role-prompt step-0 checks, `--token-budget`,
+`fwf usage --clear-hold`, and the ARMED/NOT ARMED surface) shipped as #96. See
+the README's "Token budget enforcement" section and `docs/dash.md`'s "Budget
+enforcement" section for the as-built behavior; the design sketch below is
+kept for historical/rationale context and may describe details that shifted
+slightly during build (e.g. the exact WRITER cadence or sentinel wording).
+
+<details>
+<summary>Original discovery-phase status line (kept for history)</summary>
+
 **Status: DISCOVERY.** This is a feasibility investigation + build-or-no-go
 recommendation, not code. Deliverable per the ticket: resolve the token-source
 gate with concrete evidence, sketch the aggregation/pause-seam/surfaces/config,
 state the fail-safe direction, and recommend.
+
+</details>
 
 ## Problem recap
 

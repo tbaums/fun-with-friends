@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # fwf usage — CLI report over fwf-usage-data.sh's per-role token/$ aggregate
-# (issue #95, Ticket A of #70). Read-only: this never pauses a factory or
-# writes any hold/sentinel (enforcement is Ticket B, #96).
+# (issue #95, Ticket A of #70), plus the #96 (Ticket B) budget-enforcement
+# surface: an ARMED/NOT ARMED line (so a budget set mid-run without a re-`up`
+# is visibly, not silently, off — the GV-signoff residual-risk fix) and
+# --clear-hold to lift a BUDGET_HOLD by hand.
 #
 # Usage: fwf usage [--profile NAME]     (--profile is handled by the fwf
 #                                         dispatcher's engine() — see #69)
+#        fwf usage --clear-hold         Remove $BUDGET_HOLD_FILE (operator
+#                                        override — the writer will re-write
+#                                        it next tick if still over budget).
 #
-# Prints a per-role table (state, model, tokens by kind, $ estimate) plus a
-# factory total and the proxy-vs-real-account-usage caveat.
+# Prints a per-role table (state, model, tokens by kind, $ estimate), a
+# factory total, the current budget-enforcement status, and the
+# proxy-vs-real-account-usage caveat. Reporting itself is read-only; it never
+# writes the hold sentinel except when --clear-hold is explicitly passed.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -35,8 +42,31 @@ _fwf_usage_fmt_state() { # $1=state $2=age_secs
   esac
 }
 
+_fwf_usage_budget_line() {
+  if [ -z "${FWF_TOKEN_BUDGET:-}" ]; then
+    printf 'budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)\n'
+  elif fwf_budget_writer_running; then
+    printf 'budget enforcement: ARMED (ceiling %s tokens)\n' "$FWF_TOKEN_BUDGET"
+  else
+    printf 'budget enforcement: NOT ARMED — FWF_TOKEN_BUDGET=%s is set, but the writer is not running for this profile (re-run '"'"'fwf up'"'"' to arm it)\n' "$FWF_TOKEN_BUDGET"
+  fi
+  if [ -f "$BUDGET_HOLD_FILE" ]; then
+    printf 'hold state: %s\n' "$(head -1 "$BUDGET_HOLD_FILE")"
+  else
+    printf 'hold state: none\n'
+  fi
+}
+
 main() {
-  [ $# -eq 0 ] || { echo "fwf usage: unknown argument '$1' (usage takes no flags of its own — --profile is handled before dispatch)" >&2; exit 1; }
+  case "${1:-}" in
+    "") ;;
+    --clear-hold)
+      rm -f "$BUDGET_HOLD_FILE"
+      echo "fwf usage: cleared $BUDGET_HOLD_FILE (the writer will re-write it next tick if still over budget)"
+      exit 0
+      ;;
+    *) echo "fwf usage: unknown argument '$1' (expected no arguments, or --clear-hold)" >&2; exit 1;;
+  esac
   command -v jq >/dev/null 2>&1 || { echo "fwf usage: jq is required" >&2; exit 1; }
   local data
   data="$(usage_data)"
@@ -78,6 +108,9 @@ main() {
     "$(printf '$%.4f' "$(printf '%s' "$data" | jq -r '.total.cost_usd')")"
 
   printf '\n%s\n' "$(printf '%s' "$data" | jq -r '"note: " + .caveat')"
+
+  printf '\n'
+  _fwf_usage_budget_line
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi

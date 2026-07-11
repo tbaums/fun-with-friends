@@ -171,7 +171,9 @@ fwf up --model haiku --impl-model sonnet \
 The full set: `--pairs N`, `--model M`, and per-role `--impl-model`,
 `--qa-model`, `--pm-model`, `--gv-model`, `--captain-model`,
 `--conductor-model`. (`--model` values are passed straight to `claude
---model`.)
+--model`.) There's also `--token-budget N` — a hard ceiling on combined
+token spend across every role, unset by default (unlimited); see the
+README's "Token budget enforcement" section.
 
 Make it permanent in a profile:
 

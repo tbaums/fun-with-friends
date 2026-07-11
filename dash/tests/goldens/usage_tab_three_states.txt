@@ -1,3 +1,5 @@
+budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)
+hold state: none
   ROLE        STATE               MODEL             INPUT  CACHE-W  CACHE-R   OUTPUT     EST-$
 ┌ Usage ───────────────────────────────────────────────────────────────────────────────────────────┐
 │▌impl1       fresh               claude-sonne…   1234567   234567    89012   345678  $12.3456     │
