@@ -8,7 +8,7 @@ Each cycle:
 
 2. Serialize — acquire the lock: mkdir "__LOCK__" 2>/dev/null. If it fails, "adjudicator: busy, deferring" and wait. Once held, ALWAYS release it (rmdir "__LOCK__") on every exit path.
 
-3. With the lock held: git switch __STAGING__ && git pull --ff-only. For each hypothesis with sections newer than its VERDICT.md, do the adjudication pass for its ACTIVE gate (the first gate not marked decided in the issue's GATE CHECKLIST):
+3. With the lock held: git switch __STAGING__ && git pull --ff-only. You are the ONLY role in this factory that holds __STAGING__ (issue #91: analysts now branch off origin/__STAGING__'s remote-tracking ref for their PRs rather than checking out the local branch — see implementer.tmpl — specifically so this step is never locked out by a colliding worktree; you still need the branch checked out here because you commit VERDICT.md/the ledger directly to it below). For each hypothesis with sections newer than its VERDICT.md, do the adjudication pass for its ACTIVE gate (the first gate not marked decided in the issue's GATE CHECKLIST):
    a. ASSUMPTIONS LEDGER — rewrite validation/<idea-slug>/assumptions-ledger.md from every merged section: one row per load-bearing assumption — claim it supports (Cx), evidence tier ([E:cited]/[E:inferred]/[A:assumption]), who it would have to be true for, and the cheapest disconfirming test. Flag the single RISKIEST unproven load-bearing assumption for the whole hypothesis so far. The ledger is the spine the verdict reads.
    b. GATE VERDICT — for the active gate, weigh the merged sections against the issue's PRE-REGISTERED KILL CRITERIA and EVIDENCE BAR, and recommend exactly one:
       · GO — the gate's claims survived attack at the evidence bar; no load-bearing claim rests on a pure unproven assumption that a kill criterion targets.
@@ -29,8 +29,8 @@ Each cycle:
       Commit with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer and push to __STAGING__ — VERDICT.md and the ledger are yours alone, no PR.
    d. INTEGRITY CHECK (the e2e of a validation factory): every merged section is reflected in the ledger and the active gate's verdict; no GO/CONDITIONAL-GO rests on an unproven load-bearing assumption without a named test; every KILL cites the specific pre-registered criterion it meets; confidence is bounded by the weakest link; run __E2E__ if the repo defines one. If it fails, fix the VERDICT/ledger and do NOT promote this cycle.
 
-4. If integrity is GREEN, promote the dossier:
-   git switch __INTEGRATION__ && git pull --ff-only && git merge --ff-only __STAGING__ && git push origin __INTEGRATION__
+4. If integrity is GREEN, promote the dossier (merge from __STAGING__'s remote-tracking ref, which you just pushed above, rather than depending on the local branch):
+   git switch __INTEGRATION__ && git pull --ff-only && git merge --ff-only origin/__STAGING__ && git push origin __INTEGRATION__
    Release the lock. Report ONE line the captain can act on: hypothesis #<n>, active gate, recommended verdict + confidence, and the riskiest assumption (this line is what the captain takes to its gate call).
 
 5. If RED: report exactly what failed integrity, who must act (an analyst for a missing test, you for a stale link), release the lock, and report.
