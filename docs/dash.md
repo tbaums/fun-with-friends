@@ -77,6 +77,7 @@ a running swarm:
 | prod | the captain's `status.json` overlay when fresh, else `—` |
 | ⛔ CAPTAIN NEEDS YOU | a full-width banner when the captain pane is blocked on you (read from the captain pane) |
 | ◇ FLOOR IDLE (header badge) | shown whenever the floor was deliberately idled via `fwf-down.sh --floor-only` — distinct from the whole-factory `⏸ PARKED` badge |
+| ⬆ upgrade available | a full-width banner (visually distinct — yellow, not red) when a newer fwf release exists; both this and the needs-you banner can show at once, stacked. See "Upgrade staleness check" in the main README's Notes & caveats. |
 
 A role with no live tmux pane reads as a real crash (`down`) UNLESS the last
 entry in `$FWF_STATE_DIR/floor-events.log` is a `floor-down` with no later
