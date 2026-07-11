@@ -202,6 +202,22 @@ needs_you_json() {
   fi
 }
 
+# --- upgrade-available banner (issue #94, from the #79 proposal) ------------
+# Cache-only — never triggers a network call itself. fwf_version_skew_check
+# (lib/version_check.sh) reads the shared $FWF_RUN/upgrade-check cache and, if
+# it's stale, kicks off its OWN detached single-flight refresh for next time;
+# this call never waits on that, so a dash tick never blocks on gh either.
+upgrade_json() {
+  local out cur latest
+  out="$(fwf_version_skew_check)"
+  if [ -z "$out" ]; then
+    echo '{"available":false,"current":"","latest":""}'
+    return 0
+  fi
+  cur="${out%%|*}"; latest="${out##*|}"
+  jq -n --arg cur "$cur" --arg latest "$latest" '{available:true, current:$cur, latest:$latest}'
+}
+
 # --- issues + decisions -----------------------------------------------------
 # All open issues, with bodies + labels, in one backend call (gh and the local
 # store share the --json field names even though their plain columns differ).
@@ -305,7 +321,7 @@ activity_json() {
 
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle
+  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -322,16 +338,18 @@ main() {
   decisions="$(decisions_json "$issues")"
   activity="$(activity_json)"
   needs_you="$(needs_you_json)"
+  upgrade="$(upgrade_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
     --argjson parked "$parked" \
     --arg prod "$prod" --arg pipeline "$pipeline" --arg stamp "$stamp" --arg gen "$gen" \
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
-    --argjson activity "$activity" --argjson needs_you "$needs_you" --argjson floor_idle "$floor_idle" \
+    --argjson activity "$activity" --argjson needs_you "$needs_you" \
+    --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
-      activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle}'
+      activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade}'
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------

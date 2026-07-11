@@ -29,6 +29,8 @@ pub struct Dashboard {
     pub needs_you: NeedsYou,
     #[serde(default)]
     pub floor_idle: FloorIdle,
+    #[serde(default)]
+    pub upgrade: UpgradeAvailable,
 }
 
 /// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
@@ -57,6 +59,20 @@ pub struct FloorIdle {
     pub reason: String,
     #[serde(default)]
     pub actor: String,
+}
+
+/// Set when a newer fwf release exists (issue #94, from the #79 discovery
+/// proposal) — cache-only, read from lib/version_check.sh's shared cache by
+/// `upgrade_json()` in fwf-dash-data.sh. Never triggers a network call itself;
+/// freshness comes from that cache's own detached background refresh.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UpgradeAvailable {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub current: String,
+    #[serde(default)]
+    pub latest: String,
 }
 
 /// Factory motion, derived from PRs against the integration targets: drafts are

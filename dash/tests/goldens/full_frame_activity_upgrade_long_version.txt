@@ -1,0 +1,30 @@
+┌ fwf dash ────────────────────────────────────────────────────────────────────────────────────────┐
+│profile fwf-self  ·  dev  ● running                                                               │
+│prod https://example.test/prod   pipeline staging → integration → main   [status.json]   ⟳ 2026-01│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+  1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)
+ ⬆ fwf v0.22.0-rc.1+cafef00d available (running 0.21.3-dev.20260710+deadbeef) — run 'fwf upgrade'
+┌ Activity — factory motion ─────────────┐┌ Detail · loading PR… ──────────────────────────────────┐
+│▌BUILDING                               ││PR #101  → staging                                      │
+│   #54 ● dash render golden snapshot tes││dash render golden snapshot tests via ratatui           │
+│                                        ││TestBackend, covering every main render path            │
+│ IN TEST / REVIEW                       ││                                                        │
+│   #50 ✓ fix low-contrast blockquote sty││role:   impl3                                           │
+│                                        ││issue:  #54                                             │
+│ MERGED (recent)                        ││checks: run                                             │
+│   #40 →staging 07-01 09:00 fwf dash mil││                                                        │
+│                                        ││(loading PR detail…)                                    │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+ 1-4 tab  j/k move  Ctrl-r refresh  n/p scroll PR  t captain  ? help  q quit
