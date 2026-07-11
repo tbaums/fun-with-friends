@@ -105,7 +105,12 @@ Every looped role is armed the same way: its full role prompt is delivered
 once at launch and persisted to `~/.fun-with-friends/prompts/<profile>-<role>.prompt`,
 then its loop fires a one-line tick on the role's interval — an agent that has
 compacted re-reads its role from that file instead of having the whole prompt
-re-injected every tick.
+re-injected every tick. Every role's step 0 also touches a per-role heartbeat
+at the START of each cycle (`fwf_heartbeat_touch <role>`, before any work);
+`fwf respawn <role>` waits for that heartbeat to advance (never the tmux pane's
+animation glyph, which reads a healthy-but-slow first cycle as a permanent
+wedge) and prints `respawn verified: first tick observed` — or, after one
+re-nudge, fails loudly instead of a false success (issue #99).
 
 - **PM** (loop): turns rough ideas into **draft** GitHub issues labeled
   `product-wip` (hidden from implementers) via back-and-forth, and on a loop
