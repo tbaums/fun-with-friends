@@ -18,7 +18,7 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "$DEST/containers"
 cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
 cp fwf-*.sh "$DEST/"   # ALL engine scripts — a glob so a new fwf-*.sh can't be forgotten
-cp lib/detect.sh lib/profile.sh "$DEST/lib/"
+cp lib/*.sh "$DEST/lib/"   # ALL lib scripts — a glob so a new lib/*.sh can't be forgotten (issue #94 lesson)
 cp profiles/example.sh "$DEST/profiles/"        # generic template only
 cp prompts/*.txt "$DEST/prompts/"               # shared assets (role prompts live in templates/)
 cp -R templates "$DEST/templates"               # factory design templates (all shipped designs)
