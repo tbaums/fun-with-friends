@@ -1,0 +1,8 @@
+  ROLE        STATE               MODEL             INPUT  CACHE-W  CACHE-R   OUTPUT     EST-$
+┌ Usage ───────────────────────────────────────────────────────────────────────────────────────────┐
+│▌impl1       fresh               claude-sonne…   1234567   234567    89012   345678  $12.3456     │
+│ qa1         ⚠ STALE (245s ago)  claude-opus-…    500000    10000     5000    60000   $5.4321     │
+│ pm          ⚠ UNKNOWN           -                     -        -        -        -         -     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+TOTAL                                           1734567   244567    94012   405678  $17.7777
+note: estimated $ equivalent — not your account's actual rolling-window usage

@@ -181,6 +181,84 @@ pub fn fetch() -> Result<Dashboard, String> {
     parse(&out.stdout)
 }
 
+/// Per-role token/$ usage (issue #95, Ticket A of #70), from the sibling
+/// provider `fwf-usage-data.sh` — a separate script (and a separate refresh
+/// cadence in main.rs) because summing every role's Claude Code transcripts
+/// is a heavier read than the gh/tmux-derived Dashboard above.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UsageData {
+    // `generated_at` is in the provider's JSON but unused here — per-role
+    // `age_secs` is what the UI actually shows; serde ignores the extra field.
+    #[serde(default)]
+    pub caveat: String,
+    #[serde(default)]
+    pub roles: Vec<UsageRole>,
+    #[serde(default)]
+    pub total: UsageTotals,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsageRole {
+    pub role: String,
+    /// "fresh" | "stale" | "unknown" — see fwf-usage-data.sh for the exact
+    /// semantics (unknown = never successfully read; stale = a prior good
+    /// read exists but this poll couldn't refresh it).
+    pub state: String,
+    #[serde(default)]
+    pub age_secs: Option<i64>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub tokens: UsageTokens,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+pub struct UsageTokens {
+    #[serde(default)]
+    pub input: i64,
+    #[serde(default)]
+    pub cache_creation: i64,
+    #[serde(default)]
+    pub cache_read: i64,
+    #[serde(default)]
+    pub output: i64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+pub struct UsageTotals {
+    #[serde(default)]
+    pub tokens: UsageTokens,
+    #[serde(default)]
+    pub cost_usd: f64,
+}
+
+/// Run the usage provider and parse one snapshot. `$FWF_USAGE_DATA` is set by
+/// the `fwf dash` wrapper alongside `$FWF_DASH_DATA`.
+pub fn fetch_usage() -> Result<UsageData, String> {
+    let script = std::env::var("FWF_USAGE_DATA")
+        .map_err(|_| "FWF_USAGE_DATA is not set (run via `fwf dash`)".to_string())?;
+    let out = Command::new("bash")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("could not run the usage provider: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "usage provider exited {}: {}",
+            out.status.code().unwrap_or(-1),
+            err.trim()
+        ));
+    }
+    parse_usage(&out.stdout)
+}
+
+pub fn parse_usage(bytes: &[u8]) -> Result<UsageData, String> {
+    serde_json::from_slice::<UsageData>(bytes)
+        .map_err(|e| format!("could not parse usage JSON: {e}"))
+}
+
 /// Fetch ONE issue/decision's full thread (body + comments) as plain text for the
 /// detail pane. Lazy: called only for the selected row, off the per-tick board
 /// fetch, so a freshly-posted comment appears the moment the dash re-requests it.
@@ -281,5 +359,49 @@ mod tests {
         assert!(!a.is_empty());
         let order: Vec<i64> = a.flat().iter().map(|x| x.pr).collect();
         assert_eq!(order, vec![1, 2, 3, 4]);
+    }
+
+    const USAGE_SAMPLE: &str = r##"{
+        "generated_at":"2026-07-11T01:00:00Z",
+        "caveat":"estimated $ equivalent — not your account's actual rolling-window usage",
+        "roles":[
+            {"role":"impl1","state":"fresh","age_secs":0,"model":"claude-sonnet-5",
+             "tokens":{"input":310,"cache_creation":50,"cache_read":40,"output":65},"cost_usd":0.001403},
+            {"role":"qa1","state":"stale","age_secs":240,"model":"claude-sonnet-5",
+             "tokens":{"input":100,"cache_creation":0,"cache_read":0,"output":10},"cost_usd":0.0002},
+            {"role":"pm","state":"unknown","age_secs":null,"model":null,
+             "tokens":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"cost_usd":null}
+        ],
+        "total":{"tokens":{"input":410,"cache_creation":50,"cache_read":40,"output":75},"cost_usd":0.001603}
+    }"##;
+
+    #[test]
+    fn parses_usage_snapshot_all_three_states() {
+        let u = parse_usage(USAGE_SAMPLE.as_bytes()).expect("parse");
+        assert_eq!(u.roles.len(), 3);
+        assert_eq!(u.roles[0].state, "fresh");
+        assert_eq!(u.roles[0].tokens.input, 310);
+        assert_eq!(u.roles[0].cost_usd, Some(0.001403));
+        assert_eq!(u.roles[1].state, "stale");
+        assert_eq!(u.roles[1].age_secs, Some(240));
+        assert_eq!(u.roles[2].state, "unknown");
+        assert_eq!(u.roles[2].model, None);
+        assert_eq!(u.roles[2].cost_usd, None); // never a false $0
+        assert_eq!(u.total.tokens.input, 410);
+        assert!(u
+            .caveat
+            .contains("not your account's actual rolling-window usage"));
+    }
+
+    #[test]
+    fn usage_reports_bad_json() {
+        assert!(parse_usage(b"not json").is_err());
+    }
+
+    #[test]
+    fn usage_tolerates_missing_optional_fields() {
+        let u = parse_usage(br#"{"generated_at":"x","caveat":"c"}"#).expect("parse");
+        assert!(u.roles.is_empty());
+        assert_eq!(u.total.cost_usd, 0.0);
     }
 }
