@@ -154,6 +154,21 @@ format drift before it would silently under-report here.
 For a terminal-only view of the same data (no TUI needed): `fwf usage` — a
 per-role table plus a factory total, printed once and exited (see `fwf help`).
 
+### Budget enforcement (issue #96)
+
+The tab also shows the current hard-token-budget status (see the README's
+"Token budget enforcement" section for the full design): a
+**budget enforcement: ARMED (ceiling N) / NOT ARMED** line, and the current
+hold state — `none`, a `HOLD` (over budget), a `WARN` (approaching budget,
+not paused), or an `UNKNOWN — FAIL-CLOSED` (a role's usage reader broke;
+textually distinct from `HOLD` so it's never misread as "over budget"). This
+mirrors `fwf usage`'s own ARMED/NOT ARMED line exactly, so the two surfaces
+never disagree. NOT ARMED with `FWF_TOKEN_BUDGET` set means the budget was
+configured after the factory was last brought up — re-run `fwf up` to arm
+the enforcement WRITER. Lift a HOLD/UNKNOWN with `fwf usage --clear-hold`
+(or raise `FWF_TOKEN_BUDGET` and let the WRITER re-evaluate on its next
+tick).
+
 ## Architecture
 
 The binary is purely the renderer + input layer. Both sides stay in bash so the

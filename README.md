@@ -292,9 +292,11 @@ fwf issues <create|list|view|edit|comment|close|reopen|export>
 fwf dash                                            read-only status board + decision inbox (Rust
                                                     TUI; prebuilt binary auto-downloaded on first
                                                     run — docs/dash.md)
-fwf usage                                           per-role token usage + an estimated $ equivalent,
+fwf usage [--clear-hold]                            per-role token usage + an estimated $ equivalent,
                                                     read from each role's own Claude Code session
-                                                    transcripts (read-only; also a dash tab)
+                                                    transcripts, plus budget-enforcement status
+                                                    (read-only; also a dash tab). --clear-hold lifts
+                                                    a BUDGET_HOLD by hand.
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
@@ -331,6 +333,9 @@ wins.
 --model M            model for every agent (claude --model M)
 --impl-model M       per-role override; likewise --qa-model, --pm-model,
                      --gv-model, --captain-model, --conductor-model
+--token-budget N     hard ceiling on combined token spend across every role;
+                     unset = unlimited (default, opt-in). See "Token budget
+                     enforcement" below.
 ```
 
 ```
@@ -394,6 +399,26 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   acknowledged an earlier one. `FWF_SKIP_VERSION_CHECK=1` is the full kill
   switch for offline/air-gapped use — it disables the check entirely (no cache
   read, no network, ever), not just the banner.
+- **Token budget enforcement** (`--token-budget N`, opt-in, unset = unlimited):
+  caps combined token spend across every role. `fwf up`/`fwf up --floor-only`
+  arms a background WRITER (`fwf-budget-check.sh --loop`, ~60s cadence, zero
+  network calls — it only re-reads the local transcripts `fwf usage` already
+  reads) only when `FWF_TOKEN_BUDGET` is set; every role checks a sentinel at
+  its own step-0 and, if held, commits WIP and idles until the next tick — it
+  never cancels a role's loop, so it resumes automatically once the hold
+  clears, no respawn needed. Three states, written ONLY by the WRITER (roles
+  only ever read it): **HOLD** (spend ≥ budget — needs an operator to raise
+  `FWF_TOKEN_BUDGET` or run `fwf usage --clear-hold`), **WARN** (≥
+  `FWF_TOKEN_BUDGET_WARN_PCT`, default 80%, of budget — noted, not paused),
+  and **UNKNOWN — FAIL-CLOSED** (a role's usage reader broke — pauses the
+  whole factory rather than risk silently under-counting spend; textually
+  distinct from HOLD so a Claude Code transcript-schema change is never
+  misread as "over budget"). `fwf usage` and the dash Usage tab both show an
+  explicit **ARMED (ceiling N) / NOT ARMED** line plus the current hold, so a
+  budget set mid-run without a re-`fwf up` (the only place the WRITER gets
+  armed) is visibly, not silently, off. `fwf down` (including `--floor-only`)
+  stops the WRITER and clears any hold — a downed floor spends nothing, so
+  there's nothing left to enforce against.
 
 ## Learn more
 

@@ -16,6 +16,8 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
 
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
+0b. BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
+
 1. ADDRESS THE RED-TEAM. gh pr list --state open --json number,headRefName,reviewDecision,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))' — if one has CHANGES_REQUESTED, qa__ID__ has attacked an assumption or claim. gh pr checkout <n>, then on the SAME branch: where the attack lands, HARDEN with evidence or REVISE the finding — and where the attack KILLS a load-bearing claim, say so plainly in the section (do not water the analysis down to survive; an honest "this claim does not hold" is the highest-value output you can ship). Where the attack is wrong, argue back in a comment with the evidence. Push, gh pr ready <n>, END the cycle.
 
 2. FINISH OR WAIT. Else, if you have one open impl__ID__/ PR: a DRAFT → finish the section and gh pr ready <n>; ready and unreviewed → "impl__ID__: #<n> awaiting qa__ID__" and END. Do NOT open a second PR.

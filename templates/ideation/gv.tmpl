@@ -21,6 +21,8 @@ At most ~3 substantive rounds per work product; then post "GV-CHANGES:" noting i
 
 == EACH LOOP CYCLE ==
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle.
+
+0b. BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
 1. REVIEW GATED CHALLENGES: gh issue list --state open --label "__WIP_LABEL__" --json number,title — skip `idea`-labeled issues; skip empty stubs (PM drafts first); skip frames you signed off at the current version; review real frames and PM revisions against YOUR LENS; post one of the two markers. You never touch labels.
 2. PORTFOLIO DIVERSITY SWEEP: for each RUNNING challenge (open, un-gated), skim ideas/PORTFOLIO.md and the newest merged briefs. Monoculture forming → one comment on the challenge naming the missing territory (@-reference the captain). Healthy spread → silence.
 3. ADVISE THE CAPTAIN on anything it pointed you at (convergence timing, winner selection, another round vs close).

@@ -80,6 +80,13 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          Per-role model override (beats --model for that role).
                          Persist any of these in a profile via FWF_PAIRS /
                          FWF_MODEL / FWF_MODEL_<ROLE>.
+  --token-budget N       Hard token-budget ceiling across all roles combined
+                         (issue #96); unset = unlimited (default, opt-in).
+                         Armed by 'fwf up' (or 'up --floor-only'): a background
+                         WRITER pauses every role (BUDGET_HOLD) once combined
+                         spend reaches N, fail-closed if usage can't be read.
+                         See 'fwf usage' for current spend + ARMED/NOT ARMED
+                         status, and 'fwf usage --clear-hold' to lift a hold.
   issues <cmd> [...]     The LOCAL issue tracker (--issues local): a gh-shaped
                          CLI (create/list/view/edit/comment/close/reopen/export) over
                          a markdown store outside any repo. 'fwf issues help'.
@@ -98,9 +105,13 @@ UTILITIES
                          PR on a shared-account swarm (CHANGES_REQUESTED
                          <branch|none> | AWAITING_REVIEW | APPROVED | NONE) —
                          see docs/shared-account.md.
-  usage                  Per-role token usage + an estimated $ equivalent,
+  usage [--clear-hold]   Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
-                         transcripts (read-only; see dash's Usage tab too).
+                         transcripts, plus budget-enforcement status
+                         (ARMED/NOT ARMED + current hold, issue #96; see
+                         dash's Usage tab too). --clear-hold lifts a
+                         BUDGET_HOLD by hand (the writer re-writes it next
+                         tick if still over budget).
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -213,6 +224,8 @@ parse_runtime_flags() {
       --issues)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_ISSUES="$2"; shift 2;;
       --issues=*) export FWF_ISSUES="${1#*=}"; shift;;
       --local-issues) export FWF_ISSUES=local; shift;;
+      --token-budget)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_TOKEN_BUDGET="$2"; shift 2;;
+      --token-budget=*) export FWF_TOKEN_BUDGET="${1#*=}"; shift;;
       --impl-model|--qa-model|--pm-model|--gv-model|--captain-model|--conductor-model)
         [ $# -ge 2 ] || die "$1 needs a value"
         roleflag="${1#--}"; roleflag="$(printf '%s' "${roleflag%-model}" | tr '[:lower:]' '[:upper:]')"
@@ -491,6 +504,7 @@ case "$cmd" in
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
+  budget-check) engine fwf-budget-check.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

@@ -195,6 +195,63 @@ pub struct UsageData {
     pub roles: Vec<UsageRole>,
     #[serde(default)]
     pub total: UsageTotals,
+    /// Hard token-budget enforcement status (issue #96, Ticket B of #70) —
+    /// NOT part of the bash provider's JSON (fwf-usage-data.sh stays
+    /// read-only/#95-only). Populated separately by `fetch_usage()` reading
+    /// env vars + the writer's own sentinel files directly, so `#[serde]`
+    /// must skip it (there is nothing to deserialize).
+    #[serde(skip)]
+    pub budget: BudgetStatus,
+}
+
+/// The GV-signoff residual-risk fix for #96: a budget configured mid-run
+/// without a re-`fwf up` (which is when `fwf_budget_writer_start` in lib.sh
+/// actually arms the enforcement loop) must be VISIBLY off, not silently off.
+/// Mirrors `_fwf_usage_budget_line` in fwf-usage.sh exactly (same wording),
+/// so the CLI and the dash Usage tab read as one system to an operator
+/// comparing them.
+#[derive(Debug, Clone, Default)]
+pub struct BudgetStatus {
+    /// `$FWF_TOKEN_BUDGET` — None when unset/empty (unlimited, not armed).
+    pub token_budget: Option<u64>,
+    /// True only when a budget is configured AND the writer loop is alive
+    /// for this profile (a real `kill -0` on the PID in
+    /// `$FWF_STATE_DIR/budget-writer.pid` — see `resolve_budget_status()` /
+    /// `pid_alive()` in this module).
+    pub armed: bool,
+    /// First line of `$BUDGET_HOLD_FILE`, if that sentinel exists. Its
+    /// exact text (HOLD / WARN / UNKNOWN — FAIL-CLOSED) is written only by
+    /// the bash WRITER (fwf-budget-check.sh) and passed through verbatim —
+    /// this must never be reworded, since the HOLD/FAIL-CLOSED distinction
+    /// is load-bearing for the incident protocol (an operator must never
+    /// confuse "reader broke" with "I blew my budget").
+    pub hold_line: Option<String>,
+}
+
+impl BudgetStatus {
+    /// Mirrors `_fwf_usage_budget_line`'s "budget enforcement: …" line in
+    /// fwf-usage.sh verbatim (down to the wording of each of the three
+    /// cases), so the CLI and the dash tab are textually consistent.
+    pub fn enforcement_line(&self) -> String {
+        match self.token_budget {
+            None => {
+                "budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)"
+                    .to_string()
+            }
+            Some(n) if self.armed => format!("budget enforcement: ARMED (ceiling {n} tokens)"),
+            Some(n) => format!(
+                "budget enforcement: NOT ARMED — FWF_TOKEN_BUDGET={n} is set, but the writer is not running for this profile (re-run 'fwf up' to arm it)"
+            ),
+        }
+    }
+
+    /// Mirrors `_fwf_usage_budget_line`'s "hold state: …" line verbatim.
+    pub fn hold_status_line(&self) -> String {
+        match &self.hold_line {
+            Some(l) => format!("hold state: {l}"),
+            None => "hold state: none".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -251,12 +308,84 @@ pub fn fetch_usage() -> Result<UsageData, String> {
             err.trim()
         ));
     }
-    parse_usage(&out.stdout)
+    let mut data = parse_usage(&out.stdout)?;
+    data.budget = resolve_budget_status();
+    Ok(data)
 }
 
 pub fn parse_usage(bytes: &[u8]) -> Result<UsageData, String> {
     serde_json::from_slice::<UsageData>(bytes)
         .map_err(|e| format!("could not parse usage JSON: {e}"))
+}
+
+/// Resolve the #96 budget-enforcement status by reading env vars + the
+/// WRITER's own sentinel files directly — read-only; dash must never write
+/// `$BUDGET_HOLD_FILE` or the PID file, only the bash WRITER
+/// (fwf-budget-check.sh) does.
+///
+/// `$FWF_TOKEN_BUDGET` is read from dash's own process env, exactly like
+/// `_fwf_usage_budget_line` in fwf-usage.sh reads it from its own invocation
+/// — both surfaces share the same known limitation (a budget exported in one
+/// shell is invisible to a `fwf dash` started from a different shell/tab
+/// that never re-exported it); that is the accepted #96 design already
+/// shipped on the bash side, not something to paper over here.
+///
+/// `$FWF_RUN`/`$FWF_STATE_DIR`/`$BUDGET_HOLD_FILE` are plain shell variables
+/// in lib.sh/config.sh, never `export`ed — so they are not in dash's env
+/// either. Recomputed here with the exact same fallback formula config.sh
+/// uses (`$FWF_RUN_DIR` env var, else `$HOME/.fun-with-friends`) plus
+/// `$FWF_PROFILE`, which IS inherited (the `fwf` dispatcher exports it, then
+/// `exec`s all the way down to this binary without ever unsetting it).
+fn resolve_budget_status() -> BudgetStatus {
+    let token_budget = std::env::var("FWF_TOKEN_BUDGET")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    let fwf_run = std::env::var("FWF_RUN_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{home}/.fun-with-friends")
+        });
+    let profile = std::env::var("FWF_PROFILE").unwrap_or_default();
+
+    let armed = token_budget.is_some()
+        && !profile.is_empty()
+        && pid_alive(&format!("{fwf_run}/state/{profile}/budget-writer.pid"));
+
+    let hold_line = std::fs::read_to_string(format!("{fwf_run}/BUDGET_HOLD"))
+        .ok()
+        .and_then(|s| s.lines().next().map(str::to_string));
+
+    BudgetStatus {
+        token_budget,
+        armed,
+        hold_line,
+    }
+}
+
+/// True iff `pid_file` holds a PID whose process is currently alive, checked
+/// via `kill -0` — the exact same liveness check `fwf_budget_writer_running`
+/// in lib.sh uses. A plain shell-out to the ubiquitous `kill` utility (dash
+/// already shells out to bash for its data providers) rather than a new
+/// `libc`/`nix` crate dependency, since this is the only caller that would
+/// need one.
+fn pid_alive(pid_file: &str) -> bool {
+    let pid = match std::fs::read_to_string(pid_file) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return false,
+    };
+    if pid.is_empty() || pid.parse::<i64>().is_err() {
+        return false;
+    }
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(&pid)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Fetch ONE issue/decision's full thread (body + comments) as plain text for the
@@ -403,5 +532,104 @@ mod tests {
         let u = parse_usage(br#"{"generated_at":"x","caveat":"c"}"#).expect("parse");
         assert!(u.roles.is_empty());
         assert_eq!(u.total.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn parsed_usage_json_never_carries_a_budget_status() {
+        // BudgetStatus is deliberately NOT part of the bash provider's JSON
+        // (fwf-usage-data.sh stays #95-only/read-only) — it must come back
+        // at its Default (not armed, no hold) from parse_usage alone; only
+        // fetch_usage() (untested here — it shells out + touches the real
+        // filesystem, same as fetch()) fills it in via resolve_budget_status.
+        let u = parse_usage(USAGE_SAMPLE.as_bytes()).expect("parse");
+        assert_eq!(u.budget.token_budget, None);
+        assert!(!u.budget.armed);
+        assert_eq!(u.budget.hold_line, None);
+    }
+
+    // --- BudgetStatus text (issue #96, Ticket B — the GV-signoff residual-risk
+    // fix): these three cases must mirror `_fwf_usage_budget_line` in
+    // fwf-usage.sh verbatim, and a HOLD/WARN/FAIL-CLOSED hold_line must never
+    // get reworded or collapsed into another case — that distinction is
+    // load-bearing for the incident protocol.
+
+    #[test]
+    fn budget_status_no_budget_configured_is_not_armed() {
+        let b = BudgetStatus::default();
+        assert_eq!(
+            b.enforcement_line(),
+            "budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)"
+        );
+        assert_eq!(b.hold_status_line(), "hold state: none");
+    }
+
+    #[test]
+    fn budget_status_configured_and_writer_alive_is_armed_with_ceiling() {
+        let b = BudgetStatus {
+            token_budget: Some(500_000),
+            armed: true,
+            hold_line: None,
+        };
+        assert_eq!(
+            b.enforcement_line(),
+            "budget enforcement: ARMED (ceiling 500000 tokens)"
+        );
+    }
+
+    #[test]
+    fn budget_status_configured_but_writer_not_running_is_not_armed() {
+        let b = BudgetStatus {
+            token_budget: Some(500_000),
+            armed: false,
+            hold_line: None,
+        };
+        assert_eq!(
+            b.enforcement_line(),
+            "budget enforcement: NOT ARMED — FWF_TOKEN_BUDGET=500000 is set, but the writer is not running for this profile (re-run 'fwf up' to arm it)"
+        );
+    }
+
+    #[test]
+    fn budget_status_hold_warn_and_failclosed_render_distinct_never_confused() {
+        let hold = BudgetStatus {
+            token_budget: Some(100),
+            armed: true,
+            hold_line: Some(
+                "HOLD — 120 tokens spent, budget is 100 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold"
+                    .to_string(),
+            ),
+        };
+        let warn = BudgetStatus {
+            token_budget: Some(100),
+            armed: true,
+            hold_line: Some(
+                "WARN — 85 tokens spent, budget is 100 (80% warn threshold) — not paused"
+                    .to_string(),
+            ),
+        };
+        let fail_closed = BudgetStatus {
+            token_budget: Some(100),
+            armed: true,
+            hold_line: Some(
+                "UNKNOWN — FAIL-CLOSED: could not read usage ... NOT over budget — lift: fwf usage --clear-hold"
+                    .to_string(),
+            ),
+        };
+
+        assert!(hold.hold_status_line().starts_with("hold state: HOLD —"));
+        assert!(warn.hold_status_line().starts_with("hold state: WARN —"));
+        assert!(fail_closed
+            .hold_status_line()
+            .starts_with("hold state: UNKNOWN — FAIL-CLOSED"));
+
+        // The three must never collapse into each other's wording.
+        let lines = [
+            hold.hold_status_line(),
+            warn.hold_status_line(),
+            fail_closed.hold_status_line(),
+        ];
+        assert!(!lines[0].contains("WARN") && !lines[0].contains("FAIL-CLOSED"));
+        assert!(!lines[1].contains("HOLD —") && !lines[1].contains("FAIL-CLOSED"));
+        assert!(!lines[2].contains("HOLD —") && !lines[2].contains("WARN —"));
     }
 }

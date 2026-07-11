@@ -1295,15 +1295,39 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(2),
         ])
         .split(area);
 
+    // #96 (Ticket B, GV-signoff residual-risk fix): show ARMED/NOT ARMED —
+    // and the current hold state — unmissably, at the top of the tab. A
+    // budget configured mid-run without a re-`fwf up` (the only thing that
+    // arms the writer) must be VISIBLY off, not silently off. Wording
+    // mirrors `_fwf_usage_budget_line` in fwf-usage.sh exactly.
+    let enforcement_style = match (u.budget.token_budget, u.budget.armed) {
+        (Some(_), true) => Style::default().fg(Color::Green),
+        (Some(_), false) => Style::default().fg(Color::Yellow),
+        (None, _) => Style::default().fg(Color::DarkGray),
+    };
+    let hold_style = match u.budget.hold_line.as_deref() {
+        Some(l) if l.starts_with("HOLD") => Style::default().fg(Color::Red),
+        Some(l) if l.starts_with("UNKNOWN") => Style::default().fg(Color::Magenta),
+        Some(l) if l.starts_with("WARN") => Style::default().fg(Color::Yellow),
+        Some(_) => Style::default().fg(Color::DarkGray),
+        None => Style::default().fg(Color::DarkGray),
+    };
+    let budget_para = Paragraph::new(vec![
+        Line::from(Span::styled(u.budget.enforcement_line(), enforcement_style)),
+        Line::from(Span::styled(u.budget.hold_status_line(), hold_style)),
+    ]);
+    f.render_widget(budget_para, rows[0]);
+
     let role_w = 12usize;
     let state_w = 20usize;
-    let model_w = (rows[1].width as usize)
+    let model_w = (rows[2].width as usize)
         .saturating_sub(role_w + state_w + 4 * 9 + 10 + 8)
         .clamp(6, 24);
 
@@ -1364,14 +1388,14 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
     )));
-    f.render_widget(header, rows[0]);
+    f.render_widget(header, rows[1]);
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Usage "))
         .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)))
         .highlight_symbol("▌");
     let mut state = app.cursors[Tab::Usage.index()].clone();
-    f.render_stateful_widget(list, rows[1], &mut state);
+    f.render_stateful_widget(list, rows[2], &mut state);
     app.cursors[Tab::Usage.index()] = state;
 
     let total_cost = format!("${:.4}", u.total.cost_usd);
@@ -1393,7 +1417,7 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
         format!("note: {}", u.caveat),
         Style::default().fg(Color::DarkGray),
     ));
-    f.render_widget(Paragraph::new(vec![total_line, caveat]), rows[2]);
+    f.render_widget(Paragraph::new(vec![total_line, caveat]), rows[3]);
 }
 
 /// Decisions and Issues share a list-left / body-preview-right layout — the
@@ -2614,6 +2638,10 @@ mod tests {
                 },
                 cost_usd: 17.7777,
             },
+            // No budget configured — the plain/common case. The
+            // ARMED/HOLD/WARN/FAIL-CLOSED variants get their own dedicated
+            // golden below (issue #96, Ticket B).
+            budget: data::BudgetStatus::default(),
         }
     }
 
@@ -2790,7 +2818,7 @@ mod tests {
     #[test]
     fn golden_usage_tab_three_states() {
         let mut app = golden_app_with_usage(Tab::Usage);
-        let area = Rect::new(0, 0, 100, 8);
+        let area = Rect::new(0, 0, 100, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         assert_golden("usage_tab_three_states", &buffer_to_text(&buf));
     }
@@ -2798,7 +2826,7 @@ mod tests {
     #[test]
     fn usage_fresh_row_shows_a_live_figure_not_a_warning() {
         let mut app = golden_app_with_usage(Tab::Usage);
-        let area = Rect::new(0, 0, 100, 8);
+        let area = Rect::new(0, 0, 100, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         let text = buffer_to_text(&buf);
         assert!(text.contains("impl1"), "impl1's fresh row must render");
@@ -2817,7 +2845,7 @@ mod tests {
     #[test]
     fn usage_stale_row_shows_the_warning_treatment_and_last_good_numbers() {
         let mut app = golden_app_with_usage(Tab::Usage);
-        let area = Rect::new(0, 0, 100, 8);
+        let area = Rect::new(0, 0, 100, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         let text = buffer_to_text(&buf);
         let stale_line = text.lines().find(|l| l.contains("qa1")).unwrap();
@@ -2839,7 +2867,7 @@ mod tests {
     #[test]
     fn usage_unknown_row_never_shows_a_false_zero_or_blank() {
         let mut app = golden_app_with_usage(Tab::Usage);
-        let area = Rect::new(0, 0, 100, 8);
+        let area = Rect::new(0, 0, 100, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         let text = buffer_to_text(&buf);
         let unknown_line = text.lines().find(|l| l.contains("pm")).unwrap();
@@ -2856,7 +2884,7 @@ mod tests {
     #[test]
     fn usage_caveat_is_visible_in_the_tab() {
         let mut app = golden_app_with_usage(Tab::Usage);
-        let area = Rect::new(0, 0, 100, 8);
+        let area = Rect::new(0, 0, 100, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         assert!(
             buffer_to_text(&buf).contains("not your account's actual rolling-window usage"),
@@ -2873,7 +2901,7 @@ mod tests {
     #[test]
     fn usage_tab_does_not_panic_and_keeps_state_visible_at_narrow_width() {
         let mut app = golden_app_with_usage(Tab::Usage);
-        let area = Rect::new(0, 0, 40, 8);
+        let area = Rect::new(0, 0, 40, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         let text = buffer_to_text(&buf);
         assert!(
@@ -2883,6 +2911,125 @@ mod tests {
         assert!(
             text.contains("UNKNOWN"),
             "STATE column must survive narrowing"
+        );
+    }
+
+    // --- #96 Ticket B: the ARMED/NOT ARMED + hold-state line (GV-signoff
+    // residual-risk fix) ------------------------------------------------
+
+    fn golden_app_with_budget(budget: data::BudgetStatus) -> App {
+        let mut usage = golden_usage_fixture();
+        usage.budget = budget;
+        let mut app = test_app();
+        app.usage_feed = UsageFeed::Ok(usage);
+        app.tab = Tab::Usage;
+        app
+    }
+
+    #[test]
+    fn usage_tab_shows_not_armed_when_no_budget_configured() {
+        // No token_budget at all: the common/default case.
+        let mut app = golden_app_with_budget(data::BudgetStatus::default());
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains(
+                "budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)"
+            ),
+            "no-budget-configured must render the exact NOT ARMED wording: {text:?}"
+        );
+        assert!(
+            text.contains("hold state: none"),
+            "no hold sentinel must render as 'hold state: none': {text:?}"
+        );
+    }
+
+    #[test]
+    fn usage_tab_shows_armed_with_ceiling_when_budget_configured_and_writer_running() {
+        let mut app = golden_app_with_budget(data::BudgetStatus {
+            token_budget: Some(2_000_000),
+            armed: true,
+            hold_line: None,
+        });
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("budget enforcement: ARMED (ceiling 2000000 tokens)"),
+            "an armed budget must show ARMED with its exact ceiling: {text:?}"
+        );
+    }
+
+    #[test]
+    fn usage_tab_shows_not_armed_when_budget_set_but_writer_not_running() {
+        // The exact GV-flagged gap: a budget configured mid-run without a
+        // re-`fwf up` (the only thing that arms the writer) must be VISIBLY
+        // off, not silently off — never rendered as plain ARMED.
+        let mut app = golden_app_with_budget(data::BudgetStatus {
+            token_budget: Some(2_000_000),
+            armed: false,
+            hold_line: None,
+        });
+        let area = Rect::new(0, 0, 100, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains(
+                "NOT ARMED — FWF_TOKEN_BUDGET=2000000 is set, but the writer is not running"
+            ),
+            "a configured-but-unarmed budget must say so explicitly, not read as ARMED: {text:?}"
+        );
+        assert!(
+            !text.contains("ARMED (ceiling"),
+            "must never render the ARMED-with-ceiling wording while unarmed: {text:?}"
+        );
+    }
+
+    #[test]
+    fn usage_tab_hold_line_renders_verbatim_and_never_confused_with_warn_or_failclosed() {
+        // The HOLD/WARN/FAIL-CLOSED distinction is load-bearing for the
+        // incident protocol: an operator must never confuse "reader broke"
+        // (fail-closed) with "I blew my budget" (a real HOLD).
+        let hold_text = "HOLD — 1200000 tokens spent, budget is 1000000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold";
+        let mut app = golden_app_with_budget(data::BudgetStatus {
+            token_budget: Some(1_000_000),
+            armed: true,
+            hold_line: Some(hold_text.to_string()),
+        });
+        // Wide enough that the full sentinel text (well over 100 cols) is
+        // never clipped by the Paragraph's column width — this test is about
+        // the exact wording, not layout at a realistic terminal size (that's
+        // covered by the narrow-width test elsewhere).
+        let area = Rect::new(0, 0, 140, 8);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains(&format!("hold state: {hold_text}")),
+            "the HOLD sentinel's first line must render verbatim: {text:?}"
+        );
+        assert!(
+            !text.contains("FAIL-CLOSED") && !text.contains("WARN —"),
+            "a real HOLD must never render as WARN or FAIL-CLOSED wording: {text:?}"
+        );
+
+        let fail_closed_text = "UNKNOWN — FAIL-CLOSED: could not read usage ... NOT over budget — lift: fwf usage --clear-hold";
+        let mut app2 = golden_app_with_budget(data::BudgetStatus {
+            token_budget: Some(1_000_000),
+            armed: true,
+            hold_line: Some(fail_closed_text.to_string()),
+        });
+        let buf2 = render_buffer(area.width, area.height, |f| {
+            render_usage(f, area, &mut app2)
+        });
+        let text2 = buffer_to_text(&buf2);
+        assert!(
+            text2.contains(&format!("hold state: {fail_closed_text}")),
+            "the FAIL-CLOSED sentinel's first line must render verbatim: {text2:?}"
+        );
+        assert!(
+            !text2.contains("HOLD —"),
+            "a FAIL-CLOSED pause must never be textually confused with a real HOLD: {text2:?}"
         );
     }
 

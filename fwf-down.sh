@@ -55,6 +55,7 @@ if [ "$floor_only" = 1 ]; then
     esac
   done
   rm -rf "$E2E_LOCK"
+  fwf_budget_writer_stop   # issue #96: a downed floor spends nothing — nothing left to enforce against
   fwf_floor_event floor-down "$actor" "$reason"
   echo "floor is down; the captain pane (if any) is untouched in '$COORD_SESSION'. Bring the floor back with: fwf up --floor-only"
   exit 0
@@ -64,6 +65,7 @@ for s in "$COORD_SESSION" "$BUILD_SESSION"; do
   if tmux kill-session -t "$s" 2>/dev/null; then echo "killed tmux session '$s'"; else echo "no tmux session '$s'"; fi
 done
 rm -rf "$E2E_LOCK"
+fwf_budget_writer_stop
 rm -f "$FWF_RUN/template"   # clear the persisted running-template marker (#51) so it can't go stale once the factory is down
 rm -f "$FWF_TMUX_SOCKET_FILE"   # clear the persisted launch-socket marker (#62) alongside it
 
