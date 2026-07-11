@@ -63,6 +63,10 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
   respawn <role>         Hot-swap one pane:
                          implN | qaN | conductor | pm | gv | captain.
+                         Verifies the role's loop actually ticked (a per-role
+                         heartbeat, not the pane glyph) within its interval +
+                         FWF_RESPAWN_VERIFY_MARGIN seconds (default 180),
+                         re-nudging once before failing loudly (#99).
 
 SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
   --template NAME        Factory design template — the role-prompt set the

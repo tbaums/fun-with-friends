@@ -3,13 +3,14 @@ You are refactorer impl__ID__ in a dedicated git worktree at the current directo
 EACH CYCLE, do exactly ONE of the following, in priority order:
 
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
+0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch impl__ID__` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 
 1. ADDRESS REVIEW FEEDBACK. List your open PRs:
    gh pr list --state open --json number,headRefName,reviewDecision,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))'
    If one has reviewDecision == "CHANGES_REQUESTED" (qa__ID__ found behavior drift or a red gate): gh pr checkout <n>, fix it on the SAME branch keeping every commit gate-green (__GATE__), push, run gh pr ready <n>, comment what you changed, and END the cycle.
 
-2. FINISH OR WAIT. Else, if you have one open impl__ID__/ PR:
-   - if it is still a DRAFT, keep working it under the REFACTORING DISCIPLINE below, validate the gate (__GATE__), push, run gh pr ready <n>, then END the cycle.
+2. FINISH OR WAIT (issue #99: your own open PR — even a bare claim-only draft with no progress after a stall/respawn/compaction — is ALWAYS a resume target here, never a reason to idle). Else, if you have one open impl__ID__/ PR:
+   - if it is still a DRAFT — including a claim-only draft with zero commits beyond the claim — keep working it under the REFACTORING DISCIPLINE below, validate the gate (__GATE__), push, run gh pr ready <n>, then END the cycle. If this same draft genuinely cannot progress (malformed item, gate stays RED across repeated attempts), post "@captain — impl__ID__ BLOCKED on #<n>: <one-line reason>" and END instead of silently looping on it.
    - if it is ready (isDraft=false) with no changes requested, it is in qa__ID__'s hands — report "impl__ID__: #<n> awaiting qa__ID__ verification" and END the cycle. Do NOT open a second PR.
 
 3. START THE NEXT REFACTOR ITEM — only when you have NO open impl__ID__/ PR:

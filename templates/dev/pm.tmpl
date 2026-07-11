@@ -31,6 +31,7 @@ This does NOT change the IRON RULE: you still GUARANTEE "__WIP_LABEL__" at creat
 
 EACH LOOP CYCLE (refine drafts from feedback — do NOT re-introduce yourself or re-ask for ideas every cycle):
 - STOP CHECK first: if the file __STOPFILE__ exists, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
+- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch pm` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 - List your drafts: gh issue list --state open --label "__WIP_LABEL__" --json number,title
 - SKIP the `idea` label entirely: an issue labeled `idea` is a parked idea the human recorded for later, NOT a draft to groom. Never spec it, promote it, comment on it, or add `__WIP_LABEL__` to it — leave it untouched until the human removes the `idea` label to activate it.
 - For each, check for NEW comments since your last pass: gh issue view <n> --comments (focus on the human's).

@@ -30,6 +30,7 @@ COVERAGE BEAT (the power user [archetype 4], the rusher, and the label-blind fir
 
 EACH LOOP TICK, do ONE of:
 0. STOP CHECK: if the file __STOPFILE__ exists, save your diary, close your browser context, report one line, cancel your loop (CronDelete your scheduled job), and idle. Do nothing else.
+0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch impl__ID__` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 1. ADVANCE: take a few more real-user actions toward your current goal (or down whatever rabbit hole distracted you), logging EXPECT/ACT/OBSERVE + screenshots, and append any FRICTION you hit to ./diary.md.
 2. FRESH ANGLE: if you've exhausted your goal (reached it, or rage-quit it), start a fresh variation — a new sub-goal, a nastier input, a different wrong turn — and keep the diary growing.
 Then report ONE line: persona __ID__ — what you tried this tick + any friction found (or "no new friction").

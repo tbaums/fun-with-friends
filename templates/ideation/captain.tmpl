@@ -20,6 +20,7 @@ Ideation fails in two opposite ways: converging too early (the first plausible i
 
 == OPERATING PRINCIPLES ==
 - STOP CHECK: if __STOPFILE__ exists, commit & push WIP, cancel your loop (CronDelete your scheduled job), report one line, idle.
+- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch captain` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 - The human is the approver: un-gating frames on their word, winner selection, and anything outward-facing or irreversible are theirs unless durably authorized. When granted autonomy, drive end to end and flag assumptions.
 - One small action; show the evidence; next safe step. Direct, calm, no hedging, no trailing summaries.
 - Brief agents via ISSUE COMMENTS, never tmux send-keys. Respawn wedged panes (fwf-respawn.sh <role>).

@@ -350,8 +350,14 @@ EOS
   F85CSESS="fwf-selftest-85c-$$"
   tmux new-session -d -s "${F85CSESS}-coord" -c "$F85CWT/ex-captain"
   tmux set -p -t "${F85CSESS}-coord" @l "CAPTAIN"
+  # issue #99: the stub claude never touches a heartbeat, so fwf-respawn.sh's
+  # verify-tick wait would otherwise block for a full interval+margin (twice,
+  # with its re-nudge) before giving up — force both to their minimum so this
+  # test stays fast; the floor-up append (what THIS test checks) happens
+  # before that wait, so its outcome is unaffected either way.
   env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
       FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      FWF_PM_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 \
       "$ROOT/fwf-respawn.sh" pm >/dev/null 2>&1
   assert_contains "fwf-respawn.sh of a floor role (pm) appends floor-up" "$(tail -n1 "$F85CLOG")" "floor-up"
   # respawning the CAPTAIN itself must NOT append floor-up — it was never the
@@ -359,6 +365,7 @@ EOS
   printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F85CLOG"
   env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
       FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      FWF_CAPTAIN_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 \
       "$ROOT/fwf-respawn.sh" captain >/dev/null 2>&1
   case "$(tail -n1 "$F85CLOG")" in
     *floor-up*) bad "respawning the captain must not clear floor_idle";;
@@ -452,6 +459,92 @@ if command -v tmux >/dev/null 2>&1; then
   tmux kill-session -t "${F88SESS}-build" 2>/dev/null
 else
   printf '  skip real-tmux floor-down cooldown tests (tmux not installed)\n'
+fi
+
+section "resume-before-claim wording (issue #99, Fix 1): implementer.tmpl variants"
+# Grep-based: every implementer.tmpl that carries the claim/one-PR-in-flight
+# loop must say a claim-only draft is a RESUME TARGET (never a reason to idle)
+# and must escalate rather than silently loop on an unadvanceable one. The
+# user-testing variant is a browser-only persona with no PR loop — excluded.
+for _t in dev ideation refactor validate; do
+  R99="$(FWF_TEMPLATE=$_t FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 1")"
+  assert_contains "$_t implementer names issue #99"      "$R99" "issue #99"
+  assert_contains "$_t implementer: resume target"       "$R99" "resume target"
+  assert_contains "$_t implementer: never a reason to idle" "$R99" "never a reason to idle"
+  assert_contains "$_t implementer: BLOCKED escalation for an unadvanceable draft" "$R99" "BLOCKED"
+done
+
+section "per-role cycle-start heartbeat (issue #99, Fix 2): lib.sh helpers"
+F99RUN="$TMP/run99lib"; mkdir -p "$F99RUN/state/example"
+F99ENV="FWF_RUN_DIR=$F99RUN FWF_PROFILE=example"
+assert_eq "no heartbeat yet -> empty epoch" "" "$(env $F99ENV bash -c "source '$ROOT/lib.sh'; fwf_heartbeat_epoch impl1")"
+env $F99ENV bash -c "source '$ROOT/lib.sh'; fwf_heartbeat_touch impl1"
+HB1="$(env $F99ENV bash -c "source '$ROOT/lib.sh'; fwf_heartbeat_epoch impl1")"
+case "$HB1" in ''|*[!0-9]*) bad "heartbeat touch records a numeric epoch" "$HB1";; *) ok "heartbeat touch records a numeric epoch";; esac
+assert_eq "a DIFFERENT role's heartbeat is untouched" "" "$(env $F99ENV bash -c "source '$ROOT/lib.sh'; fwf_heartbeat_epoch qa1")"
+# a second touch advances the epoch (or at least never goes backwards)
+sleep 1
+env $F99ENV bash -c "source '$ROOT/lib.sh'; fwf_heartbeat_touch impl1"
+HB2="$(env $F99ENV bash -c "source '$ROOT/lib.sh'; fwf_heartbeat_epoch impl1")"
+[ "$HB2" -ge "$HB1" ] && ok "re-touch does not go backwards" || bad "re-touch does not go backwards" "$HB1 -> $HB2"
+
+section "loop-interval parsing (issue #99): fwf_interval_seconds"
+assert_eq "30s -> 30"   "30"   "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_interval_seconds 30s")"
+assert_eq "2m -> 120"   "120"  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_interval_seconds 2m")"
+assert_eq "1h -> 3600"  "3600" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_interval_seconds 1h")"
+assert_eq "bare 45 -> 45" "45" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_interval_seconds 45")"
+FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_interval_seconds bogus" >/dev/null 2>&1 && bad "bogus interval rejected" || ok "bogus interval rejected"
+
+if command -v tmux >/dev/null 2>&1; then
+  section "fwf-respawn.sh verified-arm (issue #99, Fix 2): real tmux, off the heartbeat — never the pane glyph"
+  F99WT="$TMP/wt99"; mkdir -p "$F99WT/ex-impl1"
+  F99RRUN="$TMP/run99respawn"; mkdir -p "$F99RRUN/state/example"
+  F99SESS="fwf-selftest-99-$$"
+  F99REPO="$TMP/wt99fakerepo"; mkdir -p "$F99REPO"; git -C "$F99REPO" init -q; git -C "$F99REPO" remote add origin https://github.com/fake/fake.git
+
+  # A stub "claude" that immediately touches its own heartbeat (simulating the
+  # agent's step-0 instruction) then idles animated — proving verification
+  # reads the heartbeat, not "the pane is running something".
+  F99TICKCLAUDE="$TMP/claude99tick.sh"
+  cat > "$F99TICKCLAUDE" <<EOS
+#!/usr/bin/env bash
+source '$ROOT/lib.sh' 2>/dev/null
+fwf_heartbeat_touch impl1
+exec sleep 300
+EOS
+  chmod +x "$F99TICKCLAUDE"
+  # A stub that NEVER ticks (never touches the heartbeat) — an animated pane
+  # that is actually wedged; verification must still FAIL on this.
+  F99NOTICKCLAUDE="$TMP/claude99notick.sh"
+  cat > "$F99NOTICKCLAUDE" <<'EOS'
+#!/usr/bin/env bash
+exec sleep 300
+EOS
+  chmod +x "$F99NOTICKCLAUDE"
+
+  # tmux panes inherit env from whatever client created the SESSION, not from
+  # whatever later client runs `respawn-pane` on it — so the session itself
+  # must be created through the same env-wrapped invocation, or the stub
+  # inside it won't see FWF_RUN_DIR/FWF_PROFILE and can't find its heartbeat
+  # dir at all (a real gotcha this test caught: a bare `tmux new-session`
+  # here left the respawned stub unable to resolve FWF_STATE_DIR).
+  F99ENVR="FWF_PROFILE=example FWF_RUN_DIR=$F99RRUN FWF_SESSION=$F99SESS FWF_WT_BASE=$F99WT FWF_REPO=$F99REPO"
+  env $F99ENVR tmux new-session -d -s "${F99SESS}-build" -c "$F99WT/ex-impl1"
+  tmux set -p -t "${F99SESS}-build" @l "IMPL1 ·"
+  R99SUCC="$(env $F99ENVR FWF_CLAUDE_CMD="$F99TICKCLAUDE" FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=20 \
+      "$ROOT/fwf-respawn.sh" impl1 2>&1)" && ok "verified respawn exits 0" || bad "verified respawn exits 0" "$R99SUCC"
+  assert_contains "prints verified-tick message" "$R99SUCC" "respawn verified: first tick observed"
+  tmux kill-session -t "${F99SESS}-build" 2>/dev/null
+
+  env $F99ENVR tmux new-session -d -s "${F99SESS}-build" -c "$F99WT/ex-impl1"
+  tmux set -p -t "${F99SESS}-build" @l "IMPL1 ·"
+  R99FAIL="$(env $F99ENVR FWF_CLAUDE_CMD="$F99NOTICKCLAUDE" FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 \
+      "$ROOT/fwf-respawn.sh" impl1 2>&1)" && bad "unverified respawn exits nonzero" || ok "unverified respawn exits nonzero"
+  assert_eq "never claims false success" "0" "$(printf '%s' "$R99FAIL" | grep -c 'respawn verified' || true)"
+  assert_contains "names the failure plainly" "$R99FAIL" "never ticked"
+  tmux kill-session -t "${F99SESS}-build" 2>/dev/null
+else
+  printf '  skip real-tmux fwf-respawn.sh heartbeat-verify tests (tmux not installed)\n'
 fi
 
 section "disk-pressure guard — refuses below the free-space floor"

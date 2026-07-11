@@ -674,6 +674,49 @@ fwf_floor_cooldown_remaining() {
   printf '%s' "$remaining"
 }
 
+# --- per-role cycle-start heartbeat (issue #99) ------------------------------
+# A durable "the loop is actually ticking" signal — NOT the tmux pane-animation
+# glyph, which is exactly what caused operators to misread a healthy-but-slow
+# first cycle as a permanent wedge (repeated respawn churn). Every role's
+# rendered prompt (step 0, alongside the STOP check) touches this at the START
+# of each cycle, before any work — so it fires on cycle-START latency, not
+# cycle-COMPLETION latency; a slow-but-working cycle still verifies quickly.
+FWF_HEARTBEAT_DIR="$FWF_STATE_DIR/heartbeat"
+
+# Extra margin (seconds) added atop a role's OWN loop interval when
+# fwf-respawn.sh waits for its first post-respawn heartbeat. The heartbeat
+# fires at cycle-START (before any work), but getting there — ingesting a
+# multi-KB role prompt, cold-starting — has its own real latency; this margin
+# absorbs that. Tunable; flagged as an assumption pending real measurement.
+FWF_RESPAWN_VERIFY_MARGIN="${FWF_RESPAWN_VERIFY_MARGIN:-180}"
+case "$FWF_RESPAWN_VERIFY_MARGIN" in
+  ''|*[!0-9]*) echo "fwf: FWF_RESPAWN_VERIFY_MARGIN must be a non-negative integer of seconds (got '$FWF_RESPAWN_VERIFY_MARGIN')" >&2; exit 1;;
+esac
+
+# $1 = role tag (impl2, qa1, captain, conductor, pm, gv, or an extra role name)
+fwf_heartbeat_touch() {
+  mkdir -p "$FWF_HEARTBEAT_DIR"
+  date +%s > "$FWF_HEARTBEAT_DIR/$1"
+}
+
+# Echoes the epoch recorded in $1's heartbeat file, or "" if it has never ticked.
+fwf_heartbeat_epoch() {
+  [ -f "$FWF_HEARTBEAT_DIR/$1" ] && cat "$FWF_HEARTBEAT_DIR/$1" || printf ''
+}
+
+# Parses a loop-interval string ("30s" / "2m" / "1h") to whole seconds. Bare
+# digits are treated as seconds. Used to size fwf-respawn.sh's verify window
+# off the role's OWN configured interval, rather than a hardcoded guess.
+fwf_interval_seconds() {
+  local n="${1%[smh]}"
+  case "$n" in ''|*[!0-9]*) echo "fwf: bad interval '$1'" >&2; return 1;; esac
+  case "$1" in
+    *h) echo $(( n * 3600 ));;
+    *m) echo $(( n * 60 ));;
+    *)  echo "$n";;
+  esac
+}
+
 # --- e2e lock (issue #65) ----------------------------------------------------
 # Serializes EVERY e2e-equivalent run across the whole floor — not just
 # conductor-vs-conductor, but implementer self-verification too — since most
@@ -797,7 +840,13 @@ fwf_arm_pane() { # $1=pane  $2=role-tag  $3=tmpl-base  $4=id  $5=interval
   local pane="$1" role="$2" tmpl="$3" id="$4" interval="$5" pf
   pf="$(fwf_write_role_prompt "$role" "$tmpl" "$id")"
   fwf_send_prompt "$pane" "ADOPT THIS ROLE now and run your first cycle. Your role prompt follows — it is also saved at $pf; re-read that file whenever you have compacted or otherwise lost context. $(cat "$pf")"
-  fwf_send_prompt "$pane" "/loop $interval $role tick: if you have compacted or lost ANY context since the last tick, FIRST re-read your role prompt at $pf. Then run exactly ONE cycle of that role's loop and report in its format. Act the role; do not re-state it."
+  fwf_send_tick "$pane" "$role" "$interval" "$pf"
+}
+
+# The recurring /loop tick message alone (issue #99: also used by
+# fwf-respawn.sh's re-nudge when the first heartbeat hasn't landed yet).
+fwf_send_tick() { # $1=pane  $2=role-tag  $3=interval  $4=prompt-file
+  fwf_send_prompt "$1" "/loop $3 $2 tick: if you have compacted or lost ANY context since the last tick, FIRST re-read your role prompt at $4. Then run exactly ONE cycle of that role's loop and report in its format. Act the role; do not re-state it."
 }
 
 # True while the pane is still sitting at a shell (claude has not taken over).

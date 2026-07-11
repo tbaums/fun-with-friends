@@ -68,8 +68,34 @@ sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
+before_hb="$(fwf_heartbeat_epoch "$role")"
 fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
 # issue #85: respawning any FLOOR role (i.e. not the captain, which --floor-only
 # never tears down) means the floor is no longer idle — clear any logged IDLE.
 [ "$role" = captain ] || fwf_floor_event floor-up "" ""
 echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"
+
+# issue #99: verify the loop actually TICKED, off the durable per-role
+# heartbeat — never the pane-animation glyph (misreading that as "alive" is
+# what caused the original wedge-or-just-slow confusion and respawn churn).
+# The heartbeat fires at cycle-START, before any work, so a healthy-but-slow
+# first cycle still verifies well inside the window.
+pf="$FWF_RUN/prompts/$PROFILE-$role.prompt"
+window=$(( $(fwf_interval_seconds "$interval") + FWF_RESPAWN_VERIFY_MARGIN ))
+_fwf_wait_for_heartbeat() {   # $1=seconds to wait -> 0 if it advanced, 1 if not
+  local deadline="$1" waited=0 now_hb
+  while [ "$waited" -lt "$deadline" ]; do
+    now_hb="$(fwf_heartbeat_epoch "$role")"
+    [ -n "$now_hb" ] && [ "$now_hb" != "$before_hb" ] && return 0
+    sleep 2; waited=$((waited+2))
+  done
+  return 1
+}
+if _fwf_wait_for_heartbeat "$window"; then
+  echo "respawn verified: first tick observed (heartbeat @ $(fwf_heartbeat_epoch "$role"))"
+elif { echo "no heartbeat for $role after ${window}s — re-nudging the loop tick" >&2; fwf_send_tick "$CP" "$role" "$interval" "$pf"; _fwf_wait_for_heartbeat "$window"; }; then
+  echo "respawn verified: first tick observed after re-nudge (heartbeat @ $(fwf_heartbeat_epoch "$role"))"
+else
+  echo "fwf-respawn: $role never ticked after arming + one re-nudge (waited ${window}s twice) — respawn NOT verified" >&2
+  exit 1
+fi

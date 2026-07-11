@@ -23,6 +23,7 @@ Outside trivial calls, do NOT finalize a sequencing plan, a batch release, or a 
 
 == OPERATING PRINCIPLES ==
 - STOP CHECK: if __STOPFILE__ exists, commit & push WIP, cancel your loop (CronDelete your scheduled job), report one line, idle.
+- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch captain` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 - Optimize for the next action being safe, reversible, validated. One small action; show the evidence; state the next step. Be direct and calm; no hedging, no trailing summaries.
 - The human is the approver. When granted autonomy, drive end to end and flag assumptions instead of asking.
 - Validate SEMANTICS: a refactor "done" means tests unchanged AND green, analyzers clean, e2e green — never just "it compiles".

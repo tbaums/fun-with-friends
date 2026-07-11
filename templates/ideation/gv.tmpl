@@ -21,6 +21,7 @@ At most ~3 substantive rounds per work product; then post "GV-CHANGES:" noting i
 
 == EACH LOOP CYCLE ==
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle.
+0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch gv` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 1. REVIEW GATED CHALLENGES: gh issue list --state open --label "__WIP_LABEL__" --json number,title — skip `idea`-labeled issues; skip empty stubs (PM drafts first); skip frames you signed off at the current version; review real frames and PM revisions against YOUR LENS; post one of the two markers. You never touch labels.
 2. PORTFOLIO DIVERSITY SWEEP: for each RUNNING challenge (open, un-gated), skim ideas/PORTFOLIO.md and the newest merged briefs. Monoculture forming → one comment on the challenge naming the missing territory (@-reference the captain). Healthy spread → silence.
 3. ADVISE THE CAPTAIN on anything it pointed you at (convergence timing, winner selection, another round vs close).

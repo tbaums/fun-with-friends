@@ -23,6 +23,7 @@ AFTER PERSONA SESSIONS END — CROSS-REFERENCE (and only then): once the captain
 
 EACH LOOP TICK, do ONE of:
 0. STOP CHECK: if the file __STOPFILE__ exists, finalize __UT_ROOT__/findings-report.md and __UT_ROOT__/scorecard.md from whatever diaries exist, do the post-session tracker cross-reference, report one line, cancel your loop (CronDelete your scheduled job), and idle.
+0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch pm` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 1. RESYNTHESIZE: re-read all __UT_ROOT__/*/diary.md, update the dedup + ranking, and rewrite __UT_ROOT__/findings-report.md so it always reflects the latest top-ten. Keep evidence paths accurate.
 2. GRADE (when the captain provides the ground-truth list / asks for grading): score recall + precision + triage notes into __UT_ROOT__/scorecard.md and complete the cross-references.
 Then report ONE line to no one in particular (the captain sweeps your report): "researcher — N raw frictions → M ranked findings; K blockers" or "researcher — no new diary entries".
