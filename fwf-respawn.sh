@@ -68,8 +68,26 @@ sleep 2
 tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
+# issue #99, Fix 2: verify the loop actually TICKS after arming, off the
+# durable heartbeat file — never the pane's animation glyph, which keeps
+# looking "alive" even on a role that never advances a cycle (the exact
+# ambiguity that caused operators to fire repeated respawns chasing a
+# healthy-but-slow agent). Verifies SCHEDULED/START, not completion: the
+# heartbeat fires at cycle step-0, before any work, so a healthy first cycle
+# whose WORK takes minutes still verifies within the window.
+FWF_RESPAWN_VERIFY_MARGIN="${FWF_RESPAWN_VERIFY_MARGIN:-30}"
+_fwf_respawn_renudge() {
+  fwf_send_prompt "$CP" "/loop $interval $role tick: if you have compacted or lost ANY context since the last tick, FIRST re-read your role prompt at $(fwf_write_role_prompt "$role" "$tmpl" "$id"). Then run exactly ONE cycle of that role's loop and report in its format. Act the role; do not re-state it."
+}
+arm_epoch="$(date +%s)"
 fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
 # issue #85: respawning any FLOOR role (i.e. not the captain, which --floor-only
 # never tears down) means the floor is no longer idle — clear any logged IDLE.
 [ "$role" = captain ] || fwf_floor_event floor-up "" ""
-echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"
+
+window=$((interval + FWF_RESPAWN_VERIFY_MARGIN))
+if fwf_verify_respawn_tick "$role" "$arm_epoch" "$window" _fwf_respawn_renudge; then
+  echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"
+else
+  exit 1
+fi

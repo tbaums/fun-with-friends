@@ -168,6 +168,42 @@ assert_eq "every role template (all factory designs) carries the heartbeat write
 assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
   "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
 
+section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
+HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
+hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }
+hb_test 'mkdir -p "$(dirname "$(fwf_heartbeat_path impl9)")"'
+NOFILE_RC="$(hb_test 'fwf_wait_heartbeat impl9 $(date +%s) 2 >/dev/null 2>&1; echo $?')"
+assert_eq "missing heartbeat file -> times out (rc 1)" "1" "$NOFILE_RC"
+hb_test 'touch -t 202001010000 "$(fwf_heartbeat_path impl9)"'
+STALE_RC="$(hb_test 'fwf_wait_heartbeat impl9 $(date +%s) 2 >/dev/null 2>&1; echo $?')"
+assert_eq "stale (pre-arm) heartbeat -> times out (rc 1), not a false pass" "1" "$STALE_RC"
+hb_test 'touch "$(fwf_heartbeat_path impl9)"'
+FRESH_OUT="$(hb_test 'fwf_wait_heartbeat impl9 $(( $(date +%s) - 5 )) 2')"
+[ -n "$FRESH_OUT" ] && ok "fresh heartbeat -> succeeds and echoes the mtime" || bad "fresh heartbeat -> succeeds and echoes the mtime"
+
+section "fwf_verify_respawn_tick: verified tick / bounded re-nudge / no false success (#99 Fix 2)"
+VT="$TMP/verify-tick-test"; mkdir -p "$VT"
+vt_run() { FWF_PROFILE=example FWF_RUN_DIR="$VT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl9)\")\"; $1"; }
+# already-ticking pane: verified on the FIRST wait, renudge never called.
+vt_run 'rm -f "$(fwf_heartbeat_path impl9)"; touch "$(fwf_heartbeat_path impl9)"
+  _n() { echo NUDGE_FIRED; }
+  fwf_verify_respawn_tick impl9 $(( $(date +%s) - 5 )) 2 _n' > "$VT/out1.txt" 2>&1
+assert_contains "already-ticking pane verifies immediately" "$(cat "$VT/out1.txt")" "respawn verified: first tick observed ("
+case "$(cat "$VT/out1.txt")" in *NUDGE_FIRED*) bad "renudge must NOT fire when the first wait already succeeds";; *) ok "renudge must NOT fire when the first wait already succeeds";; esac
+# a wedged-looking pane that the re-nudge actually unsticks.
+vt_run 'rm -f "$(fwf_heartbeat_path impl9)"
+  _n() { touch "$(fwf_heartbeat_path impl9)"; }
+  fwf_verify_respawn_tick impl9 $(date +%s) 2 _n; echo "RC=$?"' > "$VT/out2.txt" 2>&1
+assert_contains "re-nudge that lands still verifies (after one re-nudge)" "$(cat "$VT/out2.txt")" "first tick observed after one re-nudge"
+assert_contains "verified-after-renudge exits 0" "$(cat "$VT/out2.txt")" "RC=0"
+# a pane that NEVER ticks, even after the re-nudge: fails loudly, never a false success.
+vt_run 'rm -f "$(fwf_heartbeat_path impl9)"
+  _n() { :; }
+  fwf_verify_respawn_tick impl9 $(date +%s) 2 _n; echo "RC=$?"' > "$VT/out3.txt" 2>&1
+assert_contains "never-ticking pane: clear failure message" "$(cat "$VT/out3.txt")" "did NOT tick after arming"
+assert_contains "never-ticking pane: exits nonzero" "$(cat "$VT/out3.txt")" "RC=1"
+case "$(cat "$VT/out3.txt")" in *"respawn verified"*) bad "never-ticking pane must NEVER print a success line";; *) ok "never-ticking pane must NEVER print a success line";; esac
+
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
 assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"

@@ -819,6 +819,58 @@ fwf_write_role_prompt() { # $1=role-tag  $2=tmpl-base  $3=id
   printf '%s\n' "$pf"
 }
 
+# Portable file mtime (epoch seconds); echoes nothing if the file is absent.
+fwf_file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true; }
+
+# The heartbeat file a role's loop touches at its own step-0, before any work
+# (issue #99, Fix 2) — a durable "this cycle started" signal, deliberately NOT
+# the pane's animation glyph, which stays looking alive even when a role never
+# actually advances a cycle.
+fwf_heartbeat_path() { echo "$FWF_STATE_DIR/heartbeat/$1"; } # $1=role tag
+
+# Poll for role $1's heartbeat to reach or pass epoch $2 (typically "when we
+# armed the pane"), for up to $3 seconds. This verifies the loop STARTED a
+# cycle since arming — not that any cycle FINISHED — so a healthy first cycle
+# whose work takes minutes still verifies (the heartbeat fires at step-0,
+# before work). On success echoes the observed mtime and returns 0; on timeout
+# echoes nothing and returns 1. Poll cadence is $FWF_HEARTBEAT_POLL_SECS
+# (default 2s; tests override for speed) — kept as a separate, tmux-free
+# function so it's unit-testable against a plain file, no pane required.
+fwf_wait_heartbeat() { # $1=role $2=since_epoch $3=window_secs
+  local role="$1" since="$2" window="$3" hb waited=0 poll="${FWF_HEARTBEAT_POLL_SECS:-2}" mt
+  hb="$(fwf_heartbeat_path "$role")"
+  while [ "$waited" -lt "$window" ]; do
+    mt="$(fwf_file_mtime "$hb")"
+    if [ -n "$mt" ] && [ "$mt" -ge "$since" ]; then echo "$mt"; return 0; fi
+    sleep "$poll"; waited=$((waited + poll))
+  done
+  return 1
+}
+
+# Verify a respawned role's loop actually TICKS, with one bounded re-nudge —
+# the full policy fwf-respawn.sh applies after arming (issue #99, Fix 2), kept
+# here (not there) so it's unit-testable against a fake heartbeat + a fake
+# renudge function, no real tmux pane required. $4 is a FUNCTION NAME (not a
+# command string — avoids eval/quoting hazards) invoked with no args if the
+# first wait times out; fwf-respawn.sh's real one re-sends the /loop tick
+# line, a test's fake one can just touch the heartbeat file to simulate the
+# nudge landing. Prints the standard "respawn verified" line on success,
+# returns 0; on a double-timeout prints a clear failure to stderr and returns
+# 1 — NEVER prints a success-shaped line without a real heartbeat advance.
+fwf_verify_respawn_tick() { # $1=role $2=arm_epoch $3=window_secs $4=renudge_fn_name
+  local role="$1" since="$2" window="$3" renudge_fn="$4" hb_ts
+  if hb_ts="$(fwf_wait_heartbeat "$role" "$since" "$window")"; then
+    echo "respawn verified: first tick observed (heartbeat @ $hb_ts)"; return 0
+  fi
+  echo "fwf-respawn: no tick observed within ${window}s of arming $role — re-nudging once" >&2
+  "$renudge_fn"
+  if hb_ts="$(fwf_wait_heartbeat "$role" "$since" "$window")"; then
+    echo "respawn verified: first tick observed after one re-nudge (heartbeat @ $hb_ts)"; return 0
+  fi
+  echo "fwf-respawn: $role did NOT tick after arming + one re-nudge (no heartbeat within $((window * 2))s total) — respawn NOT verified; the pane may still be alive but wedged" >&2
+  return 1
+}
+
 # Arm a pane (issue #38): the full rendered role prompt is delivered ONCE as a
 # normal message (and persisted to disk), then the /loop is started with a
 # ONE-LINE tick that points back at the file. Previously the loop re-fired the
