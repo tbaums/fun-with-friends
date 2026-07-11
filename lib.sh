@@ -820,7 +820,7 @@ fwf_write_role_prompt() { # $1=role-tag  $2=tmpl-base  $3=id
 }
 
 # Portable file mtime (epoch seconds); echoes nothing if the file is absent.
-fwf_file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true; }
+fwf_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true; }
 
 # The heartbeat file a role's loop touches at its own step-0, before any work
 # (issue #99, Fix 2) — a durable "this cycle started" signal, deliberately NOT
