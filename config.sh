@@ -95,6 +95,19 @@ FWF_WORKSPACE_BASE="${FWF_WORKSPACE_BASE:-$FWF_RUN/workspaces}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
 STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it commit WIP, cancel their loop, and idle
 
+# Hard token-budget enforcement (issue #96, Ticket B of #70's discovery — see
+# docs/proposals/70-token-usage-budget.md). Unset/empty = unlimited, the
+# default — enforcement is opt-in. CLI: fwf up --token-budget N.
+FWF_TOKEN_BUDGET="${FWF_TOKEN_BUDGET:-}"
+FWF_TOKEN_BUDGET_WARN_PCT="${FWF_TOKEN_BUDGET_WARN_PCT:-80}"
+# How often the `fwf budget-check` WRITER re-evaluates (see fwf-budget-check.sh).
+FWF_BUDGET_CHECK_INTERVAL="${FWF_BUDGET_CHECK_INTERVAL:-60}"
+# The sentinel every role's step-0 HONORER check reads (mirrors STOP_FILE's
+# pattern exactly). Carries a one-line state: "HOLD <reason>" / "WARN <reason>"
+# / absent = clear. Written ONLY by the WRITER (fwf-budget-check.sh) — every
+# other role only ever reads it.
+BUDGET_HOLD_FILE="$FWF_RUN/BUDGET_HOLD"
+
 # Per-worktree dev data. Default to no-ops so a profile for a repo with no dev
 # data can omit them entirely; a profile may override these to seed an
 # isolated data dir per tree. data_dir echoes nothing by default (so a

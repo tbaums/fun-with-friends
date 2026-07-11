@@ -41,6 +41,12 @@ fwf_ut_browser_preflight
 # reach a box via `fwf upgrade`, so a stale box would silently run the old flow.
 fwf_version_skew_warn || true
 
+# Token-budget WRITER (issue #96): armed ONLY when FWF_TOKEN_BUDGET is set —
+# zero cost otherwise. Idempotent (a floor-only recycle or re-`up` doesn't
+# spawn a second writer). Every role's step-0 BUDGET CHECK reads what this
+# writes; nothing here itself pauses anything.
+fwf_budget_writer_start
+
 # Disk-pressure guard: on a shared host a full disk fails not just builds
 # but PROD writes too — it once wedged a release.
 # Refuse to bring up / cycle the floor below a free-space floor. The swarm's

@@ -563,6 +563,12 @@ fwf_find_pane() { # $1=session  $2=label-token
 # `tmux -S ''`.
 FWF_STATE_DIR="$FWF_RUN/state/$PROFILE"
 FWF_TMUX_SOCKET_FILE="$FWF_STATE_DIR/tmux_socket"
+# PID file for the token-budget WRITER's detached loop (issue #96) — a plain
+# bash background loop, not a Claude Code role (there's no /loop skill for a
+# host-side process). Per-profile since two factories on one machine must not
+# share a writer. Armed at `fwf up` only when a budget is configured; killed
+# at `fwf down`.
+FWF_BUDGET_WRITER_PID_FILE="$FWF_STATE_DIR/budget-writer.pid"
 fwf_tmux_socket_value() {   # echoes what should be persisted, from the CURRENT $TMUX
   if [ -n "${TMUX:-}" ]; then printf '%s\n' "${TMUX%%,*}"; else printf '%s\n' default; fi
 }
@@ -718,6 +724,46 @@ fwf_e2e_lock_acquire() {
 
 fwf_e2e_lock_release() {
   rm -rf "$E2E_LOCK"
+}
+
+# --- token-budget WRITER lifecycle (issue #96) -------------------------------
+# The WRITER (fwf-budget-check.sh --loop) is a plain detached bash background
+# loop, not a Claude Code role — there is no `/loop` skill for a host-side
+# process. Armed at `fwf up`/`fwf up --floor-only` ONLY when a budget is
+# configured (zero cost otherwise, matching "default unlimited"); killed at
+# `fwf down`. Tracked via a per-profile PID file so re-arming is idempotent
+# (a stale/dead PID is silently replaced) and `fwf down` can find it.
+#
+# rc 0 whether or not a writer was actually started (armed = FWF_TOKEN_BUDGET
+# set AND a loop is now running for this profile) — callers that need to know
+# check fwf_budget_writer_running after calling this.
+fwf_budget_writer_start() {
+  [ -n "${FWF_TOKEN_BUDGET:-}" ] || return 0   # no budget configured: never arm
+  fwf_budget_writer_running && return 0        # already running for this profile
+  mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
+  nohup "$FWF_LIB_DIR/fwf-budget-check.sh" --loop >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  printf '%s\n' "$!" > "$FWF_BUDGET_WRITER_PID_FILE"
+}
+
+# rc 0 if a writer loop is currently alive for this profile.
+fwf_budget_writer_running() {
+  [ -f "$FWF_BUDGET_WRITER_PID_FILE" ] || return 1
+  local pid; pid="$(cat "$FWF_BUDGET_WRITER_PID_FILE" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# Idempotent: safe to call even if no writer is running (e.g. no budget was
+# ever configured). Also clears any hold the writer left behind — a downed
+# floor spends nothing, so there is nothing left to enforce against.
+fwf_budget_writer_stop() {
+  if [ -f "$FWF_BUDGET_WRITER_PID_FILE" ]; then
+    local pid; pid="$(cat "$FWF_BUDGET_WRITER_PID_FILE" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    rm -f "$FWF_BUDGET_WRITER_PID_FILE"
+  fi
+  rm -f "$BUDGET_HOLD_FILE"
 }
 
 # Clear whatever is sitting in the pane's Claude composer before we type into it,

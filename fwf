@@ -491,6 +491,7 @@ case "$cmd" in
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
+  budget-check) engine fwf-budget-check.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never
