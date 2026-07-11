@@ -11,6 +11,49 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-10
+
+Factory-reliability + operator-visibility release: startup upgrade-staleness
+check, token-usage reporting and an optional hard budget, and a set of floor
+lifecycle/idle fixes that eliminate the "green but wedged" failure modes.
+
+### Added
+- **Startup upgrade-staleness check** (#94, code ee7a1f2, docs ee7a1f2) — fwf
+  warns on startup when a newer release is available, and no longer misfires
+  when the local build is newer than a stale cached "latest". Implements the #79
+  discovery proposal.
+- **Token-usage reporting** (#95, code e5fdb80, docs e5fdb80) — a dash Usage tab
+  plus an `fwf usage` CLI for per-run/per-role token accounting. From the #70
+  proposal.
+- **Optional hard token budget** (#96, code 0ca95ae, docs 0ca95ae) — an opt-in
+  per-run token ceiling with a `BUDGET_HOLD` sentinel and fail-safe. From the #70
+  proposal.
+
+### Fixed
+- **`--profile` after the subcommand** now works, with a clearer ambiguity error
+  (#69, code d1ce7af, docs d1ce7af).
+- **`fwf upgrade` detects worktree installs** and refuses-with-guidance rather
+  than falling through to an unsafe pull/tarball path (#78, code 7ffc965, docs
+  7ffc965).
+- **Shared staging-branch collision** — roles never check out the shared
+  `staging` branch from a claim/gate step; this was the root cause of slow /
+  blocked promotion (#91, code d44c46b, docs none — internal).
+- **Floor lifecycle is observable** — a deliberate floor-idle now writes a
+  durable event and the dash shows `IDLE (captain)` instead of `down`, so a
+  cost-saving idle is no longer mistaken for a crash (#85, code 4b4afd7, docs
+  4b4afd7).
+- **Captain idle-thrash guard** — a dwell + post-promote cooldown before
+  `--floor-only` teardown, so a brief post-promote lull no longer tears down the
+  floor (#88, code 82acef8, docs 82acef8).
+- **Implementers resume their own in-flight draft** instead of idling behind a
+  claim-only draft PR after a stall/respawn; respawn is now verified off a
+  durable per-role heartbeat rather than the pane animation (#99, code 0aca90d,
+  docs 0aca90d).
+
+### Documentation
+- **Discovery proposals** added under `docs/proposals/`: startup upgrade-staleness
+  check (#79, f2f6842) and token-usage reporting + hard budget (#70, 1ec8ccb).
+
 ## [0.21.3] - 2026-07-10
 
 Factory-reliability and dash-polish release: a shared-account impl↔qa review
