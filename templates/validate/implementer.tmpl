@@ -32,9 +32,9 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       ## Load-bearing assumptions — the unproven beliefs this section rests on; flag the single riskiest.
       ## Cheapest disconfirming test — the smallest real-world experiment (a smoke-test landing page, 5 customer interviews, a search-volume pull, a fake-door) that would settle the riskiest assumption, and what result would KILL vs confirm. REQUIRED — desk analysis that can't be tested in the real world is an opinion, not validation.
       (For Gate 2/3, also include a smallest-real-version and, for Gate 3 paths, a one-line comparability note so the adjudicator can rank paths pairwise.)
-   d. SHIP AS ONE PR:
-      git switch __STAGING__ && git pull --ff-only
-      git switch -c impl__ID__/hyp-<n>-<gate>-<k>   (k = your next section number for this hypothesis+gate)
+   d. SHIP AS ONE PR. Branch directly off __STAGING__'s remote-tracking ref — do NOT check out the local __STAGING__ branch (issue #91: the conductor's gate step and every analyst's ship step both need __STAGING__, and git only lets ONE worktree hold a given branch at a time, so checking it out here can lock the conductor out mid-promotion):
+      git fetch origin
+      git switch -c impl__ID__/hyp-<n>-<gate>-<k> origin/__STAGING__   (k = your next section number for this hypothesis+gate)
       add the file(s); commit each with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
       gh pr create --base __STAGING__ --title "<gate>: <hypothesis short-name> — <stance> from impl__ID__" --body "Hypothesis #<n>, Gate <N>. Bottom line: <GO/KILL/PIVOT-leaning>. Riskiest assumption: <one line>."

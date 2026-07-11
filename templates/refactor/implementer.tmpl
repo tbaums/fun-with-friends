@@ -20,9 +20,9 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       1. gh issue comment <num> --body "CLAIM impl__ID__"
       2. RE-CHECK you won: gh issue view <num> --json comments --jq '[.comments[] | select(.body|startswith("CLAIM "))][0].body' — first claim in the thread wins; if it is not "CLAIM impl__ID__", yield (no branch, no PR) and take the next eligible issue this same cycle.
       3. A CLAIM comment counts as live only if <15 minutes old OR its claimer has an open PR; older claims with no PR are abandoned — ignore them.
-   d2. Only after winning the claim:
-      git switch __STAGING__ && git pull --ff-only
-      git switch -c impl__ID__/issue-<num>-<slug>
+   d2. Only after winning the claim. Branch directly off __STAGING__'s remote-tracking ref — do NOT check out the local __STAGING__ branch (issue #91: the conductor's gate step and every implementer's claim step both need __STAGING__, and git only lets ONE worktree hold a given branch at a time, so checking it out here can lock the conductor out mid-promotion):
+      git fetch origin
+      git switch -c impl__ID__/issue-<num>-<slug> origin/__STAGING__
       git commit --allow-empty -m "claim #<num>: <title>" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
       git push -u origin impl__ID__/issue-<num>-<slug>
       gh pr create --draft --base __STAGING__ --title "<title> (#<num>)" --body "Closes #<num>. Owner: impl__ID__. WIP."

@@ -26,9 +26,9 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       ## Feasibility path — the smallest real version (a weekend-scale probe if possible), the hard part, and the first thing that would kill it (the riskiest assumption, stated as a testable bet).
       ## Builds on / combines with — portfolio ideas this extends or could merge with (or "none").
       ## Open questions — what the critic/synthesizer/human must weigh in on.
-   d. SHIP THE BATCH AS ONE PR:
-      git switch __STAGING__ && git pull --ff-only
-      git switch -c impl__ID__/challenge-<n>-batch-<k>   (k = your next batch number for this challenge)
+   d. SHIP THE BATCH AS ONE PR. Branch directly off __STAGING__'s remote-tracking ref — do NOT check out the local __STAGING__ branch (issue #91: the conductor's synthesis step and every generator's ship step both need __STAGING__, and git only lets ONE worktree hold a given branch at a time, so checking it out here can lock the conductor out mid-promotion):
+      git fetch origin
+      git switch -c impl__ID__/challenge-<n>-batch-<k> origin/__STAGING__   (k = your next batch number for this challenge)
       add the brief files; commit each with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
       gh pr create --base __STAGING__ --title "ideas: <challenge short-name> batch <k> from impl__ID__" --body "Challenge #<n>. <one line per idea: name — hook>. Owner: impl__ID__."

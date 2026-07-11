@@ -526,6 +526,25 @@ assert_contains "captain: sole exception, per-instance" "$NPCAP" "FWF_ALLOW_PUSH
 GHCAP="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 case "$GHCAP" in *FWF_ALLOW_PUSH*) bad "gh mode has no push-guard text";; *) ok "gh mode has no push-guard text";; esac
 
+section "no shared-branch collision on claim/gate (issue #91): implementers and read-only conductors never hold local staging"
+NCIMPL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+assert_contains "impl: claims branch off origin/staging" "$NCIMPL" "git switch -c impl1/issue-<num>-<slug> origin/staging"
+case "$NCIMPL" in *"git switch staging &&"*) bad "impl: never checks out local staging";; *) ok "impl: never checks out local staging";; esac
+NCCON="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
+assert_contains "conductor (dev, read-only): detaches for e2e"    "$NCCON" "git switch --detach origin/staging"
+assert_contains "conductor (dev, read-only): promotes from origin/staging" "$NCCON" "git merge --ff-only origin/staging"
+case "$NCCON" in *"git switch staging &&"*) bad "conductor (dev): never checks out local staging";; *) ok "conductor (dev): never checks out local staging";; esac
+# the validate/ideation adjudicators DO legitimately hold local staging (they commit
+# VERDICT.md/PORTFOLIO.md directly to it) — confirm that's still intact, and that
+# their promote step still reads from origin/staging like everyone else's.
+NCVAL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/validate/conductor.tmpl' ''")"
+assert_contains "adjudicator: still holds staging to commit the ledger" "$NCVAL" "git switch staging && git pull --ff-only"
+assert_contains "adjudicator: promotes from origin/staging"             "$NCVAL" "git merge --ff-only origin/staging"
+NCVALIMPL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/validate/implementer.tmpl' 1")"
+case "$NCVALIMPL" in *"git switch staging &&"*) bad "analyst: never checks out local staging";; *) ok "analyst: never checks out local staging";; esac
+NCQA="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+assert_contains "qa: told never to check out shared staging" "$NCQA" "NEVER \`git switch\`/\`git checkout\` the shared staging"
+
 section "profile persistence of template/issues + per-template identity (issues #30/#31)"
 cat > "$ROOT/profiles/.__persist.sh" <<EOF
 FWF_REPO="$TMP/x"; WT_PREFIX="px"; WT_BASE="$TMP"
