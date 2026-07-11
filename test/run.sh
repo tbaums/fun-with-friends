@@ -474,6 +474,24 @@ for _t in dev ideation refactor validate; do
   assert_contains "$_t implementer: BLOCKED escalation for an unadvanceable draft" "$R99" "BLOCKED"
 done
 
+section "heartbeat instruction bakes profile/run-dir as literals (issue #99, Fix 2)"
+# The rendered heartbeat-touch command must NOT depend on the agent's own
+# shell (a tmux pane) happening to have fresh FWF_PROFILE/FWF_RUN_DIR — a pane
+# inherits whatever env the tmux SERVER had at ITS startup, not the current
+# invocation's, so a bare `source ./lib.sh` silently defaults to the wrong
+# profile/run dir and the heartbeat lands somewhere fwf-respawn.sh never
+# looks. fwf_render must substitute the literal, resolved values in-place.
+R99HB_RUNDIR="$TMP/hbrender99"
+# PROFILE must name a real profiles/<name>.sh (lib.sh validates it before
+# fwf_render is even reachable) — use a throwaway copy of example.sh so the
+# assertion below can't be satisfied by a coincidental default of "example".
+cp "$ROOT/profiles/example.sh" "$ROOT/profiles/.__hbtest99.sh"
+R99HB="$(FWF_TEMPLATE=dev FWF_PROFILE=.__hbtest99 FWF_RUN_DIR="$R99HB_RUNDIR" bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
+rm -f "$ROOT/profiles/.__hbtest99.sh"
+assert_contains "heartbeat bakes the resolved profile" "$R99HB" "FWF_PROFILE=.__hbtest99"
+assert_contains "heartbeat bakes the resolved run dir"  "$R99HB" "FWF_RUN_DIR=$R99HB_RUNDIR"
+case "$R99HB" in *__PROFILE__*|*__RUN_DIR__*) bad "no unrendered placeholder tokens leak into the prompt";; *) ok "no unrendered placeholder tokens leak into the prompt";; esac
+
 section "per-role cycle-start heartbeat (issue #99, Fix 2): lib.sh helpers"
 F99RUN="$TMP/run99lib"; mkdir -p "$F99RUN/state/example"
 F99ENV="FWF_RUN_DIR=$F99RUN FWF_PROFILE=example"
@@ -503,12 +521,23 @@ if command -v tmux >/dev/null 2>&1; then
   F99REPO="$TMP/wt99fakerepo"; mkdir -p "$F99REPO"; git -C "$F99REPO" init -q; git -C "$F99REPO" remote add origin https://github.com/fake/fake.git
 
   # A stub "claude" that immediately touches its own heartbeat (simulating the
-  # agent's step-0 instruction) then idles animated — proving verification
-  # reads the heartbeat, not "the pane is running something".
+  # agent's rendered step-0 instruction, which now bakes FWF_PROFILE/FWF_RUN_DIR
+  # as LITERALS — see fwf_render's __PROFILE__/__RUN_DIR__ substitution) then
+  # idles animated — proving verification reads the heartbeat, not "the pane
+  # is running something".
+  #
+  # This must NOT rely on the stub inheriting FWF_RUN_DIR/FWF_PROFILE from its
+  # environment: a tmux pane's spawned process gets the env the tmux SERVER had
+  # at its own startup, not whatever a later `tmux new-session`/`respawn-pane`
+  # client happened to export — env-wrapping those calls looks like it should
+  # work but silently does nothing once any server is already running on the
+  # socket (exactly the situation in a real test run with earlier tmux
+  # sections). That's why fwf_render bakes the values in rather than trusting
+  # the agent's ambient shell to have them — this stub mirrors that fix.
   F99TICKCLAUDE="$TMP/claude99tick.sh"
   cat > "$F99TICKCLAUDE" <<EOS
 #!/usr/bin/env bash
-source '$ROOT/lib.sh' 2>/dev/null
+FWF_PROFILE=example FWF_RUN_DIR='$F99RRUN' source '$ROOT/lib.sh' 2>/dev/null
 fwf_heartbeat_touch impl1
 exec sleep 300
 EOS
@@ -522,12 +551,6 @@ exec sleep 300
 EOS
   chmod +x "$F99NOTICKCLAUDE"
 
-  # tmux panes inherit env from whatever client created the SESSION, not from
-  # whatever later client runs `respawn-pane` on it — so the session itself
-  # must be created through the same env-wrapped invocation, or the stub
-  # inside it won't see FWF_RUN_DIR/FWF_PROFILE and can't find its heartbeat
-  # dir at all (a real gotcha this test caught: a bare `tmux new-session`
-  # here left the respawned stub unable to resolve FWF_STATE_DIR).
   F99ENVR="FWF_PROFILE=example FWF_RUN_DIR=$F99RRUN FWF_SESSION=$F99SESS FWF_WT_BASE=$F99WT FWF_REPO=$F99REPO"
   env $F99ENVR tmux new-session -d -s "${F99SESS}-build" -c "$F99WT/ex-impl1"
   tmux set -p -t "${F99SESS}-build" @l "IMPL1 ·"

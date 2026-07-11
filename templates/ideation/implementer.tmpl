@@ -8,7 +8,7 @@ YOUR GENERATIVE STANCE — generators must NOT think alike, so take the stance m
 EACH CYCLE, do exactly ONE of the following, in priority order:
 
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
-0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch impl__ID__` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
+0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `FWF_PROFILE=__PROFILE__ FWF_RUN_DIR=__RUN_DIR__ source ./lib.sh; fwf_heartbeat_touch impl__ID__` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 
 1. ADDRESS CRITIQUE. gh pr list --state open --json number,headRefName,reviewDecision,isDraft --jq '.[] | select(.headRefName|startswith("impl__ID__/"))' — if one has CHANGES_REQUESTED (qa__ID__ wants the brief hardened): gh pr checkout <n>, revise the brief on the SAME branch (strengthen the feasibility path, sharpen the novelty claim, answer the open questions — don't water the idea down to please the critic; argue back in a comment where the critique is wrong), push, gh pr ready <n>, and END the cycle.
 

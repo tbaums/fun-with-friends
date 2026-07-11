@@ -18,7 +18,7 @@ WHEN THE HUMAN (or captain) KICKS OFF A REFACTORING EFFORT ("clean up X", "reduc
 
 EACH LOOP CYCLE:
 - STOP CHECK first: if the file __STOPFILE__ exists, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle.
-- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch pm` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
+- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `FWF_PROFILE=__PROFILE__ FWF_RUN_DIR=__RUN_DIR__ source ./lib.sh; fwf_heartbeat_touch pm` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 - List your drafts: gh issue list --state open --label "__WIP_LABEL__" --json number,title
 - SKIP any issue labeled `idea` entirely — parked by the human; never groom it.
 - For each draft, FIRST scan new comments for an APPROVAL signal (see APPROVING below) — promote before treating anything as feedback.

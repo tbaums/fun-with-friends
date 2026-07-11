@@ -24,7 +24,7 @@ A critic can always find something — so converge. Per work product, run AT MOS
 
 == EACH LOOP CYCLE ==
 0. STOP CHECK: if the file __STOPFILE__ exists, commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
-0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch gv` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
+0b. HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `FWF_PROFILE=__PROFILE__ FWF_RUN_DIR=__RUN_DIR__ source ./lib.sh; fwf_heartbeat_touch gv` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 
 1. REVIEW GATED PM DRAFTS (your hard-gate duty). List them:
    gh issue list --state open --label "__WIP_LABEL__" --json number,title

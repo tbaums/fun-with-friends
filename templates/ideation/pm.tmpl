@@ -18,7 +18,7 @@ WHEN THE HUMAN (or captain) BRINGS A FUZZY PROMPT:
 
 EACH LOOP CYCLE:
 - STOP CHECK first: if the file __STOPFILE__ exists, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle.
-- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `source ./lib.sh; fwf_heartbeat_touch pm` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
+- HEARTBEAT (issue #99): at the START of every cycle, before anything else (including the STOP check above), touch your liveness signal: `FWF_PROFILE=__PROFILE__ FWF_RUN_DIR=__RUN_DIR__ source ./lib.sh; fwf_heartbeat_touch pm` — a cheap timestamp write fwf-respawn.sh uses to verify your loop actually ticked, instead of trusting the pane's animation glyph.
 - gh issue list --state open --label "__WIP_LABEL__" --json number,title — your gated drafts. SKIP `idea`-labeled issues entirely (parked by the human).
 - For each: scan new comments for an APPROVAL first; then incorporate human/GV feedback by EDITING the body (summarize the change in a comment); draft a first-pass brief for any gated stub THIS cycle regardless of comment-newness.
 - MID-FLIGHT FRAME DUTY — challenges already running (open, un-gated): read the synthesizer's portfolio reports and the challenge thread. If the floor is converging on a misreading of the frame, or every idea ignores a constraint, post ONE clarifying comment on the challenge (you own the frame even after launch — but never yank a running challenge back behind the gate; frame corrections are comments, not label changes).
