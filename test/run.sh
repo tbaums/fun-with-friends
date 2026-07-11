@@ -1627,6 +1627,95 @@ assert_eq "no QA-* sentinel at all -> AWAITING_REVIEW" "AWAITING_REVIEW" "$(prs_
 assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "source '$PRS'; main abc")"
 
 # --------------------------------------------------------------------------
+# fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed
+# from FAKE Claude Code project dirs — never touches the real
+# ~/.claude/projects (FWF_CLAUDE_PROJECTS_DIR override) or the real run dir
+# (FWF_RUN_DIR override).
+UD="$ROOT/fwf-usage-data.sh"
+UT="$TMP/usage"; mkdir -p "$UT/wt" "$UT/claude-projects"
+cat > "$ROOT/profiles/.__usage.sh" <<EOF
+FWF_REPO="$UT/repo"; WT_PREFIX="ut"; WT_BASE="$UT/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+# impl1's cwd -> project-dir slug, replicating fwf_role_cwd's wt_dir() shape
+# ($WT_BASE/$WT_PREFIX-impl1) and Claude Code's own slugification (every '/'
+# and '.' -> '-' — confirmed against this repo's own ~/.claude/projects/*).
+UCWD="$UT/wt/ut-impl1"
+USLUG="${UCWD//\//-}"; USLUG="${USLUG//./-}"
+UPROJ="$UT/claude-projects/$USLUG"
+usage_run() { FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$UD" 2>&1; }
+usage_role() { usage_run | jq -c '.roles[] | select(.role=="impl1")'; }
+
+section "fwf usage (#95): missing project dir -> UNKNOWN, never \$0/blank"
+assert_eq "no dir yet -> state unknown" "unknown" "$(usage_role | jq -r '.state')"
+assert_eq "unknown -> cost_usd is null, not 0" "null" "$(usage_role | jq -c '.cost_usd')"
+
+section "fwf usage (#95): sum-across-all-files (compaction: multiple session files)"
+mkdir -p "$UPROJ"
+printf '%s\n%s\n%s\n' \
+  '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"cache_creation_input_tokens":50,"cache_read_input_tokens":10,"output_tokens":20}}}' \
+  '{"type":"user","message":{}}' \
+  '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":30,"output_tokens":40}}}' \
+  > "$UPROJ/sessA.jsonl"
+printf '%s\n' \
+  '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}}' \
+  > "$UPROJ/sessB.jsonl"
+R1="$(usage_role)"
+assert_eq "state is fresh once readable" "fresh" "$(printf '%s' "$R1" | jq -r '.state')"
+assert_eq "input summed across BOTH files (not just newest)" "310" "$(printf '%s' "$R1" | jq -r '.tokens.input')"
+assert_eq "cache_creation summed"  "50" "$(printf '%s' "$R1" | jq -r '.tokens.cache_creation')"
+assert_eq "cache_read summed"      "40" "$(printf '%s' "$R1" | jq -r '.tokens.cache_read')"
+assert_eq "output summed"          "65" "$(printf '%s' "$R1" | jq -r '.tokens.output')"
+assert_eq "newest-file-only counting would under-report (RED if it did)" "310" \
+  "$(printf '%s' "$R1" | jq -r '.tokens.input')"   # 310 only reachable by summing BOTH files; sessB alone is 10
+
+section "fwf usage (#95): idempotent — re-running yields the same total (no double-count)"
+R2="$(usage_role)"
+assert_eq "re-run: same input total"          "$(printf '%s' "$R1" | jq -r '.tokens.input')" "$(printf '%s' "$R2" | jq -r '.tokens.input')"
+assert_eq "re-run: same output total"         "$(printf '%s' "$R1" | jq -r '.tokens.output')" "$(printf '%s' "$R2" | jq -r '.tokens.output')"
+
+section "fwf usage (#95): efficiency — an already-summed file is not fully re-read (byte-offset cache)"
+# In-place, SAME-LENGTH poison of the already-cached prefix (100/200 -> 999,
+# same digit count so the file's byte length — and thus the cached offset —
+# doesn't shift). If the aggregator ever re-summed from byte 0 instead of the
+# cached offset, this poisoned prefix would inflate the total; if it truly
+# only reads new bytes, poisoning already-read history has NO effect.
+OLDINPUT="$(printf '%s' "$R1" | jq -r '.tokens.input')"
+content="$(cat "$UPROJ/sessA.jsonl")"
+content="${content//:100,/:999,}"
+content="${content//:200,/:999,}"
+printf '%s\n' "$content" > "$UPROJ/sessA.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' >> "$UPROJ/sessA.jsonl"
+R3="$(usage_role)"
+assert_eq "only the NEW appended line's tokens are added (poisoned history had zero effect)" \
+  "$((OLDINPUT + 7))" "$(printf '%s' "$R3" | jq -r '.tokens.input')"
+CACHEFILE="$UT/run/state/.__usage/usage-cache/impl1.json"
+assert_eq "cached offset for sessA equals its new (grown) size" "$(wc -c <"$UPROJ/sessA.jsonl" | tr -d ' ')" \
+  "$(jq -r '.files["sessA.jsonl"]' "$CACHEFILE")"
+
+section "fwf usage (#95): model/\$ mapping"
+assert_eq "known model -> expected \$ from the price table (310 in @ \$2.00/MTok + 50 cache-write @ \$2.50 + 40 cache-read @ \$0.20 + 65 out @ \$10.00, /1e6)" \
+  "0.001403" "$(printf '%s' "$R1" | jq -r '.cost_usd')"
+UD2CWD="$UT/wt/ut-impl2"; USLUG2="${UD2CWD//\//-}"; USLUG2="${USLUG2//./-}"
+UNKNOWN_MODEL_PROJ="$UT/claude-projects/$USLUG2"
+mkdir -p "$UNKNOWN_MODEL_PROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-totally-unknown","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$UNKNOWN_MODEL_PROJ/s.jsonl"
+UNKMODEL="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$UD" | jq -c '.roles[] | select(.role=="impl2")')"
+assert_eq "unpriced model -> cost_usd is null, never a wrong \$0" "null" "$(printf '%s' "$UNKMODEL" | jq -c '.cost_usd')"
+assert_eq "unpriced model's tokens are still shown (not hidden)" "100" "$(printf '%s' "$UNKMODEL" | jq -r '.tokens.input')"
+
+section "fwf usage (#95): proxy caveat is present in the payload"
+assert_contains "caveat names this as an estimate, not real account usage" "$(usage_run)" "not your account's actual rolling-window usage"
+
+section "fwf usage (#95): unreadable after a good read -> STALE with last-good numbers, not frozen/blank"
+rm -rf "$UPROJ"
+R4="$(usage_role)"
+assert_eq "dir removed -> state stale (not unknown — we HAD a good read)" "stale" "$(printf '%s' "$R4" | jq -r '.state')"
+assert_eq "stale keeps the last-good totals" "317" "$(printf '%s' "$R4" | jq -r '.tokens.input')"
+rm -f "$ROOT/profiles/.__usage.sh"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
