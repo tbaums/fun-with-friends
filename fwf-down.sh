@@ -9,20 +9,24 @@
 # Logs a floor-down event (issue #85) so the dash can show a deliberate idle
 # as distinct from a crash, and so there's an audit trail once the panes are
 # gone: --actor NAME (default "captain"), --reason "TEXT" (default below).
+# --floor-only also enforces a deterministic anti-thrash cooldown (issue #88):
+# it refuses within FWF_FLOOR_COOLDOWN seconds of the last recorded floor-up
+# unless --force is passed.
 #
-# Usage: [FWF_PROFILE=example] fwf-down.sh [--purge | --floor-only [--actor NAME] [--reason TEXT]]
+# Usage: [FWF_PROFILE=example] fwf-down.sh [--purge | --floor-only [--actor NAME] [--reason TEXT] [--force]]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 
-floor_only=0; purge=0; actor="captain"; reason="queue empty; nothing in flight"
+floor_only=0; purge=0; force=0; actor="captain"; reason="queue empty; nothing in flight"
 while [ $# -gt 0 ]; do
   case "$1" in
     --floor-only|--keep-captain) floor_only=1; shift;;
     --purge) purge=1; shift;;
     --actor) actor="$2"; shift 2;;
     --reason) reason="$2"; shift 2;;
-    *) echo "usage: fwf-down.sh [--purge | --floor-only [--actor NAME] [--reason TEXT]]" >&2; exit 1;;
+    --force) force=1; shift;;
+    *) echo "usage: fwf-down.sh [--purge | --floor-only [--actor NAME] [--reason TEXT] [--force]]" >&2; exit 1;;
   esac
 done
 if [ "$floor_only" = 1 ] && [ "$purge" = 1 ]; then
@@ -31,6 +35,13 @@ if [ "$floor_only" = 1 ] && [ "$purge" = 1 ]; then
 fi
 
 if [ "$floor_only" = 1 ]; then
+  if [ "$force" != 1 ]; then
+    remaining="$(fwf_floor_cooldown_remaining)"
+    if [ "$remaining" -gt 0 ]; then
+      echo "fwf-down: refusing --floor-only — floor-up cooldown active, ${remaining}s remaining (last floor-up was too recent; pass --force to override)" >&2
+      exit 1
+    fi
+  fi
   if tmux kill-session -t "$BUILD_SESSION" 2>/dev/null; then echo "killed tmux session '$BUILD_SESSION'"; else echo "no tmux session '$BUILD_SESSION'"; fi
   # Everything in coordination EXCEPT the captain is floor — PM, GV, and any
   # template-declared extra role (e.g. dev-sre's SRE). Matching on "not the

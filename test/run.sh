@@ -370,6 +370,90 @@ else
   printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
 fi
 
+section "floor-down cooldown guard (issue #88): fwf_floor_last_up_epoch / fwf_floor_cooldown_remaining"
+# Pure file I/O (lib.sh) — no tmux needed for the read-only cooldown math.
+F88RUN="$TMP/run88lib"; mkdir -p "$F88RUN/state/example"
+F88ENV="FWF_RUN_DIR=$F88RUN FWF_PROFILE=example"
+F88LIBLOG="$F88RUN/state/example/floor-events.log"
+# no log at all -> no prior up on record -> cooldown never blocks
+assert_eq "no log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_last_up_epoch")"
+assert_eq "no log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+# a log that has only ever seen floor-down (never a floor-up) -> still unguarded
+printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tfirst ever down\n' > "$F88LIBLOG"
+assert_eq "floor-down-only log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_last_up_epoch")"
+assert_eq "floor-down-only log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+# a recent floor-up -> remaining cooldown is positive and bounded by FWF_FLOOR_COOLDOWN
+NOW="$(date +%s)"
+printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$NOW" > "$F88LIBLOG"
+REM="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+case "$REM" in ''|*[!0-9]*) bad "recent floor-up -> remaining is numeric" "$REM";; *) ok "recent floor-up -> remaining is numeric";; esac
+[ "$REM" -gt 0 ] && [ "$REM" -le 100 ] && ok "recent floor-up -> 0 < remaining <= cooldown" || bad "recent floor-up -> 0 < remaining <= cooldown" "$REM"
+# an old floor-up (past the cooldown window) -> remaining is 0
+OLD=$(( NOW - 1000 ))
+printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD" > "$F88LIBLOG"
+assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+# the LAST floor-up wins, not the first, when there are several in the log
+{
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-down\tcaptain\tr\n' "$OLD"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$NOW"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-down\tcaptain\tr2\n' "$NOW"
+} > "$F88LIBLOG"
+REM2="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+[ "$REM2" -gt 0 ] && [ "$REM2" -le 100 ] && ok "cooldown keys off the LAST floor-up, not the first" || bad "cooldown keys off the LAST floor-up, not the first" "$REM2"
+# bogus FWF_FLOOR_COOLDOWN is rejected at source time, same style as FWF_PAIRS
+env $F88ENV FWF_FLOOR_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_FLOOR_COOLDOWN=banana rejected" || ok "FWF_FLOOR_COOLDOWN=banana rejected"
+
+section "captain.tmpl (issue #88): dwell + deterministic cooldown are both stated"
+CAPRENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+assert_contains "captain prompt mentions the dwell" "$CAPRENDER" "dwell"
+assert_contains "captain prompt names FWF_FLOOR_COOLDOWN" "$CAPRENDER" "FWF_FLOOR_COOLDOWN"
+assert_contains "captain prompt calls the cooldown deterministic" "$CAPRENDER" "DETERMINISTIC"
+assert_contains "captain prompt mentions --force" "$CAPRENDER" "--force"
+
+if command -v tmux >/dev/null 2>&1; then
+  section "fwf-down.sh --floor-only cooldown guard (issue #88): real tmux"
+  F88TRUN="$TMP/run88tmux"; mkdir -p "$F88TRUN/state/example"
+  F88TLOG="$F88TRUN/state/example/floor-events.log"
+  F88SESS="fwf-selftest-88-$$"
+  F88ENVT="FWF_PROFILE=example FWF_RUN_DIR=$F88TRUN FWF_SESSION=$F88SESS FWF_FLOOR_COOLDOWN=300"
+
+  # --- refused within cooldown: sessions/panes must stay up, exit nonzero ----
+  tmux new-session -d -s "${F88SESS}-coord" -c "$TMP"
+  tmux set -p -t "${F88SESS}-coord" @l "CAPTAIN"
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  RECENT_UP="$(date +%s)"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$RECENT_UP" > "$F88TLOG"
+  REFUSED="$(env $F88ENVT "$ROOT/fwf-down.sh" --floor-only 2>&1)" && bad "cooldown refuses too-soon floor-only down" || ok "cooldown refuses too-soon floor-only down"
+  assert_contains "refusal names the remaining cooldown" "$REFUSED" "remaining"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session stays up when refused" || bad "build session stays up when refused"
+  tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord session stays up when refused" || bad "coord session stays up when refused"
+  assert_contains "log unchanged (no floor-down appended) when refused" "$(tail -n1 "$F88TLOG")" "floor-up"
+
+  # --- --force overrides the cooldown and actually tears down -----------------
+  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only --force >/dev/null 2>&1 && ok "--force overrides cooldown" || bad "--force overrides cooldown"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "--force actually tears down the build session" || ok "--force actually tears down the build session"
+  assert_contains "--force still logs floor-down" "$(tail -n1 "$F88TLOG")" "floor-down"
+
+  # --- cooldown elapsed -> tears down normally without --force ----------------
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  OLD_UP=$(( $(date +%s) - 1000 ))
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD_UP" > "$F88TLOG"
+  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && ok "elapsed cooldown allows floor-only down" || bad "elapsed cooldown allows floor-only down"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "elapsed-cooldown down actually tears down" || ok "elapsed-cooldown down actually tears down"
+
+  # --- no prior floor-up on record (first-ever down) -> allowed ---------------
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  rm -f "$F88TLOG"
+  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && ok "no prior floor-up on record allows down" || bad "no prior floor-up on record allows down"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "no-record down actually tears down" || ok "no-record down actually tears down"
+
+  tmux kill-session -t "${F88SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F88SESS}-build" 2>/dev/null
+else
+  printf '  skip real-tmux floor-down cooldown tests (tmux not installed)\n'
+fi
+
 section "disk-pressure guard — refuses below the free-space floor"
 # An impossibly high floor must refuse before any tmux work; portable df runs.
 GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=999999 "$ROOT/fwf-up.sh" 2>&1)" && bad "guard refuses below floor" || ok "guard refuses below floor"
