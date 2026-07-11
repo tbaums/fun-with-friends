@@ -8,16 +8,19 @@
 # bash gathers, the binary renders). Read-only — this NEVER mutates anything.
 #
 # Derived-first, so the board works with the factory parked:
-#   roles    <- tmux pane state (@l label + current command)
-#   pipeline <- git branch deltas in the target repo
-#   decisions<- the label protocol: open + WIP_LABEL + a "GV-SIGNOFF" comment
-#   prod     <- the captain's status.json overlay when fresh, else "—"
+#   roles      <- tmux pane state (@l label + current command)
+#   pipeline   <- git branch deltas in the target repo
+#   decisions  <- the label protocol: open + WIP_LABEL + a "GV-SIGNOFF" comment
+#   prod       <- the captain's status.json overlay when fresh, else "—"
+#   floor_idle <- the last floor-lifecycle event (issue #85): a deliberate
+#                 `fwf-down.sh --floor-only` idle, distinct from a crash
 #
 # Output schema (consumed by dash/src/data.rs):
 #   { profile, template, parked, prod, pipeline, stamp, generated_at,
 #     roles:[{role,state,detail}],
 #     decisions:[{id,title,flags,body}],
-#     issues:[{number,title,gated,body}] }
+#     issues:[{number,title,gated,body}],
+#     floor_idle:{active,since,reason,actor} }
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The dash reflects the RUNNING factory, so it opts in to resolving the
@@ -108,8 +111,35 @@ derive_pipeline() {
   printf '%s +%s ahead · %s %s · %s' "$STAGING_BRANCH" "$sa" "$INTEGRATION_BRANCH" "$ic" "$md"
 }
 
+# --- floor lifecycle (issue #85) — dash's IDLE-vs-crash signal --------------
+# Derived the same way `parked` is (read-only, alongside it in main()): the
+# LAST logged floor-lifecycle event. Active only when it's a floor-down with
+# no later floor-up, so a crash (which never logs anything) still reads as
+# not-idle here — roles_json()'s pane check is what actually renders "down".
+floor_idle_json() {
+  local line active since reason actor
+  line="$(fwf_floor_idle_state)"
+  active="$(printf '%s' "$line" | cut -f1)"
+  since="$(printf '%s' "$line" | cut -f2)"
+  reason="$(printf '%s' "$line" | cut -f3)"
+  actor="$(printf '%s' "$line" | cut -f4)"
+  jq -n --argjson active "$active" --arg since "$since" --arg reason "$reason" --arg actor "$actor" \
+    '{active:$active, since:$since, reason:$reason, actor:$actor}'
+}
+
 # --- roles (tmux pane liveness, overlaid with status.json detail) -----------
+# $1 = floor_idle_json (so a pane-less floor role can render a deliberate IDLE
+# instead of "down" — see floor_idle_json above). Optional and defaults to
+# inactive (old "no floor_idle at all" behavior) so callers that don't pass it
+# — e.g. tests exercising roles_json in isolation — still get a plain down/live/idle read.
 roles_json() {
+  local fi_json="${1:-}" fi_active="false" fi_since="" fi_reason="" fi_actor=""
+  if [ -n "$fi_json" ]; then
+    fi_active="$(printf '%s' "$fi_json" | jq -r '.active // false')"
+    fi_since="$(printf '%s' "$fi_json" | jq -r '.since // ""')"
+    fi_reason="$(printf '%s' "$fi_json" | jq -r '.reason // ""')"
+    fi_actor="$(printf '%s' "$fi_json" | jq -r '.actor // ""')"
+  fi
   local role sess token pane state detail cmd
   for role in $(fwf_all_roles); do
     case "$role" in
@@ -123,13 +153,24 @@ roles_json() {
     case "$role" in impl*|qa*) token="$token ·";; esac
     pane="$(fwf_find_pane "$sess" "$token" 2>/dev/null || true)"
     if [ -n "$pane" ]; then
+      # Live-pane precedence: a role with a live pane is NEVER shown idle off
+      # the log, however stale or racing a floor-up append might be.
       cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
       case "$cmd" in bash|zsh|sh|fish|"") state="idle";; *) state="live";; esac
+    elif [ "$role" != "captain" ] && [ "$fi_active" = "true" ]; then
+      # No pane + a logged floor-down with no later floor-up = deliberately
+      # idled by --floor-only, not crashed. The captain is the one role
+      # --floor-only never tears down, so it's excluded from this state —
+      # a captain with no pane is always a real "down".
+      state="floor_idle"
     else
       state="down"
     fi
     detail=""
     status_fresh && detail="$(status_q ".roles[]? | select(.id==\"$role\") | \"#\"+(.issue|tostring)+\" \"+(.title // \"\")")"
+    if [ "$state" = "floor_idle" ]; then
+      detail="floor idled by $fi_actor since ${fi_since} — ${fi_reason}"
+    fi
     jq -n --arg role "$role" --arg state "$state" --arg detail "$detail" \
       '{role:$role, state:$state, detail:$detail}'
   done | jq -s '.'
@@ -264,7 +305,7 @@ activity_json() {
 
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions activity needs_you
+  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -275,8 +316,9 @@ main() {
   fi
   parked=false; [ -f "$STOP_FILE" ] && parked=true
   gen="$(date +%H:%M:%S)"
+  floor_idle="$(floor_idle_json)"
   issues="$(open_issues_json)"
-  roles="$(roles_json)"
+  roles="$(roles_json "$floor_idle")"
   decisions="$(decisions_json "$issues")"
   activity="$(activity_json)"
   needs_you="$(needs_you_json)"
@@ -286,10 +328,10 @@ main() {
     --argjson parked "$parked" \
     --arg prod "$prod" --arg pipeline "$pipeline" --arg stamp "$stamp" --arg gen "$gen" \
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
-    --argjson activity "$activity" --argjson needs_you "$needs_you" \
+    --argjson activity "$activity" --argjson needs_you "$needs_you" --argjson floor_idle "$floor_idle" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
-      activity:$activity, needs_you:$needs_you}'
+      activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle}'
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------

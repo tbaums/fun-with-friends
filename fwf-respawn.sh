@@ -69,4 +69,7 @@ tmux send-keys -t "$CP" Enter   # clear one-time bypass-accept screen
 sleep 2
 
 fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
+# issue #85: respawning any FLOOR role (i.e. not the captain, which --floor-only
+# never tears down) means the floor is no longer idle — clear any logged IDLE.
+[ "$role" = captain ] || fwf_floor_event floor-up "" ""
 echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"

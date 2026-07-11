@@ -171,6 +171,161 @@ assert_contains "floor-only down names the comeback" "$DOWNOUT" "fwf up --floor-
 # help advertises the floor lifecycle
 assert_contains "help mentions --floor-only" "$("$ROOT/fwf" help)" "--floor-only"
 
+section "floor-lifecycle event log (issue #85): fwf_floor_event / fwf_floor_idle_state"
+# Pure file I/O (lib.sh) — no tmux/gh needed for the read/write primitives.
+F85RUN="$TMP/run85"; mkdir -p "$F85RUN"
+F85ENV="FWF_RUN_DIR=$F85RUN FWF_PROFILE=example"
+assert_eq "no log yet -> floor_idle inactive" "false" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+# (b) floor-down is appended with actor/reason/ts/epoch and survives a re-read
+env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain 'queue empty; nothing in flight'"
+F85LOG="$F85RUN/state/example/floor-events.log"
+[ -f "$F85LOG" ] && ok "floor-events.log created" || bad "floor-events.log created"
+F85LAST="$(tail -n1 "$F85LOG")"
+assert_contains "floor-down line names the actor" "$F85LAST" "captain"
+assert_contains "floor-down line carries the reason" "$F85LAST" "queue empty; nothing in flight"
+case "$F85LAST" in *"floor-down"*) ok "last line is floor-down";; *) bad "last line is floor-down" "$F85LAST";; esac
+F85EPOCH="$(printf '%s' "$F85LAST" | cut -f2)"
+case "$F85EPOCH" in ''|*[!0-9]*) bad "epoch field is numeric" "$F85EPOCH";; *) ok "epoch field is numeric";; esac
+F85TS="$(printf '%s' "$F85LAST" | cut -f1)"
+case "$F85TS" in [0-9][0-9][0-9][0-9]-*T*Z) ok "ts field is ISO-8601 UTC";; *) bad "ts field is ISO-8601 UTC" "$F85TS";; esac
+# (a) fwf_floor_idle_state now reports active, carrying the same reason
+F85IDLE="$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state")"
+assert_eq "floor_idle_state active after floor-down" "true" "$(printf '%s' "$F85IDLE" | cut -f1)"
+assert_contains "floor_idle_state carries the reason" "$F85IDLE" "queue empty; nothing in flight"
+# (b-up-paths / idempotency) floor-up clears it; repeated transitions stay coherent
+env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-up '' ''"
+assert_eq "floor-up clears floor_idle" "false" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain r2; fwf_floor_event floor-up '' ''; fwf_floor_event floor-down captain r3"
+assert_eq "repeated down/up/down stays coherent (last event wins)" "true" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+# (bound) capped at the last 200 lines; the dash still reads the correct last event
+F85CAPRUN="$TMP/run85cap"; mkdir -p "$F85CAPRUN/state/example"
+F85CAPLOG="$F85CAPRUN/state/example/floor-events.log"
+i=1; while [ "$i" -le 205 ]; do printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$i" >> "$F85CAPLOG"; i=$((i+1)); done
+env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain capped"
+assert_eq "log capped at 200 lines" "200" "$(wc -l < "$F85CAPLOG" | tr -d ' ')"
+assert_eq "dash still reads the correct (capped) last event" "true" \
+  "$(env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+
+section "fwf dash data (issue #85): roles_json renders floor_idle, distinct from a crash"
+DD85="$ROOT/fwf-dash-data.sh"
+FI_ON='{"active":true,"since":"2026-01-01T00:00:00Z","reason":"queue empty; nothing in flight","actor":"captain"}'
+FI_OFF='{"active":false,"since":"","reason":"","actor":""}'
+# no pane anywhere (stub tmux always "down") + floor_idle active -> every
+# non-captain role reads floor_idle; the captain (never torn down by
+# --floor-only) is excluded and stays a real "down".
+NOPANE_TMUX="$TMP/nopane85bin"; mkdir -p "$NOPANE_TMUX"
+cat > "$NOPANE_TMUX/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in has-session) exit 1;; list-panes) exit 0;; *) exit 1;; esac
+STUB
+chmod +x "$NOPANE_TMUX/tmux"
+R85_IDLE="$(PATH="$NOPANE_TMUX:$PATH" FWF_PROFILE=example bash -c "source '$DD85'; roles_json '$FI_ON'")"
+assert_eq "impl1 renders floor_idle when idle+no pane" "floor_idle" \
+  "$(printf '%s' "$R85_IDLE" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_contains "impl1 detail names the actor+reason" \
+  "$(printf '%s' "$R85_IDLE" | jq -r '.[] | select(.role=="impl1") | .detail')" "captain"
+assert_eq "captain is EXCLUDED from floor_idle (never torn down by --floor-only)" "down" \
+  "$(printf '%s' "$R85_IDLE" | jq -r '.[] | select(.role=="captain") | .state')"
+# same no-pane fixture, but floor_idle inactive (a REAL crash, no floor-down
+# logged) -> every role reads down, never floor_idle. RED if this and the
+# idle case above ever render the same state.
+R85_CRASH="$(PATH="$NOPANE_TMUX:$PATH" FWF_PROFILE=example bash -c "source '$DD85'; roles_json '$FI_OFF'")"
+assert_eq "impl1 renders down on a real crash (no floor-down logged)" "down" \
+  "$(printf '%s' "$R85_CRASH" | jq -r '.[] | select(.role=="impl1") | .state')"
+case "$(printf '%s' "$R85_CRASH" | jq -c '[.[] | .state] | unique')" in
+  *floor_idle*) bad "crash fixture must never show floor_idle";;
+  *) ok "crash fixture never shows floor_idle";;
+esac
+# top-level floor_idle_json passes through active/since/reason/actor untouched
+F85TOPRUN="$TMP/run85top"; mkdir -p "$F85TOPRUN/state/example"
+printf '2026-01-01T00:00:00Z\t0\tfloor-down\thuman\tmanual test\n' > "$F85TOPRUN/state/example/floor-events.log"
+F85TOP="$(FWF_RUN_DIR="$F85TOPRUN" FWF_PROFILE=example bash -c "source '$DD85'; floor_idle_json")"
+assert_eq "floor_idle_json.active" "true"  "$(printf '%s' "$F85TOP" | jq -r '.active')"
+assert_eq "floor_idle_json.actor"  "human" "$(printf '%s' "$F85TOP" | jq -r '.actor')"
+assert_eq "floor_idle_json.reason" "manual test" "$(printf '%s' "$F85TOP" | jq -r '.reason')"
+
+if command -v tmux >/dev/null 2>&1; then
+  section "floor-lifecycle wiring (issue #85): fwf-up.sh / fwf-respawn.sh append floor-up on success (real tmux, stubbed claude)"
+  # A fast, non-shell "claude" stand-in: tmux reports its pane_current_command
+  # as soon as the shell execs it, so fwf_ensure_claude's shell-vs-not-shell
+  # poll resolves on its first ~1s tick instead of the real 15s×5 retry budget
+  # (there being no real `claude` to ever take over the pane).
+  F85CLAUDE="$TMP/claude85-stub.sh"
+  cat > "$F85CLAUDE" <<'EOS'
+#!/usr/bin/env bash
+exec sleep 300
+EOS
+  chmod +x "$F85CLAUDE"
+  # fwf-up.sh's fwf_install_ghguard reads FWF_REPO's origin remote — needs a
+  # REAL git repo (the example profile's placeholder $HOME/your-repo isn't
+  # one), or it fails closed under set -e before ever reaching the pane work.
+  F85REPO="$TMP/wt85fakerepo"; mkdir -p "$F85REPO"
+  git -C "$F85REPO" init -q
+  git -C "$F85REPO" remote add origin https://github.com/fake/fake.git
+
+  # --- (b-up-paths) fwf-up.sh --floor-only, around a pre-existing CAPTAIN ----
+  F85AWT="$TMP/wt85a"
+  mkdir -p "$F85AWT/ex-impl1" "$F85AWT/ex-qa1" "$F85AWT/ex-conductor" "$F85AWT/ex-pm" "$F85AWT/ex-gv" "$F85AWT/ex-captain"
+  F85ARUN="$TMP/run85a"; mkdir -p "$F85ARUN/state/example"
+  F85ALOG="$F85ARUN/state/example/floor-events.log"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F85ALOG"
+  F85ASESS="fwf-selftest-85a-$$"
+  tmux new-session -d -s "${F85ASESS}-coord" -c "$F85AWT/ex-captain"
+  tmux set -p -t "${F85ASESS}-coord" @l "CAPTAIN"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F85ARUN" FWF_SESSION="$F85ASESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F85AWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      "$ROOT/fwf-up.sh" --floor-only >/dev/null 2>&1
+  assert_contains "fwf-up.sh --floor-only appends floor-up" "$(tail -n1 "$F85ALOG")" "floor-up"
+  tmux kill-session -t "${F85ASESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F85ASESS}-build" 2>/dev/null
+
+  # --- a full `fwf up` (GV explicitly called this out) — neither session ----
+  # exists yet, so this exercises the FULL (non-floor-only) launch path.
+  F85BWT="$TMP/wt85b"
+  mkdir -p "$F85BWT/ex-impl1" "$F85BWT/ex-qa1" "$F85BWT/ex-conductor" "$F85BWT/ex-pm" "$F85BWT/ex-gv" "$F85BWT/ex-captain"
+  F85BRUN="$TMP/run85b"; mkdir -p "$F85BRUN/state/example"
+  F85BLOG="$F85BRUN/state/example/floor-events.log"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F85BLOG"
+  F85BSESS="fwf-selftest-85b-$$"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F85BRUN" FWF_SESSION="$F85BSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F85BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  assert_contains "a full 'fwf up' appends floor-up" "$(tail -n1 "$F85BLOG")" "floor-up"
+  tmux kill-session -t "${F85BSESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F85BSESS}-build" 2>/dev/null
+
+  # --- a floor-role fwf-respawn.sh (pm) -- captain is excluded (never torn ---
+  # down by --floor-only, so respawning it is not an "IDLE cleared" signal).
+  F85CWT="$TMP/wt85c"; mkdir -p "$F85CWT/ex-captain" "$F85CWT/ex-pm"
+  F85CRUN="$TMP/run85c"; mkdir -p "$F85CRUN/state/example"
+  F85CLOG="$F85CRUN/state/example/floor-events.log"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F85CLOG"
+  F85CSESS="fwf-selftest-85c-$$"
+  tmux new-session -d -s "${F85CSESS}-coord" -c "$F85CWT/ex-captain"
+  tmux set -p -t "${F85CSESS}-coord" @l "CAPTAIN"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
+      FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      "$ROOT/fwf-respawn.sh" pm >/dev/null 2>&1
+  assert_contains "fwf-respawn.sh of a floor role (pm) appends floor-up" "$(tail -n1 "$F85CLOG")" "floor-up"
+  # respawning the CAPTAIN itself must NOT append floor-up — it was never the
+  # thing --floor-only tore down, so its respawn says nothing about the floor.
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F85CLOG"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
+      FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      "$ROOT/fwf-respawn.sh" captain >/dev/null 2>&1
+  case "$(tail -n1 "$F85CLOG")" in
+    *floor-up*) bad "respawning the captain must not clear floor_idle";;
+    *) ok "respawning the captain must not clear floor_idle";;
+  esac
+  tmux kill-session -t "${F85CSESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F85CSESS}-build" 2>/dev/null
+else
+  printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
+fi
+
 section "disk-pressure guard — refuses below the free-space floor"
 # An impossibly high floor must refuse before any tmux work; portable df runs.
 GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=999999 "$ROOT/fwf-up.sh" 2>&1)" && bad "guard refuses below floor" || ok "guard refuses below floor"

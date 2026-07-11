@@ -27,6 +27,8 @@ pub struct Dashboard {
     pub activity: Activity,
     #[serde(default)]
     pub needs_you: NeedsYou,
+    #[serde(default)]
+    pub floor_idle: FloorIdle,
 }
 
 /// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
@@ -38,6 +40,23 @@ pub struct NeedsYou {
     pub active: bool,
     #[serde(default)]
     pub summary: String,
+}
+
+/// Issue #85: the last floor-lifecycle event (`fwf-down.sh --floor-only` /
+/// `fwf-up.sh --floor-only` / a floor-role respawn), so a deliberate idle can be
+/// told apart from a crash. `active` is true only when the last logged event is
+/// `floor-down` with no later `floor-up` — see `roles_json()` in
+/// fwf-dash-data.sh for how this combines with live-pane precedence.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FloorIdle {
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
+    pub since: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub actor: String,
 }
 
 /// Factory motion, derived from PRs against the integration targets: drafts are
@@ -98,7 +117,8 @@ pub struct ActivityItem {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Role {
     pub role: String,
-    /// "live" | "idle" | "down"
+    /// "live" | "idle" | "down" | "floor_idle" (deliberately parked by
+    /// `fwf-down.sh --floor-only`, issue #85 — never a real crash)
     pub state: String,
     #[serde(default)]
     pub detail: String,
@@ -212,6 +232,16 @@ mod tests {
     #[test]
     fn reports_bad_json() {
         assert!(parse(b"not json").is_err());
+    }
+
+    #[test]
+    fn parses_floor_idle() {
+        let d = parse(br#"{"profile":"p","template":"dev","prod":"-","pipeline":"-","stamp":"derived","generated_at":"00:00:00",
+            "floor_idle":{"active":true,"since":"2026-01-01T00:00:00Z","reason":"queue empty; nothing in flight","actor":"captain"}}"#)
+            .expect("parse");
+        assert!(d.floor_idle.active);
+        assert_eq!(d.floor_idle.actor, "captain");
+        assert_eq!(d.floor_idle.reason, "queue empty; nothing in flight");
     }
 
     #[test]

@@ -809,6 +809,18 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
+            // A deliberate `fwf-down.sh --floor-only` idle (issue #85) is its
+            // own calm/dim badge — never the red down/crashed treatment, and
+            // distinct from the whole-factory ⏸ PARKED badge above.
+            if d.floor_idle.active {
+                l1.push(Span::styled(
+                    format!(" ◇ FLOOR IDLE — {} ", d.floor_idle.actor),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             // Line 2: prod / pipeline / provenance / clock.
             l2.push(Span::styled("prod ", key));
             l2.push(Span::raw(d.prod.clone()));
@@ -819,6 +831,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
                 provenance_style(&d.stamp),
             ));
             l2.push(Span::styled(format!("  ⟳ {}", d.generated_at), dim));
+            if d.floor_idle.active {
+                l2.push(Span::styled(
+                    format!("   since {} — {}", d.floor_idle.since, d.floor_idle.reason),
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
         }
         Feed::Err(e, None) => {
             l1.push(Span::styled(
@@ -1079,7 +1097,18 @@ fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
             let (glyph, style) = match r.state.as_str() {
                 "live" => ("●", Style::default().fg(Color::Green)),
                 "idle" => ("◌", Style::default().fg(Color::Yellow)),
+                // Deliberately parked by `fwf-down.sh --floor-only` (#85) — a
+                // calm/dim treatment, visually distinct from both live/idle
+                // AND the dark-gray "down"/crashed circle below.
+                "floor_idle" => ("◇", Style::default().fg(Color::Cyan)),
                 _ => ("○", Style::default().fg(Color::DarkGray)),
+            };
+            // "floor_idle" renders as the short "IDLE" label; the detail span
+            // (below) carries "floor idled by <actor> since <ts> — <reason>".
+            let state_label = if r.state == "floor_idle" {
+                "IDLE"
+            } else {
+                r.state.as_str()
             };
             let mut spans = vec![
                 Span::styled(format!(" {glyph} "), style),
@@ -1087,7 +1116,7 @@ fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
                     format!("{:<10}", r.role),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(format!("{:<6}", r.state), style),
+                Span::styled(format!("{:<6}", state_label), style),
             ];
             if !r.detail.is_empty() {
                 spans.push(Span::styled(
@@ -2243,6 +2272,7 @@ mod tests {
                 active: true,
                 summary: "decision #101 awaiting you".into(),
             },
+            floor_idle: data::FloorIdle::default(),
         }
     }
 
@@ -2286,6 +2316,24 @@ mod tests {
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
         assert_golden("header_parked_stale", &buffer_to_text(&buf));
+    }
+
+    // issue #85: the header's calm FLOOR IDLE badge — running (not parked),
+    // distinct from both ● running alone and the ⏸ PARKED badge.
+    #[test]
+    fn golden_header_floor_idle_badge() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.floor_idle = data::FloorIdle {
+                active: true,
+                since: "2026-01-01T00:00:00Z".into(),
+                reason: "queue empty; nothing in flight".into(),
+                actor: "captain".into(),
+            };
+        }
+        let area = Rect::new(0, 0, 90, 4);
+        let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
+        assert_golden("header_floor_idle", &buffer_to_text(&buf));
     }
 
     #[test]
@@ -2401,5 +2449,54 @@ mod tests {
         }
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
         assert_golden("full_frame_decisions_parked", &buffer_to_text(&buf));
+    }
+
+    // issue #85 (a-appearance): a role with no live pane must render DISTINCTLY
+    // depending on whether the floor was deliberately idled (floor_idle) or has
+    // actually crashed (down) — a phantom-outage chase is the whole bug this
+    // fixes, so this drives the REAL renderer over both fixtures rather than
+    // asserting on the data layer alone. RED if the two ever render identically.
+    #[test]
+    fn golden_roles_floor_idle_vs_crash_pivot() {
+        let mut idle_app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut idle_app.feed {
+            d.roles = vec![data::Role {
+                role: "impl2".into(),
+                state: "floor_idle".into(),
+                detail: "floor idled by captain since 2026-01-01T00:00:00Z — queue empty; nothing in flight".into(),
+            }];
+        }
+        let idle_buf = render_buffer(100, 30, |f| ui(f, &mut idle_app));
+        let idle_text = buffer_to_text(&idle_buf);
+        assert_golden("full_frame_roles_floor_idle", &idle_text);
+
+        let mut crash_app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut crash_app.feed {
+            d.roles = vec![data::Role {
+                role: "impl2".into(),
+                state: "down".into(),
+                detail: "crashed".into(),
+            }];
+        }
+        let crash_buf = render_buffer(100, 30, |f| ui(f, &mut crash_app));
+        let crash_text = buffer_to_text(&crash_buf);
+        assert_golden("full_frame_roles_down_crash", &crash_text);
+
+        assert_ne!(
+            idle_text, crash_text,
+            "a deliberately idled floor and a real crash must render differently (issue #85)"
+        );
+        assert!(
+            idle_text.contains("IDLE"),
+            "floor_idle state must show the distinct IDLE label"
+        );
+        assert!(
+            !idle_text.to_lowercase().contains("crash"),
+            "the IDLE render must not carry crash wording"
+        );
+        assert!(
+            !crash_text.contains("IDLE"),
+            "a real crash (down, no floor-down logged) must never show IDLE"
+        );
     }
 }

@@ -1,0 +1,4 @@
+┌ fwf dash ──────────────────────────────────────────────────────────────────────────────┐
+│profile fwf-self  ·  dev  ● running  ◇ FLOOR IDLE — captain                             │
+│prod https://example.test/prod   pipeline staging → integration → main   [status.json]  │
+└────────────────────────────────────────────────────────────────────────────────────────┘

@@ -66,12 +66,24 @@ a running swarm:
 | Field | Derived from |
 |---|---|
 | activity | open/merged PRs against the integration targets: BUILDING / IN TEST·REVIEW / MERGED (the landing tab) |
-| roles | tmux pane liveness (`@l` label + current command): live / idle / down |
+| roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`, never conflated with a crash (see below) |
 | pipeline | git branch deltas in the target repo (`staging +N ahead · …`) |
 | decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you |
 | issues | every open issue (gated ones marked 🔒) |
 | prod | the captain's `status.json` overlay when fresh, else `—` |
 | ⛔ CAPTAIN NEEDS YOU | a full-width banner when the captain pane is blocked on you (read from the captain pane) |
+| ◇ FLOOR IDLE (header badge) | shown whenever the floor was deliberately idled via `fwf-down.sh --floor-only` — distinct from the whole-factory `⏸ PARKED` badge |
+
+A role with no live tmux pane reads as a real crash (`down`) UNLESS the last
+entry in `$FWF_STATE_DIR/floor-events.log` is a `floor-down` with no later
+`floor-up` — that append-only, 200-line-capped log is the single source of
+truth for both this live signal and the after-the-fact audit trail of who
+idled the floor, when, and why. `fwf-down.sh --floor-only` writes it (`--actor
+NAME`, `--reason "TEXT"` — defaults `captain` / `queue empty; nothing in
+flight`); every up-path (`fwf-up.sh --floor-only`, a full `fwf up`, and
+respawning any floor role) clears it. The captain itself is excluded — it's
+the one role `--floor-only` never tears down, so a captain with no pane is
+always a real `down`.
 
 The header's provenance stamp says where prod/pipeline came from: `status.json`
 (fresh overlay, green), `stale` (overlay too old, amber), or `derived` (gray).

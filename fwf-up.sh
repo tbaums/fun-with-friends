@@ -229,6 +229,7 @@ if [ "${#EXTRA_PANES[@]}" -gt 0 ]; then
   NEW_PANES+=( "${EXTRA_PANES[@]}" ); NEW_ROLES+=( "${EXTRA_NAMES[@]}" )
 fi
 if [ "${#NEW_PANES[@]}" = 0 ]; then
+  fwf_floor_event floor-up "" ""   # issue #85: every up-path clears IDLE, even a no-op one
   echo "fwf is already fully up — nothing to do."
   exit 0
 fi
@@ -264,6 +265,8 @@ while [ "$i" -lt "${#EXTRA_PANES[@]}" ]; do
   fwf_arm_pane "${EXTRA_PANES[$i]}" "${EXTRA_NAMES[$i]}" "${EXTRA_NAMES[$i]}" "" "$(fwf_extra_interval "${EXTRA_NAMES[$i]}")"
   i=$((i+1))
 done
+
+fwf_floor_event floor-up "" ""   # issue #85: this run just (re)built the floor — clear any logged IDLE
 
 echo
 if [ "$FLOOR_ONLY" = 1 ]; then

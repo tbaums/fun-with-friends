@@ -167,7 +167,9 @@ re-injected every tick.
   work with the GV but still confirms irreversible actions (deploys, releases)
   with you. It also manages cost autonomously: when the queue is empty it can
   **idle the whole floor** (`fwf down --floor-only`) without losing its own
-  session, and bring it back (`fwf up --floor-only`) when work arrives. The
+  session, and bring it back (`fwf up --floor-only`) when work arrives — logged
+  so `fwf dash` shows a calm **IDLE (captain)** state, never conflated with a
+  crash (see [`docs/dash.md`](docs/dash.md)). The
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
