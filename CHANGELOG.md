@@ -11,6 +11,25 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-12
+
+Build-provenance stamp: every factory PR now records which fwf checkout and which
+per-seat models produced it.
+
+### Added
+- **Build-provenance stamp on every factory PR** (#104, code 12cf8f9, docs 12cf8f9) —
+  a one-line `fwf-Provenance:` git trailer (`fwf=<ver>@<sha> profile=<name>
+  seats=[captain=… pm=… gv=… impl=… qa=… conductor=…]`) is now stamped into both the
+  implementer's `gh pr create` body and the QA squash-merge commit across every
+  PR-producing template. Adds `fwf_model_for` (per-role model resolver, extracted from
+  `fwf_claude_cmd`) and `fwf_provenance_block` in `lib.sh`, exposed through the existing
+  `fwf_render` engine as a `__PROVENANCE__` placeholder so the stamp reflects the seat
+  assignments actually in force at launch. A coverage test enforces that any template
+  running `gh pr create|merge` carries the stamp (`_local-issues` templates, which open
+  no upstream PR, are exempt). Makes per-release quality/provenance a derived
+  `git log` query instead of a maintained ledger. See
+  [docs/proposals/80-build-provenance-stamp.md](docs/proposals/80-build-provenance-stamp.md).
+
 ## [0.23.0] - 2026-07-12
 
 New factory template: **`consulting`** — the diagnosis firm.
