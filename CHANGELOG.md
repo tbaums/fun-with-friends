@@ -11,6 +11,25 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-12
+
+New factory template: **`consulting`** — the diagnosis firm.
+
+### Added
+- **Consulting factory template** (code 3cc276b, docs 3cc276b) — a 7th shipped
+  template built on `validate`: a 3-phase falsification funnel (premise gate →
+  cause tournament → empirical replay, replay OFF by default) that diagnoses
+  whether an agent-built pipeline's **shipped quality actually regressed** and, if
+  so, **why** — treating "quality collapsed" as a hypothesis where `no real
+  decline / drift / unverifiable` is a first-class win. Advisory: reads the client
+  repo, writes only its own findings repo. Six reframed role prompts
+  (framer/registrar · lens-specialist · citation-cop/Red · judge/synthesizer ·
+  standing-skeptic GV · phase-state captain), a six-lens coverage gate + mandatory
+  other/unknown contender, a README runbook, and three acceptance-fixture
+  scaffolds under `eval/`. Adds [docs/consulting-factory.md](docs/consulting-factory.md)
+  and a README template-table row. Role prompts carry the v0.22 heartbeat (#99)
+  and budget-hold (#96) placeholders.
+
 ## [0.22.0] - 2026-07-10
 
 Factory-reliability + operator-visibility release: startup upgrade-staleness
