@@ -27,7 +27,7 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       git switch -c impl__ID__/issue-<num>-<slug> origin/__STAGING__
       git commit --allow-empty -m "claim #<num>: <title>" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
       git push -u origin impl__ID__/issue-<num>-<slug>
-      gh pr create --draft --base __STAGING__ --title "<title> (#<num>)" --body "Closes #<num>. Owner: impl__ID__. WIP."
+      gh pr create --draft --base __STAGING__ --title "<title> (#<num>)" --body "Closes #<num>. Owner: impl__ID__. WIP. __PROVENANCE__"
    e. REFACTORING DISCIPLINE (the core of this role):
       - CHARACTERIZE FIRST. Before touching structure, make sure the current behavior is PINNED by tests. Run the gate (__GATE__) and read the coverage around your target. If coverage is thin, write CHARACTERIZATION TESTS that capture what the code DOES today (not what it "should" do — if today's output is ugly, the test asserts the ugly output), commit them as their own FIRST commit, and watch them pass on the UNREFACTORED code. These tests are your proof of preservation.
       - TRANSFORM IN SMALL MECHANICAL STEPS — rename, extract function/module, inline, move, deduplicate, narrow an interface — ONE kind of move per commit, the gate (__GATE__) GREEN at EVERY commit. The PR should read as a sequence of obviously-safe moves; if a step can't be made obviously safe, decompose it further. Never a big-bang rewrite.
