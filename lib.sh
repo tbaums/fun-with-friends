@@ -233,10 +233,10 @@ _fwf_i=1
 while [ "$_fwf_i" -le "$FWF_PAIRS" ]; do PAIRS+=("$_fwf_i"); _fwf_i=$((_fwf_i+1)); done
 unset _fwf_i
 
-# The claude launch command for a role, honoring the per-role model overrides
-# (FWF_MODEL_<ROLE>, falling back to FWF_MODEL, falling back to the CLI default).
+# Resolve the model NAME for a role, honoring the per-role overrides
+# (FWF_MODEL_<ROLE>, falling back to FWF_MODEL, falling back to "" = CLI default).
 # $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
-fwf_claude_cmd() { # $1=role
+fwf_model_for() { # $1=role -> prints model name (empty string = CLI default)
   local m=""
   case "$1" in
     impl*)     m="${FWF_MODEL_IMPL:-$FWF_MODEL}";;
@@ -256,7 +256,32 @@ fwf_claude_cmd() { # $1=role
       esac
       unset _fwf_up;;
   esac
+  printf '%s' "$m"
+}
+
+# The claude launch command for a role, honoring the per-role model overrides.
+# $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
+fwf_claude_cmd() { # $1=role
+  local m; m="$(fwf_model_for "$1")"
   if [ -n "$m" ]; then printf '%s --model %s' "$CLAUDE_CMD" "$m"; else printf '%s' "$CLAUDE_CMD"; fi
+}
+
+# One-line build-provenance trailer stamped into every PR body + squash-merge
+# commit the floor produces (build-provenance instrument): which fwf checkout +
+# per-seat models built the change, recorded IN git next to the diff and ticket.
+# It turns a later "did shipped quality regress?" diagnosis into a git query
+# instead of archaeology — the role→model map otherwise lives only in a
+# gitignored profile with no history. Generic by design: the factory's own
+# identity + seats, no client/repo specifics.
+fwf_provenance_block() {
+  local ver sha role m seats=""
+  ver="$(cat "$FWF_LIB_DIR/VERSION" 2>/dev/null)"; : "${ver:=unknown}"
+  sha="$(git -C "$FWF_LIB_DIR" rev-parse --short HEAD 2>/dev/null)"; : "${sha:=unknown}"
+  for role in captain pm gv impl qa conductor; do
+    m="$(fwf_model_for "$role")"; [ -n "$m" ] || m="cli-default"
+    seats="${seats:+$seats }$role=$m"
+  done
+  printf 'fwf-Provenance: fwf=%s@%s profile=%s seats=[%s]' "$ver" "$sha" "$PROFILE" "$seats"
 }
 
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
@@ -455,6 +480,9 @@ $(cat "$addendum")"
   text="${text//__STOPFILE__/$STOP_FILE}"
   text="${text//__BUDGET_HOLD_FILE__/$BUDGET_HOLD_FILE}"
   text="${text//__HEARTBEAT__/$FWF_STATE_DIR/heartbeat/$role_tag}"
+  # Build-provenance trailer for PR bodies + squash-merge commits. Guarded so
+  # the git/version lookup only runs for templates that actually use it.
+  case "$text" in *__PROVENANCE__*) text="${text//__PROVENANCE__/$(fwf_provenance_block)}";; esac
   text="${text//__COORD_SESSION__/$COORD_SESSION}"
   text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"

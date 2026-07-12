@@ -168,6 +168,47 @@ assert_eq "every role template (all factory designs) carries the heartbeat write
 assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
   "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
 
+# --------------------------------------------------------------------------
+section "build-provenance stamp: role->model map recorded on every PR"
+prov_env() { FWF_PROFILE=example FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 FWF_MODEL_GV=claude-opus-4-8 FWF_MODEL_CAPTAIN=claude-opus-4-8 bash -c "source '$ROOT/lib.sh'; $1"; }
+# fwf_model_for: per-role override -> floor default -> "" (CLI default).
+assert_eq "fwf_model_for pm -> override"          "claude-opus-4-8" "$(prov_env 'fwf_model_for pm')"
+assert_eq "fwf_model_for impl2 -> floor default"  "claude-sonnet-5" "$(prov_env 'fwf_model_for impl2')"
+assert_eq "fwf_model_for qa1 -> floor default"    "claude-sonnet-5" "$(prov_env 'fwf_model_for qa1')"
+assert_eq "fwf_model_for gv -> override"          "claude-opus-4-8" "$(prov_env 'fwf_model_for gv')"
+assert_eq "fwf_model_for unset role -> empty (CLI default)" "" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_model_for impl2")"
+# fwf_provenance_block: exactly one fwf-Provenance trailer carrying fwf@sha,
+# profile, and every seat's model.
+PROV="$(prov_env 'fwf_provenance_block')"
+assert_contains "provenance is an fwf-Provenance trailer with fwf@sha" "$PROV" "fwf-Provenance: fwf="
+assert_contains "provenance carries the profile"                       "$PROV" "profile=example"
+assert_contains "provenance carries the pm seat model"                 "$PROV" "pm=claude-opus-4-8"
+assert_contains "provenance carries the impl seat model"               "$PROV" "impl=claude-sonnet-5"
+assert_contains "provenance carries the conductor seat"                "$PROV" "conductor="
+assert_eq "provenance has no embedded newlines (single line)" "0" "$(printf '%s' "$PROV" | tr -cd '\n' | wc -c | tr -d ' ')"
+# A seat with no override AND no floor default records cli-default, never blank.
+PROV_BLANK="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_provenance_block")"
+assert_contains "unset seat -> cli-default (never blank)" "$PROV_BLANK" "impl=cli-default"
+# __PROVENANCE__ substitutes into both the merge body and the PR-create body.
+assert_contains "qa merge body carries the provenance trailer" \
+  "$(prov_env "fwf_render '$ROOT/templates/validate/qa.tmpl' 1")" "fwf-Provenance: fwf="
+assert_contains "implementer PR body carries the provenance trailer" \
+  "$(prov_env "fwf_render '$ROOT/templates/consulting/implementer.tmpl' 2")" "fwf-Provenance: fwf="
+# COVERAGE: every PR-producing template (excluding _local-issues, which never
+# opens an upstream PR) MUST carry __PROVENANCE__ — else a factory could ship
+# un-attributed work, the exact instrumentation gap that makes a post-hoc
+# "did quality regress?" diagnosis impossible.
+MISSING_PROV=""
+while IFS= read -r -d '' f; do
+  if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
+    /usr/bin/grep -q "__PROVENANCE__" "$f" || MISSING_PROV="$MISSING_PROV $f"
+  fi
+done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every PR-producing template carries the provenance stamp" "" "$MISSING_PROV"
+# No unsubstituted __PROVENANCE__ leaks through a render.
+assert_eq "no stray __PROVENANCE__ after render" "" \
+  "$(prov_env "fwf_render '$ROOT/templates/validate/qa.tmpl' 1" | /usr/bin/grep -o '__PROVENANCE__' | head -1)"
+
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
 hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }

@@ -33,7 +33,7 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       git switch -c impl__ID__/challenge-<n>-batch-<k> origin/__STAGING__   (k = your next batch number for this challenge)
       add the brief files; commit each with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
-      gh pr create --base __STAGING__ --title "ideas: <challenge short-name> batch <k> from impl__ID__" --body "Challenge #<n>. <one line per idea: name — hook>. Owner: impl__ID__."
+      gh pr create --base __STAGING__ --title "ideas: <challenge short-name> batch <k> from impl__ID__" --body "Challenge #<n>. <one line per idea: name — hook>. Owner: impl__ID__. __PROVENANCE__"
       (Do NOT write "Closes #<n>" — the challenge outlives your batch.) Comment on the challenge issue: one line per idea so the thread indexes the portfolio. Run __GATE__ if the repo defines one (a docs repo's gate is usually a lint or 'true').
    e. CROSS-POLLINATION DUTY: if the synthesizer (conductor) filed a combination request naming you (an issue titled "combine: …" assigned/mentioning impl__ID__), treat it as priority work in step 3a — develop the combined brief the same way.
 

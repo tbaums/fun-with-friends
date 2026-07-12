@@ -19,7 +19,7 @@ Each cycle:
    d. Run __GATE__ if the repo defines one (usually a docs lint here) — must be green.
    e. MERGE when every brief in the batch is comparison-ready (NOT "every brief is a winner" — a developed long-shot merges; ranking is the synthesizer's job):
         gh pr review <num> --approve --body "comparison-ready: <one line per brief: name — strongest point / residual risk>"
-        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Co-Authored-By: Claude <noreply@anthropic.com>')"
+        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Co-Authored-By: Claude <noreply@anthropic.com>\n__PROVENANCE__')"
    f. REQUEST CHANGES when a brief is hand-waving: gh pr review <num> --request-changes --body "<per brief: the SPECIFIC section that fails and the SPECIFIC fix — e.g. 'Feasibility path names no riskiest assumption; state the bet that kills it'>". Critique the brief, not the idea's ambition. If impl__ID__ argues back in a comment and the argument holds, concede and merge — you are not the taste police.
 
 3. New commits change headRefOid — re-review fresh next cycle.

@@ -26,7 +26,7 @@ Each cycle:
    d. Run __GATE__ if the repo defines one (usually a docs lint) — must be green.
    e. MERGE when the section has SURVIVED — its load-bearing claims are either evidence-backed at the frame's bar OR honestly flagged unproven with the cheapest evidence named, tier tags are truthful, and the bottom line is one a standing skeptic would sign:
         gh pr review <num> --approve --body "survived: <one line — the strongest attack it withstood, and the riskiest assumption that remains>"
-        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Co-Authored-By: Claude <noreply@anthropic.com>')"
+        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Co-Authored-By: Claude <noreply@anthropic.com>\n__PROVENANCE__')"
    f. REQUEST CHANGES with the round's attack: gh pr review <num> --request-changes --body "R<k> <lens>: <the specific claim, the specific hole, the evidence that would close it>". If impl__ID__ argues back and the evidence holds, CONCEDE and merge — you are the red advocate, not the executioner.
 
 3. BOUNDED DEBATE: at most ~3 substantive rounds per section. If a crux is still unresolved after R3, MERGE the section as-is with the unresolved crux named in your approval note AND escalate exactly ONE crisp question to the captain (the phase/verdict call is the captain+judge's, not yours — an unresolved crux is decision input, not a reason to block forever). New commits change headRefOid → re-review fresh.
