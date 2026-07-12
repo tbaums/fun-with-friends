@@ -201,7 +201,7 @@ only a confirmed-dead one is broken immediately (`fwf_e2e_lock_acquire` /
 
 ## Factory templates
 
-The pipeline above is the **dev** template — one of six shipped factory
+The pipeline above is the **dev** template — one of seven shipped factory
 designs. A template re-aims every role's prompt (and optionally the topology)
 while reusing all the machinery: tmux grid, branch ladder, labels, floor
 lifecycle, stop/resume.
@@ -214,6 +214,7 @@ lifecycle, stop/resume.
 | `dev-sre` | dev + a dedicated prod-ops (SRE) pane; the captain does zero ops while it runs | [docs/captain-split.md](docs/captain-split.md) |
 | `user-testing` | ranked usability findings — 3 source-blind personas (9 in deep-sweep mode) drive a real browser like whacky humans, a researcher dedupes their diaries into a top-10 report graded against ground truth, a captain gates what graduates | [docs/user-testing.md](docs/user-testing.md) |
 | `validate` | a defensible GO / KILL / PIVOT verdict on a posited business+product idea — falsification dossier under `validation/<slug>/`, curated `VERDICT.md` | [docs/validate-factory.md](docs/validate-factory.md) |
+| `consulting` | a defensible diagnosis of whether an agent-built pipeline's shipped quality regressed and why — a 3-phase falsification funnel (premise gate → cause tournament → replay) writing a `DOSSIER.md`; advisory, reads the client repo, writes only its own findings repo | [docs/consulting-factory.md](docs/consulting-factory.md) |
 
 ```bash
 fwf templates                       # list what's shipped
