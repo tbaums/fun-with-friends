@@ -11,6 +11,12 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.25.4] - 2026-07-15
+
+### Fixed
+- **Gate pileup: per-role single-flight lock + hermetic e2e** (#123, code f4fad92, docs f4fad92) — agents were relaunching `test/run.sh` concurrently and colliding on a shared fixed port, so overlapping gate runs mutually stalled and QA never converged (an hour-plus to ship one small ticket). Every `__GATE__`/`__E2E__` now renders as a call to the new `fwf gate <role> [--e2e] -- <cmd>` shared launcher, which takes a per-role single-flight lock (exits `75` = skip-this-tick rather than stacking a second run) and, under `--e2e`, additionally takes the floor-wide e2e lock; stale/past-`FWF_GATE_LOCK_MAX_RUN_SECS` holders are reaped. A test asserts overlapping runs complete when routed through `fwf gate` and deterministically time out when unwrapped.
+- **`fwf upgrade`: git-clone installs converge on the release tag, not main tip** (#125, code f83519c, docs f83519c) — a git-clone install upgraded by `git pull`-ing `main`, which contradicts the "latest release" contract and could ship un-released commits. It now checks out the resolved latest release tag, matching the tarball-install path.
+
 ## [0.25.3] - 2026-07-15
 
 ### Fixed
