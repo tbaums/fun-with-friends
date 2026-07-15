@@ -70,31 +70,41 @@ a running swarm:
 | Field | Derived from |
 |---|---|
 | activity | open/merged PRs against the integration targets: BUILDING / IN TEST·REVIEW / MERGED (the landing tab) |
-| roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`, never conflated with a crash (see below) |
+| roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`/`--build-only`, never conflated with a crash (see below) |
 | pipeline | git branch deltas in the target repo (`staging +N ahead · …`) |
 | decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you |
 | issues | every open issue (gated ones marked 🔒) |
 | prod | the captain's `status.json` overlay when fresh, else `—` |
 | ⛔ CAPTAIN NEEDS YOU | a full-width banner when the captain pane is blocked on you (read from the captain pane) |
-| ◇ FLOOR IDLE (header badge) | shown whenever the floor was deliberately idled via `fwf-down.sh --floor-only` — distinct from the whole-factory `⏸ PARKED` badge |
+| ◇ FLOOR IDLE (header badge) | shown whenever the **build** floor was deliberately idled via `fwf-down.sh --build-only`/`--floor-only` — distinct from the whole-factory `⏸ PARKED` badge |
 | ⬆ upgrade available | a full-width banner (visually distinct — yellow, not red) when a newer fwf release exists; both this and the needs-you banner can show at once, stacked. See "Upgrade staleness check" in the main README's Notes & caveats. |
 
 A role with no live tmux pane reads as a real crash (`down`) UNLESS the last
 entry in `$FWF_STATE_DIR/floor-events.log` is a `floor-down` with no later
 `floor-up` — that append-only, 200-line-capped log is the single source of
 truth for both this live signal and the after-the-fact audit trail of who
-idled the floor, when, and why. `fwf-down.sh --floor-only` writes it (`--actor
-NAME`, `--reason "TEXT"` — defaults `captain` / `queue empty; nothing in
-flight`); every up-path (`fwf-up.sh --floor-only`, a full `fwf up`, and
-respawning any floor role) clears it. The captain itself is excluded — it's
-the one role `--floor-only` never tears down, so a captain with no pane is
-always a real `down`.
+idled the floor, when, and why. Since issue #105 this log is per-**plane**
+(`build` or `pm`, a 6th column; legacy rows with no plane column read as
+`build`) so the captain can idle the build floor and the PM pane
+independently — but the dash's `roles`/`FLOOR IDLE` surfaces above
+deliberately stay plane-agnostic in v1 and read only the **build** plane
+(matching every existing consumer unchanged); PM-plane idle isn't yet shown
+here. `fwf-down.sh --build-only`/`--floor-only` writes the build-plane event
+(`--actor NAME`, `--reason "TEXT"` — defaults `captain` / `queue empty;
+nothing in flight`); every up-path (`fwf-up.sh --build-only`/`--floor-only`,
+a full `fwf up`, and respawning any build-floor role) clears it. The captain
+and GV are excluded — neither is ever torn down by any of these flags, so a
+captain (or GV) with no pane is always a real `down`.
 
-`fwf-down.sh --floor-only` also enforces a deterministic anti-thrash cooldown
-(issue #88): it refuses (nonzero exit, naming the remaining seconds) within
-`FWF_FLOOR_COOLDOWN` seconds (default 300) of the last logged floor-up, unless
-`--force` is passed — this is what actually bounds a down→up→down thrash
-cycle, since it cannot be defeated without `--force`.
+`fwf-down.sh --build-only`/`--floor-only` also enforces a deterministic
+anti-thrash cooldown (issue #88, generalized by #105): it refuses (nonzero
+exit, naming the remaining seconds) within `FWF_BUILD_COOLDOWN` seconds
+(default 300, alias of the legacy `FWF_FLOOR_COOLDOWN`) of the build plane's
+last logged floor-up, unless `--force` is passed. `--pm-only` enforces the
+same shape via `FWF_PM_COOLDOWN` (default 300) against the PM plane's own
+last up. Neither cooldown can be defeated by the OTHER unit's `--force`, and
+`--force` never overrides the deadlock guard (see the README) — only the
+cooldown.
 
 The header's provenance stamp says where prod/pipeline came from: `status.json`
 (fresh overlay, green), `stale` (overlay too old, amber), or `derived` (gray).

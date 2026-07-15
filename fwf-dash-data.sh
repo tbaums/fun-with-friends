@@ -116,9 +116,14 @@ derive_pipeline() {
 # LAST logged floor-lifecycle event. Active only when it's a floor-down with
 # no later floor-up, so a crash (which never logs anything) still reads as
 # not-idle here — roles_json()'s pane check is what actually renders "down".
+# issue #105: floor-events.log is now per-plane (build|pm); this dash surface
+# stays plane-agnostic for now and reads only the BUILD plane (the pre-#105
+# "floor"), matching every existing dash consumer/test unchanged. Per-plane
+# dash rendering (e.g. a separate PM-idle badge) is a fast-follow, not part
+# of this ticket's acceptance criteria.
 floor_idle_json() {
   local line active since reason actor
-  line="$(fwf_floor_idle_state)"
+  line="$(fwf_plane_idle_state build)"
   active="$(printf '%s' "$line" | cut -f1)"
   since="$(printf '%s' "$line" | cut -f2)"
   reason="$(printf '%s' "$line" | cut -f3)"

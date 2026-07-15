@@ -81,9 +81,24 @@ _fwf_respawn_renudge() {
 }
 arm_epoch="$(date +%s)"
 fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
-# issue #85: respawning any FLOOR role (i.e. not the captain, which --floor-only
-# never tears down) means the floor is no longer idle — clear any logged IDLE.
-[ "$role" = captain ] || fwf_floor_event floor-up "" ""
+# issue #85/#105: respawning a role means its PLANE is no longer idle — clear
+# any logged IDLE for that plane. captain and gv aren't a plane (GV never
+# idles; the captain is the always-up driver) so neither logs an event. An
+# extra template-declared role's plane follows its own declared session
+# (coord -> pm; build -> build), matching fwf-up.sh's own classification.
+case "$role" in
+  pm) fwf_floor_event floor-up "" "" pm;;
+  gv|captain) ;;
+  impl*|qa*|conductor) fwf_floor_event floor-up "" "" build;;
+  *)
+    if fwf_extra_entry "$role" >/dev/null 2>&1; then
+      case "$(fwf_extra_session "$role")" in
+        build) fwf_floor_event floor-up "" "" build;;
+        *)     fwf_floor_event floor-up "" "" pm;;
+      esac
+    fi
+    ;;
+esac
 
 window=$((interval + FWF_RESPAWN_VERIFY_MARGIN))
 if fwf_verify_respawn_tick "$role" "$arm_epoch" "$window" _fwf_respawn_renudge; then

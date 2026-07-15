@@ -52,9 +52,13 @@ GETTING STARTED
 
 RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   provision [--build]    Create worktrees + dev data (one-time per repo).
-  up [--floor-only]      Launch both tmux sessions and deliver prompts.
-                         --floor-only: (re)create just the floor (build session
-                         + PM/GV panes) around a LIVE captain pane, untouched.
+  up [--build-only|--pm-only|--floor-only]
+                         Launch both tmux sessions and deliver prompts.
+                         --build-only: (re)create just the build session.
+                         --pm-only: (re)create just the PM pane (GV, which
+                         never idles, is left alone). --floor-only: both
+                         together (back-compat alias), around a LIVE captain
+                         pane, untouched. See "PER-PLANE IDLING" below (#105).
   attach [coord|build]   tmux attach to coordination (default) or implementation.
   dash                   Read-only status board (Rust + ratatui TUI): roles,
                          pipeline, prod, and the human-gated decision list.
@@ -116,13 +120,27 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          a markdown store outside any repo. 'fwf issues help'.
   stop                   Graceful halt: agents commit WIP and idle.
   resume [--clear-only]  Clear the stop sentinel and re-arm all roles (or just clear).
-  down [--purge|--floor-only [--actor NAME] [--reason TEXT] [--force]]
-                         Kill both tmux sessions (--purge also removes worktrees;
-                         --floor-only kills only the floor, captain left running,
-                         and logs why — 'fwf dash' shows IDLE, not crashed).
-                         --floor-only refuses within FWF_FLOOR_COOLDOWN seconds
-                         (default 300) of the last floor-up unless --force is
-                         passed — the deterministic anti-thrash bound (#88).
+  down [--purge|--build-only|--pm-only|--floor-only [--actor NAME] [--reason TEXT] [--force]]
+                         Kill tmux sessions/panes (--purge also removes worktrees).
+                         --build-only kills only the build session; --pm-only
+                         kills only the PM pane; --floor-only is both together
+                         (back-compat alias) — captain and GV always survive,
+                         and each unit logs why ('fwf dash' shows IDLE, not
+                         crashed). Each unit refuses within its own
+                         FWF_BUILD_COOLDOWN / FWF_PM_COOLDOWN seconds (default
+                         300 each) of its own last up unless --force is passed
+                         — the deterministic anti-thrash bound (#88). Each unit
+                         ALSO refuses — NOT overridable by --force — while
+                         idling it could strand work: --build-only while any PR
+                         is open or a promotion is in flight; --pm-only while
+                         any product-wip draft is open (issue #105).
+
+PER-PLANE IDLING (issue #105)
+  The captain idles the build floor and the PM pane INDEPENDENTLY, driven by
+  each unit's own workload — GV never idles in v1 (must stay reachable to the
+  captain on demand; no down-path ever tears it down). See 'up'/'down' above
+  for the --build-only/--pm-only/--floor-only flags, and the README's
+  "Floor lifecycle" section for the full design.
 
 UTILITIES
   pr-review-state <pr>   Print the authoritative qa<->impl review state for a
