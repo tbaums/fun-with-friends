@@ -11,6 +11,14 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-14
+
+Two factory-facing improvements, built via the self-hosting factory.
+
+### Added
+- **Token budget in dollars: `--budget-usd` + per-run baseline** (#108, code 8cc6e6f, docs 8cc6e6f) — the budget guardrail now accepts a `--budget-usd N` ceiling measured against the estimated-$ figure instead of raw token counts (cache-read-inclusive raw counts made intuitive values like `1000000` instantly HOLD), and captures a per-run usage baseline at `fwf up` so the budget measures THIS run rather than cumulative transcript history. Fail-closed on baseline loss/respawn.
+- **PR body context fold-in + "built with fwf" credit** (#106, code 091508b, docs 091508b) — PRs fwf raises fold the sanitized ticket context (problem / decisions / acceptance; fwf vocabulary stripped; body-only, never the comment thread) into the squash-merge message, plus a reviewer-facing "built with fwf + Claude" credit — so an upstream reviewer gets the full *why* without needing to know fwf.
+
 ## [0.24.0] - 2026-07-12
 
 Build-provenance stamp: every factory PR now records which fwf checkout and which
