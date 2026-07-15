@@ -762,10 +762,17 @@ if command -v tmux >/dev/null 2>&1; then
   # staging == integration, 0 open product-wip issues) so THIS section's
   # tests exercise ONLY the cooldown guard, not the deadlock guard (that gets
   # its own dedicated section below).
+  # Configurable via F88_PR_COUNT / F88_WIP_COUNT (default 0 == "safe"), so
+  # the SAME stub serves both this section (always safe) and the dedicated
+  # deadlock-guard section below (which drives each count deliberately).
   F88GHSTUB="$TMP/gh88stub"; mkdir -p "$F88GHSTUB"
   cat > "$F88GHSTUB/gh" <<'EOS'
 #!/usr/bin/env bash
-echo 0
+case "$1 $2" in
+  "pr list") echo "${F88_PR_COUNT:-0}";;
+  "issue list") echo "${F88_WIP_COUNT:-0}";;
+  *) echo 0;;
+esac
 EOS
   chmod +x "$F88GHSTUB/gh"
   F88ORIGIN="$TMP/origin88.git"; git init -q --bare "$F88ORIGIN"
@@ -837,11 +844,62 @@ EOS
 
   # --- --floor-only refuses as ONE ATOMIC unit if EITHER sub-cooldown blocks -
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"   # recreate build for this scenario
-  BUILD_BEFORE="$(tmux list-panes -t "${F88SESS}-build" 2>/dev/null | wc -l | tr -d ' ')"
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$RECENT_UP" > "$F88TLOG"   # build fresh (blocks)
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"        # pm elapsed (would allow)
   env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && bad "floor-only refused when ONLY build's cooldown is fresh" || ok "floor-only refused when ONLY build's cooldown is fresh"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched by the refused --floor-only" || bad "build session untouched by the refused --floor-only"
+
+  # --- DEADLOCK GUARDS (issue #105 acceptance criterion 1) — --force lifts
+  # the COOLDOWN but must NEVER lift these; every scenario below has an
+  # elapsed cooldown so the guard under test is isolated from #88's.
+  section "fwf-down.sh deadlock guards (issue #105 acceptance criterion 1): real tmux"
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$OLD_UP" > "$F88TLOG"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"
+
+  # (1a) build-only refused while an open PR exists — --force does NOT override
+  BDOUT="$(env $F88ENVT F88_PR_COUNT=2 "$ROOT/fwf-down.sh" --build-only --force 2>&1)" && bad "build-only refused while a PR is open" || ok "build-only refused while a PR is open"
+  assert_contains "refusal names the open PR(s)" "$BDOUT" "open PR"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (deadlock refusal survives --force)" || bad "build session untouched (deadlock refusal survives --force)"
+
+  # (1a-cont) build-only refused while staging is ahead of integration (mid-promotion)
+  ( cd "$F88REPO" && git fetch -q origin && git checkout -q staging && echo more >> f && git commit -qam more && git push -q origin staging ) >/dev/null 2>&1
+  BDOUT2="$(env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force 2>&1)" && bad "build-only refused mid-promotion (staging ahead of integration)" || ok "build-only refused mid-promotion (staging ahead of integration)"
+  assert_contains "refusal names mid-promotion" "$BDOUT2" "mid-promotion"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (mid-promotion refusal)" || bad "build session untouched (mid-promotion refusal)"
+  ( cd "$F88REPO" && git push -q origin staging:integration ) >/dev/null 2>&1   # resync so the next assertion sees a clean repo
+
+  # (1a-safe) once the PR count is 0 and staging==integration, build-only proceeds
+  env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "build-only proceeds once the deadlock guard is clear" || bad "build-only proceeds once the deadlock guard is clear"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down once safe" || ok "build session torn down once safe"
+
+  # (1b) pm-only refused while an open product-wip draft exists — --force does NOT override
+  tmux split-window -h -t "${F88SESS}-coord" -c "$TMP"
+  tmux set -p -t "$(tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | tail -1)" @l "PM · refine loop"
+  PDOUT="$(env $F88ENVT F88_PR_COUNT=0 F88_WIP_COUNT=1 "$ROOT/fwf-down.sh" --pm-only --force 2>&1)" && bad "pm-only refused while a product-wip draft is open" || ok "pm-only refused while a product-wip draft is open"
+  assert_contains "refusal names the product-wip draft(s)" "$PDOUT" "product-wip"
+  tmux list-panes -t "${F88SESS}-coord" -F '#{@l}' | grep -q "PM" && ok "PM pane untouched (deadlock refusal survives --force)" || bad "PM pane untouched (deadlock refusal survives --force)"
+
+  # (1c) ambiguity (gh query fails outright) -> decline and stay up, never silently idle
+  F88BADGH="$TMP/gh88bad"; mkdir -p "$F88BADGH"
+  cat > "$F88BADGH/gh" <<'EOS'
+#!/usr/bin/env bash
+exit 1
+EOS
+  chmod +x "$F88BADGH/gh"
+  ADOUT="$(env FWF_PROFILE=example FWF_RUN_DIR=$F88TRUN FWF_SESSION=$F88SESS FWF_BUILD_COOLDOWN=300 FWF_PM_COOLDOWN=300 FWF_REPO=$F88REPO "PATH=$F88BADGH:$PATH" "$ROOT/fwf-down.sh" --pm-only --force 2>&1)" && bad "ambiguous (gh failure) declines rather than silently idling" || ok "ambiguous (gh failure) declines rather than silently idling"
+  assert_contains "ambiguity refusal explains why" "$ADOUT" "assuming blocked"
+  tmux list-panes -t "${F88SESS}-coord" -F '#{@l}' | grep -q "PM" && ok "PM pane untouched on ambiguous refusal" || bad "PM pane untouched on ambiguous refusal"
+
+  # --- GV-REACHABLE (constraint 2): no idle path may ever tear down the GV ---
+  GVPANE="$(tmux split-window -P -F '#{pane_id}' -h -t "${F88SESS}-coord" -c "$TMP")"
+  tmux set -p -t "$GVPANE" @l "GRAND VIZIER"
+  env $F88ENVT F88_PR_COUNT=0 F88_WIP_COUNT=0 "$ROOT/fwf-down.sh" --pm-only --force >/dev/null 2>&1
+  tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | grep -qx "$GVPANE" && ok "GV pane survives a pm-only teardown" || bad "GV pane survives a pm-only teardown"
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1
+  tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | grep -qx "$GVPANE" && ok "GV pane survives a build-only teardown" || bad "GV pane survives a build-only teardown"
+  tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord SESSION (captain+GV) survives every deadlock/idle path above" || bad "coord SESSION (captain+GV) survives every deadlock/idle path above"
 
   tmux kill-session -t "${F88SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F88SESS}-build" 2>/dev/null
