@@ -1016,6 +1016,31 @@ fwf_write_role_prompt() { # $1=role-tag  $2=tmpl-base  $3=id
   printf '%s\n' "$pf"
 }
 
+# Convert a /loop-style interval ("3m", "2h", "45s", "1d", or a bare integer
+# already in seconds) to whole seconds. Loop intervals (IMPL_INTERVAL etc.,
+# issue #116) carry a unit suffix because they're handed straight to /loop's
+# own parser — but any caller doing ARITHMETIC on one (e.g. fwf-respawn.sh's
+# verify window) must normalize first, or the unit suffix makes bash treat the
+# value as a base-N literal ("value too great for base"). Echoes the number of
+# seconds and returns 0; on a malformed interval, prints nothing and returns 1
+# rather than silently truncating with `${iv%[smhd]}` on garbage input.
+fwf_interval_seconds() { # $1=interval
+  local iv="$1" n unit
+  case "$iv" in
+    *[0-9]s) unit=1;;
+    *[0-9]m) unit=60;;
+    *[0-9]h) unit=3600;;
+    *[0-9]d) unit=86400;;
+    *[0-9]) unit=1;;
+    *) echo "fwf: invalid interval '$iv' (expected N, Ns, Nm, Nh, or Nd)" >&2; return 1;;
+  esac
+  n="${iv%[smhd]}"
+  case "$n" in
+    ''|*[!0-9]*) echo "fwf: invalid interval '$iv' (expected N, Ns, Nm, Nh, or Nd)" >&2; return 1;;
+  esac
+  echo $((n * unit))
+}
+
 # Portable file mtime (epoch seconds); echoes nothing if the file is absent.
 fwf_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true; }
 
