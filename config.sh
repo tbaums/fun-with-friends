@@ -99,8 +99,17 @@ STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it co
 # docs/proposals/70-token-usage-budget.md). Unset/empty = unlimited, the
 # default — enforcement is opt-in. CLI: fwf up --token-budget N.
 FWF_TOKEN_BUDGET="${FWF_TOKEN_BUDGET:-}"
+# Estimated-$ ceiling (issue #108) — the human-intuitive alternative to raw
+# tokens: the price table (fwf-usage-data.sh) already prices cache-read at its
+# true low rate, so a $ budget is already correctly cache-read-weighted with
+# no down-weight factor to invent. CLI: fwf up --budget-usd N. Mutually
+# exclusive with FWF_TOKEN_BUDGET (validated in lib.sh — both set is an error,
+# never a silent pick-one).
+FWF_BUDGET_USD="${FWF_BUDGET_USD:-}"
 FWF_TOKEN_BUDGET_WARN_PCT="${FWF_TOKEN_BUDGET_WARN_PCT:-80}"
 # How often the `fwf budget-check` WRITER re-evaluates (see fwf-budget-check.sh).
+# Enforcement is poll-based: a HOLD fires within one interval of crossing the
+# cap, not at the instant it's crossed — see fwf --help.
 FWF_BUDGET_CHECK_INTERVAL="${FWF_BUDGET_CHECK_INTERVAL:-60}"
 # The sentinel every role's step-0 HONORER check reads (mirrors STOP_FILE's
 # pattern exactly). Carries a one-line state: "HOLD <reason>" / "WARN <reason>"

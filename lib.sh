@@ -233,6 +233,13 @@ _fwf_i=1
 while [ "$_fwf_i" -le "$FWF_PAIRS" ]; do PAIRS+=("$_fwf_i"); _fwf_i=$((_fwf_i+1)); done
 unset _fwf_i
 
+# token-budget unit disambiguation (issue #108): two explicit ceilings, never
+# a silent pick-one. Rejected at source time, same style as bogus FWF_PAIRS.
+if [ -n "${FWF_TOKEN_BUDGET:-}" ] && [ -n "${FWF_BUDGET_USD:-}" ]; then
+  echo "fwf: --token-budget and --budget-usd are mutually exclusive (got both FWF_TOKEN_BUDGET=$FWF_TOKEN_BUDGET and FWF_BUDGET_USD=$FWF_BUDGET_USD) — pick one ceiling" >&2
+  exit 1
+fi
+
 # Resolve the model NAME for a role, honoring the per-role overrides
 # (FWF_MODEL_<ROLE>, falling back to FWF_MODEL, falling back to "" = CLI default).
 # $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
@@ -613,6 +620,13 @@ FWF_TMUX_SOCKET_FILE="$FWF_STATE_DIR/tmux_socket"
 # share a writer. Armed at `fwf up` only when a budget is configured; killed
 # at `fwf down`.
 FWF_BUDGET_WRITER_PID_FILE="$FWF_STATE_DIR/budget-writer.pid"
+# Run-start usage snapshot (issue #108) — written once by a genuinely fresh
+# arm (see fwf_budget_baseline_ensure) so enforcement is against spend SINCE
+# this run, not the lifetime total sitting in reused worktree transcripts.
+# Survives floor bounces and fwf-respawn.sh (neither re-arms); cleared only by
+# a full teardown (fwf-down.sh's non-floor-only path, via
+# fwf_budget_baseline_clear) so the next full `fwf up` gets a fresh baseline.
+BUDGET_BASELINE_FILE="$FWF_STATE_DIR/budget-baseline.json"
 fwf_tmux_socket_value() {   # echoes what should be persisted, from the CURRENT $TMUX
   if [ -n "${TMUX:-}" ]; then printf '%s\n' "${TMUX%%,*}"; else printf '%s\n' default; fi
 }
@@ -778,12 +792,13 @@ fwf_e2e_lock_release() {
 # `fwf down`. Tracked via a per-profile PID file so re-arming is idempotent
 # (a stale/dead PID is silently replaced) and `fwf down` can find it.
 #
-# rc 0 whether or not a writer was actually started (armed = FWF_TOKEN_BUDGET
+# rc 0 whether or not a writer was actually started (armed = a budget ceiling
 # set AND a loop is now running for this profile) — callers that need to know
 # check fwf_budget_writer_running after calling this.
 fwf_budget_writer_start() {
-  [ -n "${FWF_TOKEN_BUDGET:-}" ] || return 0   # no budget configured: never arm
-  fwf_budget_writer_running && return 0        # already running for this profile
+  { [ -n "${FWF_TOKEN_BUDGET:-}" ] || [ -n "${FWF_BUDGET_USD:-}" ]; } || return 0   # no budget configured: never arm
+  fwf_budget_writer_running && return 0        # already running for this profile — same run, don't re-baseline
+  fwf_budget_baseline_ensure                   # genuinely fresh arm: snapshot run-start usage (issue #108)
   mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
   nohup "$FWF_LIB_DIR/fwf-budget-check.sh" --loop >/dev/null 2>&1 &
   disown 2>/dev/null || true
@@ -801,6 +816,10 @@ fwf_budget_writer_running() {
 # Idempotent: safe to call even if no writer is running (e.g. no budget was
 # ever configured). Also clears any hold the writer left behind — a downed
 # floor spends nothing, so there is nothing left to enforce against.
+# Deliberately does NOT touch BUDGET_BASELINE_FILE — this is called from both
+# a floor-only teardown and a full teardown, and only the latter should reset
+# the baseline (issue #108, AC5); see fwf_budget_baseline_clear, wired into
+# fwf-down.sh's full-teardown path only.
 fwf_budget_writer_stop() {
   if [ -f "$FWF_BUDGET_WRITER_PID_FILE" ]; then
     local pid; pid="$(cat "$FWF_BUDGET_WRITER_PID_FILE" 2>/dev/null || true)"
@@ -808,6 +827,52 @@ fwf_budget_writer_stop() {
     rm -f "$FWF_BUDGET_WRITER_PID_FILE"
   fi
   rm -f "$BUDGET_HOLD_FILE"
+}
+
+# Write $BUDGET_BASELINE_FILE (cumulative tokens_total + cost_usd at this
+# instant) iff one doesn't already exist. Called only from
+# fwf_budget_writer_start right after its "already armed" check, so it fires
+# ONLY on a genuinely fresh arm: a full `fwf up` following a full `fwf down`
+# (the only path that clears the file — see fwf_budget_baseline_clear). A
+# floor-only bounce or fwf-respawn.sh never reaches an empty file since
+# neither clears it, so the existing baseline is left alone (AC5/AC7) without
+# fwf-up.sh needing to distinguish "full" from "floor-only" itself.
+#
+# Leaves the file ABSENT (never a zero/partial baseline) if the usage
+# aggregator can't be read right now — fwf-budget-check.sh's missing-baseline
+# path then fails closed to UNKNOWN (AC8), the same posture as an unreadable
+# aggregator, rather than silently arming with a wrong baseline.
+fwf_budget_baseline_ensure() {
+  [ -f "$BUDGET_BASELINE_FILE" ] && return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local usage_json
+  usage_json="$("$FWF_LIB_DIR/fwf-usage-data.sh" 2>/dev/null || echo '')"
+  [ -n "$usage_json" ] && printf '%s' "$usage_json" | jq -e . >/dev/null 2>&1 || return 0
+  mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
+  printf '%s' "$usage_json" | jq -c \
+    '{tokens_total: ([.total.tokens.input, .total.tokens.cache_creation, .total.tokens.cache_read, .total.tokens.output] | add),
+      cost_usd: .total.cost_usd}' > "$BUDGET_BASELINE_FILE"
+}
+
+# Explicit reset — call ONLY from a full teardown (never floor-only, never
+# fwf-respawn.sh) so the next full `fwf up` snapshots a fresh baseline instead
+# of inheriting this run's spend as if it were prior history.
+fwf_budget_baseline_clear() {
+  rm -f "$BUDGET_BASELINE_FILE"
+}
+
+# Read the baseline for delta enforcement: emits "tokens_total\tcost_usd" and
+# returns 0 on a valid snapshot. Returns 1 (no stdout) if the file is
+# absent/unparseable/missing a numeric field — callers MUST treat that as
+# fail-closed UNKNOWN (issue #108 AC8), never as baseline=0 (reintroduces the
+# instant-HOLD bug this issue fixes) and never as baseline=current (silently
+# disables the budget).
+fwf_budget_baseline_read() {
+  [ -f "$BUDGET_BASELINE_FILE" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -re 'if (.tokens_total|type)=="number" and (.cost_usd|type)=="number"
+          then "\(.tokens_total)\t\(.cost_usd)" else empty end' \
+    "$BUDGET_BASELINE_FILE" 2>/dev/null
 }
 
 # Clear whatever is sitting in the pane's Claude composer before we type into it,
