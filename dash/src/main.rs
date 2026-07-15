@@ -1327,8 +1327,15 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
 
     let role_w = 12usize;
     let state_w = 20usize;
+    // Numeric columns get a 1-space gutter each (including before EST-$) so
+    // adjacent fields can never touch, even when a value fills its whole
+    // field width (#115). Values are humanized (see `humanize_tokens`), so
+    // 8 chars comfortably covers everything up to low trillions.
+    let num_w = 8usize;
+    let cost_w = 10usize;
+    let gutters = 5usize;
     let model_w = (rows[2].width as usize)
-        .saturating_sub(role_w + state_w + 4 * 9 + 10 + 8)
+        .saturating_sub(role_w + state_w + 4 * num_w + cost_w + gutters + 7)
         .clamp(6, 24);
 
     let items: Vec<ListItem> = u
@@ -1352,7 +1359,7 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
                 if unknown {
                     "-".to_string()
                 } else {
-                    n.to_string()
+                    humanize_tokens(n)
                 }
             };
             let cost = match r.cost_usd {
@@ -1369,11 +1376,14 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
                     "{:<model_w$}",
                     truncate(model, model_w.saturating_sub(1))
                 )),
-                Span::raw(format!("{:>9}", fmt_tok(r.tokens.input))),
-                Span::raw(format!("{:>9}", fmt_tok(r.tokens.cache_creation))),
-                Span::raw(format!("{:>9}", fmt_tok(r.tokens.cache_read))),
-                Span::raw(format!("{:>9}", fmt_tok(r.tokens.output))),
-                Span::styled(format!("{cost:>10}"), Style::default().fg(Color::Cyan)),
+                Span::raw(format!(" {:>num_w$}", fmt_tok(r.tokens.input))),
+                Span::raw(format!(" {:>num_w$}", fmt_tok(r.tokens.cache_creation))),
+                Span::raw(format!(" {:>num_w$}", fmt_tok(r.tokens.cache_read))),
+                Span::raw(format!(" {:>num_w$}", fmt_tok(r.tokens.output))),
+                Span::styled(
+                    format!(" {cost:>cost_w$}"),
+                    Style::default().fg(Color::Cyan),
+                ),
             ]);
             ListItem::new(line)
         })
@@ -1381,7 +1391,7 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
 
     let header = Paragraph::new(Line::from(Span::styled(
         format!(
-            "  {:<role_w$}{:<state_w$}{:<model_w$}{:>9}{:>9}{:>9}{:>9}{:>10}",
+            "  {:<role_w$}{:<state_w$}{:<model_w$} {:>num_w$} {:>num_w$} {:>num_w$} {:>num_w$} {:>cost_w$}",
             "ROLE", "STATE", "MODEL", "INPUT", "CACHE-W", "CACHE-R", "OUTPUT", "EST-$"
         ),
         Style::default()
@@ -1404,12 +1414,24 @@ fn render_usage(f: &mut Frame, area: Rect, app: &mut App) {
             format!("{:<role_w$}{:<state_w$}{:<model_w$}", "TOTAL", "", ""),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("{:>9}", u.total.tokens.input)),
-        Span::raw(format!("{:>9}", u.total.tokens.cache_creation)),
-        Span::raw(format!("{:>9}", u.total.tokens.cache_read)),
-        Span::raw(format!("{:>9}", u.total.tokens.output)),
+        Span::raw(format!(
+            " {:>num_w$}",
+            humanize_tokens(u.total.tokens.input)
+        )),
+        Span::raw(format!(
+            " {:>num_w$}",
+            humanize_tokens(u.total.tokens.cache_creation)
+        )),
+        Span::raw(format!(
+            " {:>num_w$}",
+            humanize_tokens(u.total.tokens.cache_read)
+        )),
+        Span::raw(format!(
+            " {:>num_w$}",
+            humanize_tokens(u.total.tokens.output)
+        )),
         Span::styled(
-            format!("{total_cost:>10}"),
+            format!(" {total_cost:>cost_w$}"),
             Style::default().fg(Color::Cyan),
         ),
     ]);
@@ -1780,6 +1802,40 @@ fn render_input(f: &mut Frame, area: Rect, prompt: &str, buffer: &str) {
 }
 
 // --- text helpers -----------------------------------------------------------
+
+/// Render a token/usage count so it stays scannable at any scale: comma
+/// thousands-separators below a million, then `M`/`B`/`T` suffixes above it
+/// (#115 — unsuffixed digit strings collide once counts hit billions).
+fn humanize_tokens(n: i64) -> String {
+    let abs = n.unsigned_abs();
+    if abs >= 1_000_000_000_000 {
+        format!("{:.2}T", n as f64 / 1_000_000_000_000.0)
+    } else if abs >= 1_000_000_000 {
+        format!("{:.2}B", n as f64 / 1_000_000_000.0)
+    } else if abs >= 1_000_000 {
+        format!("{:.0}M", n as f64 / 1_000_000.0)
+    } else {
+        thousands(n)
+    }
+}
+
+/// Comma-separate an integer's digits (`-1234` -> `-1,234`).
+fn thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().rev().enumerate() {
+        if i != 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    let out: String = out.chars().rev().collect();
+    if n < 0 {
+        format!("-{out}")
+    } else {
+        out
+    }
+}
 
 /// Truncate to `max` display columns (best-effort by char count), adding an
 /// ellipsis. Guards the many places we drop user/issue text into fixed widths.
@@ -2821,6 +2877,63 @@ mod tests {
         let area = Rect::new(0, 0, 100, 10);
         let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
         assert_golden("usage_tab_three_states", &buffer_to_text(&buf));
+    }
+
+    // #115: at billion-scale token counts the numeric columns used to have
+    // NO gutter between them, so a wide CACHE-W value ran straight into
+    // CACHE-R with zero separation (and the header stopped lining up with
+    // the data). Guard it structurally — split_whitespace() merges any two
+    // fields that collide into a single token, so this goes RED again if
+    // the gutter or humanization regresses, independent of exact digits.
+    #[test]
+    fn usage_tab_billion_scale_values_stay_separated_and_readable() {
+        let mut app = test_app();
+        let mut data = golden_usage_fixture();
+        data.roles[0].tokens = data::UsageTokens {
+            input: 152_340_000,
+            cache_creation: 3_980_000_000,
+            cache_read: 7_123_000_000,
+            output: 45_678_901,
+        };
+        app.usage_feed = UsageFeed::Ok(data);
+        app.tab = Tab::Usage;
+        let area = Rect::new(0, 0, 100, 10);
+        let buf = render_buffer(area.width, area.height, |f| render_usage(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let row = text
+            .lines()
+            .find(|l| l.contains("impl1"))
+            .expect("impl1 row must render");
+        let fields: Vec<&str> = row.split_whitespace().collect();
+
+        assert!(
+            fields.contains(&"152M"),
+            "INPUT must humanize to M-scale as its own token: {row:?}"
+        );
+        assert!(
+            fields.contains(&"3.98B"),
+            "CACHE-W must humanize to B-scale, distinct from CACHE-R: {row:?}"
+        );
+        assert!(
+            fields.contains(&"7.12B"),
+            "CACHE-R must humanize to B-scale, distinct from CACHE-W: {row:?}"
+        );
+        assert!(
+            fields.contains(&"46M"),
+            "OUTPUT must humanize to M-scale as its own token: {row:?}"
+        );
+
+        // Header columns must stay distinct and correctly ordered even
+        // though the data got much wider.
+        let header_line = text
+            .lines()
+            .find(|l| l.contains("CACHE-W"))
+            .expect("header must render");
+        assert_eq!(
+            header_line.split_whitespace().collect::<Vec<_>>(),
+            vec!["ROLE", "STATE", "MODEL", "INPUT", "CACHE-W", "CACHE-R", "OUTPUT", "EST-$"],
+            "header columns must stay distinct and aligned: {header_line:?}"
+        );
     }
 
     #[test]

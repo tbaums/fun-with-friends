@@ -153,6 +153,12 @@ Each role shows one of three states, never collapsed to two:
 | STALE | a prior good read exists, but this poll couldn't refresh it | `⚠ STALE (Ns ago)` + the **last-good** figures (never a frozen blank) |
 | UNKNOWN | never successfully read (missing dir / no data yet) | `⚠ UNKNOWN` and `-` throughout (never `$0`, which would misread as confirmed no-spend) |
 
+Numeric columns (INPUT/CACHE-W/CACHE-R/OUTPUT) are right-aligned with a
+guaranteed gutter between them and humanized once counts get large — comma
+thousands-separators below a million, then `M`/`B`/`T` suffixes above it
+(e.g. `152M`, `3.98B`) — so a long-running role's totals never merge into an
+unreadable blob (issue #115).
+
 The $ figures are an **engineering proxy** — fwf panes run under a Claude
 subscription session, not a metered API key, so this is "API-cost-equivalent
 spend," not a reading of the account's actual rolling-window usage. That
