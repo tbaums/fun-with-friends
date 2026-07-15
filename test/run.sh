@@ -2026,23 +2026,34 @@ case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *)
 STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
 assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
 
-section "fwf usage (#96): budget-enforcement ARMED/NOT ARMED surface (GV-signoff residual-risk fix)"
+section "fwf usage (#96/#108): budget-enforcement ARMED/NOT ARMED surface (GV-signoff residual-risk fix) + this-run-vs-cumulative"
 NOBUDGET="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
-assert_contains "no FWF_TOKEN_BUDGET -> NOT ARMED" "$NOBUDGET" "budget enforcement: NOT ARMED"
+assert_contains "no budget configured -> NOT ARMED" "$NOBUDGET" "budget enforcement: NOT ARMED"
 assert_contains "no budget -> hold state none" "$NOBUDGET" "hold state: none"
 
 UNARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
 assert_contains "budget set but writer not running -> NOT ARMED (visibly, not silently, off)" "$UNARMED" "budget enforcement: NOT ARMED"
 assert_contains "unarmed message tells the operator how to fix it" "$UNARMED" "fwf up"
 
+UNARMEDUSD="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$ROOT/fwf" usage 2>&1)"
+assert_contains "--budget-usd set but writer not running -> NOT ARMED" "$UNARMEDUSD" "budget enforcement: NOT ARMED"
+assert_contains "unarmed \$ message names FWF_BUDGET_USD" "$UNARMEDUSD" "FWF_BUDGET_USD=5"
+
 env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
   bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
 ARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
-assert_contains "writer running for this profile -> ARMED" "$ARMED" "budget enforcement: ARMED (ceiling 1000 tokens)"
+assert_contains "writer running for this profile -> ARMED (unchanged wording, back-compat)" "$ARMED" "budget enforcement: ARMED (ceiling 1000 tokens)"
+assert_contains "this-run-vs-cumulative line appears once a baseline exists" "$ARMED" "this run:"
+assert_contains "this-run line names cumulative too" "$ARMED" "cumulative:"
 
-printf 'HOLD — 1200 tokens spent, budget is 1000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold\n' > "$UT/run/BUDGET_HOLD"
+# Stop the background writer before hand-editing the hold file — otherwise its
+# next tick (real usage data from these fixtures) races the manual overwrite
+# below and can clobber it before "fwf usage" ever reads it.
+env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+printf 'HOLD — 1200 tokens spent this run (of 1200 cumulative; includes cache-read), budget is 1000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold\n' > "$UT/run/BUDGET_HOLD"
 HELDOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
-assert_contains "usage report surfaces the current hold state verbatim" "$HELDOUT" "hold state: HOLD — 1200 tokens spent"
+assert_contains "usage report surfaces the current hold state verbatim" "$HELDOUT" "hold state: HOLD — 1200 tokens spent this run"
 
 CLEAROUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage --clear-hold 2>&1)"
 assert_contains "--clear-hold confirms" "$CLEAROUT" "cleared"
@@ -2054,7 +2065,39 @@ env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/clau
 rm -f "$ROOT/profiles/.__usage.sh"
 
 # --------------------------------------------------------------------------
-section "fwf-budget-check.sh (#96, Ticket B of #70): the WRITER — hermetic, isolated fixture"
+section "token-budget unit disambiguation (issue #108, AC3): both ceilings set -> rejected at source time"
+env FWF_TOKEN_BUDGET=1000 FWF_BUDGET_USD=5 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 \
+  && bad "FWF_TOKEN_BUDGET + FWF_BUDGET_USD both set rejected" || ok "FWF_TOKEN_BUDGET + FWF_BUDGET_USD both set rejected"
+
+section "fwf --help / help (#108 AC10): documents --budget-usd, the poll-interval guarantee, and the price-table coupling"
+HELPTXT="$("$ROOT/fwf" help)"
+assert_contains "--help documents --budget-usd" "$HELPTXT" "budget-usd"
+assert_contains "--help states raw --token-budget counts cache-read" "$HELPTXT" "cache-read tokens"
+assert_contains "--help states the poll-interval (not instant) guarantee" "$HELPTXT" "FWF_BUDGET_CHECK_INTERVAL"
+assert_contains "--help names the price-table coupling for \$ enforcement" "$HELPTXT" "price table"
+
+section "fwf-respawn.sh (issue #108 AC7): never touches the token-budget arming path — a respawn cannot reset the baseline"
+case "$(cat "$ROOT/fwf-respawn.sh")" in
+  *fwf_budget_writer_start*|*fwf_budget_baseline*) bad "fwf-respawn.sh must not call the budget-arming path" ;;
+  *) ok "fwf-respawn.sh never calls fwf_budget_writer_start/fwf_budget_baseline_* (same-run recovery, not a new run)" ;;
+esac
+
+section "fwf-down.sh (issue #108 AC5): a full teardown clears the run-start baseline; --floor-only preserves it"
+FD108ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-108-$$ FWF_MIN_FREE_GB=0"
+FD108RUN="$TMP/run108down"; mkdir -p "$FD108RUN/state/example"
+FD108BASE="$FD108RUN/state/example/budget-baseline.json"
+
+printf '{"tokens_total":100,"cost_usd":1}' > "$FD108BASE"
+env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1
+[ -f "$FD108BASE" ] && ok "AC5: --floor-only down preserves the baseline (same run)" \
+  || bad "AC5: --floor-only down preserves the baseline (same run)"
+
+env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/fwf-down.sh" >/dev/null 2>&1
+[ -f "$FD108BASE" ] && bad "AC5: a full 'fwf down' must clear the baseline (next full 'fwf up' gets a fresh one)" \
+  || ok "AC5: a full 'fwf down' clears the baseline"
+
+# --------------------------------------------------------------------------
+section "fwf-budget-check.sh (#96, Ticket B of #70; #108 delta+\$ enforcement): the WRITER — hermetic, isolated fixture"
 BC="$ROOT/fwf-budget-check.sh"
 BT="$TMP/budget"; mkdir -p "$BT/wt" "$BT/claude-projects"
 cat > "$ROOT/profiles/.__budget.sh" <<EOF
@@ -2069,29 +2112,42 @@ budget_run() { # $1=FWF_TOKEN_BUDGET (may be empty) $2=extra env (may be empty)
     FWF_PAIRS=1 FWF_TOKEN_BUDGET="${1:-}" ${2:-} "$BC"
 }
 hold_file() { cat "$BT/run/BUDGET_HOLD" 2>/dev/null || true; }
+# A budget is only ever enforced against a run-start baseline (#108) — this
+# snapshots one (usually at 0, matching a fresh `fwf up`) into a given run
+# dir, mirroring what fwf_budget_writer_start does on a genuinely fresh arm.
+baseline_ensure() { # $1=FWF_RUN_DIR
+  env FWF_PROFILE=.__budget FWF_RUN_DIR="$1" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+    bash -c "source '$ROOT/lib.sh'; fwf_budget_baseline_ensure"
+}
+baseline_file() { echo "$1/state/.__budget/budget-baseline.json"; }
 
 section "fwf-budget-check.sh: bootstrap — a role that has NEVER produced usage is 0 tokens, not a hold"
+baseline_ensure "$BT/run"
 budget_run 1000
 [ -z "$(hold_file)" ] && ok "no hold at t=0 (unknown-with-no-prior-data is not a fail-closed trigger)" \
   || bad "no hold at t=0" "$(hold_file)"
 
-section "fwf-budget-check.sh: over budget -> HOLD"
+section "fwf-budget-check.sh: over budget -> HOLD (delta since baseline; #108 AC1/AC9)"
 mkdir -p "$BPROJ"
 printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":600,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":500}}}' > "$BPROJ/s1.jsonl"
 budget_run 1000
-assert_contains "HOLD written when total >= budget" "$(hold_file)" "HOLD"
+assert_contains "HOLD written when this-run delta >= budget" "$(hold_file)" "HOLD"
 assert_contains "HOLD names the lift command" "$(hold_file)" "fwf usage --clear-hold"
+assert_contains "HOLD names this-run spend distinctly from cumulative" "$(hold_file)" "this run"
+case "$(hold_file)" in HOLD\ *) ok "AC9: first-line token is byte-identical 'HOLD '";; *) bad "AC9: first-line token" "$(hold_file)";; esac
 
 section "fwf-budget-check.sh: WARN at threshold, below budget — does not pause"
 # Fresh run dir + a smaller total than the HOLD test above, so this lands in
 # the WARN band (>=80% of budget, <100%) without also tripping HOLD.
 rm -rf "$BT/run3" "$BPROJ"
+baseline_ensure "$BT/run3"
 mkdir -p "$BPROJ"
 printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":450,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":400}}}' > "$BPROJ/s1.jsonl"
 FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run3" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
 WARNHOLD="$(cat "$BT/run3/BUDGET_HOLD" 2>/dev/null || true)"
 assert_contains "WARN written at >=80% and <100% of budget" "$WARNHOLD" "WARN"
 case "$WARNHOLD" in *HOLD*) bad "WARN must not also say HOLD";; *) ok "WARN is textually distinct from HOLD";; esac
+case "$WARNHOLD" in WARN\ *) ok "AC9: first-line token is byte-identical 'WARN '";; *) bad "AC9: first-line token" "$WARNHOLD";; esac
 
 section "fwf-budget-check.sh: unlimited (no budget configured) clears any stale hold"
 mkdir -p "$BT/run4"; printf 'HOLD — stale leftover\n' > "$BT/run4/BUDGET_HOLD"
@@ -2108,12 +2164,100 @@ assert_contains "fail-closed UNKNOWN written when a role's reader broke" "$FAILC
 assert_contains "fail-closed message says FAIL-CLOSED"                    "$FAILCLOSED" "FAIL-CLOSED"
 assert_contains "fail-closed message says NOT over budget (never confused with a real HOLD)" "$FAILCLOSED" "NOT over budget"
 assert_contains "fail-closed message names the broken role"               "$FAILCLOSED" "impl1"
+case "$FAILCLOSED" in UNKNOWN\ *) ok "AC9: first-line token is byte-identical 'UNKNOWN '";; *) bad "AC9: first-line token" "$FAILCLOSED";; esac
 
 section "fwf-budget-check.sh: dispatches via the fwf CLI"
 CLIRC=0
 FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run6" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" budget-check >/dev/null 2>&1 || CLIRC=$?
 [ "$CLIRC" = 0 ] && ok "'fwf budget-check' dispatches and exits 0 with no budget configured" \
   || bad "'fwf budget-check' dispatches and exits 0" "exit $CLIRC"
+
+section "fwf-budget-check.sh (#108 AC8): missing baseline -> UNKNOWN, never 0 and never a silent HOLD/no-hold"
+rm -rf "$BT/run7" "$BPROJ"; mkdir -p "$BPROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100000000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$BPROJ/s1.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run7" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
+MISSING="$(cat "$BT/run7/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "no baseline yet -> UNKNOWN (fail-closed), even with a huge cumulative total" "$MISSING" "UNKNOWN"
+assert_contains "missing-baseline message is distinct/actionable" "$MISSING" "baseline"
+
+section "fwf-budget-check.sh (#108 AC8): corrupt baseline (non-numeric field) -> UNKNOWN"
+rm -rf "$BT/run8"; mkdir -p "$BT/run8/state/.__budget"
+printf '%s\n' '{"tokens_total":"oops","cost_usd":0}' > "$(baseline_file "$BT/run8")"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run8" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
+CORRUPT="$(cat "$BT/run8/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "corrupt baseline (non-numeric field) -> UNKNOWN" "$CORRUPT" "UNKNOWN"
+
+section "fwf-budget-check.sh (#108 AC8): current usage below the recorded baseline -> UNKNOWN, never clamped to 'no spend'"
+rm -rf "$BT/run9"; mkdir -p "$BT/run9/state/.__budget"
+printf '%s\n' '{"tokens_total":200000000000,"cost_usd":99999}' > "$(baseline_file "$BT/run9")"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run9" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
+BELOW="$(cat "$BT/run9/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "current < baseline (raw-token path) -> UNKNOWN, not silently 'no spend'" "$BELOW" "UNKNOWN"
+rm -rf "$BT/run9b"; mkdir -p "$BT/run9b/state/.__budget"
+printf '%s\n' '{"tokens_total":0,"cost_usd":300000}' > "$(baseline_file "$BT/run9b")"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run9b" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$BC"
+BELOWUSD="$(cat "$BT/run9b/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "current < baseline (\$ path) -> UNKNOWN, not silently 'no spend'" "$BELOWUSD" "UNKNOWN"
+
+section "fwf-budget-check.sh (#108): --budget-usd over budget -> HOLD, formatted in \$ (cache-read priced at its true low rate)"
+rm -rf "$BT/run10" "$BPROJ"; baseline_ensure "$BT/run10"; mkdir -p "$BPROJ"
+# sonnet-5: \$2.00/MTok input -> 3,000,000 input tokens = \$6.00, over a \$5 ceiling.
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":3000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$BPROJ/s1.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run10" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$BC"
+USDHOLD="$(cat "$BT/run10/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "\$ HOLD fires once this-run spend crosses the \$ ceiling" "$USDHOLD" "HOLD"
+assert_contains "\$ HOLD is formatted in dollars" "$USDHOLD" "\$6.0000"
+assert_contains "\$ HOLD names the \$ lift command" "$USDHOLD" "FWF_BUDGET_USD"
+
+section "fwf-budget-check.sh (#108 AC1): a profile with BILLIONS of prior cumulative tokens does NOT instantly HOLD once re-armed"
+rm -rf "$BT/run11" "$BPROJ"; mkdir -p "$BPROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":1000000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":3000000000,"output_tokens":100000000}}}' > "$BPROJ/s1.jsonl"
+baseline_ensure "$BT/run11"   # snapshots the huge cumulative as the baseline
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run11" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$BC"
+[ -z "$(cat "$BT/run11/BUDGET_HOLD" 2>/dev/null || true)" ] \
+  && ok "AC1: billions of prior tokens + a fresh baseline -> no instant HOLD with --budget-usd 5" \
+  || bad "AC1: no instant HOLD" "$(cat "$BT/run11/BUDGET_HOLD")"
+# ...but NEW spend since that baseline still HOLDs, same \$6-over-\$5 fixture as above.
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":3000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' >> "$BPROJ/s1.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run11" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$BC"
+AC1HOLD="$(cat "$BT/run11/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "AC1: new spend since the baseline still triggers HOLD" "$AC1HOLD" "HOLD"
+assert_contains "AC1: HOLD names the small this-run figure, not the huge cumulative one" "$AC1HOLD" "\$6.0000 spent this run"
+
+section "fwf-budget-check.sh (#108 AC2): a role with an unpriced model fails CLOSED for --budget-usd, never a silent \$0"
+rm -rf "$BT/run12"; baseline_ensure "$BT/run12"
+UNPRICEDCWD="$BT/wt/bt-impl2"; UNPRICEDSLUG="${UNPRICEDCWD//\//-}"; UNPRICEDSLUG="${UNPRICEDSLUG//./-}"
+UNPRICEDPROJ="$BT/claude-projects/$UNPRICEDSLUG"; mkdir -p "$UNPRICEDPROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-totally-unknown","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$UNPRICEDPROJ/s.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run12" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=2 FWF_BUDGET_USD=5 "$BC"
+UNPRICED="$(cat "$BT/run12/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "unpriced model -> UNKNOWN (fail-closed), never a silent \$0" "$UNPRICED" "UNKNOWN"
+assert_contains "unpriced-model message names the price table" "$UNPRICED" "price table"
+rm -rf "$UNPRICEDPROJ"
+
+section "fwf-budget-check.sh / fwf_budget_writer_stop (#108 AC5/AC7): stopping the writer preserves the baseline — only an explicit clear resets it"
+rm -rf "$BT/run13" "$BPROJ"; mkdir -p "$BPROJ"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+BEFORE="$(cat "$(baseline_file "$BT/run13")")"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+[ -f "$(baseline_file "$BT/run13")" ] && ok "fwf_budget_writer_stop (floor-down equivalent) leaves the baseline file in place" \
+  || bad "fwf_budget_writer_stop must not delete the baseline"
+# new usage arrives between the stop and a floor-only re-up...
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":9999,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$BPROJ/s1.jsonl"
+# ...but re-arming (a floor-only `fwf up` equivalent) must NOT re-snapshot.
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+AFTER="$(cat "$(baseline_file "$BT/run13")")"
+assert_eq "AC5/AC7: re-arming after a stop does not overwrite an existing baseline, even with fresh usage sitting in between" "$BEFORE" "$AFTER"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+# explicit clear (the full-teardown path) DOES reset it.
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_baseline_clear"
+[ -f "$(baseline_file "$BT/run13")" ] && bad "fwf_budget_baseline_clear must remove the baseline" \
+  || ok "fwf_budget_baseline_clear (full-teardown path) resets the baseline for the next full 'fwf up'"
 
 rm -f "$ROOT/profiles/.__budget.sh"
 

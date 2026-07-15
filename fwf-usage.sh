@@ -42,14 +42,39 @@ _fwf_usage_fmt_state() { # $1=state $2=age_secs
   esac
 }
 
-_fwf_usage_budget_line() {
-  if [ -z "${FWF_TOKEN_BUDGET:-}" ]; then
-    printf 'budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)\n'
+_fwf_usage_budget_line() { # $1=usage-data JSON (for the this-run-vs-cumulative line)
+  local data="$1"
+  if [ -z "${FWF_TOKEN_BUDGET:-}" ] && [ -z "${FWF_BUDGET_USD:-}" ]; then
+    printf 'budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET/FWF_BUDGET_USD configured — unlimited)\n'
   elif fwf_budget_writer_running; then
-    printf 'budget enforcement: ARMED (ceiling %s tokens)\n' "$FWF_TOKEN_BUDGET"
+    if [ -n "${FWF_BUDGET_USD:-}" ]; then
+      printf 'budget enforcement: ARMED (ceiling $%.4f USD)\n' "$FWF_BUDGET_USD"
+    else
+      printf 'budget enforcement: ARMED (ceiling %s tokens)\n' "$FWF_TOKEN_BUDGET"
+    fi
+  elif [ -n "${FWF_BUDGET_USD:-}" ]; then
+    printf 'budget enforcement: NOT ARMED — FWF_BUDGET_USD=%s is set, but the writer is not running for this profile (re-run '"'"'fwf up'"'"' to arm it)\n' "$FWF_BUDGET_USD"
   else
     printf 'budget enforcement: NOT ARMED — FWF_TOKEN_BUDGET=%s is set, but the writer is not running for this profile (re-run '"'"'fwf up'"'"' to arm it)\n' "$FWF_TOKEN_BUDGET"
   fi
+
+  # this-run vs cumulative (issue #108): only shown once a baseline exists
+  # (i.e. armed at least once by a full `fwf up`) — before that there's
+  # nothing yet to diff against. Both figures always named as $/tokens so the
+  # unit — and that tokens include cache-read — is never left implicit.
+  local baseline
+  if baseline="$(fwf_budget_baseline_read)"; then
+    local baseline_tokens baseline_cost total_tokens cost_usd delta_tokens delta_cost
+    baseline_tokens="${baseline%%$'\t'*}"
+    baseline_cost="${baseline#*$'\t'}"
+    total_tokens="$(printf '%s' "$data" | jq -r '[.total.tokens.input, .total.tokens.cache_creation, .total.tokens.cache_read, .total.tokens.output] | add')"
+    cost_usd="$(printf '%s' "$data" | jq -r '.total.cost_usd')"
+    delta_tokens=$(( total_tokens - baseline_tokens )); [ "$delta_tokens" -lt 0 ] && delta_tokens=0
+    delta_cost="$(jq -rn --argjson c "$cost_usd" --argjson b "$baseline_cost" '(($c - $b) as $d | if $d < 0 then 0 else $d end)')"
+    printf 'this run: %s tokens (est. $%.4f) since fwf up — cumulative: %s tokens (est. $%.4f)\n' \
+      "$delta_tokens" "$delta_cost" "$total_tokens" "$cost_usd"
+  fi
+
   if [ -f "$BUDGET_HOLD_FILE" ]; then
     printf 'hold state: %s\n' "$(head -1 "$BUDGET_HOLD_FILE")"
   else
@@ -110,7 +135,7 @@ main() {
   printf '\n%s\n' "$(printf '%s' "$data" | jq -r '"note: " + .caveat')"
 
   printf '\n'
-  _fwf_usage_budget_line
+  _fwf_usage_budget_line "$data"
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi
