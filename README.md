@@ -244,7 +244,7 @@ success, failure, or a kill — so no role has to manage them by hand; see
 
 ## Factory templates
 
-The pipeline above is the **dev** template — one of seven shipped factory
+The pipeline above is the **dev** template — one of eight shipped factory
 designs. A template re-aims every role's prompt (and optionally the topology)
 while reusing all the machinery: tmux grid, branch ladder, labels, floor
 lifecycle, stop/resume.
@@ -258,6 +258,7 @@ lifecycle, stop/resume.
 | `user-testing` | ranked usability findings — 3 source-blind personas (9 in deep-sweep mode) drive a real browser like whacky humans, a researcher dedupes their diaries into a top-10 report graded against ground truth, a captain gates what graduates | [docs/user-testing.md](docs/user-testing.md) |
 | `validate` | a defensible GO / KILL / PIVOT verdict on a posited business+product idea — falsification dossier under `validation/<slug>/`, curated `VERDICT.md` | [docs/validate-factory.md](docs/validate-factory.md) |
 | `consulting` | a defensible diagnosis of whether an agent-built pipeline's shipped quality regressed and why — a 3-phase falsification funnel (premise gate → cause tournament → replay) writing a `DOSSIER.md`; advisory, reads the client repo, writes only its own findings repo | [docs/consulting-factory.md](docs/consulting-factory.md) |
+| `defect-report` | a filed, receiver-ready defect report per `(skill,target)` run in one pass — checklist derived from the skill's standard, grounded facts, adversarial sanitization, dry-mode delivery verification, one human gate; Phase 1 (archetype B) of the parameterized skill-runner config, gated on a pre-registered eval beating a single-model baseline | [docs/defect-report-factory.md](docs/defect-report-factory.md) |
 
 ```bash
 fwf templates                       # list what's shipped
