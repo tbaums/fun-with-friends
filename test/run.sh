@@ -1914,6 +1914,20 @@ case "$(cat "$ROOT/fwf-respawn.sh")" in
   *) ok "fwf-respawn.sh never calls fwf_budget_writer_start/fwf_budget_baseline_* (same-run recovery, not a new run)" ;;
 esac
 
+section "fwf-down.sh (issue #108 AC5): a full teardown clears the run-start baseline; --floor-only preserves it"
+FD108ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-108-$$ FWF_MIN_FREE_GB=0"
+FD108RUN="$TMP/run108down"; mkdir -p "$FD108RUN/state/example"
+FD108BASE="$FD108RUN/state/example/budget-baseline.json"
+
+printf '{"tokens_total":100,"cost_usd":1}' > "$FD108BASE"
+env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1
+[ -f "$FD108BASE" ] && ok "AC5: --floor-only down preserves the baseline (same run)" \
+  || bad "AC5: --floor-only down preserves the baseline (same run)"
+
+env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/fwf-down.sh" >/dev/null 2>&1
+[ -f "$FD108BASE" ] && bad "AC5: a full 'fwf down' must clear the baseline (next full 'fwf up' gets a fresh one)" \
+  || ok "AC5: a full 'fwf down' clears the baseline"
+
 # --------------------------------------------------------------------------
 section "fwf-budget-check.sh (#96, Ticket B of #70; #108 delta+\$ enforcement): the WRITER — hermetic, isolated fixture"
 BC="$ROOT/fwf-budget-check.sh"

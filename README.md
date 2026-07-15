@@ -349,8 +349,18 @@ wins.
 --model M            model for every agent (claude --model M)
 --impl-model M       per-role override; likewise --qa-model, --pm-model,
                      --gv-model, --captain-model, --conductor-model
---token-budget N     hard ceiling on combined token spend across every role;
-                     unset = unlimited (default, opt-in). See "Token budget
+--budget-usd N       RECOMMENDED hard budget ceiling, in estimated dollars;
+                     unset = unlimited (default, opt-in). Enforced against the
+                     same per-model price table `fwf usage` shows (cache-read
+                     priced at its true, far-cheaper rate — no unit
+                     guesswork), as a DELTA since this run's `fwf up` (see
+                     "Token budget enforcement" below). Mutually exclusive
+                     with --token-budget (setting both is an error).
+--token-budget N     hard ceiling on combined RAW token spend across every
+                     role (back-compat); unset = unlimited (default, opt-in).
+                     Counts cache-read tokens, which dominate real runs by 2-3
+                     orders of magnitude — prefer --budget-usd unless you
+                     specifically want a raw-token ceiling. See "Token budget
                      enforcement" below.
 ```
 
@@ -415,26 +425,48 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   acknowledged an earlier one. `FWF_SKIP_VERSION_CHECK=1` is the full kill
   switch for offline/air-gapped use — it disables the check entirely (no cache
   read, no network, ever), not just the banner.
-- **Token budget enforcement** (`--token-budget N`, opt-in, unset = unlimited):
-  caps combined token spend across every role. `fwf up`/`fwf up --floor-only`
-  arms a background WRITER (`fwf-budget-check.sh --loop`, ~60s cadence, zero
-  network calls — it only re-reads the local transcripts `fwf usage` already
-  reads) only when `FWF_TOKEN_BUDGET` is set; every role checks a sentinel at
-  its own step-0 and, if held, commits WIP and idles until the next tick — it
-  never cancels a role's loop, so it resumes automatically once the hold
-  clears, no respawn needed. Three states, written ONLY by the WRITER (roles
-  only ever read it): **HOLD** (spend ≥ budget — needs an operator to raise
-  `FWF_TOKEN_BUDGET` or run `fwf usage --clear-hold`), **WARN** (≥
-  `FWF_TOKEN_BUDGET_WARN_PCT`, default 80%, of budget — noted, not paused),
-  and **UNKNOWN — FAIL-CLOSED** (a role's usage reader broke — pauses the
-  whole factory rather than risk silently under-counting spend; textually
-  distinct from HOLD so a Claude Code transcript-schema change is never
-  misread as "over budget"). `fwf usage` and the dash Usage tab both show an
-  explicit **ARMED (ceiling N) / NOT ARMED** line plus the current hold, so a
+- **Token budget enforcement** (`--budget-usd N` recommended, or `--token-budget
+  N` for a raw-token ceiling; opt-in, unset = unlimited): caps spend across
+  every role. `fwf up`/`fwf up --floor-only` arms a background WRITER
+  (`fwf-budget-check.sh --loop`, ~60s cadence, zero network calls — it only
+  re-reads the local transcripts `fwf usage` already reads) only when a
+  ceiling is set; every role checks a sentinel at its own step-0 and, if held,
+  commits WIP and idles until the next tick — it never cancels a role's loop,
+  so it resumes automatically once the hold clears, no respawn needed.
+  Enforcement is a within-one-poll-interval guarantee (`FWF_BUDGET_CHECK_INTERVAL`,
+  default 60s), not an instant stop at exactly `N` — set the cap with headroom.
+  Setting both `--budget-usd` and `--token-budget` is an error (no silent
+  pick-one). `--budget-usd` reuses the per-model price table `fwf usage`
+  already computes — it prices cache-read at its true, far-cheaper rate, so a
+  dollar ceiling is already correctly cache-read-weighted with no down-weight
+  factor to invent; an unpriced model fails the whole run closed to UNKNOWN
+  rather than silently costing it \$0.
+  **Per-run baseline:** a genuinely fresh `fwf up` (not a `--floor-only`
+  bounce, not `fwf-respawn.sh` — both preserve the existing baseline)
+  snapshots current cumulative usage as this run's baseline; every check
+  after that enforces the *delta* since that snapshot, not the lifetime
+  cumulative total — so reusing a profile's worktree paths after `fwf down
+  --purge` doesn't inherit a prior run's billions of tokens as if spent just
+  now. A full `fwf down` (with or without `--purge`) clears the baseline so
+  the next full `fwf up` starts a fresh one; a missing/corrupt baseline, or a
+  cumulative read that comes back *below* the recorded baseline (a transcript
+  rotation/prune), fails closed to UNKNOWN rather than guessing.
+  Three states, written ONLY by the WRITER (roles only ever read it, and the
+  sentinel's first-line token — `HOLD`/`WARN`/`UNKNOWN` — is stable regardless
+  of unit): **HOLD** (this-run spend ≥ ceiling — needs an operator to raise
+  the ceiling or run `fwf usage --clear-hold`), **WARN** (≥
+  `FWF_TOKEN_BUDGET_WARN_PCT`, default 80%, of the ceiling — noted, not
+  paused), and **UNKNOWN — FAIL-CLOSED** (a role's usage reader or the
+  baseline broke — pauses the whole factory rather than risk silently
+  under-counting spend; textually distinct from HOLD so a Claude Code
+  transcript-schema change is never misread as "over budget"). `fwf usage`
+  and the dash Usage tab both show an explicit **ARMED (ceiling N) / NOT
+  ARMED** line, this-run-vs-cumulative spend, and the current hold, so a
   budget set mid-run without a re-`fwf up` (the only place the WRITER gets
   armed) is visibly, not silently, off. `fwf down` (including `--floor-only`)
   stops the WRITER and clears any hold — a downed floor spends nothing, so
-  there's nothing left to enforce against.
+  there's nothing left to enforce against — but only a full `fwf down` also
+  clears the baseline.
 
 ## Learn more
 
