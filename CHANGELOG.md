@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.25.3] - 2026-07-15
+
+### Fixed
+- **`fwf resume` / `fwf respawn` no longer crash on the loop interval** (#116, code 07ff2e8, docs 07ff2e8) — the re-arm path did arithmetic directly on the unit-suffixed interval (e.g. `3m`), which errored (`value too great for base`) and left `window` unset, so `resume`/`respawn` failed for every role and the only recovery was a full `down`+`up`. The interval is now normalized to seconds before the arithmetic; a test asserts `stop`→`resume` re-arms all roles.
+
 ## [0.25.2] - 2026-07-15
 
 ### Added
