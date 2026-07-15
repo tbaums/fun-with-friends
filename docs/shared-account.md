@@ -35,8 +35,8 @@ pipeline:
 
 | Marker (first line of a plain PR comment) | Posted by | Meaning |
 |---|---|---|
-| `QA-CHANGES-REQUESTED: #<pr>` | qaN only | gate is red / docs missing / UI broken — details + an optional `qaN/repro-<pr>` branch follow |
-| `QA-APPROVED: #<pr>` | qaN only | gate is green, merging now |
+| `QA-CHANGES-REQUESTED: #<pr>` | qaN only | gate is red / docs missing / UI broken / adversarial artifact review found a real gap (issue #119) — details + an optional `qaN/repro-<pr>` branch follow |
+| `QA-APPROVED: #<pr>` | qaN only | gate is green and (for load-bearing changes) the calibrated adversarial artifact review passed — merging now |
 | `IMPL-ADDRESSED: #<pr> <sha>` | implN only | acknowledges a fix pushed in response to a `QA-CHANGES-REQUESTED` |
 
 implN is a **hard rule** never to emit a line starting with `QA-` at the

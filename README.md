@@ -163,7 +163,12 @@ instead of stalling silently (issue #99).
 - **QA1–3** (paired by branch prefix): review only `implN/*` PRs, run the fast
   gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`);
   they also **request changes on a behavior-changing PR whose diff didn't update
-  its docs**, so docs ride with the change. No e2e here — kept fast and parallel-safe.
+  its docs**, so docs ride with the change. A green gate isn't the final word:
+  QA is also the **"GV of the artifact"** — calibrated to the change's size, it
+  reads load-bearing diffs adversarially, sanity-checks the impl's tests would
+  actually catch a regression, tries to break the change with its own
+  edge-case test, and checks the artifact against the source ticket's full
+  intent, not just its headline ask. No e2e here — kept fast and parallel-safe.
 - **CONDUCTOR** (owns e2e and the gate into `integration`): when `staging` is
   ahead, acquires the e2e lock, runs the **full e2e suite** on `staging`, and on
   green ff-merges **`staging → integration`**. It **never touches the default
