@@ -398,6 +398,19 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.
+- **PR body context-fold + built-with credit:** every PR that closes a ticket
+  gets a mechanically-extracted, sanitized "Context & rationale" fold (the
+  ticket's problem/decisions/alternatives/acceptance-criteria/testing
+  sections, plus any linked `docs/proposals/<n>-*.md`) folded into the squash-
+  merge commit and PR body — no fwf-internal vocabulary (role/seat names,
+  worktree/gate jargon, `LI-N`), no invented rationale, fail-closed if
+  anything survives sanitization (`fwf pr-context <n> [<n>...]` — see `fwf
+  help`). Alongside it, a reviewer-facing "🏭 Built with fun-with-friends +
+  Claude" credit line (distinct from — and coexists with — the `fwf-
+  Provenance:` machine trailer). `FWF_CREDIT=on|minimal|off` controls it:
+  `on` (every model that touched the work), `minimal` (link only, no model
+  list), `off` (nothing). Defaults `on` for a normal GitHub-backed profile and
+  `off` for `--issues local` (a repo you don't control, until you opt it in).
 - **Release freeze:** ask the PM to "freeze for release" and it labels tickets
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can

@@ -117,6 +117,18 @@ esac
 # shellcheck disable=SC2034  # consumed by fwf-issues.sh / fwf-provision.sh
 FWF_ISSUES_DIR="$FWF_RUN/issues/$PROFILE"
 
+# Reviewer-facing "built with fwf" credit policy (issue #106): on | minimal | off.
+# local-issues mode IS the existing "this repo isn't ours" signal (its own
+# description: "a no-push local-issues mode for repos you don't control"), so
+# default the credit OFF there and ON everywhere else — a profile/env override
+# always wins. #107 (upstream-contribution mode, not yet built) will give this
+# a per-target dial; until then, FWF_ISSUES=local is the only signal we have.
+FWF_CREDIT="${FWF_CREDIT:-$([ "$FWF_ISSUES" = local ] && echo off || echo on)}"
+case "$FWF_CREDIT" in
+  on|minimal|off) ;;
+  *) echo "fwf: FWF_CREDIT must be 'on', 'minimal', or 'off' (got '$FWF_CREDIT')" >&2; exit 1;;
+esac
+
 # The gh-write guard (issue #34) — the issue-tracker counterpart of #28's
 # pre-push hook. In local mode every pane gets this directory PREPENDED to
 # PATH; it holds (a) a `gh` wrapper that fail-closed blocks every mutating
@@ -376,6 +388,11 @@ fwf_ut_browser_preflight() {
 # shellcheck source=lib/version_check.sh
 source "$FWF_LIB_DIR/lib/version_check.sh"
 
+# PR body context-fold + built-with credit (issue #106): fwf_context_block,
+# fwf_credit_block, fwf_sanitize_pr_text, fwf_pr_body_guard.
+# shellcheck source=lib/pr_context.sh
+source "$FWF_LIB_DIR/lib/pr_context.sh"
+
 # Prod-target refusal for the user-testing factory (issue #42): a trial must run
 # only against an isolated scratch/UAT instance, never production. Fail-closed
 # ALLOW-LIST — anything that is not obviously a throwaway target is refused, so a
@@ -483,6 +500,9 @@ $(cat "$addendum")"
   # Build-provenance trailer for PR bodies + squash-merge commits. Guarded so
   # the git/version lookup only runs for templates that actually use it.
   case "$text" in *__PROVENANCE__*) text="${text//__PROVENANCE__/$(fwf_provenance_block)}";; esac
+  # Reviewer-facing built-with credit (issue #106) — same guard pattern as
+  # __PROVENANCE__ above; fwf_credit_block honors FWF_CREDIT on/minimal/off.
+  case "$text" in *__CREDIT__*) text="${text//__CREDIT__/$(fwf_credit_block)}";; esac
   text="${text//__COORD_SESSION__/$COORD_SESSION}"
   text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"

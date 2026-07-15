@@ -105,6 +105,11 @@ UTILITIES
                          PR on a shared-account swarm (CHANGES_REQUESTED
                          <branch|none> | AWAITING_REVIEW | APPROVED | NONE) —
                          see docs/shared-account.md.
+  pr-context <n> [n...]  Print the sanitized "## Context & rationale" fold for
+                         the given issue number(s) — an implementer/QA agent
+                         runs this for real when composing a PR/squash-merge
+                         body (issue #106); fails closed (prints nothing, rc 1)
+                         if fwf-internal vocabulary survives sanitization.
   usage [--clear-hold]   Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
                          transcripts, plus budget-enforcement status
@@ -503,6 +508,7 @@ case "$cmd" in
   issues)    engine fwf-issues.sh "$@";;
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
+  pr-context) engine fwf-pr-context.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   shell)

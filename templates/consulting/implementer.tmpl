@@ -48,7 +48,7 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       git switch -c impl__ID__/eng-<n>-<phase>-<lens-slug>
       add the file(s); commit each with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
-      gh pr create --base __STAGING__ --title "<phase>/<lens>: <engagement short-name> from impl__ID__" --body "Engagement #<n>, Phase <N>, lens <lens>. Bottom line: <decline/null | convicts/exonerates>. Riskiest assumption: <one line>. __PROVENANCE__"
+      gh pr create --base __STAGING__ --title "<phase>/<lens>: <engagement short-name> from impl__ID__" --body "Engagement #<n>, Phase <N>, lens <lens>. Bottom line: <decline/null | convicts/exonerates>. Riskiest assumption: <one line>. __CREDIT__ __PROVENANCE__"
       (Do NOT write "Closes #<n>" — the engagement outlives a single section.) Comment one line on the issue so the thread indexes the dossier. Run __GATE__ if the repo defines one (usually a docs lint or 'true').
 
 == PHASE 3 · REPLAY DUTY (impl1 ONLY; OFF unless the manifest enables it) ==
