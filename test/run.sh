@@ -1883,6 +1883,11 @@ assert_contains "writer running for this profile -> ARMED (unchanged wording, ba
 assert_contains "this-run-vs-cumulative line appears once a baseline exists" "$ARMED" "this run:"
 assert_contains "this-run line names cumulative too" "$ARMED" "cumulative:"
 
+# Stop the background writer before hand-editing the hold file — otherwise its
+# next tick (real usage data from these fixtures) races the manual overwrite
+# below and can clobber it before "fwf usage" ever reads it.
+env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
 printf 'HOLD — 1200 tokens spent this run (of 1200 cumulative; includes cache-read), budget is 1000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold\n' > "$UT/run/BUDGET_HOLD"
 HELDOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
 assert_contains "usage report surfaces the current hold state verbatim" "$HELDOUT" "hold state: HOLD — 1200 tokens spent this run"
@@ -2021,12 +2026,12 @@ assert_contains "corrupt baseline (non-numeric field) -> UNKNOWN" "$CORRUPT" "UN
 
 section "fwf-budget-check.sh (#108 AC8): current usage below the recorded baseline -> UNKNOWN, never clamped to 'no spend'"
 rm -rf "$BT/run9"; mkdir -p "$BT/run9/state/.__budget"
-printf '%s\n' '{"tokens_total":999999999,"cost_usd":99999}' > "$(baseline_file "$BT/run9")"
+printf '%s\n' '{"tokens_total":200000000000,"cost_usd":99999}' > "$(baseline_file "$BT/run9")"
 FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run9" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
 BELOW="$(cat "$BT/run9/BUDGET_HOLD" 2>/dev/null || true)"
 assert_contains "current < baseline (raw-token path) -> UNKNOWN, not silently 'no spend'" "$BELOW" "UNKNOWN"
 rm -rf "$BT/run9b"; mkdir -p "$BT/run9b/state/.__budget"
-printf '%s\n' '{"tokens_total":0,"cost_usd":99999}' > "$(baseline_file "$BT/run9b")"
+printf '%s\n' '{"tokens_total":0,"cost_usd":300000}' > "$(baseline_file "$BT/run9b")"
 FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run9b" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$BC"
 BELOWUSD="$(cat "$BT/run9b/BUDGET_HOLD" 2>/dev/null || true)"
 assert_contains "current < baseline (\$ path) -> UNKNOWN, not silently 'no spend'" "$BELOWUSD" "UNKNOWN"
