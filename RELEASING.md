@@ -8,8 +8,8 @@ Releases are cut from `main` and published automatically by
 [`.github/workflows/release.yml`](.github/workflows/release.yml): pushing a
 matching tag verifies `tag == VERSION`, lints (`shellcheck -S warning`), runs the
 functional suite, builds a tarball with [`scripts/package.sh`](scripts/package.sh),
-cross-compiles prebuilt `fwf-dash` binaries for all four supported platforms
-(darwin-arm64/x86_64, linux-arm64/x86_64), and creates a GitHub Release with the
+cross-compiles prebuilt `fwf-dash` binaries for the three supported platforms
+(darwin-arm64, linux-arm64, linux-x86_64 — Intel Macs build from source), and creates a GitHub Release with the
 tarball, the dash binaries, and `fwf-dash-<ver>-checksums.txt` attached (plus
 auto-generated notes). `fwf dash` depends on those assets for prebuilt
 resolution — see [docs/dash.md](docs/dash.md).
@@ -17,8 +17,15 @@ resolution — see [docs/dash.md](docs/dash.md).
 ## Cut a release
 
 1. **Land the work on `main`** and make sure it's green (CI passing).
-2. **Bump the version** in `VERSION` (e.g. `0.2.0`). Skip if it already holds the
-   number you're releasing.
+2. **Bump the version** in `VERSION` (e.g. `0.26.0`). Skip if it already holds the
+   number you're releasing. **Bump rule (SemVer, pre-1.0):** if the release adds
+   any new feature — i.e. it has a `### Added` entry — bump the **minor**
+   (`0.x.0`); if it's only fixes / changes / docs / chores (`### Fixed`,
+   `### Changed`, `### Documentation`, `### Removed`, `### Internal` — **no
+   `### Added`**), bump the **patch** (`0.x.y`). The CHANGELOG section types for
+   the release decide it: **any `Added` ⇒ minor.** (A user-facing feature shipped
+   as a patch understates the change and is a versioning bug — classify by the
+   CHANGELOG, don't just increment the patch digit.)
 3. **Update [`CHANGELOG.md`](CHANGELOG.md)**: move items from `Unreleased` into a
    new `## [X.Y.Z] - YYYY-MM-DD` section. **Every entry carries two commit refs —
    code and docs**: `- **Feature** (#NNN, code <sha>, docs <sha>) — …`. Same SHA
