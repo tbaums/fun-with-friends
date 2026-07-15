@@ -2758,7 +2758,11 @@ rec_advance() { # $1=branch to push a new commit onto (from the seed repo)
   ( cd "$REC_SEED" && git checkout -q main && echo "$RANDOM$RANDOM" >> f && git commit -qam "advance $1" \
     && git push -q origin "main:$1" )
 }
-rec_sha() { ( cd "$REC_SEED" && git rev-parse "$1" ); } # local branch tip in the seed repo
+rec_sha() { git -C "$REC_ORIGIN" rev-parse "refs/heads/$1"; } # authoritative: read the tip straight off origin
+rec_fork() { # $1=branch $2=base-sha -> a NEW commit forking off base-sha (independent of any later main advances), pushed to $1
+  ( cd "$REC_SEED" && git checkout -q "$2" && echo "$RANDOM$RANDOM" >> f && git commit -qam "fork $1 from $2" \
+    && git push -q origin "HEAD:$1" )
+}
 rec_run() { FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
 
 # --- classifier: BEHIND -------------------------------------------------
@@ -2782,8 +2786,9 @@ assert_contains "EQUAL: freshly-synced branches classify as EQUAL" "$CLS" "EQUAL
 
 # --- classifier: DIVERGED --------------------------------------------------
 rec_setup diverged
-rec_advance main          # main moves...
-rec_advance staging       # ...and staging ALSO moves independently -> neither is an ancestor of the other
+DIV_BASE="$(rec_sha main)"       # common ancestor before either side moves
+rec_advance main                  # main moves forward from the common ancestor...
+rec_fork staging "$DIV_BASE"      # ...and staging forks independently FROM THAT SAME ancestor -> neither is an ancestor of the other
 CLS="$(rec_run 'fwf_reconcile_classify staging main')"
 assert_contains "DIVERGED: two independently-moved branches classify as DIVERGED" "$CLS" "DIVERGED"
 
@@ -2805,8 +2810,9 @@ assert_contains "BEHIND reconcile: staging == main on origin afterward" "$POST" 
 
 # --- fwf_reconcile_branch: DIVERGED -> halts, never mutates (AC2) ---------
 rec_setup reconcile-diverged
+RD_BASE="$(rec_sha main)"
 rec_advance main
-rec_advance staging
+rec_fork staging "$RD_BASE"
 PRE_STAGING_SHA="$(rec_sha staging)"
 rc=0; LINE="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
 assert_eq   "DIVERGED reconcile: rc 1 (do not build on this base)" "1" "$rc"
@@ -2835,8 +2841,8 @@ assert_contains "idempotent: second run reports the same clean no-op" "$LINE2" "
 
 # --- fwf-reconcile.sh CLI: both branches, non-zero exit iff any is unsafe --
 rec_setup cli-mixed
-rec_advance integration                     # integration -> AHEAD (safe)
-rec_advance main; rec_advance main           # main advances twice -> staging is BEHIND by 2
+rec_advance main; rec_advance main           # main advances twice from the common base -> staging (still at base) is BEHIND by 2
+rec_advance integration                      # integration then advances PAST that (a descendant of the new main tip) -> AHEAD (safe, never a false alarm)
 CLI_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
   "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)"; rc=$?
 assert_eq   "CLI: exits 0 when every branch ends up safe (BEHIND auto-FF'd, AHEAD normal)" "0" "$rc"
@@ -2844,8 +2850,9 @@ assert_contains "CLI: reports the staging reconcile" "$CLI_OUT" "reconciled stag
 assert_contains "CLI: reports the integration normal-ahead" "$CLI_OUT" "normal-ahead integration"
 
 rec_setup cli-halts
+CH_BASE="$(rec_sha main)"
 rec_advance main
-rec_advance staging   # staging DIVERGED from main
+rec_fork staging "$CH_BASE"   # staging forks independently from the common base -> DIVERGED from main
 CLI_RC=0; CLI_OUT2="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
   "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
 assert_eq   "CLI: exits non-zero when any branch is unsafe (halted-diverged)" "1" "$CLI_RC"
