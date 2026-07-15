@@ -209,6 +209,169 @@ assert_eq "every PR-producing template carries the provenance stamp" "" "$MISSIN
 assert_eq "no stray __PROVENANCE__ after render" "" \
   "$(prov_env "fwf_render '$ROOT/templates/validate/qa.tmpl' 1" | /usr/bin/grep -o '__PROVENANCE__' | head -1)"
 
+# --------------------------------------------------------------------------
+section "PR body context-fold + built-with credit (issue #106)"
+pctx_env() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+# fwf_sanitize_pr_text: the denylist + pattern sweep, portable across BSD sed
+# (macOS, no \b support in -E) and GNU sed. This is a regression guard for a
+# real bug: the first cut of this sanitizer used \b, which silently NEVER
+# matches on this repo's own dev machine (macOS /usr/bin/sed) — every rule
+# below would otherwise pass straight through unsanitized.
+SANI_IN="mentions impl3 and impl__ID__ and qa2 and CLAIM impl1 and ASSIGNED qa4
+GV-SIGNOFF then GV-CHANGES; QA-APPROVED: #1 and QA-CHANGES-REQUESTED: #2 and IMPL-ADDRESSED: #3
+captain, conductor, gv, pm all met in the worktree on the floor to review the gate
+staging branch and integration branch; origin/staging and origin/integration
+product-wip and release-hold; Owner: impl9  WIP
+FWF_TOKEN_BUDGET and LI-42 and impl2/issue-9-slug and fwf-self-abc123 and ~/.fun-with-friends/state/x"
+SANI_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SANI_IN")"
+for tok in 'impl3' 'impl__ID__' 'qa2' 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
+           'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:' 'captain' 'conductor' \
+           'worktree' 'floor' 'gate' 'staging branch' 'integration branch' 'origin/staging' \
+           'origin/integration' 'product-wip' 'release-hold' 'Owner:' 'FWF_TOKEN_BUDGET' \
+           'LI-42' 'impl2/issue-9-slug' 'fwf-self-abc123' '.fun-with-friends'; do
+  case "$SANI_OUT" in
+    *"$tok"*) bad "sanitizer strips '$tok'" "leaked: $SANI_OUT";;
+    *)        ok "sanitizer strips '$tok'";;
+  esac
+done
+# bare "WIP" (not part of a larger word) is deleted entirely, not replaced.
+case "$SANI_OUT" in *WIP*) bad "sanitizer deletes bare WIP";; *) ok "sanitizer deletes bare WIP";; esac
+# adjacent tokens sharing a boundary char (the specific bug the \b rewrite fixed)
+# must ALL convert, not just the outermost ones.
+ADJ="$(pctx_env "fwf_sanitize_pr_text" <<<"impl1 impl2 impl3")"
+assert_eq "adjacent role tokens all sanitized (no boundary-consuming gap)" \
+  "the implementer the implementer the implementer" "$ADJ"
+# sensitive-data scrub (constraint 3): secret/token/key SHAPES, not just fwf vocab.
+SEC_IN='ghp_abcdefghijklmnopqrstuvwxyz012345 AKIAABCDEFGHIJKLMNOP sk-abcdefghijklmnopqrstuvwx api_key: sup3rsecret'
+SEC_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SEC_IN")"
+case "$SEC_OUT" in
+  *ghp_*|*AKIAABCDEFGHIJKLMNOP*|*sk-abcdefghijklmnopqrstuvwx*|*sup3rsecret*)
+    bad "sensitive-data scrub redacts secret-shaped tokens" "leaked: $SEC_OUT";;
+  *) ok "sensitive-data scrub redacts secret-shaped tokens";;
+esac
+
+# fwf_credit_block: on (default) / minimal / off, model-family-agnostic via fwf_model_for.
+CRED_ON="$(FWF_PROFILE=example FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
+assert_contains "credit (on) carries the fwf link"       "$CRED_ON" "github.com/tbaums/fun-with-friends"
+assert_contains "credit (on) carries the Claude mention"  "$CRED_ON" "Claude"
+assert_contains "credit (on) lists a seat's model"        "$CRED_ON" "claude-sonnet-5"
+CRED_MIN="$(FWF_PROFILE=example FWF_CREDIT=minimal bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
+assert_contains "credit (minimal) still carries the link" "$CRED_MIN" "github.com/tbaums/fun-with-friends"
+case "$CRED_MIN" in *claude-sonnet-5*|*cli-default*) bad "credit (minimal) omits the model list" "$CRED_MIN";; *) ok "credit (minimal) omits the model list";; esac
+CRED_OFF="$(FWF_PROFILE=example FWF_CREDIT=off bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
+assert_eq "credit (off) prints nothing" "" "$CRED_OFF"
+# --issues local defaults FWF_CREDIT to off (constraint 4/5: not our repo until configured).
+CRED_LOCAL_DEFAULT="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$FWF_CREDIT\"")"
+assert_eq "--issues local defaults FWF_CREDIT to off" "off" "$CRED_LOCAL_DEFAULT"
+CRED_REMOTE_DEFAULT="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$FWF_CREDIT\"")"
+assert_eq "remote (gh) mode defaults FWF_CREDIT to on" "on" "$CRED_REMOTE_DEFAULT"
+
+# fwf_pr_body_guard: fail-closed backstop (PM item 2) — re-scans the ACTUAL
+# rendered output right before it would ship, independent of the sanitizer.
+GUARD_CLEAN="$(pctx_env "fwf_pr_body_guard" <<<"a normal reviewer-facing sentence with no fwf vocabulary")"
+assert_eq "guard passes clean text through unchanged" \
+  "a normal reviewer-facing sentence with no fwf vocabulary" "$GUARD_CLEAN"
+GUARD_LEAK_OUT="$(pctx_env "fwf_pr_body_guard" <<<"still mentions impl3 raw" 2>/tmp/fwf-guard-err.$$)"
+GUARD_LEAK_RC=$?
+GUARD_LEAK_ERR="$(cat /tmp/fwf-guard-err.$$ 2>/dev/null)"; rm -f "/tmp/fwf-guard-err.$$"
+assert_eq "guard blocks a surviving fwf-internal token (rc)" "1" "$GUARD_LEAK_RC"
+assert_eq "guard blocks a surviving fwf-internal token (no stdout)" "" "$GUARD_LEAK_OUT"
+assert_contains "guard names the offending line on stderr" "$GUARD_LEAK_ERR" "impl3"
+
+# fwf_context_block: mechanical extraction from a fixture ticket's structured
+# body sections + a linked docs/proposals/<n>-*.md, via the LOCAL issue store
+# (--issues local) so this test needs no network / no real gh issue.
+PCTXRUN="$TMP/pr-context-run"
+PISS() { FWF_RUN_DIR="$PCTXRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+FIX1_BODY='## Problem / intent
+The thing is broken for real users in a real way.
+
+## Decisions & tradeoffs
+- Chose mechanical extraction over an LLM pass: no per-render spend, no fabrication risk.
+
+## Alternatives considered
+- An LLM-drawn summary — rejected: fabrication risk, per-call cost.
+
+## Acceptance criteria
+- The fix ships behind a flag.
+
+## Testing
+- Unit tests cover the new branch.'
+PISS create --title "Fix the thing" --body "$FIX1_BODY" >/dev/null
+PISS comment 1 --body "CAPTAIN -> PM: ball is in your court, GV-SIGNOFF pending" >/dev/null
+PCTXREPO="$TMP/pr-context-repo"; mkdir -p "$PCTXREPO/docs/proposals"
+printf '# Proposal: fix the thing\n\nDo the fix this way.\n' > "$PCTXREPO/docs/proposals/1-fix-the-thing.md"
+CTX1="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block 1")"
+assert_contains "context fold has the heading"        "$CTX1" "## Context & rationale"
+assert_contains "context fold carries the ticket title" "$CTX1" "Fix the thing"
+assert_contains "context fold carries the intro"       "$CTX1" "broken for real users"
+assert_contains "context fold carries decisions"       "$CTX1" "mechanical extraction over an LLM pass"
+assert_contains "context fold carries alternatives"    "$CTX1" "fabrication risk, per-call cost"
+assert_contains "context fold carries acceptance criteria" "$CTX1" "ships behind a flag"
+assert_contains "context fold carries testing"         "$CTX1" "Unit tests cover the new branch"
+assert_contains "context fold folds in the linked proposal" "$CTX1" "Do the fix this way"
+# (a) the extraction source is the BODY's structured sections + linked
+# proposals ONLY — the comment thread (role-coordination prose) must NEVER
+# surface, even though a comment exists on this very fixture issue (PM
+# round-2 decision: exclusion-by-scope is the primary leak control).
+case "$CTX1" in
+  *"CAPTAIN"*|*"ball is in your court"*|*"GV-SIGNOFF"*) bad "comment thread must never be a context-fold source" "$CTX1";;
+  *) ok "comment thread must never be a context-fold source";;
+esac
+
+# (d) multi-ticket PRs: fold both, ordered by issue number regardless of call order.
+PISS create --title "Second ticket" --body "## Problem / intent
+A second, unrelated issue." >/dev/null
+CTX2="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block 2 1")"
+assert_contains "two-ticket fold carries ticket 1" "$CTX2" "Fix the thing"
+assert_contains "two-ticket fold carries ticket 2" "$CTX2" "Second ticket"
+BEFORE_TICKET2="${CTX2%%Second ticket*}"
+case "$BEFORE_TICKET2" in
+  *"Fix the thing"*) ok "two-ticket fold orders by issue number, not call order";;
+  *) bad "two-ticket fold orders by issue number, not call order" "$CTX2";;
+esac
+
+# fwf pr-context CLI (the entrypoint an agent actually runs at PR-create/
+# squash-merge time): same fixture, through the dispatcher end-to-end.
+CLI_CTX="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example "$ROOT/fwf" pr-context 1 2>&1)"
+assert_contains "fwf pr-context prints the context fold" "$CLI_CTX" "## Context & rationale"
+assert_contains "fwf pr-context has no fwf-internal leak" "$CLI_CTX" "Fix the thing"
+case "$CLI_CTX" in *impl[0-9]*|*QA-*) bad "fwf pr-context output has no fwf-internal token" "$CLI_CTX";; *) ok "fwf pr-context output has no fwf-internal token";; esac
+
+# COVERAGE (mirrors #80's provenance coverage above): every PR-producing
+# template (excluding _local-issues, which never opens an upstream PR — same
+# constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.
+MISSING_CREDIT=""
+while IFS= read -r -d '' f; do
+  if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
+    /usr/bin/grep -q "__CREDIT__" "$f" || MISSING_CREDIT="$MISSING_CREDIT $f"
+  fi
+done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every PR-producing template carries the built-with credit" "" "$MISSING_CREDIT"
+# COVERAGE: every template whose PR/commit actually CLOSES a ticket ("Closes
+# #<num>"/"Closes #<n>") must wire in the context-fold CLI (fwf pr-context) —
+# narrower than the credit check above because a few factory designs (e.g.
+# validate/ideation/consulting) intentionally never close the ticket their PR
+# references (a hypothesis/challenge/engagement outlives a single section),
+# so folding a full ticket distillation into every one of their PRs would be
+# noise, not signal; the ticket's own "Anchor" language ties context-fold to
+# the issue-closing squash-merge moment.
+MISSING_CTX=""
+while IFS= read -r -d '' f; do
+  # only the actual gh pr create/merge command LINE decides "closes a ticket"
+  # here — validate/ideation/consulting mention "Closes #<n>" in unrelated
+  # prose (e.g. explicitly telling the agent NOT to write it) without their
+  # gh pr command line ever containing it.
+  prline="$(/usr/bin/grep -E 'gh pr (create|merge)' "$f" || true)"
+  if printf '%s' "$prline" | /usr/bin/grep -qE 'Closes #<n'; then
+    printf '%s' "$prline" | /usr/bin/grep -q "fwf pr-context" || MISSING_CTX="$MISSING_CTX $f"
+  fi
+done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every issue-closing template wires in the context-fold CLI" "" "$MISSING_CTX"
+# No unsubstituted __CREDIT__/__CONTEXT__ leaks through a render.
+assert_eq "no stray __CREDIT__ after render" "" \
+  "$(prov_env "fwf_render '$ROOT/templates/dev/qa.tmpl' 1" | /usr/bin/grep -o '__CREDIT__' | head -1)"
+
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
 hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }

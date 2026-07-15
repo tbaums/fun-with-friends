@@ -39,7 +39,7 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       git switch -c impl__ID__/hyp-<n>-<gate>-<k> origin/__STAGING__   (k = your next section number for this hypothesis+gate)
       add the file(s); commit each with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
-      gh pr create --base __STAGING__ --title "<gate>: <hypothesis short-name> — <stance> from impl__ID__" --body "Hypothesis #<n>, Gate <N>. Bottom line: <GO/KILL/PIVOT-leaning>. Riskiest assumption: <one line>. __PROVENANCE__"
+      gh pr create --base __STAGING__ --title "<gate>: <hypothesis short-name> — <stance> from impl__ID__" --body "Hypothesis #<n>, Gate <N>. Bottom line: <GO/KILL/PIVOT-leaning>. Riskiest assumption: <one line>. __CREDIT__ __PROVENANCE__"
       (Do NOT write "Closes #<n>" — the hypothesis outlives a single section.) Comment one line on the issue so the thread indexes the dossier. Run __GATE__ if the repo defines one (usually a docs lint or 'true').
 
 Hard rules: ONE PR in flight; only ever work the ACTIVE phase of an un-gated hypothesis (never run Gate 2 work on a hypothesis still at Gate 1); never edit another analyst's sections (extend in a NEW section crediting the source); never write validation/<idea-slug>/VERDICT.md or assumptions-ledger.md (the adjudicator owns those); never push to __STAGING__, __INTEGRATION__, or __DEFAULT__ directly; never merge your own PR; stay in this worktree. The bar for a section is "an honest skeptic would sign it", not "it helps the idea pass".

@@ -388,6 +388,11 @@ fwf_ut_browser_preflight() {
 # shellcheck source=lib/version_check.sh
 source "$FWF_LIB_DIR/lib/version_check.sh"
 
+# PR body context-fold + built-with credit (issue #106): fwf_context_block,
+# fwf_credit_block, fwf_sanitize_pr_text, fwf_pr_body_guard.
+# shellcheck source=lib/pr_context.sh
+source "$FWF_LIB_DIR/lib/pr_context.sh"
+
 # Prod-target refusal for the user-testing factory (issue #42): a trial must run
 # only against an isolated scratch/UAT instance, never production. Fail-closed
 # ALLOW-LIST — anything that is not obviously a throwaway target is refused, so a
@@ -495,6 +500,9 @@ $(cat "$addendum")"
   # Build-provenance trailer for PR bodies + squash-merge commits. Guarded so
   # the git/version lookup only runs for templates that actually use it.
   case "$text" in *__PROVENANCE__*) text="${text//__PROVENANCE__/$(fwf_provenance_block)}";; esac
+  # Reviewer-facing built-with credit (issue #106) — same guard pattern as
+  # __PROVENANCE__ above; fwf_credit_block honors FWF_CREDIT on/minimal/off.
+  case "$text" in *__CREDIT__*) text="${text//__CREDIT__/$(fwf_credit_block)}";; esac
   text="${text//__COORD_SESSION__/$COORD_SESSION}"
   text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"
