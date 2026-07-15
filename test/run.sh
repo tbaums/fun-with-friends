@@ -1246,6 +1246,23 @@ echo dirty >> "$GCPD/install/VERSION"
 PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$GCPD/install/fwf" upgrade >/dev/null 2>&1 \
   && bad "dirty git-clone install refuses to upgrade" || ok "dirty git-clone install refuses to upgrade"
 
+# QA adversarial check (#125, issue #119 adversarial-artifact-review): a clean
+# but truly DIVERGED git-clone install (a committed local change off the
+# release lineage, not just an uncommitted dirty tree) must refuse via
+# ff-only rather than silently rewriting/discarding local history.
+git clone -q "$GCPD/origin.git" "$GCPD/install2" 2>/dev/null
+( cd "$GCPD/install2" && git checkout -q v0.0.1 && git checkout -q -B main \
+  && git config user.email t@t.co && git config user.name t \
+  && printf '0.0.1-local\n' > VERSION && git commit -qam "local-only work, diverges from the release lineage" )
+assert_eq "diverged git-clone install starts at its local version" "0.0.1-local" "$(cat "$GCPD/install2/VERSION")"
+GCDIVRC=0
+GCDIV="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$GCPD/install2/fwf" upgrade 2>&1)" || GCDIVRC=$?
+[ "$GCDIVRC" -ne 0 ] \
+  && ok "diverged git-clone install refuses to upgrade (ff-only, not a silent rewrite)" \
+  || bad "diverged git-clone install refuses to upgrade" "$GCDIV"
+assert_contains "diverged-refusal message names the divergence" "$GCDIV" "diverged"
+assert_eq "diverged install's local VERSION is untouched by the refused upgrade" "0.0.1-local" "$(cat "$GCPD/install2/VERSION")"
+
 rm -rf "$ROOT/dist"
 
 section "local issues backend (issue #26) — store CLI"
