@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-15
+
+### Added
+- **Skill-runner factory config — Phase 1 (defect→report archetype)** (#117, code 1b1a02c, docs 1b1a02c) — a new `defect-report` factory template set (captain/conductor/qa + eval scaffold with fixtures) that spins up from a (skill, target) pair and drives to a first-shot finished deliverable, plus `docs/defect-report-factory.md`.
+
 ## [0.26.0] - 2026-07-15
 
 ### Added
