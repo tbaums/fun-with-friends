@@ -152,6 +152,18 @@ UTILITIES
                          runs this for real when composing a PR/squash-merge
                          body (issue #106); fails closed (prints nothing, rc 1)
                          if fwf-internal vocabulary survives sanitization.
+  flag-captain <n> --role R --reason TEXT
+                         Raise a "needs-captain" flag on issue/PR <n> (label +
+                         a NEEDS-CAPTAIN: [R] TEXT comment) — any role calls
+                         this when something needs the captain's decision; the
+                         captain's per-tick sweep picks it up reliably instead
+                         of depending on a pane message (issue #113). Same
+                         command in gh-issues and local-issues mode.
+  flag-captain <n> --clear [--note TEXT]
+                         Clear a flag once handled (removes the label; TEXT
+                         records what you did in an optional comment).
+  flag-captain sweep     List every open needs-captain flag: # · [role] ·
+                         reason · age — see docs/needs-captain.md.
   usage [--clear-hold]   Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
                          transcripts, plus budget-enforcement status
@@ -575,6 +587,7 @@ case "$cmd" in
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
+  flag-captain) engine fwf-flag-captain.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;

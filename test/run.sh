@@ -2364,6 +2364,81 @@ assert_eq "no QA-* sentinel at all -> AWAITING_REVIEW" "AWAITING_REVIEW" "$(prs_
 assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "source '$PRS'; main abc")"
 
 # --------------------------------------------------------------------------
+# fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
+# any role raises on an issue/PR, that the captain's per-tick sweep picks up
+# reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests
+# drive the REAL helper end-to-end over a real fwf-issues.sh store (identical
+# code path to production); gh-backend tests override the gh_ boundary only.
+FC="$ROOT/fwf-flag-captain.sh"
+FCRUN="$TMP/flagcaptain-local"
+FCISS() { FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+FCL()   { FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example FWF_ISSUES=local "$FC" "$@"; }
+
+section "fwf flag-captain (#113): local backend — raise, sweep, clear round-trip"
+FCISS create --title "Base missing provenance primitive" >/dev/null
+RAISE_OUT="$(FCL 1 --role impl1 --reason "blocked: base missing #104 provenance primitive")"
+assert_contains "raise confirms" "$RAISE_OUT" "flagged: NEEDS-CAPTAIN [impl1] blocked: base missing #104 provenance primitive"
+assert_contains "raise applies the label" "$(FCISS list --label needs-captain)" "LI-1"
+SWEEP1="$(FCL sweep)"
+assert_contains "sweep shows the issue"  "$SWEEP1" "LI-1"
+assert_contains "sweep shows the role"   "$SWEEP1" "[impl1]"
+assert_contains "sweep shows the reason" "$SWEEP1" "blocked: base missing #104 provenance primitive"
+
+section "fwf flag-captain (#113): multiple raisers append, never overwrite"
+FCL 1 --role qa1 --reason "also seeing this on review" >/dev/null
+SWEEP2="$(FCL sweep)"
+assert_contains "first raiser's row survives a second raise" "$SWEEP2" "[impl1]"
+assert_contains "second raiser's row is appended"            "$SWEEP2" "[qa1]"
+assert_eq "two active rows for LI-1, not a dedup to one" "2" "$(printf '%s\n' "$SWEEP2" | grep -c '^LI-1'"$(printf '\t')")"
+
+section "fwf flag-captain (#113): clear ends the flag; a bare re-raise after clear is active again"
+CLEAR_OUT="$(FCL 1 --clear --note "unblocked, rebased onto staging")"
+assert_contains "clear confirms" "$CLEAR_OUT" "needs-captain cleared"
+assert_contains "clear removes the label" "$(FCISS list --label needs-captain)" "no local issue"$'\n'"" || true
+case "$(FCISS list --label needs-captain)" in *LI-1*) bad "clear removes the label" "still listed";; *) ok "clear removes the label";; esac
+assert_eq "cleared item has no open flags" "no needs-captain flags open" "$(FCL sweep)"
+assert_contains "clear is recorded as a comment" "$(FCISS view 1 --comments)" "NEEDS-CAPTAIN-CLEARED: unblocked, rebased onto staging"
+FCL 1 --role impl1 --reason "flaked again on the same base" >/dev/null
+POSTCLEAR="$(FCL sweep)"
+assert_contains "a raise AFTER a clear is active again" "$POSTCLEAR" "flaked again on the same base"
+case "$POSTCLEAR" in *"blocked: base missing #104"*) bad "the pre-clear reason must not resurrect" "$POSTCLEAR";; *) ok "the pre-clear reason stays inactive (only post-clear raises count)";; esac
+
+section "fwf flag-captain (#113): a labeled item never silently drops a missing role/reason"
+FCISS create --title "Silent stub" >/dev/null
+FCISS edit 2 --add-label needs-captain >/dev/null   # label with zero NEEDS-CAPTAIN: comments
+assert_contains "bare label with no comment still surfaces" "$(FCL sweep)" "no reason given"
+FCISS comment 2 --body "NEEDS-CAPTAIN: unattributed reason, no role tag" >/dev/null
+assert_contains "a NEEDS-CAPTAIN: line with no [role] tag surfaces as role unstated" "$(FCL sweep)" "role unstated"
+
+section "fwf flag-captain (#113): usage errors"
+RC=0; FCL 3 --role impl1 2>/dev/null || RC=$?
+[ "$RC" -ne 0 ] && ok "raise without --reason fails closed" || bad "raise without --reason should fail"
+RC=0; FCL 3 --reason "x" 2>/dev/null || RC=$?
+[ "$RC" -ne 0 ] && ok "raise without --role fails closed" || bad "raise without --role should fail"
+
+section "fwf flag-captain (#113): gh backend — label pre-provisioning (AC7) and PR-vs-issue routing"
+FCG() { # $1... args; overrides gh_ to log calls instead of hitting the network
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_kind() { [ \"\$1\" = 9 ] && echo pr || echo issue; }
+    gh_() { printf '%s\n' \"gh \$*\" >> '$TMP/gh-calls.log'; }
+    main \"\$@\"
+  " "$FC" "$@"
+}
+rm -f "$TMP/gh-calls.log"
+FCG 5 --role gv --reason "spec won't converge, needs a human call" >/dev/null
+GHLOG="$(cat "$TMP/gh-calls.log")"
+assert_contains "gh raise ensures the label exists first" "$GHLOG" "gh label create needs-captain"
+assert_contains "gh raise adds the label to the issue"    "$GHLOG" "gh issue edit 5 --add-label needs-captain"
+assert_contains "gh raise posts the NEEDS-CAPTAIN comment" "$GHLOG" "gh issue comment 5 --body NEEDS-CAPTAIN: [gv] spec won't converge, needs a human call"
+LABEL_LINE="$(printf '%s\n' "$GHLOG" | grep -n "label create" | head -1 | cut -d: -f1)"
+ADDLABEL_LINE="$(printf '%s\n' "$GHLOG" | grep -n "add-label" | head -1 | cut -d: -f1)"
+[ "$LABEL_LINE" -lt "$ADDLABEL_LINE" ] && ok "label create-if-absent runs BEFORE add-label (AC7 order)" || bad "label must be ensured before it's applied"
+rm -f "$TMP/gh-calls.log"
+FCG 9 --role qa2 --reason "PR needs a rebase call" >/dev/null
+assert_contains "PR number routes through 'gh pr', not 'gh issue'" "$(cat "$TMP/gh-calls.log")" "gh pr edit 9 --add-label needs-captain"
+
+# --------------------------------------------------------------------------
 # fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed
 # from FAKE Claude Code project dirs — never touches the real
 # ~/.claude/projects (FWF_CLAUDE_PROJECTS_DIR override) or the real run dir

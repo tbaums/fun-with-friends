@@ -366,6 +366,9 @@ fwf gate <role> [--e2e] -- <cmd...>                 the shared guarded gate/e2e 
                                                     __GATE__/__E2E__ render calls (issue #123); exits
                                                     75 rather than stacking a second run when <role>'s
                                                     own prior gate is still in flight
+fwf flag-captain <n> --role R --reason TEXT         raise a persisted "needs-captain" flag on issue/PR
+  fwf flag-captain <n> --clear [--note TEXT]        <n> for the captain's per-tick sweep to pick up
+  fwf flag-captain sweep                            (issue #113) — see docs/needs-captain.md
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
@@ -578,6 +581,9 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   one GitHub account: why formal PR reviews don't work, and the
   `QA-CHANGES-REQUESTED`/`QA-APPROVED`/`IMPL-ADDRESSED` marker protocol
   (`fwf pr-review-state`) that replaces them.
+- [docs/needs-captain.md](docs/needs-captain.md) — the persisted
+  `needs-captain` flag any role raises on an issue/PR (`fwf flag-captain`),
+  swept by the captain every tick so it can't go unseen (issue #113).
 - [docs/containers.md](docs/containers.md) — the containerization design and
   `fwf shell`.
 

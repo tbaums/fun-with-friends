@@ -71,6 +71,10 @@ if [ "$FWF_ISSUES" = "gh" ]; then
   # Ensure the release-freeze hold label exists (implementers skip held issues until the PM lifts it post-release).
   gh label create "$HOLD_LABEL" --description "Held for a future release — implementers skip until the PM lifts it after the current release" --color 0052CC --force >/dev/null 2>&1 \
     && log "ensured label '$HOLD_LABEL'" || log "label '$HOLD_LABEL' ensure skipped (gh not ready?)"
+  # Ensure the needs-captain label exists (issue #113, AC7) — belt-and-suspenders
+  # alongside fwf-flag-captain.sh's own create-if-absent on every raise.
+  gh label create "$NEEDS_CAPTAIN_LABEL" --description "Something needs the captain's attention — see the NEEDS-CAPTAIN: comment" --color D93F0B --force >/dev/null 2>&1 \
+    && log "ensured label '$NEEDS_CAPTAIN_LABEL'" || log "label '$NEEDS_CAPTAIN_LABEL' ensure skipped (gh not ready?)"
 else
   # Local issues mode (#26): labels are free-form strings in the local store —
   # nothing to create on GitHub, and we must NOT touch the repo's labels.
