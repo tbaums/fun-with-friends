@@ -81,17 +81,29 @@ Under it, a one-line health note and the single next action.
 
 **Watch the "⛔ NEEDS YOU" list.** Every captain tick sweeps for decisions
 only you can make — an unanswered PM question, a GV escalation, a signed-off
-draft waiting on your go, a risky call — and presents them as a numbered
-list. If something's blocked on you, it's here; if the list says "nothing
-needs you", you can walk away.
+draft waiting on your go, a risky call, a `needs-captain` flag (below) — and
+presents them as a numbered list. If something's blocked on you, it's here;
+if the list says "nothing needs you", you can walk away.
 
-**The three labels.**
+**The `needs-captain` flag (issue #113).** Any role — impl/qa/pm/gv — can
+reach the captain reliably, instead of hoping it reads the right tmux pane at
+the right moment: `fwf flag-captain <n> --role <role> --reason "<text>"
+[--pr]` applies the `needs-captain` label to the issue/PR and posts a
+self-declared `NEEDS-CAPTAIN: [<role>] <reason>` comment (self-declared
+because every role shares one GitHub account — the comment author carries no
+role info). The captain's per-tick sweep (`fwf flag-captain --sweep`) lists
+every open flag across both issue-tracker backends — # · role · reason ·
+age — so it survives ticks, idle, and respawn until the captain clears it
+(`fwf flag-captain <n> --clear`).
+
+**The four labels.**
 
 | Label | Meaning | Who acts |
 |---|---|---|
 | `product-wip` | a PM draft being specced/hardened — implementers can't see it | you (or the captain) approve to remove it |
 | `release-hold` | held for a future release during a freeze | the PM lifts it when you authorize |
 | `idea` | parked by you for later — **every** role skips it entirely | you remove `idea` to activate it |
+| `needs-captain` | a role flagged something only the captain/you can decide | the captain clears it once handled |
 
 **Approving work.** Any unambiguous go-ahead works — "go ahead on #N",
 "lgtm", "ship it", a 👍 comment on the issue. The PM verifies the spec is
@@ -387,6 +399,7 @@ are treated as PM-plane: they die on `down --pm-only` (and so also on
 | `__PM_INTERVAL__` | the PM's loop interval |
 | `__DEVUI__` | the live-dev hint (with `__DATA__` expanded) |
 | `__DISCOVERY_LABEL__` | the discovery-flow label |
+| `__NEEDS_CAPTAIN_LABEL__` | the needs-captain flag label (issue #113) |
 | `__UT_APP_URL__` / `__UT_ROOT__` / `__UT_PERSONA_PANES__` / `__UT_PERSONA_COUNT__` | user-testing template only: target app URL, output root, persona roster |
 
 **Keep the harness contract.** Whatever your roles do, preserve these

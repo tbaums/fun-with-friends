@@ -152,6 +152,24 @@ UTILITIES
                          runs this for real when composing a PR/squash-merge
                          body (issue #106); fails closed (prints nothing, rc 1)
                          if fwf-internal vocabulary survives sanitization.
+  flag-captain <n> --role R --reason TEXT [--pr]
+                         Raise a persisted "needs-captain" signal on issue/PR
+                         <n> (issue #113): applies the needs-captain label
+                         (create-if-absent) and a self-declared
+                         `NEEDS-CAPTAIN: [R] TEXT` comment — self-declared
+                         because every role shares one GitHub account, so the
+                         comment author carries no role info. Works on both
+                         issue-tracker backends; PRs always route through
+                         `gh pr` (--pr).
+  flag-captain <n> --clear [--note TEXT] [--pr]
+                         Clear a needs-captain flag (removes the label,
+                         optionally leaves a closing note).
+  flag-captain --sweep   List every open issue/PR carrying the needs-captain
+                         label across both trackers — one line each with its
+                         raiser role, reason, and age. The captain runs this
+                         every tick so a raised flag persists until cleared,
+                         rather than depending on the captain reading the
+                         right tmux pane at the right time.
   usage [--clear-hold]   Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
                          transcripts, plus budget-enforcement status
@@ -566,6 +584,7 @@ case "$cmd" in
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
+  flag-captain) engine fwf-flag-captain.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;

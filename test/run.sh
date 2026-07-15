@@ -2732,6 +2732,143 @@ for f in templates/_local-issues/*.tmpl; do
 done
 
 # --------------------------------------------------------------------------
+# fwf flag-captain (#113): the persisted "needs-captain" signal any role can
+# raise on an issue/PR, that the captain sweeps every tick, instead of the
+# ephemeral pane message the 2026-07-14 impl1 incident showed can go unseen.
+FC="$ROOT/fwf-flag-captain.sh"
+
+section "flag-captain: NEEDS-CAPTAIN line parsing (self-declared role, never inferred from the comment author)"
+FC_PARSE="$(FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_parse_needs_captain_line 'NEEDS-CAPTAIN: [impl2] blocked on base'")"
+assert_contains "role parsed from the [role] tag" "$FC_PARSE" "role=impl2"
+assert_contains "reason parsed from the [role] tag" "$FC_PARSE" "reason=blocked on base"
+
+FC_PARSE_NOROLE="$(FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_parse_needs_captain_line 'NEEDS-CAPTAIN: no role here'")"
+assert_contains "missing [role] tag -> role=unstated (edge case: never silently dropped)" "$FC_PARSE_NOROLE" "role=unstated"
+assert_contains "missing [role] tag -> reason still captured" "$FC_PARSE_NOROLE" "reason=no role here"
+
+FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_parse_needs_captain_line 'just a regular comment'" \
+  && bad "non-NEEDS-CAPTAIN line rejected (rc 1)" || ok "non-NEEDS-CAPTAIN line rejected (rc 1)"
+
+section "flag-captain: age bucketing"
+FC_NOW="$(date -u +%s)"
+assert_eq "just now -> seconds bucket"   "0s" "$(FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_age_str $FC_NOW")"
+assert_eq "90s ago -> minutes bucket"    "1m" "$(FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_age_str $((FC_NOW - 90))")"
+assert_eq "2h ago -> hours bucket"       "2h" "$(FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_age_str $((FC_NOW - 7200))")"
+assert_eq "3d ago -> days bucket"        "3d" "$(FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _fwf_age_str $((FC_NOW - 259200))")"
+
+section "flag-captain: sweep row emission (_emit_sweep_row) — the AC2 'each item's latest reason' shape"
+NOROW="$(printf '%s' '[]' | FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _emit_sweep_row 42 issue 2026-07-01T00:00:00Z")"
+assert_contains "no NEEDS-CAPTAIN comment at all -> role unstated (never silently dropped)" "$NOROW" "role=unstated"
+assert_contains "no NEEDS-CAPTAIN comment at all -> \"no reason given\""                    "$NOROW" "reason=no reason given"
+assert_contains "row carries the item number + type"                                        "$NOROW" "#42 [issue]"
+
+ONEROW="$(printf '%s' '[{"body":"NEEDS-CAPTAIN: [impl2] blocked on base","createdAt":"2026-07-15T18:00:00Z"}]' \
+  | FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _emit_sweep_row 113 issue 2026-07-15T17:00:00Z")"
+assert_contains "single flag -> role captured"   "$ONEROW" "role=impl2"
+assert_contains "single flag -> reason captured" "$ONEROW" "reason=blocked on base"
+
+LATESTROW="$(printf '%s' '[{"body":"NEEDS-CAPTAIN: [impl1] first reason","createdAt":"2026-07-15T10:00:00Z"},{"body":"NEEDS-CAPTAIN: [impl1] second reason (appended)","createdAt":"2026-07-15T12:00:00Z"}]' \
+  | FWF_PROFILE=example bash -c "source '$FC' 2>/dev/null; _emit_sweep_row 200 pr 2026-07-15T09:00:00Z")"
+assert_contains "multiple raises on one item -> sweep shows the LATEST reason, not the first" "$LATESTROW" "reason=second reason (appended)"
+assert_contains "row type is pr"                                                              "$LATESTROW" "[pr]"
+
+section "flag-captain: local-issues mode end-to-end (AC1/AC2/AC3/AC4/AC5 — raise, sweep, append, clear, real fwf-issues.sh store)"
+FCRUN="$TMP/flagcaptain-local"
+fc_local() { FWF_RUN_DIR="$FCRUN" FWF_ISSUES=local FWF_PROFILE=example bash "$FC" "$@"; }
+fi_local() { FWF_RUN_DIR="$FCRUN" FWF_ISSUES=local FWF_PROFILE=example bash "$ROOT/fwf-issues.sh" "$@"; }
+
+FC_CREATE_OUT="$(fi_local create --title "needs a captain call" --body seed)"
+FCNUM="$(printf '%s' "$FC_CREATE_OUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+[ -n "$FCNUM" ] || bad "local issue created for flag-captain e2e" "could not parse issue number from: $FC_CREATE_OUT"
+
+fc_local "$FCNUM" --role impl2 --reason "blocked: needs the captain's call" >/dev/null
+assert_contains "raise: needs-captain label applied in the local store" "$(fi_local view "$FCNUM" --json labels)" "needs-captain"
+assert_contains "raise: self-declared NEEDS-CAPTAIN comment posted"     "$(fi_local view "$FCNUM" --json comments)" "NEEDS-CAPTAIN: [impl2] blocked: needs the captain's call"
+
+SWEEP1="$(fc_local --sweep)"
+assert_contains "sweep: lists the raised flag with its role" "$SWEEP1" "#$FCNUM [issue] role=impl2"
+assert_contains "sweep: carries the reason"                   "$SWEEP1" "reason=blocked: needs the captain's call"
+
+# Edge case: a second raiser on the SAME item appends (never overwrites), and
+# the sweep line reflects the LATEST reason while both comments persist.
+fc_local "$FCNUM" --role qa2 --reason "also blocked, different angle" >/dev/null
+FC_COMMENTS_AFTER2="$(fi_local view "$FCNUM" --json comments)"
+assert_contains "second raise appends a NEW comment" "$FC_COMMENTS_AFTER2" "NEEDS-CAPTAIN: [qa2] also blocked, different angle"
+assert_contains "the first raiser's comment is NOT overwritten" "$FC_COMMENTS_AFTER2" "NEEDS-CAPTAIN: [impl2] blocked: needs the captain's call"
+SWEEP2="$(fc_local --sweep)"
+assert_contains "sweep after 2nd raise shows the LATEST raiser" "$SWEEP2" "role=qa2"
+
+fc_local "$FCNUM" --clear --note "handled: unblocked in #999" >/dev/null
+assert_contains "clear: posts the closing note" "$(fi_local view "$FCNUM" --json comments)" "handled: unblocked in #999"
+case "$(fi_local view "$FCNUM" --json labels)" in
+  *"needs-captain"*) bad "clear: needs-captain label removed from the local store";;
+  *) ok "clear: needs-captain label removed from the local store";;
+esac
+SWEEP3="$(fc_local --sweep)"
+case "$SWEEP3" in
+  *"#$FCNUM"*) bad "sweep: a cleared flag is no longer listed" "still present: $SWEEP3";;
+  *) ok "sweep: a cleared flag is no longer listed";;
+esac
+
+section "flag-captain: gh-mode routing (issues vs PRs always through gh pr; AC7 label pre-provisioning)"
+FCGHBIN="$TMP/flagcaptain-ghstub"; mkdir -p "$FCGHBIN"
+FCGHLOG="$TMP/flagcaptain-gh.log"
+cat > "$FCGHBIN/gh" <<'EOS'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FC_GH_LOG"
+exit 0
+EOS
+chmod +x "$FCGHBIN/gh"
+
+: > "$FCGHLOG"
+FWF_ISSUES=gh FC_GH_LOG="$FCGHLOG" PATH="$FCGHBIN:$PATH" FWF_PROFILE=example bash "$FC" 55 --role gv --reason "spec ambiguity" >/dev/null
+GHLOG_ISSUE="$(cat "$FCGHLOG")"
+assert_contains "gh-mode raise on an issue: label pre-provisioned before use (AC7)" "$GHLOG_ISSUE" "label create needs-captain"
+assert_contains "gh-mode raise on an issue: routes through gh issue edit --add-label" "$GHLOG_ISSUE" "issue edit 55 --add-label needs-captain"
+assert_contains "gh-mode raise on an issue: comment via gh issue comment" "$GHLOG_ISSUE" "issue comment 55 --body NEEDS-CAPTAIN: [gv] spec ambiguity"
+printf '%s\n' "$GHLOG_ISSUE" | grep -q '^pr ' \
+  && bad "gh-mode issue raise never touches gh pr" || ok "gh-mode issue raise never touches gh pr"
+
+: > "$FCGHLOG"
+FWF_ISSUES=gh FC_GH_LOG="$FCGHLOG" PATH="$FCGHBIN:$PATH" FWF_PROFILE=example bash "$FC" 77 --pr --role impl1 --reason "flaky e2e port collision" >/dev/null
+GHLOG_PR="$(cat "$FCGHLOG")"
+assert_contains "--pr raise routes through gh pr edit, not gh issue" "$GHLOG_PR" "pr edit 77 --add-label needs-captain"
+assert_contains "--pr raise: comment via gh pr comment" "$GHLOG_PR" "pr comment 77 --body NEEDS-CAPTAIN: [impl1] flaky e2e port collision"
+printf '%s\n' "$GHLOG_PR" | grep -q '^issue ' \
+  && bad "--pr raise never touches gh issue (PRs always route through gh pr, both tracker backends)" \
+  || ok "--pr raise never touches gh issue (PRs always route through gh pr, both tracker backends)"
+
+: > "$FCGHLOG"
+FWF_ISSUES=gh FC_GH_LOG="$FCGHLOG" PATH="$FCGHBIN:$PATH" FWF_PROFILE=example bash "$FC" 55 --clear --note resolved >/dev/null
+GHLOG_CLEAR="$(cat "$FCGHLOG")"
+assert_contains "gh-mode clear: removes the label" "$GHLOG_CLEAR" "issue edit 55 --remove-label needs-captain"
+assert_contains "gh-mode clear: posts the closing note" "$GHLOG_CLEAR" "issue comment 55 --body resolved"
+
+# Local mode never shells out to gh at all — a raise/sweep succeeds even with
+# no gh binary reachable on PATH (AC5: identical command, no cross-mode leak).
+FWF_RUN_DIR="$FCRUN" FWF_ISSUES=local FWF_PROFILE=example PATH="/usr/bin:/bin" bash "$FC" --sweep >/dev/null 2>&1 \
+  && ok "local mode needs no gh on PATH at all" || bad "local mode needs no gh on PATH at all"
+
+section "flag-captain: wired into the fwf CLI dispatcher"
+assert_contains "fwf help documents flag-captain" "$("$ROOT/fwf" help)" "flag-captain <n> --role R --reason TEXT"
+CLISWEEP="$(FWF_RUN_DIR="$TMP/flagcaptain-clismoke" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf" flag-captain --sweep 2>&1)"
+assert_contains "fwf flag-captain --sweep dispatches to the real helper" "$CLISWEEP" "nothing flagged"
+
+section "needs-captain sweep coverage (issue #113 AC6): the sweep is ENFORCED in every base captain.tmpl, not optional guidance"
+MISSING_SWEEP=""
+while IFS= read -r -d '' f; do
+  /usr/bin/grep -q "flag-captain --sweep" "$f" || MISSING_SWEEP="$MISSING_SWEEP $f"
+done < <(find "$ROOT/templates" -name "captain.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every factory design's captain.tmpl carries the enforced needs-captain sweep" "" "$MISSING_SWEEP"
+
+NC_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+assert_contains "__NEEDS_CAPTAIN_LABEL__ substitutes to the real label" "$NC_RENDER" "needs-captain"
+case "$NC_RENDER" in
+  *"__NEEDS_CAPTAIN_LABEL__"*) bad "no stray __NEEDS_CAPTAIN_LABEL__ after render";;
+  *) ok "no stray __NEEDS_CAPTAIN_LABEL__ after render";;
+esac
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

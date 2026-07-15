@@ -153,27 +153,31 @@ sweep() {
 }
 
 # --- dispatch ----------------------------------------------------------------
-[ $# -gt 0 ] || die "usage: fwf flag-captain <n> --role R --reason TEXT [--pr] | <n> --clear [--note TEXT] [--pr] | --sweep"
+main() {
+  [ $# -gt 0 ] || die "usage: fwf flag-captain <n> --role R --reason TEXT [--pr] | <n> --clear [--note TEXT] [--pr] | --sweep"
 
-if [ "$1" = "--sweep" ]; then sweep; exit 0; fi
+  if [ "$1" = "--sweep" ]; then sweep; return 0; fi
 
-n="$1"; shift
-case "$n" in ''|*[!0-9]*) die "need an issue/PR number (got '$n')";; esac
+  local n="$1"; shift
+  case "$n" in ''|*[!0-9]*) die "need an issue/PR number (got '$n')";; esac
 
-is_pr=0; role=""; reason=""; do_clear=0; note=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --pr)     is_pr=1; shift;;
-    --role)   role="$2"; shift 2;;
-    --reason) reason="$2"; shift 2;;
-    --clear)  do_clear=1; shift;;
-    --note)   note="$2"; shift 2;;
-    *) die "unknown flag '$1'";;
-  esac
-done
+  local is_pr=0 role="" reason="" do_clear=0 note=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr)     is_pr=1; shift;;
+      --role)   role="$2"; shift 2;;
+      --reason) reason="$2"; shift 2;;
+      --clear)  do_clear=1; shift;;
+      --note)   note="$2"; shift 2;;
+      *) die "unknown flag '$1'";;
+    esac
+  done
 
-if [ "$do_clear" = 1 ]; then
-  clear_flag "$n" "$is_pr" "$note"
-else
-  raise "$n" "$is_pr" "$role" "$reason"
-fi
+  if [ "$do_clear" = 1 ]; then
+    clear_flag "$n" "$is_pr" "$note"
+  else
+    raise "$n" "$is_pr" "$role" "$reason"
+  fi
+}
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi

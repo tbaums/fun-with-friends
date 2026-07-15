@@ -97,3 +97,40 @@ forever even after qa posted a plain-comment request, and a qa that only
 posted its request and never re-checked would never notice implN's fix — the
 respawn-safe fix is that the durable PR thread is the source of truth for
 both directions, not a role's local memory of what it last saw.
+
+## The needs-captain flag protocol (issue #113)
+
+A second concrete instance of rule 2 above, one level up: any role (impl/qa/
+pm/gv) that hits something only the captain can decide has no formal way to
+address the captain specifically — every comment author is the same shared
+account. The raiser therefore **self-declares** its role in the marker text,
+never relying on the comment author:
+
+| Marker (first line of a plain issue/PR comment) | Posted by | Meaning |
+|---|---|---|
+| `NEEDS-CAPTAIN: [<role>] <reason>` | any role, `<role>` self-declared | the raiser needs the captain to decide something before it can proceed |
+
+The label + comment are applied together by `fwf flag-captain <n> --role
+<role> --reason "<text>" [--pr]` (`fwf-flag-captain.sh`) — never a bare
+`gh issue/pr edit --add-label`, since that can no-op silently if the
+`needs-captain` label doesn't exist yet in the GitHub backend (the helper
+creates it on demand; `fwf-provision.sh` also provisions it at setup, belt
+and suspenders). Works uniformly across both issue-tracker backends: issues
+route through the local store when `--issues local`, `gh issue` otherwise;
+PRs always route through `gh pr` (`--pr`), since PRs live on GitHub in both
+modes.
+
+The captain never hand-parses these threads either — it sweeps with:
+
+```
+fwf flag-captain --sweep
+```
+
+which lists every open issue/PR carrying the `needs-captain` label, across
+both trackers, one line each: `#<n> [issue|pr] role=<role> age=<Ns/m/h/d>
+reason=<text>` (falling back to `role=unstated`/`reason=no reason given`
+rather than ever silently dropping a flag with no comment or no `[role]`
+tag). This is wired into every `captain.tmpl`'s per-tick "⛔ NEEDS YOU" sweep
+(not optional guidance), so a flag persists across ticks, idle, and respawn
+until the captain clears it: `fwf flag-captain <n> --clear [--note "<text>"]
+[--pr]`.

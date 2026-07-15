@@ -319,6 +319,7 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
 `FWF_QA_INTERVAL`, `FWF_CONDUCTOR_INTERVAL`, `FWF_PM_INTERVAL`, `FWF_GV_INTERVAL`,
 `FWF_CAPTAIN_INTERVAL`, `FWF_IMPL_INTERVAL`, `FWF_WIP_LABEL`, `FWF_HOLD_LABEL`,
 `FWF_DISCOVERY_LABEL` (default `discovery`),
+`FWF_NEEDS_CAPTAIN_LABEL` (default `needs-captain`, issue #113),
 `FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors — plus the
 sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
 `FWF_TEMPLATE`) from the next section. Role prompts are the source of truth and
@@ -479,6 +480,18 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
   release. Authorize the PM to "lift the freeze" afterward.
+- **Needs-captain flag (issue #113):** every role authenticates as the same
+  GitHub account, so a role that hits something only the captain can decide
+  (a blocker, a conflicting-goals call) has no reliable channel beyond an
+  ephemeral tmux pane line the captain might never read. `fwf flag-captain <n>
+  --role <role> --reason "<text>" [--pr]` applies a persisted `needs-captain`
+  label plus a self-declared `NEEDS-CAPTAIN: [<role>] <reason>` comment (the
+  role is written into the line by the raiser, never inferred from the
+  comment author); the captain's per-tick sweep (`fwf flag-captain --sweep`)
+  lists every open flag across both issue-tracker backends — # · role ·
+  reason · age — so it survives ticks, idle, and respawn until cleared
+  (`fwf flag-captain <n> --clear`). See `fwf help` and
+  `fwf-flag-captain.sh`.
 - **Upgrade staleness check:** `fwf up` and `fwf doctor` check (never blocking —
   the network call, if any, always runs detached in the background) whether a
   newer fwf release exists and warn if you're behind. `fwf doctor` reports one
