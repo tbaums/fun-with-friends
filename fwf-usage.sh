@@ -42,6 +42,13 @@ _fwf_usage_fmt_state() { # $1=state $2=age_secs
   esac
 }
 
+# NOTE (issue #108): the ARMED/NOT ARMED line stays a plain ceiling summary —
+# it must keep matching dash's independent Rust reimplementation (data.rs
+# `armed_status_line()`, whose own header comment claims parity "exactly").
+# The this-run / excl.-cache-read breakdown lives in the hold-state line
+# instead, which BOTH surfaces already render verbatim from $BUDGET_HOLD_FILE
+# (the single thing fwf-budget-check.sh writes) — so it appears there for
+# free, with no risk of the two surfaces drifting apart.
 _fwf_usage_budget_line() {
   if [ -z "${FWF_TOKEN_BUDGET:-}" ]; then
     printf 'budget enforcement: NOT ARMED (no FWF_TOKEN_BUDGET configured — unlimited)\n'

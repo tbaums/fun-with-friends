@@ -1911,6 +1911,37 @@ FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run6" FWF_CLAUDE_PROJECTS_DIR="$BT/claude
 [ "$CLIRC" = 0 ] && ok "'fwf budget-check' dispatches and exits 0 with no budget configured" \
   || bad "'fwf budget-check' dispatches and exits 0" "exit $CLIRC"
 
+section "fwf-budget-check.sh (#108): cache_read is excluded from the ceiling — heavy cache traffic alone must not trip a small budget"
+rm -rf "$BT/run7" "$BPROJ"; mkdir -p "$BPROJ"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":5000000,"output_tokens":10}}}' > "$BPROJ/s1.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run7" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
+[ -f "$BT/run7/BUDGET_HOLD" ] && bad "5M cache-read tokens alone must not trip a 1000-token ceiling" "$(cat "$BT/run7/BUDGET_HOLD")" \
+  || ok "5M cache-read tokens alone does not trip a 1000-token ceiling (cache_read excluded from the ceiling formula)"
+
+section "fwf-budget-check.sh (#108): per-run baseline — a prior run's leftover transcript history does not count against a FRESH run's ceiling"
+rm -rf "$BT/run8" "$BPROJ"; mkdir -p "$BPROJ"
+# Simulate a PRIOR run's leftover history already sitting in the transcript at
+# arm time (issue #108's repro: `fwf down --purge` + re-provision reuses the
+# same worktree path, so the recreated pane's transcript dir still holds it).
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":950,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$BPROJ/s1.jsonl"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run8" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+BASELINE8="$(cat "$BT/run8/state/.__budget/budget-baseline.json" 2>/dev/null || true)"
+assert_eq "baseline snapshot captured the pre-existing 950 input tokens" "950" "$(printf '%s' "$BASELINE8" | jq -r '.input')"
+# NEW spend after arming: 100 more input tokens -> lifetime-cumulative is now
+# 1050 (would trip a 1000-token ceiling under the OLD cumulative-only logic),
+# but THIS run has only spent 100 — still well under budget.
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' >> "$BPROJ/s1.jsonl"
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run8" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$BC"
+[ -f "$BT/run8/BUDGET_HOLD" ] && bad "this-run spend (100) under budget must not hold, even though lifetime-cumulative (1050) would exceed it" "$(cat "$BT/run8/BUDGET_HOLD")" \
+  || ok "per-run baseline: lifetime-cumulative exceeding budget does not hold when THIS run's own spend is still under it"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run8" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+
+section "fwf_budget_writer_stop (#108): clears the baseline too, so the NEXT arm for this profile starts fresh"
+[ -f "$BT/run8/state/.__budget/budget-baseline.json" ] && bad "writer_stop removes the baseline file" \
+  || ok "writer_stop removes the baseline file"
+
 rm -f "$ROOT/profiles/.__budget.sh"
 
 section "BUDGET CHECK step-0 (issue #96): every REAL role-loop template carries it (composed/rendered, not a naive per-file grep)"

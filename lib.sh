@@ -585,6 +585,13 @@ FWF_TMUX_SOCKET_FILE="$FWF_STATE_DIR/tmux_socket"
 # share a writer. Armed at `fwf up` only when a budget is configured; killed
 # at `fwf down`.
 FWF_BUDGET_WRITER_PID_FILE="$FWF_STATE_DIR/budget-writer.pid"
+# Per-run usage snapshot (issue #108): captured once, the moment the WRITER
+# newly arms (never on an idempotent re-arm of an already-running writer —
+# that's the SAME run continuing, e.g. a --floor-only recycle). Lets the
+# WRITER enforce against spend SINCE THIS RUN rather than the worktrees'
+# lifetime-cumulative total, which otherwise inherits a prior run's history
+# when `fwf down --purge` + re-`provision` reuses the same worktree paths.
+FWF_BUDGET_BASELINE_FILE="$FWF_STATE_DIR/budget-baseline.json"
 fwf_tmux_socket_value() {   # echoes what should be persisted, from the CURRENT $TMUX
   if [ -n "${TMUX:-}" ]; then printf '%s\n' "${TMUX%%,*}"; else printf '%s\n' default; fi
 }
@@ -750,13 +757,29 @@ fwf_e2e_lock_release() {
 # `fwf down`. Tracked via a per-profile PID file so re-arming is idempotent
 # (a stale/dead PID is silently replaced) and `fwf down` can find it.
 #
+# Snapshot the CURRENT enforcement-relevant totals (input + cache_creation +
+# output — mirrors fwf-budget-check.sh's own ceiling formula, issue #108) as
+# this run's baseline. Best-effort: a read failure (e.g. jq missing, no
+# transcripts yet) degrades to a zero baseline rather than blocking `fwf up`
+# — that just falls back to the old cumulative-since-worktree-creation
+# behavior for this run, never worse than before this fix.
+fwf_budget_baseline_capture() {
+  mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
+  local usage_json totals
+  usage_json="$("$FWF_LIB_DIR/fwf-usage-data.sh" 2>/dev/null || true)"
+  totals="$(printf '%s' "$usage_json" | jq -c '.total.tokens // {input:0,cache_creation:0,cache_read:0,output:0}' 2>/dev/null || true)"
+  [ -n "$totals" ] || totals='{"input":0,"cache_creation":0,"cache_read":0,"output":0}'
+  printf '%s\n' "$totals" > "$FWF_BUDGET_BASELINE_FILE"
+}
+
 # rc 0 whether or not a writer was actually started (armed = FWF_TOKEN_BUDGET
 # set AND a loop is now running for this profile) — callers that need to know
 # check fwf_budget_writer_running after calling this.
 fwf_budget_writer_start() {
   [ -n "${FWF_TOKEN_BUDGET:-}" ] || return 0   # no budget configured: never arm
-  fwf_budget_writer_running && return 0        # already running for this profile
+  fwf_budget_writer_running && return 0        # already running for this profile: SAME run, keep its baseline
   mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
+  fwf_budget_baseline_capture           # fresh arm = a NEW run: snapshot before the loop can write anything
   nohup "$FWF_LIB_DIR/fwf-budget-check.sh" --loop >/dev/null 2>&1 &
   disown 2>/dev/null || true
   printf '%s\n' "$!" > "$FWF_BUDGET_WRITER_PID_FILE"
@@ -779,7 +802,7 @@ fwf_budget_writer_stop() {
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$FWF_BUDGET_WRITER_PID_FILE"
   fi
-  rm -f "$BUDGET_HOLD_FILE"
+  rm -f "$BUDGET_HOLD_FILE" "$FWF_BUDGET_BASELINE_FILE"   # a downed floor's next up starts a fresh baseline (issue #108)
 }
 
 # Clear whatever is sitting in the pane's Claude composer before we type into it,

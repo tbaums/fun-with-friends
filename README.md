@@ -415,25 +415,39 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   switch for offline/air-gapped use — it disables the check entirely (no cache
   read, no network, ever), not just the banner.
 - **Token budget enforcement** (`--token-budget N`, opt-in, unset = unlimited):
-  caps combined token spend across every role. `fwf up`/`fwf up --floor-only`
-  arms a background WRITER (`fwf-budget-check.sh --loop`, ~60s cadence, zero
-  network calls — it only re-reads the local transcripts `fwf usage` already
-  reads) only when `FWF_TOKEN_BUDGET` is set; every role checks a sentinel at
-  its own step-0 and, if held, commits WIP and idles until the next tick — it
-  never cancels a role's loop, so it resumes automatically once the hold
-  clears, no respawn needed. Three states, written ONLY by the WRITER (roles
-  only ever read it): **HOLD** (spend ≥ budget — needs an operator to raise
-  `FWF_TOKEN_BUDGET` or run `fwf usage --clear-hold`), **WARN** (≥
-  `FWF_TOKEN_BUDGET_WARN_PCT`, default 80%, of budget — noted, not paused),
-  and **UNKNOWN — FAIL-CLOSED** (a role's usage reader broke — pauses the
-  whole factory rather than risk silently under-counting spend; textually
-  distinct from HOLD so a Claude Code transcript-schema change is never
-  misread as "over budget"). `fwf usage` and the dash Usage tab both show an
-  explicit **ARMED (ceiling N) / NOT ARMED** line plus the current hold, so a
-  budget set mid-run without a re-`fwf up` (the only place the WRITER gets
-  armed) is visibly, not silently, off. `fwf down` (including `--floor-only`)
-  stops the WRITER and clears any hold — a downed floor spends nothing, so
-  there's nothing left to enforce against.
+  caps combined token spend across every role, THIS RUN. `fwf up`/`fwf up
+  --floor-only` arms a background WRITER (`fwf-budget-check.sh --loop`, ~60s
+  cadence, zero network calls — it only re-reads the local transcripts `fwf
+  usage` already reads) only when `FWF_TOKEN_BUDGET` is set; every role checks
+  a sentinel at its own step-0 and, if held, commits WIP and idles until the
+  next tick — it never cancels a role's loop, so it resumes automatically once
+  the hold clears, no respawn needed. The ceiling counts **input + cache-write
+  + output tokens** — it deliberately EXCLUDES cache-read tokens, which are
+  billed at a fraction of the input rate but dominate raw counts by orders of
+  magnitude on a long-lived run (every turn re-reads a large cached context),
+  so counting them 1:1 would trip an intuitive ceiling like `1000000` before
+  any real work happens. It's also measured **since this run's arm**, not the
+  worktrees' lifetime-cumulative total — a baseline snapshot is captured once,
+  the moment the WRITER newly arms, so a `fwf down --purge` + re-`provision`
+  to the same worktree paths never inherits a prior run's history as this
+  run's starting spend. (`fwf usage` still shows the full cache-read-inclusive
+  breakdown and $ estimate for the whole worktree's lifetime — the ceiling and
+  the report intentionally answer different questions.) Three states, written
+  ONLY by the WRITER (roles only ever read it): **HOLD** (spend ≥ budget —
+  needs an operator to raise `FWF_TOKEN_BUDGET` or run `fwf usage
+  --clear-hold`), **WARN** (≥ `FWF_TOKEN_BUDGET_WARN_PCT`, default 80%, of
+  budget — noted, not paused), and **UNKNOWN — FAIL-CLOSED** (a role's usage
+  reader broke — pauses the whole factory rather than risk silently
+  under-counting spend; textually distinct from HOLD so a Claude Code
+  transcript-schema change is never misread as "over budget"). The HOLD/WARN
+  text itself names the this-run, cache-read-excluded total that tripped it.
+  `fwf usage` and the dash Usage tab both show an explicit **ARMED (ceiling
+  N) / NOT ARMED** line plus the current hold, so a budget set mid-run
+  without a re-`fwf up` (the only place the WRITER gets armed) is visibly,
+  not silently, off. `fwf down` (including `--floor-only`)
+  stops the WRITER and clears any hold AND the run's baseline — a downed
+  floor spends nothing, so there's nothing left to enforce against, and the
+  next arm starts a fresh baseline.
 
 ## Learn more
 
