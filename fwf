@@ -170,8 +170,9 @@ UTILITIES
                          (a reproducible Linux sandbox — see docs/containers.md).
   doctor                 Check tmux / git / gh / claude and report versions.
   upgrade [--check]      Upgrade this fwf install to the latest release —
-                         git-clone installs ff-pull; tarball installs download
-                         the release and re-link. --check only reports.
+                         git-clone installs fetch tags + ff-merge to the release
+                         tag; tarball installs download the release and re-link.
+                         --check only reports.
   profiles               List available profiles.
   templates              List available factory design templates.
   version                Print the fwf version (aliases: -v, --version).
@@ -459,7 +460,9 @@ case "$cmd" in
   doctor)    doctor;;
   upgrade)
     # Self-upgrade. Two install modes, two paths:
-    #   git clone  -> ff-only pull (the clone IS the install; refuses on a dirty tree)
+    #   git clone  -> fetch tags + ff-merge to the release tag, converging on
+    #                 the same commit the tarball path installs (the clone IS
+    #                 the install; refuses on a dirty tree)
     #   tarball    -> download the latest release NEXT TO the current dir + re-run
     #                 its install.sh (re-points the symlink; old dir left for rollback)
     # FWF_UPGRADE_REPO overrides the canonical repo (forks, tests).
@@ -474,11 +477,11 @@ case "$cmd" in
     if [ -z "$latest" ]; then
       echo "fwf upgrade: could not query the latest release of $upgrade_repo (gh api failed — offline? unauthenticated?)." >&2
       if [ -d "$FWF_DIR/.git" ]; then
-        echo "  your install is a git clone — 'git -C $FWF_DIR pull --ff-only' upgrades it regardless." >&2
+        echo "  your install is a git clone — 'git -C $FWF_DIR fetch --tags && git -C $FWF_DIR merge --ff-only <tag>' upgrades it to a specific release regardless." >&2
       elif [ -e "$FWF_DIR/.git" ]; then
         wt_main="$(fwf_worktree_main_root "$FWF_DIR" || true)"
         if [ -n "$wt_main" ]; then
-          echo "  your install is a git worktree — run 'fwf upgrade' (or 'git -C $wt_main pull --ff-only') from $wt_main instead." >&2
+          echo "  your install is a git worktree — run 'fwf upgrade' (or 'git -C $wt_main fetch --tags && git -C $wt_main merge --ff-only <tag>') from $wt_main instead." >&2
         else
           echo "  your install links to a git checkout via .git, but its target couldn't be resolved — find that checkout and run 'fwf upgrade' from there." >&2
         fi
@@ -491,17 +494,19 @@ case "$cmd" in
     if [ -d "$FWF_DIR/.git" ]; then
       [ -z "$(git -C "$FWF_DIR" status --porcelain)" ] \
         || die "upgrade: the clone at $FWF_DIR has local changes — commit or stash them first."
-      git -C "$FWF_DIR" pull --ff-only || die "upgrade: git pull --ff-only failed (diverged from origin?)"
-      echo "fwf: upgraded $current -> $(cat "$FWF_DIR/VERSION") (git pull in $FWF_DIR)."
+      git -C "$FWF_DIR" fetch --tags || die "upgrade: git fetch --tags failed"
+      git -C "$FWF_DIR" merge --ff-only "$latest" \
+        || die "upgrade: git merge --ff-only to release $latest failed (local branch has diverged from the release tag?)"
+      echo "fwf: upgraded $current -> $(cat "$FWF_DIR/VERSION") (git clone converged on release $latest in $FWF_DIR)."
     elif [ -e "$FWF_DIR/.git" ]; then
       # .git exists but isn't a plain directory — a linked worktree (the normal
       # case for every fwf-self swarm role) or something unresolvable. Either
-      # way, pulling THIS checkout in place is unsafe (feature branch / detached
+      # way, upgrading THIS checkout in place is unsafe (feature branch / detached
       # HEAD / dirty), so refuse with guidance instead of guessing.
       wt_main="$(fwf_worktree_main_root "$FWF_DIR" || true)"
       if [ -n "$wt_main" ]; then
         die "upgrade: $FWF_DIR is a git worktree, not the main checkout — upgrading it in place would be unsafe.
-  Run 'fwf upgrade' from $wt_main instead (equivalent: git -C $wt_main pull --ff-only)."
+  Run 'fwf upgrade' from $wt_main instead (equivalent: git -C $wt_main fetch --tags && git -C $wt_main merge --ff-only <tag>)."
       else
         die "upgrade: $FWF_DIR/.git exists but isn't a plain git directory, and its target couldn't be resolved — refusing to guess.
   Find the git checkout this install links to and run 'fwf upgrade' from there."

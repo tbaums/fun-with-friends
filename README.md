@@ -73,10 +73,11 @@ fwf doctor
 
 Or just run `./fwf` directly from the clone — `install.sh` only puts it on your PATH.
 
-Upgrading later is one command — `fwf upgrade` (ff-pulls a clone install;
-downloads the latest release and re-links a tarball install; `--check` only
-reports). Agents in a running factory keep their old prompts until respawned —
-`fwf resume` re-arms everything on the new version.
+Upgrading later is one command — `fwf upgrade` (fetches tags and ff-merges a
+clone install to the latest release tag; downloads the latest release and
+re-links a tarball install; `--check` only reports). Agents in a running
+factory keep their old prompts until respawned — `fwf resume` re-arms
+everything on the new version.
 
 ## Quick start
 
@@ -343,9 +344,10 @@ fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
 fwf upgrade [--check]                               self-upgrade to the latest release (git clones
-                                                    ff-pull; tarball installs download + re-link;
-                                                    worktree installs refuse-with-guidance to their
-                                                    main checkout — never pulled in place)
+                                                    fetch tags + ff-merge to the release tag; tarball
+                                                    installs download + re-link; worktree installs
+                                                    refuse-with-guidance to their main checkout —
+                                                    never merged in place)
 fwf doctor | profiles | templates | version | help  (version also: -v, --version)
 ```
 

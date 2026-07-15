@@ -1164,7 +1164,7 @@ assert_contains "up-to-date reported" "$UPC" "up to date"
 UPA="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$ROOT/fwf" upgrade --check 2>&1)"
 assert_contains "upgrade-available reported" "$UPA" "upgrade available"
 UPF="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$ROOT/fwf" upgrade --check 2>&1)" && bad "gh failure exits nonzero" || ok "gh failure exits nonzero"
-assert_contains "gh failure hints at clone pull" "$UPF" "pull --ff-only"
+assert_contains "gh failure hints at clone fetch+merge" "$UPF" "fetch --tags"
 
 # regression (issue #71): a git *worktree* has .git as a FILE (gitdir: …), not
 # a dir — and every fwf-self swarm role runs from a worktree.  Build a
@@ -1220,6 +1220,49 @@ assert_contains "symlink re-pointed to new install" "$LINK" "fwf-$REALV/fwf"
 [ -d "$UPHOME/fwf-old" ] && ok "old install left for rollback" || bad "old install left for rollback"
 assert_eq "upgraded copy reports new version" "$REALV" "$("$UPHOME/bin/fwf" version)"
 assert_contains "respawn note printed" "$UPOUT" "fwf respawn"
+
+# git-clone upgrade must converge on the RELEASE TAG, not whatever the tracked
+# branch tip happens to be (#125) — simulate main having moved past the last
+# cut release and assert the clone still lands exactly on the release.
+section "fwf upgrade — git-clone install converges on the release tag, not unreleased main (#125)"
+GCPD="$TMP/gitclone-upgrade"; mkdir -p "$GCPD"
+git init -q --bare "$GCPD/origin.git"
+tar -C "$GCPD" -xzf "$TARBALL"
+mv "$GCPD/fwf-$REALV" "$GCPD/seed"
+( cd "$GCPD/seed" && git init -q && git config user.email t@t.co && git config user.name t
+  printf '0.0.1\n' > VERSION && git add -A && git commit -qm "v0.0.1" && git tag v0.0.1
+  printf '%s\n' "$REALV" > VERSION && git add -A && git commit -qm "v$REALV" && git tag "v$REALV"
+  printf '%s-dev\n' "$REALV" > VERSION && git add -A && git commit -qm "unreleased work past the last cut release"
+  git remote add origin "$GCPD/origin.git" && git push -q origin HEAD:main && git push -q origin --tags )
+git -C "$GCPD/origin.git" symbolic-ref HEAD refs/heads/main
+git clone -q "$GCPD/origin.git" "$GCPD/install" 2>/dev/null
+( cd "$GCPD/install" && git checkout -q v0.0.1 && git checkout -q -B main )
+assert_eq "git-clone install starts at the old release" "0.0.1" "$(cat "$GCPD/install/VERSION")"
+GCUPG="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$GCPD/install/fwf" upgrade 2>&1)" \
+  && ok "git-clone upgrade exits 0" || bad "git-clone upgrade exits 0" "$GCUPG"
+assert_eq "git-clone install lands on the release tag, not unreleased main" "$REALV" "$(cat "$GCPD/install/VERSION")"
+assert_contains "git-clone upgrade message names convergence" "$GCUPG" "converged on release"
+echo dirty >> "$GCPD/install/VERSION"
+PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$GCPD/install/fwf" upgrade >/dev/null 2>&1 \
+  && bad "dirty git-clone install refuses to upgrade" || ok "dirty git-clone install refuses to upgrade"
+
+# QA adversarial check (#125, issue #119 adversarial-artifact-review): a clean
+# but truly DIVERGED git-clone install (a committed local change off the
+# release lineage, not just an uncommitted dirty tree) must refuse via
+# ff-only rather than silently rewriting/discarding local history.
+git clone -q "$GCPD/origin.git" "$GCPD/install2" 2>/dev/null
+( cd "$GCPD/install2" && git checkout -q v0.0.1 && git checkout -q -B main \
+  && git config user.email t@t.co && git config user.name t \
+  && printf '0.0.1-local\n' > VERSION && git commit -qam "local-only work, diverges from the release lineage" )
+assert_eq "diverged git-clone install starts at its local version" "0.0.1-local" "$(cat "$GCPD/install2/VERSION")"
+GCDIVRC=0
+GCDIV="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$GCPD/install2/fwf" upgrade 2>&1)" || GCDIVRC=$?
+[ "$GCDIVRC" -ne 0 ] \
+  && ok "diverged git-clone install refuses to upgrade (ff-only, not a silent rewrite)" \
+  || bad "diverged git-clone install refuses to upgrade" "$GCDIV"
+assert_contains "diverged-refusal message names the divergence" "$GCDIV" "diverged"
+assert_eq "diverged install's local VERSION is untouched by the refused upgrade" "0.0.1-local" "$(cat "$GCPD/install2/VERSION")"
+
 rm -rf "$ROOT/dist"
 
 section "local issues backend (issue #26) — store CLI"
