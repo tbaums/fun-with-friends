@@ -112,10 +112,15 @@ def human_age($secs):
   else "\(($secs/86400)|floor)d\((($secs%86400)/3600)|floor)h"
   end;
 def sweep_rows($now):
-  .[] as $it
-  | ($it.comments // []) as $c
-  | ([$c[] | select((.body // "") | test("^NEEDS-CAPTAIN-CLEARED:"))] | sort_by(.createdAt) | last | .createdAt) as $clearedAt
-  | ([$c[] | select((.body // "") | test("^NEEDS-CAPTAIN:")) | select($clearedAt == null or .createdAt > $clearedAt)]) as $active
+  . as $it
+  # Index-based (not timestamp-string-based) ordering: the local backend's
+  # createdAt has only 1s resolution, so a clear and the very next raise can
+  # land in the SAME second — comparing createdAt strings would then mis-order
+  # them. $c is already in true append order (fwf-issues.sh serializes comment
+  # appends through one store lock), so array position is a reliable clock.
+  | ($it.comments // [] | to_entries) as $ce
+  | ([$ce[] | select((.value.body // "") | test("^NEEDS-CAPTAIN-CLEARED:"))] | last | .key) as $clearedIdx
+  | ([$ce[] | select((.value.body // "") | test("^NEEDS-CAPTAIN:")) | select($clearedIdx == null or .key > $clearedIdx) | .value]) as $active
   | if ($active | length) == 0 then
       { number: $it.number, role: "role unstated", reason: "no reason given", at: $it.createdAt }
     else

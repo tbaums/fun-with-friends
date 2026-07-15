@@ -2394,7 +2394,6 @@ assert_eq "two active rows for LI-1, not a dedup to one" "2" "$(printf '%s\n' "$
 section "fwf flag-captain (#113): clear ends the flag; a bare re-raise after clear is active again"
 CLEAR_OUT="$(FCL 1 --clear --note "unblocked, rebased onto staging")"
 assert_contains "clear confirms" "$CLEAR_OUT" "needs-captain cleared"
-assert_contains "clear removes the label" "$(FCISS list --label needs-captain)" "no local issue"$'\n'"" || true
 case "$(FCISS list --label needs-captain)" in *LI-1*) bad "clear removes the label" "still listed";; *) ok "clear removes the label";; esac
 assert_eq "cleared item has no open flags" "no needs-captain flags open" "$(FCL sweep)"
 assert_contains "clear is recorded as a comment" "$(FCISS view 1 --comments)" "NEEDS-CAPTAIN-CLEARED: unblocked, rebased onto staging"
@@ -2418,12 +2417,17 @@ RC=0; FCL 3 --reason "x" 2>/dev/null || RC=$?
 
 section "fwf flag-captain (#113): gh backend — label pre-provisioning (AC7) and PR-vs-issue routing"
 FCG() { # $1... args; overrides gh_ to log calls instead of hitting the network
+  # arg0 below is deliberately NOT "$FC" — fwf-flag-captain.sh's own
+  # "if BASH_SOURCE[0] = 0" direct-execution guard would otherwise fire
+  # DURING the `source` (BASH_SOURCE[0] and $0 both equal $FC's path),
+  # running the real (network-hitting) main() before gh_/gh_kind are
+  # stubbed below. A harmless name here keeps this test hermetic.
   FWF_PROFILE=example bash -c "
     source '$FC'
     gh_kind() { [ \"\$1\" = 9 ] && echo pr || echo issue; }
     gh_() { printf '%s\n' \"gh \$*\" >> '$TMP/gh-calls.log'; }
     main \"\$@\"
-  " "$FC" "$@"
+  " fcg-test-harness "$@"
 }
 rm -f "$TMP/gh-calls.log"
 FCG 5 --role gv --reason "spec won't converge, needs a human call" >/dev/null
