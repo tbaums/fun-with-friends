@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-07-15
+
+### Added
+- **Captain idles the build floor and the PM/GV plane independently** (#105, code c1eed46, docs c1eed46) — per-plane, workload-driven idle: the captain parks the build floor when the claimable queue is empty, and the PM/GV plane when no grooming/gating is pending, bringing each back the instant work appears — instead of the old all-or-nothing floor idle. Deadlock-guarded (the `product-wip` label is the single captain-owned wake signal; idle is refused with an open PR, an unaddressed draft, or anything mid-promotion; the GV never idles in v1).
+
 ## [0.25.0] - 2026-07-14
 
 Two factory-facing improvements, built via the self-hosting factory.
