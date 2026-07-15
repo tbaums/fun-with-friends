@@ -513,8 +513,16 @@ $(cat "$addendum")"
   text="${text//__COORD_SESSION__/$COORD_SESSION}"
   text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"
-  text="${text//__GATE__/$GATE_CMD}"
-  text="${text//__E2E__/$E2E_CMD}"
+  # Issue #123: every rendered __GATE__/__E2E__ routes through the shared
+  # guarded launcher (fwf-gate.sh) instead of the raw command string, so the
+  # per-role single-flight lock applies uniformly with no per-template copy.
+  # __GATE__ (the fast per-commit gate) does NOT take the floor-wide e2e
+  # lock — it isn't meant to share ports with anything, so serializing it
+  # floor-wide would only add a throughput bottleneck with no hermeticity
+  # benefit. __E2E__ does, via --e2e, preserving the existing issue #65
+  # cross-role serialization for a harness whose ports are fixed.
+  text="${text//__GATE__/fwf gate $role_tag -- bash -c $(printf '%q' "$GATE_CMD")}"
+  text="${text//__E2E__/fwf gate $role_tag --e2e -- bash -c $(printf '%q' "$E2E_CMD")}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
@@ -886,6 +894,99 @@ fwf_e2e_lock_acquire() {
 
 fwf_e2e_lock_release() {
   rm -rf "$E2E_LOCK"
+}
+
+# --- per-role gate single-flight lock (issue #123) ---------------------------
+# Root cause 1 of the gate pileup: an agent relaunches the FULL gate
+# (test/run.sh / dash cargo test, or the conductor's promotion e2e) every tick
+# without checking whether ITS OWN prior gate is still running — 8 concurrent
+# test/run.sh processes were observed stacked this way (7:04-7:18 PDT), none
+# finishing. This is a PER-ROLE, NON-BLOCKING guard: unlike the e2e lock above
+# (which several roles wait on and share), a role that finds its own gate
+# still in flight does not queue — it skips this tick and reports so, per the
+# spec's fail-closed contract ("indeterminate -> skip, never stack").
+#
+# Distinct from fwf_e2e_lock_*, which serializes ACROSS roles on a shared
+# fixed-port harness (cause 2); this one bounds a SINGLE role's own relaunch
+# rate. The two compose: fwf-gate.sh (the shared launcher, issue #123 AC6)
+# always takes this lock, and additionally takes the e2e lock when wrapping an
+# e2e-class command.
+#
+# Liveness mirrors the e2e lock's same-host/dead-PID reasoning, but adds a
+# max-run ceiling even for a LIVE holder (FWF_GATE_LOCK_MAX_RUN_SECS) so a
+# genuinely wedged-but-alive gate (the observed S-state, ~0% CPU processes)
+# can't hold the role hostage forever the way a floor-wide wait could. Pick
+# the ceiling comfortably above the slowest legitimate gate run, or a healthy
+# slow run gets reaped mid-flight and a second one stacks on top of it —
+# recreating the very pileup this guards against.
+FWF_GATE_LOCK_MAX_RUN_SECS="${FWF_GATE_LOCK_MAX_RUN_SECS:-1800}" # ~30m ceiling, even for a live holder
+
+fwf_gate_lock_dir() { echo "$FWF_STATE_DIR/gate-lock/$1"; }   # $1=role
+
+_fwf_gate_owner_field() { # $1=field  $2=owner-file → value, or empty (never errors)
+  [ -f "$2" ] || return 0
+  awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$2" 2>/dev/null
+}
+
+# rc 0 = alive, same host, past neither ceiling (or ceiling not yet due) — NOT reclaimed
+# rc 1 = dead (same host, PID confirmed dead) — reclaim immediately
+# rc 2 = indeterminate (different host, or stamp missing/unparseable) — ceiling backstop applies
+# rc 3 = alive but past FWF_GATE_LOCK_MAX_RUN_SECS — reclaim as a wedge (anomaly)
+_fwf_gate_owner_liveness() { # $1=owner-file
+  local f="$1" host pid ts now
+  [ -f "$f" ] || return 2
+  host="$(_fwf_gate_owner_field host "$f")"
+  pid="$(_fwf_gate_owner_field pid "$f")"
+  ts="$(_fwf_gate_owner_field acquired "$f")"
+  now="$(date +%s)"
+  [ -n "$host" ] && [ -n "$pid" ] || return 2
+  [ "$host" = "$(hostname)" ] || return 2
+  if kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_GATE_LOCK_MAX_RUN_SECS" ]; then
+      return 3
+    fi
+    return 0
+  fi
+  return 1
+}
+
+# $1 = role label (e.g. "impl2", "qa2", "conductor"). rc 0 = acquired (proceed
+# with the gate); rc 1 = SKIP this tick (a prior gate for this role is still
+# in flight, or its state is indeterminate — fail closed). NEVER blocks/polls;
+# a skip is a normal, expected outcome the caller reports, not an error.
+fwf_gate_lock_acquire() {
+  local role="${1:?fwf_gate_lock_acquire needs a role}" dir owner rc reason
+  dir="$(fwf_gate_lock_dir "$role")"; owner="$dir/owner"
+  mkdir -p "$(dirname "$dir")" 2>/dev/null
+  if mkdir "$dir" 2>/dev/null; then
+    printf 'role=%s\npid=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$(hostname)" "$(date +%s)" > "$owner"
+    return 0
+  fi
+  _fwf_gate_owner_liveness "$owner"; rc=$?
+  case "$rc" in
+    0)
+      echo "fwf: gate for '$role' already in flight (pid $(_fwf_gate_owner_field pid "$owner")) — skipping this tick, not stacking a second" >&2
+      return 1
+      ;;
+    1) reason="held by dead pid $(_fwf_gate_owner_field pid "$owner")";;
+    2)
+      echo "fwf: gate lock for '$role' has indeterminate liveness — failing closed, skipping this tick rather than risking a stack" >&2
+      return 1
+      ;;
+    3) reason="past the ${FWF_GATE_LOCK_MAX_RUN_SECS}s max-run ceiling (pid $(_fwf_gate_owner_field pid "$owner") still alive) — treating as wedged";;
+  esac
+  echo "fwf: ANOMALY — reaping gate lock for '$role' ($reason)" >&2
+  rm -rf "$dir"
+  if mkdir "$dir" 2>/dev/null; then
+    printf 'role=%s\npid=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$(hostname)" "$(date +%s)" > "$owner"
+    return 0
+  fi
+  echo "fwf: gate lock for '$role' contested during reap — skipping this tick" >&2
+  return 1
+}
+
+fwf_gate_lock_release() {
+  rm -rf "$(fwf_gate_lock_dir "${1:?fwf_gate_lock_release needs a role}")"
 }
 
 # --- token-budget WRITER lifecycle (issue #96) -------------------------------

@@ -2,7 +2,7 @@ You are the CONDUCTOR for __REPO__, in a dedicated worktree, inside a BEHAVIOR-P
 
 Each cycle:
 
-0. STOP CHECK + HEARTBEAT: touch __HEARTBEAT__ (a cheap, durable cycle-start signal for respawn/dash liveness checks — never the pane glyph, issue #99). Then, if the file __STOPFILE__ exists, stop — release the e2e lock if you hold it, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
+0. STOP CHECK + HEARTBEAT: touch __HEARTBEAT__ (a cheap, durable cycle-start signal for respawn/dash liveness checks — never the pane glyph, issue #99). Then, if the file __STOPFILE__ exists, stop — cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else. (No manual lock release needed: step 3's `fwf gate` already released both locks via its own internal trap when your last cycle's command exited; if a prior cycle was hard-killed mid-run instead, the next acquirer's dead-PID/stale-ceiling check recovers each lock automatically.)
 
 0b. BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
 
@@ -10,20 +10,18 @@ Each cycle:
    git rev-list --count origin/__INTEGRATION__..origin/__STAGING__
    If 0, say "conductor: __INTEGRATION__ up to date" and wait for the next cycle.
 
-2. e2e is slow and binds single ports, so SERIALIZE it. Acquire the lock:
-   mkdir "__LOCK__" 2>/dev/null
-   If that fails, someone else holds it — say "conductor: e2e busy, deferring" and wait for the next cycle. Once you hold it, ALWAYS release it (rmdir "__LOCK__") on every exit path, including failures.
-
-3. With the lock held, test the staged batch. Use a DETACHED checkout of __STAGING__'s remote-tracking ref, not the local __STAGING__ branch (issue #91: git only lets ONE worktree hold a given branch at a time, so if any other worktree — an implementer mid-claim, a QA self-check — has the local __STAGING__ branch checked out, `git switch __STAGING__` here fails and stalls every promotion until it clears; detaching means this step can NEVER be locked out by another worktree):
+2. Use a DETACHED checkout of __STAGING__'s remote-tracking ref, not the local __STAGING__ branch (issue #91: git only lets ONE worktree hold a given branch at a time, so if any other worktree — an implementer mid-claim, a QA self-check — has the local __STAGING__ branch checked out, `git switch __STAGING__` here fails and stalls every promotion until it clears; detaching means this step can NEVER be locked out by another worktree):
    git switch --detach origin/__STAGING__
-   Run the FULL e2e suite: __E2E__
 
-4. If e2e is GREEN, promote staging into integration. Merge from __STAGING__'s remote-tracking ref (already fetched in step 1) rather than the local branch, for the same reason as step 3:
+3. Run the FULL e2e suite through the shared guarded launcher (issue #123): __E2E__
+   That single command takes the per-role single-flight lock (so a slow prior e2e run for "conductor" is never stacked a second time) AND the floor-wide e2e lock (issue #65, e2e binds fixed single ports), and its own internal trap releases both the moment it exits — success, failure, or a kill; nothing further to release by hand. Exit 75 means this tick was SKIPPED, not red — say "conductor: gate busy, deferring" and wait for the next cycle.
+
+4. If e2e is GREEN (exit 0), promote staging into integration. Merge from __STAGING__'s remote-tracking ref (already fetched in step 1) rather than the local branch, for the same reason as step 2:
    git switch __INTEGRATION__ && git pull --ff-only && git merge --ff-only origin/__STAGING__ && git push origin __INTEGRATION__
-   Do NOT merge or push to __DEFAULT__. Release the lock. Report what advanced (git log --oneline shows the "Closes #<n>" lines).
+   Do NOT merge or push to __DEFAULT__. Report what advanced (git log --oneline shows the "Closes #<n>" lines).
 
-5. If e2e is RED, do NOT promote — and treat it as a behavior-preservation breach, not a flaky test, until proven otherwise:
+5. If e2e is RED (any other nonzero exit), do NOT promote — and treat it as a behavior-preservation breach, not a flaky test, until proven otherwise:
    git log --oneline origin/__INTEGRATION__..origin/__STAGING__
-   First rule out environment (machine overload, a foreign e2e run colliding on the fixed ports: first-N-pass-then-connection-refused cascades — re-run a single test on a quiet box before blaming a PR). If the failure is real, identify the refactor that moved behavior, comment the EXACT failure on that PR (the diff that did it if you can see it), notify the owning refactorer and the captain, release the lock, and report.
+   First rule out environment (machine overload, a foreign e2e run colliding on the fixed ports: first-N-pass-then-connection-refused cascades — re-run a single test on a quiet box before blaming a PR). If the failure is real, identify the refactor that moved behavior, comment the EXACT failure on that PR (the diff that did it if you can see it), notify the owning refactorer and the captain, and report.
 
-Never touch __DEFAULT__ in any way. If the ff-only merge into __INTEGRATION__ fails (you are its sole writer), stop and report rather than forcing. Always leave the e2e lock released when your cycle ends.
+Never touch __DEFAULT__ in any way. If the ff-only merge into __INTEGRATION__ fails (you are its sole writer), stop and report rather than forcing.
