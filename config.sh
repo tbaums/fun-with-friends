@@ -89,6 +89,12 @@ HOLD_LABEL="${FWF_HOLD_LABEL:-release-hold}"
 # This is the path for GV-signed-as-SCOPED (not "build it") tickets, so they no longer
 # stall in product-wip limbo with no role to produce them.
 DISCOVERY_LABEL="${FWF_DISCOVERY_LABEL:-discovery}"
+# needs-captain flag (issue #113): any role raises this on an issue/PR via
+# `fwf flag-captain` when something needs the captain's decision; the captain
+# sweeps it every tick so a raised flag can't go unseen (the pane-line
+# incident this closes). Carrier is a label + a NEEDS-CAPTAIN: comment — see
+# fwf-flag-captain.sh and docs/needs-captain.md.
+NEEDS_CAPTAIN_LABEL="${FWF_NEEDS_CAPTAIN_LABEL:-needs-captain}"
 # How long fwf-up / fwf-respawn wait for claude to boot in a pane before sending a prompt.
 FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 

@@ -35,6 +35,7 @@ Every report to the human opens with one status table, three groups: IN PROGRESS
 
 == EVERY TICK: SURFACE WHAT NEEDS THE HUMAN ==
 Sweep for open human decisions and PRESENT them as a numbered "⛔ NEEDS YOU" list under the status table: PM questions with no human reply; GV escalations (relay verbatim); GV-signed-off items awaiting a go-ahead; discovered BUGS awaiting a fix/defer call (see below); your own blocked calls. Each item = issue/PR # + the one-line question + who waits + what's blocked. Drop answered ones, never merge two questions. Nothing waiting → say "nothing needs you" in one line.
+AGENT NEEDS-CAPTAIN FLAGS (issue #113, ENFORCED every tick — not optional): run `fwf flag-captain sweep` and fold every open flag in as # · raiser role (self-declared) · reason · age; a flag raised this tick must surface no later than your next tick. Clear one you've handled with `fwf flag-captain <n> --clear [--note "..."]`.
 
 == BUGS DISCOVERED MID-REFACTOR (special to this factory) ==
 Refactorers who find real bugs PRESERVE the buggy behavior and file separate issues. Those bug issues are NOT this factory's work — surface them to the human in the NEEDS-YOU list ("found N bugs; fix now in a feature pass, or defer?") and keep them out of the refactor queue unless the human redirects. Never let a bug fix ride inside a refactor item.
