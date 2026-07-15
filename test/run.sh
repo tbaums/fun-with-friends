@@ -497,31 +497,39 @@ RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf" --profile example resume --clear-only 2
 [ -e "$RUNDIR/STOP" ] && bad "resume --clear-only removes sentinel" || ok "resume --clear-only removes sentinel"
 assert_contains "resume --clear-only message" "$RES" "cleared STOP sentinel"
 
-section "floor lifecycle flags (issue #6) — no live tmux needed"
+section "floor lifecycle flags (issue #6, per-plane split by #105) — no live tmux needed"
 # Isolated session names guarantee we never touch a real factory.
 # FWF_MIN_FREE_GB=0 disables the disk-pressure guard so these flag-logic
 # tests don't depend on the runner's free disk.
 FU_ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0"
 # up: unknown flag rejected before any tmux work
 env $FU_ENV "$ROOT/fwf-up.sh" --bogus >/dev/null 2>&1 && bad "up rejects unknown flag" || ok "up rejects unknown flag"
-# up --floor-only without a live coord session points at the full launch path
-UPOUT="$(env $FU_ENV "$ROOT/fwf-up.sh" --floor-only 2>&1)" && bad "floor-only up needs coord session" || ok "floor-only up needs coord session"
-assert_contains "floor-only up suggests full up" "$UPOUT" "run a full 'fwf up' instead"
-# down: --floor-only + --purge don't combine
-env $FU_ENV "$ROOT/fwf-down.sh" --floor-only --purge >/dev/null 2>&1 && bad "down rejects floor-only+purge" || ok "down rejects floor-only+purge"
-# down --floor-only with nothing up reports cleanly and leaves captain advice
-DOWNOUT="$(env $FU_ENV "$ROOT/fwf-down.sh" --floor-only 2>&1)" && ok "floor-only down is safe when nothing is up" || bad "floor-only down is safe when nothing is up"
-assert_contains "floor-only down names the comeback" "$DOWNOUT" "fwf up --floor-only"
-# help advertises the floor lifecycle
-assert_contains "help mentions --floor-only" "$("$ROOT/fwf" help)" "--floor-only"
+# up --floor-only / --build-only / --pm-only without a live coord session all
+# point at the full launch path (none of the partial modes can bootstrap).
+for FLAG in --floor-only --build-only --pm-only; do
+  UPOUT="$(env $FU_ENV "$ROOT/fwf-up.sh" "$FLAG" 2>&1)" && bad "$FLAG up needs coord session" || ok "$FLAG up needs coord session"
+  assert_contains "$FLAG up suggests full up" "$UPOUT" "run a full 'fwf up' instead"
+done
+# down: --floor-only/--build-only/--pm-only + --purge don't combine (rejected
+# before the flags reach any cooldown/deadlock check, so no stub needed here)
+for FLAG in --floor-only --build-only --pm-only; do
+  env $FU_ENV "$ROOT/fwf-down.sh" "$FLAG" --purge >/dev/null 2>&1 && bad "down rejects $FLAG+purge" || ok "down rejects $FLAG+purge"
+done
+# (down-with-nothing-up now also runs the #105 deadlock guards, which shell
+# out to gh/git — see the dedicated hermetic section below for those)
+# help advertises the per-plane flags
+HELP_OUT="$("$ROOT/fwf" help)"
+assert_contains "help mentions --floor-only" "$HELP_OUT" "--floor-only"
+assert_contains "help mentions --build-only" "$HELP_OUT" "--build-only"
+assert_contains "help mentions --pm-only"    "$HELP_OUT" "--pm-only"
 
-section "floor-lifecycle event log (issue #85): fwf_floor_event / fwf_floor_idle_state"
+section "floor-lifecycle event log (issue #85, per-plane by #105): fwf_floor_event / fwf_plane_idle_state"
 # Pure file I/O (lib.sh) — no tmux/gh needed for the read/write primitives.
 F85RUN="$TMP/run85"; mkdir -p "$F85RUN"
 F85ENV="FWF_RUN_DIR=$F85RUN FWF_PROFILE=example"
-assert_eq "no log yet -> floor_idle inactive" "false" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
-# (b) floor-down is appended with actor/reason/ts/epoch and survives a re-read
+assert_eq "no log yet -> build plane idle inactive" "false" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+# (b) floor-down is appended with actor/reason/ts/epoch/plane and survives a re-read
 env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain 'queue empty; nothing in flight'"
 F85LOG="$F85RUN/state/example/floor-events.log"
 [ -f "$F85LOG" ] && ok "floor-events.log created" || bad "floor-events.log created"
@@ -529,29 +537,44 @@ F85LAST="$(tail -n1 "$F85LOG")"
 assert_contains "floor-down line names the actor" "$F85LAST" "captain"
 assert_contains "floor-down line carries the reason" "$F85LAST" "queue empty; nothing in flight"
 case "$F85LAST" in *"floor-down"*) ok "last line is floor-down";; *) bad "last line is floor-down" "$F85LAST";; esac
+assert_eq "plane defaults to build when omitted" "build" "$(printf '%s' "$F85LAST" | cut -f6)"
 F85EPOCH="$(printf '%s' "$F85LAST" | cut -f2)"
 case "$F85EPOCH" in ''|*[!0-9]*) bad "epoch field is numeric" "$F85EPOCH";; *) ok "epoch field is numeric";; esac
 F85TS="$(printf '%s' "$F85LAST" | cut -f1)"
 case "$F85TS" in [0-9][0-9][0-9][0-9]-*T*Z) ok "ts field is ISO-8601 UTC";; *) bad "ts field is ISO-8601 UTC" "$F85TS";; esac
-# (a) fwf_floor_idle_state now reports active, carrying the same reason
-F85IDLE="$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state")"
-assert_eq "floor_idle_state active after floor-down" "true" "$(printf '%s' "$F85IDLE" | cut -f1)"
-assert_contains "floor_idle_state carries the reason" "$F85IDLE" "queue empty; nothing in flight"
+# (a) fwf_plane_idle_state now reports active, carrying the same reason
+F85IDLE="$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build")"
+assert_eq "plane_idle_state active after floor-down" "true" "$(printf '%s' "$F85IDLE" | cut -f1)"
+assert_contains "plane_idle_state carries the reason" "$F85IDLE" "queue empty; nothing in flight"
+# a DIFFERENT plane (pm) is untouched by a build-plane event
+assert_eq "pm plane stays inactive while only build has a floor-down" "false" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+# an explicit pm-plane event is tracked independently of build
+env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain 'pm reason' pm"
+assert_eq "pm plane active after its own floor-down" "true" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+assert_eq "build plane STILL active (independent of pm)" "true" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-up '' '' pm"
+assert_eq "pm floor-up clears ONLY pm, not build" "true" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+assert_eq "pm plane cleared by its own floor-up" "false" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
 # (b-up-paths / idempotency) floor-up clears it; repeated transitions stay coherent
 env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-up '' ''"
-assert_eq "floor-up clears floor_idle" "false" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+assert_eq "floor-up clears build plane idle" "false" \
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain r2; fwf_floor_event floor-up '' ''; fwf_floor_event floor-down captain r3"
 assert_eq "repeated down/up/down stays coherent (last event wins)" "true" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 # (bound) capped at the last 200 lines; the dash still reads the correct last event
 F85CAPRUN="$TMP/run85cap"; mkdir -p "$F85CAPRUN/state/example"
 F85CAPLOG="$F85CAPRUN/state/example/floor-events.log"
 i=1; while [ "$i" -le 205 ]; do printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$i" >> "$F85CAPLOG"; i=$((i+1)); done
 env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain capped"
 assert_eq "log capped at 200 lines" "200" "$(wc -l < "$F85CAPLOG" | tr -d ' ')"
-assert_eq "dash still reads the correct (capped) last event" "true" \
-  "$(env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_floor_idle_state" | cut -f1)"
+assert_eq "dash still reads the correct (capped) last event, legacy 5-column rows read as plane build" "true" \
+  "$(env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 
 section "fwf dash data (issue #85): roles_json renders floor_idle, distinct from a crash"
 DD85="$ROOT/fwf-dash-data.sh"
@@ -670,28 +693,40 @@ else
   printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
 fi
 
-section "floor-down cooldown guard (issue #88): fwf_floor_last_up_epoch / fwf_floor_cooldown_remaining"
+section "floor-down cooldown guard (issue #88, per-plane by #105): fwf_plane_last_up_epoch / fwf_plane_cooldown_remaining"
 # Pure file I/O (lib.sh) — no tmux needed for the read-only cooldown math.
 F88RUN="$TMP/run88lib"; mkdir -p "$F88RUN/state/example"
 F88ENV="FWF_RUN_DIR=$F88RUN FWF_PROFILE=example"
 F88LIBLOG="$F88RUN/state/example/floor-events.log"
 # no log at all -> no prior up on record -> cooldown never blocks
-assert_eq "no log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_last_up_epoch")"
-assert_eq "no log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+assert_eq "no log -> no last-up epoch (build)" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_last_up_epoch build")"
+assert_eq "no log -> cooldown remaining 0 (build)" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+assert_eq "no log -> cooldown remaining 0 (pm)" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining pm")"
 # a log that has only ever seen floor-down (never a floor-up) -> still unguarded
 printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tfirst ever down\n' > "$F88LIBLOG"
-assert_eq "floor-down-only log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_last_up_epoch")"
-assert_eq "floor-down-only log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
-# a recent floor-up -> remaining cooldown is positive and bounded by FWF_FLOOR_COOLDOWN
+assert_eq "floor-down-only log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_last_up_epoch build")"
+assert_eq "floor-down-only log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+# a recent floor-up -> remaining cooldown is positive and bounded by FWF_BUILD_COOLDOWN
 NOW="$(date +%s)"
 printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$NOW" > "$F88LIBLOG"
-REM="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+REM="$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
 case "$REM" in ''|*[!0-9]*) bad "recent floor-up -> remaining is numeric" "$REM";; *) ok "recent floor-up -> remaining is numeric";; esac
 [ "$REM" -gt 0 ] && [ "$REM" -le 100 ] && ok "recent floor-up -> 0 < remaining <= cooldown" || bad "recent floor-up -> 0 < remaining <= cooldown" "$REM"
+# FWF_FLOOR_COOLDOWN (legacy) still works, aliased into FWF_BUILD_COOLDOWN
+REM_LEGACY="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+[ "$REM_LEGACY" -gt 0 ] && [ "$REM_LEGACY" -le 100 ] && ok "legacy FWF_FLOOR_COOLDOWN still bounds the build plane's cooldown" \
+  || bad "legacy FWF_FLOOR_COOLDOWN still bounds the build plane's cooldown" "$REM_LEGACY"
+# the pm plane is a SEPARATE cooldown, unaffected by a build-plane floor-up
+assert_eq "pm plane cooldown independent of build's recent floor-up" "0" \
+  "$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining pm")"
+printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$NOW" >> "$F88LIBLOG"
+REM_PM="$(env $F88ENV FWF_PM_COOLDOWN=50 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining pm")"
+[ "$REM_PM" -gt 0 ] && [ "$REM_PM" -le 50 ] && ok "pm plane's own recent floor-up bounds ITS cooldown via FWF_PM_COOLDOWN" \
+  || bad "pm plane's own recent floor-up bounds ITS cooldown via FWF_PM_COOLDOWN" "$REM_PM"
 # an old floor-up (past the cooldown window) -> remaining is 0
 OLD=$(( NOW - 1000 ))
 printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD" > "$F88LIBLOG"
-assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
 # the LAST floor-up wins, not the first, when there are several in the log
 {
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD"
@@ -699,54 +734,114 @@ assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_FLOO
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$NOW"
   printf '2026-01-01T00:00:00Z\t%s\tfloor-down\tcaptain\tr2\n' "$NOW"
 } > "$F88LIBLOG"
-REM2="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_floor_cooldown_remaining")"
+REM2="$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
 [ "$REM2" -gt 0 ] && [ "$REM2" -le 100 ] && ok "cooldown keys off the LAST floor-up, not the first" || bad "cooldown keys off the LAST floor-up, not the first" "$REM2"
-# bogus FWF_FLOOR_COOLDOWN is rejected at source time, same style as FWF_PAIRS
+assert_eq "fwf_plane_cooldown_remaining rejects an unknown plane" "1" \
+  "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining bogus >/dev/null 2>&1; echo \$?")"
+# bogus FWF_FLOOR_COOLDOWN / FWF_BUILD_COOLDOWN / FWF_PM_COOLDOWN are all
+# rejected at source time, same style as FWF_PAIRS
 env $F88ENV FWF_FLOOR_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_FLOOR_COOLDOWN=banana rejected" || ok "FWF_FLOOR_COOLDOWN=banana rejected"
+env $F88ENV FWF_BUILD_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_BUILD_COOLDOWN=banana rejected" || ok "FWF_BUILD_COOLDOWN=banana rejected"
+env $F88ENV FWF_PM_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_PM_COOLDOWN=banana rejected" || ok "FWF_PM_COOLDOWN=banana rejected"
 
-section "captain.tmpl (issue #88): dwell + deterministic cooldown are both stated"
+section "captain.tmpl (issue #88, per-plane by #105): dwell + deterministic cooldown are both stated"
 CAPRENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
 assert_contains "captain prompt mentions the dwell" "$CAPRENDER" "dwell"
-assert_contains "captain prompt names FWF_FLOOR_COOLDOWN" "$CAPRENDER" "FWF_FLOOR_COOLDOWN"
+assert_contains "captain prompt names FWF_BUILD_COOLDOWN" "$CAPRENDER" "FWF_BUILD_COOLDOWN"
+assert_contains "captain prompt names FWF_PM_COOLDOWN" "$CAPRENDER" "FWF_PM_COOLDOWN"
 assert_contains "captain prompt calls the cooldown deterministic" "$CAPRENDER" "DETERMINISTIC"
 assert_contains "captain prompt mentions --force" "$CAPRENDER" "--force"
+assert_contains "captain prompt mentions --build-only" "$CAPRENDER" "--build-only"
+assert_contains "captain prompt mentions --pm-only" "$CAPRENDER" "--pm-only"
+assert_contains "captain prompt states GV never idles" "$CAPRENDER" "GV never idles"
+assert_contains "captain prompt names the deadlock guard" "$CAPRENDER" "DEADLOCK GUARD"
 
 if command -v tmux >/dev/null 2>&1; then
-  section "fwf-down.sh --floor-only cooldown guard (issue #88): real tmux"
+  section "fwf-down.sh cooldown guards (issue #88, per-plane by #105): real tmux"
+  # Fixture for the #105 DEADLOCK guards to resolve "safe" (0 open PRs,
+  # staging == integration, 0 open product-wip issues) so THIS section's
+  # tests exercise ONLY the cooldown guard, not the deadlock guard (that gets
+  # its own dedicated section below).
+  F88GHSTUB="$TMP/gh88stub"; mkdir -p "$F88GHSTUB"
+  cat > "$F88GHSTUB/gh" <<'EOS'
+#!/usr/bin/env bash
+echo 0
+EOS
+  chmod +x "$F88GHSTUB/gh"
+  F88ORIGIN="$TMP/origin88.git"; git init -q --bare "$F88ORIGIN"
+  F88REPO="$TMP/repo88"
+  git clone -q "$F88ORIGIN" "$F88REPO" 2>/dev/null
+  ( cd "$F88REPO" && git config user.email t@t.co && git config user.name t \
+    && echo hi > f && git add -A && git commit -qm init \
+    && git branch -M main && git push -q origin main \
+    && git branch staging && git push -q origin staging \
+    && git branch integration && git push -q origin integration )
+
   F88TRUN="$TMP/run88tmux"; mkdir -p "$F88TRUN/state/example"
   F88TLOG="$F88TRUN/state/example/floor-events.log"
   F88SESS="fwf-selftest-88-$$"
-  F88ENVT="FWF_PROFILE=example FWF_RUN_DIR=$F88TRUN FWF_SESSION=$F88SESS FWF_FLOOR_COOLDOWN=300"
+  F88ENVT="FWF_PROFILE=example FWF_RUN_DIR=$F88TRUN FWF_SESSION=$F88SESS FWF_BUILD_COOLDOWN=300 FWF_PM_COOLDOWN=300 FWF_REPO=$F88REPO PATH=$F88GHSTUB:$PATH"
 
-  # --- refused within cooldown: sessions/panes must stay up, exit nonzero ----
+  # --- BUILD-ONLY: refused within cooldown; sessions/panes stay up -----------
   tmux new-session -d -s "${F88SESS}-coord" -c "$TMP"
   tmux set -p -t "${F88SESS}-coord" @l "CAPTAIN"
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   RECENT_UP="$(date +%s)"
-  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$RECENT_UP" > "$F88TLOG"
-  REFUSED="$(env $F88ENVT "$ROOT/fwf-down.sh" --floor-only 2>&1)" && bad "cooldown refuses too-soon floor-only down" || ok "cooldown refuses too-soon floor-only down"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$RECENT_UP" > "$F88TLOG"
+  REFUSED="$(env $F88ENVT "$ROOT/fwf-down.sh" --build-only 2>&1)" && bad "cooldown refuses too-soon build-only down" || ok "cooldown refuses too-soon build-only down"
   assert_contains "refusal names the remaining cooldown" "$REFUSED" "remaining"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session stays up when refused" || bad "build session stays up when refused"
   tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord session stays up when refused" || bad "coord session stays up when refused"
   assert_contains "log unchanged (no floor-down appended) when refused" "$(tail -n1 "$F88TLOG")" "floor-up"
 
-  # --- --force overrides the cooldown and actually tears down -----------------
-  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only --force >/dev/null 2>&1 && ok "--force overrides cooldown" || bad "--force overrides cooldown"
+  # --- --force overrides the cooldown (but not the deadlock guard) -----------
+  env $F88ENVT "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "--force overrides cooldown" || bad "--force overrides cooldown"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "--force actually tears down the build session" || ok "--force actually tears down the build session"
   assert_contains "--force still logs floor-down" "$(tail -n1 "$F88TLOG")" "floor-down"
 
   # --- cooldown elapsed -> tears down normally without --force ----------------
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   OLD_UP=$(( $(date +%s) - 1000 ))
-  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD_UP" > "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && ok "elapsed cooldown allows floor-only down" || bad "elapsed cooldown allows floor-only down"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$OLD_UP" > "$F88TLOG"
+  env $F88ENVT "$ROOT/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "elapsed cooldown allows build-only down" || bad "elapsed cooldown allows build-only down"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "elapsed-cooldown down actually tears down" || ok "elapsed-cooldown down actually tears down"
 
   # --- no prior floor-up on record (first-ever down) -> allowed ---------------
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   rm -f "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && ok "no prior floor-up on record allows down" || bad "no prior floor-up on record allows down"
+  env $F88ENVT "$ROOT/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "no prior floor-up on record allows down" || bad "no prior floor-up on record allows down"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "no-record down actually tears down" || ok "no-record down actually tears down"
+
+  # --- PM-ONLY: its own independent cooldown (FWF_PM_COOLDOWN), pane-based ---
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"   # recreate for isolation from prior asserts
+  tmux split-window -h -t "${F88SESS}-coord" -c "$TMP"
+  tmux set -p -t "$(tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | tail -1)" @l "PM · refine loop"
+  PMPANE_COUNT_BEFORE="$(tmux list-panes -t "${F88SESS}-coord" | wc -l | tr -d ' ')"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$RECENT_UP" > "$F88TLOG"
+  env $F88ENVT "$ROOT/fwf-down.sh" --pm-only >/dev/null 2>&1 && bad "cooldown refuses too-soon pm-only down" || ok "cooldown refuses too-soon pm-only down"
+  PMPANE_COUNT_AFTER="$(tmux list-panes -t "${F88SESS}-coord" | wc -l | tr -d ' ')"
+  assert_eq "PM pane survives a refused pm-only down" "$PMPANE_COUNT_BEFORE" "$PMPANE_COUNT_AFTER"
+  # build's cooldown is INDEPENDENT of pm's — a fresh pm floor-up must not
+  # block a build-only down whose OWN cooldown has elapsed.
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$OLD_UP" >> "$F88TLOG"
+  env $F88ENVT "$ROOT/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "build-only unaffected by pm's independent (still-fresh) cooldown" \
+    || bad "build-only unaffected by pm's independent (still-fresh) cooldown"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build-only tore down despite pm's fresh cooldown" || ok "build-only tore down despite pm's fresh cooldown"
+  # elapsed pm cooldown -> pm-only allowed, tears down the PM pane
+  OLD_PM=$(( $(date +%s) - 1000 ))
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"
+  env $F88ENVT "$ROOT/fwf-down.sh" --pm-only >/dev/null 2>&1 && ok "elapsed pm cooldown allows pm-only down" || bad "elapsed pm cooldown allows pm-only down"
+  PMPANE_COUNT_FINAL="$(tmux list-panes -t "${F88SESS}-coord" | wc -l | tr -d ' ')"
+  [ "$PMPANE_COUNT_FINAL" -lt "$PMPANE_COUNT_BEFORE" ] && ok "pm-only actually tears down the PM pane" || bad "pm-only actually tears down the PM pane" "$PMPANE_COUNT_FINAL vs $PMPANE_COUNT_BEFORE"
+  tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord SESSION (captain) survives a pm-only down" || bad "coord SESSION (captain) survives a pm-only down"
+
+  # --- --floor-only refuses as ONE ATOMIC unit if EITHER sub-cooldown blocks -
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"   # recreate build for this scenario
+  BUILD_BEFORE="$(tmux list-panes -t "${F88SESS}-build" 2>/dev/null | wc -l | tr -d ' ')"
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$RECENT_UP" > "$F88TLOG"   # build fresh (blocks)
+  printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"        # pm elapsed (would allow)
+  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && bad "floor-only refused when ONLY build's cooldown is fresh" || ok "floor-only refused when ONLY build's cooldown is fresh"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched by the refused --floor-only" || bad "build session untouched by the refused --floor-only"
 
   tmux kill-session -t "${F88SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F88SESS}-build" 2>/dev/null
