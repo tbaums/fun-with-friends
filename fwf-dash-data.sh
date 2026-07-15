@@ -17,7 +17,7 @@
 #
 # Output schema (consumed by dash/src/data.rs):
 #   { profile, template, parked, prod, pipeline, stamp, generated_at,
-#     roles:[{role,state,detail}],
+#     roles:[{role,state,detail,report,report_age_secs,report_stale}],
 #     decisions:[{id,title,flags,body}],
 #     issues:[{number,title,gated,body}],
 #     floor_idle:{active,since,reason,actor} }
@@ -177,8 +177,40 @@ roles_json() {
       detail="floor idled by $fi_actor since ${fi_since} — ${fi_reason}"
     fi
     jq -n --arg role "$role" --arg state "$state" --arg detail "$detail" \
-      '{role:$role, state:$state, detail:$detail}'
+          --argjson report "$(role_report_json "$role")" \
+      '{role:$role, state:$state, detail:$detail} + $report'
   done | jq -s '.'
+}
+
+# --- per-role latest tick report (issue #126) -------------------------------
+# The one-line status a role's loop last "report"ed, plus how long ago —
+# derived from the tick file's OWN mtime (fwf_tick_path), the same
+# never-trust-the-pane-glyph approach heartbeat uses (#99): a role can leave
+# its pane looking busy while its loop is actually wedged, but it can't fake
+# a filesystem timestamp. Absent file (role has never ticked, or predates
+# this feature) -> report:null, report_age_secs:null, report_stale:false —
+# never a fabricated "0s ago".
+role_report_json() { # $1=role tag
+  local role="$1" tf mt now age iv iv_secs stale="false" report
+  tf="$(fwf_tick_path "$role")"
+  if [ ! -f "$tf" ]; then
+    echo '{"report":null,"report_age_secs":null,"report_stale":false}'
+    return 0
+  fi
+  report="$(cat "$tf" 2>/dev/null || true)"
+  mt="$(fwf_file_mtime "$tf")"
+  now="$(date -u +%s)"
+  if [ -z "$mt" ]; then
+    jq -n --arg r "$report" '{report:$r,report_age_secs:null,report_stale:false}'
+    return 0
+  fi
+  age=$((now - mt))
+  iv="$(fwf_role_interval "$role" 2>/dev/null || true)"
+  if iv_secs="$(fwf_interval_seconds "${iv:-2m}" 2>/dev/null)" && [ "$age" -gt $((iv_secs * 2)) ]; then
+    stale="true"
+  fi
+  jq -n --arg r "$report" --argjson age "$age" --argjson stale "$stale" \
+    '{report:$r, report_age_secs:$age, report_stale:$stale}'
 }
 
 # --- needs-you (captain blocked on a human decision) ------------------------

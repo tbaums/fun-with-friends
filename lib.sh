@@ -504,6 +504,7 @@ $(cat "$addendum")"
   text="${text//__STOPFILE__/$STOP_FILE}"
   text="${text//__BUDGET_HOLD_FILE__/$BUDGET_HOLD_FILE}"
   text="${text//__HEARTBEAT__/$FWF_STATE_DIR/heartbeat/$role_tag}"
+  text="${text//__TICKFILE__/$FWF_STATE_DIR/ticks/$role_tag}"
   # Build-provenance trailer for PR bodies + squash-merge commits. Guarded so
   # the git/version lookup only runs for templates that actually use it.
   case "$text" in *__PROVENANCE__*) text="${text//__PROVENANCE__/$(fwf_provenance_block)}";; esac
@@ -1333,6 +1334,31 @@ fwf_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null ||
 # the pane's animation glyph, which stays looking alive even when a role never
 # actually advances a cycle.
 fwf_heartbeat_path() { echo "$FWF_STATE_DIR/heartbeat/$1"; } # $1=role tag
+
+# The tick-status file a role's loop overwrites with its latest one-line
+# report + a UTC timestamp, whenever a step in its prompt says "report"
+# (issue #126) — read by the dash Roles tab so an operator can see each
+# agent's latest self-reported state-of-work without attaching to its pane.
+# Sibling of fwf_heartbeat_path (issue #99): same per-profile, per-role-tag
+# layout, different directory.
+fwf_tick_path() { echo "$FWF_STATE_DIR/ticks/$1"; } # $1=role tag
+
+# Role tag -> its configured loop-interval string ("2m", "5m", ...), the same
+# mapping fwf_role_label uses for its "loop <interval>" suffix. Used by the
+# dash tick-status provider to flag a report "stale" once its age exceeds a
+# multiple of the role's own cadence, rather than one fixed threshold for
+# every role.
+fwf_role_interval() { # $1=role tag
+  case "$1" in
+    impl*)     echo "$IMPL_INTERVAL";;
+    qa*)       echo "$QA_LOOP_INTERVAL";;
+    conductor) echo "$CONDUCTOR_INTERVAL";;
+    pm)        echo "$PM_INTERVAL";;
+    gv)        echo "$GV_INTERVAL";;
+    captain)   echo "$CAPTAIN_INTERVAL";;
+    *)         fwf_extra_interval "$1" || echo "";;
+  esac
+}
 
 # Poll for role $1's heartbeat to reach or pass epoch $2 (typically "when we
 # armed the pane"), for up to $3 seconds. This verifies the loop STARTED a

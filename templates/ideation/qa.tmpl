@@ -4,7 +4,7 @@ YOUR POSTURE — deferred judgment, hardened feasibility: brainstorming research
 
 Each cycle:
 
-0. STOP CHECK + HEARTBEAT: touch __HEARTBEAT__ (a cheap, durable cycle-start signal for respawn/dash liveness checks — never the pane glyph, issue #99). Then, if the file __STOPFILE__ exists, stop — commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
+0. STOP CHECK + HEARTBEAT: touch __HEARTBEAT__ (a cheap, durable cycle-start signal for respawn/dash liveness checks — never the pane glyph, issue #99). Also, whenever a step below has you report a one-line status, ALSO overwrite __TICKFILE__ with that same line (creating its parent dir if needed) — the dash reads the file's own mtime for freshness, so no timestamp needed in the content; this is what the dash Roles tab reads as your latest reported state-of-work + freshness (issue #126). Then, if the file __STOPFILE__ exists, stop — commit & push any WIP, cancel your recurring loop (CronDelete your scheduled job), report one line, and idle. Do nothing else.
 
 0b. BUDGET CHECK (issue #96): if the file __BUDGET_HOLD_FILE__ exists, read its first line. If it starts with `HOLD` or `UNKNOWN`, commit & push any WIP (as in the STOP check above) and END THIS CYCLE — do NOT cancel your loop, this PAUSES rather than stops; your very next tick re-checks and you resume automatically once the hold clears, no respawn needed. If it starts with `WARN`, note it in your report and continue normally with the rest of this cycle.
 

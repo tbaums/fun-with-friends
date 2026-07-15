@@ -168,6 +168,67 @@ assert_eq "every role template (all factory designs) carries the heartbeat write
 assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
   "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
 
+section "per-agent latest tick: report + freshness (#126)"
+assert_eq "fwf_tick_path is per-role, sibling of heartbeat" "/some/state/ticks/qa3" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; FWF_STATE_DIR=/some/state fwf_tick_path qa3")"
+TICK_QA3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_contains "rendered tick path is per-role, under FWF_STATE_DIR" "$TICK_QA3" "state/example/ticks/qa3"
+assert_contains "tick-file write is framed as a generic 'whenever you report' rule" "$TICK_QA3" "whenever a step below has you report"
+# every base role template (every factory design, excluding _local-issues
+# overlay fragments) also carries the tick-file write, same coverage as the
+# heartbeat check above.
+MISSING_TICKFILE=""
+while IFS= read -r -d '' f; do
+  /usr/bin/grep -q "__TICKFILE__" "$f" || MISSING_TICKFILE="$MISSING_TICKFILE $f"
+done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
+assert_eq "every role template (all factory designs) carries the tick-file write" "" "$MISSING_TICKFILE"
+assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
+  "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__TICKFILE__" {} \; | wc -l | tr -d ' ')"
+
+# fwf_role_interval: the per-role loop cadence used to derive the 2x-interval
+# staleness threshold below.
+assert_eq "fwf_role_interval impl* -> IMPL_INTERVAL" "2m" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_interval impl1")"
+assert_eq "fwf_role_interval qa* -> QA_LOOP_INTERVAL" "1m" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_interval qa2")"
+assert_eq "fwf_role_interval captain -> CAPTAIN_INTERVAL" "2m" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_interval captain")"
+
+# roles_json (fwf-dash-data.sh): reads each role's tick file, if any, and
+# reports its content + age derived from the file's OWN mtime (never a
+# fabricated timestamp embedded in the content — same never-trust-a-string
+# philosophy as the heartbeat liveness check).
+DD126="$ROOT/fwf-dash-data.sh"
+NOPANE_TMUX126="$TMP/nopane126bin"; mkdir -p "$NOPANE_TMUX126"
+cat > "$NOPANE_TMUX126/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in has-session) exit 1;; list-panes) exit 0;; *) exit 1;; esac
+STUB
+chmod +x "$NOPANE_TMUX126/tmux"
+R126RUN="$TMP/run126"; mkdir -p "$R126RUN/state/example/ticks"
+printf 'impl1: #130 awaiting qa1 review — idle' > "$R126RUN/state/example/ticks/impl1"
+R126="$(PATH="$NOPANE_TMUX126:$PATH" FWF_RUN_DIR="$R126RUN" FWF_PROFILE=example bash -c "source '$DD126'; roles_json")"
+assert_eq "impl1's tick-file content renders verbatim as .report" "impl1: #130 awaiting qa1 review — idle" \
+  "$(printf '%s' "$R126" | jq -r '.[] | select(.role=="impl1") | .report')"
+assert_eq "a fresh tick file is not stale" "false" \
+  "$(printf '%s' "$R126" | jq -r '.[] | select(.role=="impl1") | .report_stale')"
+assert_eq "a role with no tick file has a null report, never a fabricated one" "null" \
+  "$(printf '%s' "$R126" | jq -r '.[] | select(.role=="impl2") | .report')"
+assert_eq "no tick file -> report_age_secs is null, not 0" "null" \
+  "$(printf '%s' "$R126" | jq -r '.[] | select(.role=="impl2") | .report_age_secs')"
+# a tick file older than 2x impl's loop interval (2m -> 240s stale threshold)
+# must flag report_stale, using only the file's mtime, not its content.
+# touch -t takes its [[CC]YY]MMDDhhmm[.SS] argument as LOCAL time (both BSD
+# and GNU touch), so the timestamp must be generated in local time too — a
+# `date -u`-computed value fed to `touch -t` silently lands hours off on any
+# non-UTC host, which is why this used `date -u` here once and always read as
+# fresh (mtime landed in the future) instead of stale.
+touch -t "$(date -v-10M +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M.%S)" \
+  "$R126RUN/state/example/ticks/impl1"
+R126STALE="$(PATH="$NOPANE_TMUX126:$PATH" FWF_RUN_DIR="$R126RUN" FWF_PROFILE=example bash -c "source '$DD126'; roles_json")"
+assert_eq "a tick file older than 2x the role's loop interval is flagged stale" "true" \
+  "$(printf '%s' "$R126STALE" | jq -r '.[] | select(.role=="impl1") | .report_stale')"
+
 # --------------------------------------------------------------------------
 section "build-provenance stamp: role->model map recorded on every PR"
 prov_env() { FWF_PROFILE=example FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 FWF_MODEL_GV=claude-opus-4-8 FWF_MODEL_CAPTAIN=claude-opus-4-8 bash -c "source '$ROOT/lib.sh'; $1"; }
