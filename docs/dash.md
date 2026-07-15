@@ -70,7 +70,7 @@ a running swarm:
 | Field | Derived from |
 |---|---|
 | activity | open/merged PRs against the integration targets: BUILDING / IN TEST·REVIEW / MERGED (the landing tab) |
-| roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`/`--build-only`, never conflated with a crash (see below) |
+| roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`/`--build-only`, never conflated with a crash (see below); each row also shows the role's latest self-reported state-of-work + how long ago (issue #126, see below) |
 | pipeline | git branch deltas in the target repo (`staging +N ahead · …`) |
 | decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you |
 | issues | every open issue (gated ones marked 🔒) |
@@ -108,6 +108,19 @@ cooldown.
 
 The header's provenance stamp says where prod/pipeline came from: `status.json`
 (fresh overlay, green), `stale` (overlay too old, amber), or `derived` (gray).
+
+### Per-role latest tick report (issue #126)
+
+Every role's prompt has it overwrite `$FWF_STATE_DIR/ticks/<role-tag>` with its
+latest one-line status whenever a step tells it to "report" (the same text
+that would otherwise only be visible by attaching to its pane). The Roles tab
+renders that line under the role, plus a relative age (`42s ago`, `3m 42s
+ago`, `1h 05m ago`) computed from the tick file's own mtime — never from a
+timestamp embedded in the content, so a wedged loop can't fake freshness. A
+report older than 2x the role's own configured loop interval renders with a
+`⚠ STALE` treatment. A role that has never ticked (predates this feature, or
+hasn't completed a cycle yet) shows no report line at all, never a fabricated
+"0s ago".
 
 ## Keys (no F-keys — the prior-art model)
 

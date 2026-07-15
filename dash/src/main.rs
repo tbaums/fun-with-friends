@@ -1231,6 +1231,21 @@ fn activity_summary(it: &&data::ActivityItem) -> String {
     s
 }
 
+/// "42s ago" / "3m 42s ago" / "1h 05m ago" — the relative-age format the
+/// Roles tab uses for a role's latest tick report (issue #126). Kept
+/// separate from the Usage tab's plain "{}s ago" (that tab's numbers are
+/// meant to be scanned as raw seconds since a poll, not a human clock).
+fn fmt_report_age(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m {:02}s ago", secs / 60, secs % 60)
+    } else {
+        format!("{}h {:02}m ago", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
 fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
     let d = app.feed.dashboard().expect("checked by caller");
     let items: Vec<ListItem> = d
@@ -1267,7 +1282,29 @@ fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::Gray),
                 ));
             }
-            ListItem::new(Line::from(spans))
+            let mut lines = vec![Line::from(spans)];
+            // Latest tick report (issue #126) — a second line so it never
+            // crowds out the captain's status.json `detail` above. Absent
+            // report (role has never ticked) renders nothing extra, never a
+            // fabricated "0s ago".
+            if let Some(report) = &r.report {
+                let age_style = if r.report_stale {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                let age_text = match r.report_age_secs {
+                    Some(age) if r.report_stale => format!("⚠ STALE, {}", fmt_report_age(age)),
+                    Some(age) => fmt_report_age(age),
+                    None => "age unknown".to_string(),
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("            "),
+                    Span::styled(report.clone(), Style::default().fg(Color::Gray)),
+                    Span::styled(format!("  ({age_text})"), age_style),
+                ]));
+            }
+            ListItem::new(lines)
         })
         .collect();
 
@@ -2578,16 +2615,21 @@ mod tests {
                     role: "impl1".into(),
                     state: "live".into(),
                     detail: "building #62".into(),
+                    report: Some("impl1: #62 gate green, pushing".into()),
+                    report_age_secs: Some(42),
+                    report_stale: false,
                 },
                 data::Role {
                     role: "qa1".into(),
                     state: "idle".into(),
                     detail: String::new(),
+                    ..Default::default()
                 },
                 data::Role {
                     role: "impl2".into(),
                     state: "down".into(),
                     detail: "crashed".into(),
+                    ..Default::default()
                 },
             ],
             decisions: vec![data::Decision {
@@ -3246,6 +3288,7 @@ mod tests {
                 role: "impl2".into(),
                 state: "floor_idle".into(),
                 detail: "floor idled by captain since 2026-01-01T00:00:00Z — queue empty; nothing in flight".into(),
+                ..Default::default()
             }];
         }
         let idle_buf = render_buffer(100, 30, |f| ui(f, &mut idle_app));
@@ -3258,6 +3301,7 @@ mod tests {
                 role: "impl2".into(),
                 state: "down".into(),
                 detail: "crashed".into(),
+                ..Default::default()
             }];
         }
         let crash_buf = render_buffer(100, 30, |f| ui(f, &mut crash_app));
@@ -3280,5 +3324,102 @@ mod tests {
             !crash_text.contains("IDLE"),
             "a real crash (down, no floor-down logged) must never show IDLE"
         );
+    }
+
+    // issue #126: per-agent latest tick — state-of-work + freshness.
+    #[test]
+    fn golden_full_frame_roles_tab_with_report() {
+        let mut app = golden_app(Tab::Roles);
+        let text = buffer_to_text(&render_buffer(100, 30, |f| ui(f, &mut app)));
+        assert_golden("full_frame_roles_with_report", &text);
+    }
+
+    #[test]
+    fn roles_report_line_shows_the_reported_text_and_a_human_age() {
+        let mut app = golden_app(Tab::Roles);
+        let area = Rect::new(0, 0, 100, 10);
+        let buf = render_buffer(area.width, area.height, |f| render_roles(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let idx = text
+            .lines()
+            .position(|l| l.contains("impl1"))
+            .expect("impl1 row must render");
+        let report_line = text.lines().nth(idx + 1).expect("report line must follow");
+        assert!(
+            report_line.contains("impl1: #62 gate green, pushing"),
+            "the role's exact latest-report text must render: {report_line:?}"
+        );
+        assert!(
+            report_line.contains("42s ago"),
+            "a fresh report's age must render as a human relative time: {report_line:?}"
+        );
+        assert!(
+            !report_line.contains('⚠'),
+            "a fresh (non-stale) report must never carry the STALE warning glyph: {report_line:?}"
+        );
+    }
+
+    #[test]
+    fn roles_report_line_flags_a_stale_report() {
+        let mut app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.roles = vec![data::Role {
+                role: "impl3".into(),
+                state: "live".into(),
+                detail: String::new(),
+                report: Some("impl3: rebasing #90 onto staging".into()),
+                report_age_secs: Some(365),
+                report_stale: true,
+            }];
+        }
+        let area = Rect::new(0, 0, 100, 10);
+        let buf = render_buffer(area.width, area.height, |f| render_roles(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let report_line = text
+            .lines()
+            .find(|l| l.contains("impl3: rebasing"))
+            .expect("stale report line must render");
+        assert!(
+            report_line.contains("STALE") && report_line.contains('⚠'),
+            "a stale report must carry the STALE warning treatment: {report_line:?}"
+        );
+        assert!(
+            report_line.contains("6m 05s ago"),
+            "a stale report's age must still render as a human relative time: {report_line:?}"
+        );
+    }
+
+    #[test]
+    fn roles_role_with_no_report_renders_no_extra_line() {
+        // golden_fixture's qa1 has no report (issue #126) — the very next
+        // rendered line must be the following role, not a fabricated
+        // "0s ago"/blank report line squeezed in underneath.
+        let mut app = golden_app(Tab::Roles);
+        let area = Rect::new(0, 0, 100, 10);
+        let buf = render_buffer(area.width, area.height, |f| render_roles(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let idx = text
+            .lines()
+            .position(|l| l.contains("qa1"))
+            .expect("qa1 row must render");
+        let next_line = text
+            .lines()
+            .nth(idx + 1)
+            .expect("a following line must exist");
+        assert!(
+            next_line.contains("impl2"),
+            "qa1 (no report) must not inject an extra line before the next role: {next_line:?}"
+        );
+    }
+
+    #[test]
+    fn fmt_report_age_formats_seconds_minutes_and_hours() {
+        assert_eq!(fmt_report_age(0), "0s ago");
+        assert_eq!(fmt_report_age(42), "42s ago");
+        assert_eq!(fmt_report_age(59), "59s ago");
+        assert_eq!(fmt_report_age(60), "1m 00s ago");
+        assert_eq!(fmt_report_age(222), "3m 42s ago");
+        assert_eq!(fmt_report_age(3600), "1h 00m ago");
+        assert_eq!(fmt_report_age(3900), "1h 05m ago");
     }
 }

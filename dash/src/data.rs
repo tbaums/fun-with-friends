@@ -130,7 +130,7 @@ pub struct ActivityItem {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Role {
     pub role: String,
     /// "live" | "idle" | "down" | "floor_idle" (deliberately parked by
@@ -138,6 +138,21 @@ pub struct Role {
     pub state: String,
     #[serde(default)]
     pub detail: String,
+    /// The role's latest self-reported one-line status (issue #126) — the
+    /// exact text it last wrote to its tick file. `None` if the role has
+    /// never ticked (predates this feature, or hasn't completed a cycle
+    /// yet) — never a fabricated empty report.
+    #[serde(default)]
+    pub report: Option<String>,
+    /// Seconds since that report was written, derived from the tick file's
+    /// own mtime (never trusts the pane glyph — same philosophy as the
+    /// heartbeat liveness check, issue #99). `None` alongside `report: None`.
+    #[serde(default)]
+    pub report_age_secs: Option<i64>,
+    /// True once `report_age_secs` exceeds 2x the role's configured loop
+    /// interval — flags a report that's gone quiet longer than expected.
+    #[serde(default)]
+    pub report_stale: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -455,6 +470,28 @@ mod tests {
     #[test]
     fn reports_bad_json() {
         assert!(parse(b"not json").is_err());
+    }
+
+    // issue #126: a role's latest tick report + freshness. The absent-report
+    // case (predates this feature, or a role that's never ticked) must parse
+    // to None/false, never a fabricated 0s-ago or empty-string report.
+    #[test]
+    fn parses_role_report_fields() {
+        let d = parse(br#"{"profile":"p","template":"dev","prod":"-","pipeline":"-","stamp":"derived","generated_at":"00:00:00",
+            "roles":[
+              {"role":"impl1","state":"live","detail":"","report":"impl1: #62 gate green, pushing","report_age_secs":42,"report_stale":false},
+              {"role":"impl2","state":"idle","detail":""}
+            ]}"#)
+            .expect("parse");
+        assert_eq!(
+            d.roles[0].report.as_deref(),
+            Some("impl1: #62 gate green, pushing")
+        );
+        assert_eq!(d.roles[0].report_age_secs, Some(42));
+        assert!(!d.roles[0].report_stale);
+        assert_eq!(d.roles[1].report, None);
+        assert_eq!(d.roles[1].report_age_secs, None);
+        assert!(!d.roles[1].report_stale);
     }
 
     #[test]
