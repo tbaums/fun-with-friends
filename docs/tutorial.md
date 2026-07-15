@@ -380,7 +380,7 @@ are treated as PM-plane: they die on `down --pm-only` (and so also on
 | `__REPO__` | the target repo's basename |
 | `__STAGING__` / `__INTEGRATION__` / `__DEFAULT__` | the branch ladder |
 | `__WIP_LABEL__` / `__HOLD_LABEL__` | the gate + freeze labels |
-| `__GATE__` / `__E2E__` | the profile's gate and e2e commands |
+| `__GATE__` / `__E2E__` | the profile's gate/e2e commands, wrapped as `fwf gate <role> [--e2e] -- ...` (issue #123) — the shared guarded launcher; exits 75 (skip, not red) when that role's own prior gate is still in flight |
 | `__LOCK__` | the e2e lock path |
 | `__STOPFILE__` | the stop sentinel path (every role must honor it) |
 | `__COORD_SESSION__` / `__BUILD_SESSION__` | the tmux session names |

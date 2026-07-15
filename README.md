@@ -209,15 +209,37 @@ instead of stalling silently (issue #99).
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
-The e2e lock (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`) serializes e2e so
-its single-port suite never collides — and it's shared by every role, not just
-the conductor: implementers acquire the same lock for their own local e2e
-self-verification runs before marking a PR ready (issue #65), since those
-share the same fixed ports. The lock dir carries a holder-identity stamp
-(role/PID/host/worktree/timestamp) so a role that dies mid-hold is recovered
-automatically — a live holder is never reclaimed no matter how long it runs,
-only a confirmed-dead one is broken immediately (`fwf_e2e_lock_acquire` /
-`fwf_e2e_lock_release` in `lib.sh`).
+Every `__GATE__`/`__E2E__` a role runs is rendered as a call to `fwf gate`
+(issue #123), the one shared guarded launcher every tick-driven gate/e2e
+invocation routes through — qa's fast-gate review, an implementer's own gate
+validation, and the conductor's promotion e2e all go through the same code,
+not a per-role copy:
+
+- **Per-role single-flight lock** (`~/.fun-with-friends/state/<profile>/gate-lock/<role>`,
+  atomic `mkdir`): a role whose own PRIOR gate is still running does not
+  launch a second — `fwf gate` exits `75` and the role skips that tick rather
+  than stacking runs (the observed failure mode: 8 concurrent `test/run.sh`
+  processes, none finishing, because a role kept relaunching without checking
+  whether its last one had exited). Fail-closed: if the lock's liveness can't
+  be determined, it also skips rather than risking a stack. A live holder
+  past `FWF_GATE_LOCK_MAX_RUN_SECS` (default 1800s) is treated as wedged and
+  reaped, so a crashed gate can never wedge the role permanently
+  (`fwf_gate_lock_acquire` / `fwf_gate_lock_release` in `lib.sh`).
+- **Floor-wide e2e lock** (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`,
+  issue #65) — taken ADDITIONALLY when `fwf gate` is called with `--e2e`
+  (every `__E2E__` render; `__GATE__` does not need it, since the fast gate
+  isn't meant to share ports with anything). Serializes e2e-class runs across
+  DIFFERENT roles so a single-port harness never collides — conductor's
+  promotion e2e and an implementer's own local e2e self-verification (before
+  marking a PR ready) share this same lock. The lock dir carries a
+  holder-identity stamp (role/PID/host/worktree/timestamp) so a role that
+  dies mid-hold is recovered automatically — a live holder is never reclaimed
+  no matter how long it runs, only a confirmed-dead one is broken immediately
+  (`fwf_e2e_lock_acquire` / `fwf_e2e_lock_release` in `lib.sh`).
+
+Both locks are released by `fwf gate`'s own `EXIT` trap the moment it exits —
+success, failure, or a kill — so no role has to manage them by hand; see
+`fwf gate` in `fwf help` and `fwf-gate.sh`.
 
 ## Factory templates
 
@@ -339,6 +361,10 @@ fwf usage [--clear-hold]                            per-role token usage + an es
                                                     transcripts, plus budget-enforcement status
                                                     (read-only; also a dash tab). --clear-hold lifts
                                                     a BUDGET_HOLD by hand.
+fwf gate <role> [--e2e] -- <cmd...>                 the shared guarded gate/e2e launcher every
+                                                    __GATE__/__E2E__ render calls (issue #123); exits
+                                                    75 rather than stacking a second run when <role>'s
+                                                    own prior gate is still in flight
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)
