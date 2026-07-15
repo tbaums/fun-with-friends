@@ -80,6 +80,10 @@ HOLD_LABEL="${FWF_HOLD_LABEL:-release-hold}"
 # This is the path for GV-signed-as-SCOPED (not "build it") tickets, so they no longer
 # stall in product-wip limbo with no role to produce them.
 DISCOVERY_LABEL="${FWF_DISCOVERY_LABEL:-discovery}"
+# needs-captain (issue #113): any role raises this on an issue or PR to reach
+# the captain reliably — a persisted, queryable signal the captain's per-tick
+# sweep reads, unlike an ephemeral pane line. See fwf-flag-captain.sh.
+NEEDS_CAPTAIN_LABEL="${FWF_NEEDS_CAPTAIN_LABEL:-needs-captain}"
 # How long fwf-up / fwf-respawn wait for claude to boot in a pane before sending a prompt.
 FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
