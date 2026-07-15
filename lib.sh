@@ -655,77 +655,161 @@ fwf_persist_tmux_socket() {   # $1 = value to persist (a socket path, or "defaul
   printf '%s\n' "$1" > "$FWF_TMUX_SOCKET_FILE"
 }
 
-# --- floor-lifecycle event log (issue #85) -----------------------------------
+# --- floor-lifecycle event log (issue #85; generalized per-UNIT by #105) -----
 # Single source of truth for BOTH the dash's live floor state and the
 # after-the-fact audit trail — no second file that can disagree with this one.
 # A crash never appends to this log, so "the last event is floor-down" cleanly
-# means "deliberately idled by fwf-down.sh --floor-only", not "gone".
+# means "deliberately idled by fwf-down.sh", not "gone".
 # Append-only TSV, capped at the last N lines so it cannot grow unbounded.
+# issue #105: a 6th column, "plane" (build|pm), lets this ONE log carry both
+# units' lifecycles instead of fragmenting into per-unit files. A legacy
+# 5-column row (written before #105, when the whole floor was one unit) has
+# no plane field and reads as "build".
 FWF_FLOOR_LOG="$FWF_STATE_DIR/floor-events.log"
 FWF_FLOOR_LOG_CAP=200
 
 # $1=event ("floor-down"|"floor-up")  $2=actor  $3=reason (may be empty)
+# $4=plane ("build"|"pm", default "build")
 fwf_floor_event() {
-  local event="$1" actor="$2" reason="${3:-}" ts epoch tmp
+  local event="$1" actor="$2" reason="${3:-}" plane="${4:-build}" ts epoch tmp
   mkdir -p "$FWF_STATE_DIR"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   epoch="$(date +%s)"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$epoch" "$event" "$actor" "$reason" >> "$FWF_FLOOR_LOG"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$epoch" "$event" "$actor" "$reason" "$plane" >> "$FWF_FLOOR_LOG"
   if [ "$(wc -l < "$FWF_FLOOR_LOG")" -gt "$FWF_FLOOR_LOG_CAP" ]; then
     tmp="$(mktemp "${FWF_FLOOR_LOG}.XXXXXX")"
     tail -n "$FWF_FLOOR_LOG_CAP" "$FWF_FLOOR_LOG" > "$tmp" && mv "$tmp" "$FWF_FLOOR_LOG"
   fi
 }
 
-# Echoes "active\tsince\treason\tactor" (TSV, one line). active is "true" only
-# when the LAST logged event is floor-down with no later floor-up — a missing
-# log, or a log whose last event is floor-up, both read as not-idle. Read-only;
-# the dash's live-pane precedence (a role with a live pane is never shown
-# idle) lives in the caller, not here.
-fwf_floor_idle_state() {
-  local last ts ev actor reason
+# $1=plane ("build"|"pm"). Echoes "active\tsince\treason\tactor" (TSV, one
+# line) for THAT plane. active is "true" only when the LAST logged event FOR
+# THIS PLANE is floor-down with no later floor-up on the same plane — a
+# missing log, or a log whose last matching event is floor-up, both read as
+# not-idle. A legacy (pre-#105) row with no 6th column counts as plane
+# "build". Read-only; the dash's live-pane precedence (a role with a live
+# pane is never shown idle) lives in the caller, not here.
+fwf_plane_idle_state() {
+  local plane="$1"
   if [ ! -f "$FWF_FLOOR_LOG" ]; then printf 'false\t\t\t\n'; return 0; fi
-  last="$(tail -n1 "$FWF_FLOOR_LOG")"
-  ts="$(printf '%s' "$last" | cut -f1)"
-  ev="$(printf '%s' "$last" | cut -f3)"
-  actor="$(printf '%s' "$last" | cut -f4)"
-  reason="$(printf '%s' "$last" | cut -f5)"
-  if [ "$ev" = "floor-down" ]; then
-    printf 'true\t%s\t%s\t%s\n' "$ts" "$reason" "$actor"
-  else
-    printf 'false\t\t\t\n'
-  fi
+  awk -F'\t' -v want="$plane" '
+    { pl = ($6 == "" ? "build" : $6); if (pl == want) { ts=$1; ev=$3; actor=$4; reason=$5 } }
+    END {
+      if (ev == "floor-down") printf "true\t%s\t%s\t%s\n", ts, reason, actor
+      else printf "false\t\t\t\n"
+    }
+  ' "$FWF_FLOOR_LOG"
 }
 
-# --- floor-down cooldown guard (issue #88) -----------------------------------
-# The DETERMINISTIC anti-thrash bound: once the floor comes up, fwf-down.sh
-# --floor-only refuses to take it down again for FWF_FLOOR_COOLDOWN seconds —
+# --- floor-down cooldown guard (issue #88; generalized per-UNIT by #105) -----
+# The DETERMINISTIC anti-thrash bound: once a unit comes up, fwf-down.sh
+# refuses to take THAT unit down again for its own cooldown window —
 # script-enforced, not defeatable without --force. This is what actually
 # breaks the down->up->down thrash cycle; captain.tmpl's dwell guidance is
 # soft and only reduces how often a single premature down fires.
+# FWF_BUILD_COOLDOWN aliases the pre-#105 FWF_FLOOR_COOLDOWN by default (the
+# build floor is the unit that existed, alone, before this split) — set
+# FWF_BUILD_COOLDOWN explicitly to diverge the two.
 FWF_FLOOR_COOLDOWN="${FWF_FLOOR_COOLDOWN:-300}"
 case "$FWF_FLOOR_COOLDOWN" in
   ''|*[!0-9]*) echo "fwf: FWF_FLOOR_COOLDOWN must be a non-negative integer of seconds (got '$FWF_FLOOR_COOLDOWN')" >&2; exit 1;;
 esac
+FWF_BUILD_COOLDOWN="${FWF_BUILD_COOLDOWN:-$FWF_FLOOR_COOLDOWN}"
+case "$FWF_BUILD_COOLDOWN" in
+  ''|*[!0-9]*) echo "fwf: FWF_BUILD_COOLDOWN must be a non-negative integer of seconds (got '$FWF_BUILD_COOLDOWN')" >&2; exit 1;;
+esac
+FWF_PM_COOLDOWN="${FWF_PM_COOLDOWN:-300}"
+case "$FWF_PM_COOLDOWN" in
+  ''|*[!0-9]*) echo "fwf: FWF_PM_COOLDOWN must be a non-negative integer of seconds (got '$FWF_PM_COOLDOWN')" >&2; exit 1;;
+esac
 
-# Echoes the epoch of the last logged floor-up event, or "" if none on record
-# (a fresh log, or one that has never seen an up — the first-ever down is
-# intentionally unguarded; see #88's edge cases).
-fwf_floor_last_up_epoch() {
+# $1=plane. Echoes the epoch of the last logged floor-up event FOR THAT
+# PLANE, or "" if none on record (a fresh log, or one that has never seen an
+# up for this plane — the first-ever down for a plane is intentionally
+# unguarded; see #88's edge cases).
+fwf_plane_last_up_epoch() {
+  local plane="$1"
   [ -f "$FWF_FLOOR_LOG" ] || { printf ''; return 0; }
-  awk -F'\t' '$3=="floor-up"{e=$2} END{if (e != "") print e}' "$FWF_FLOOR_LOG"
+  awk -F'\t' -v want="$plane" '
+    { pl = ($6 == "" ? "build" : $6); if ($3 == "floor-up" && pl == want) e=$2 }
+    END { if (e != "") print e }
+  ' "$FWF_FLOOR_LOG"
 }
 
-# Echoes the remaining cooldown in seconds (0 if elapsed, or no prior floor-up
-# on record).
-fwf_floor_cooldown_remaining() {
-  local last_up now remaining
-  last_up="$(fwf_floor_last_up_epoch)"
+# $1=plane ("build"|"pm"). Echoes that plane's remaining cooldown in seconds
+# (0 if elapsed, or no prior floor-up on record for it).
+fwf_plane_cooldown_remaining() {
+  local plane="$1" cooldown last_up now remaining
+  case "$plane" in
+    build) cooldown="$FWF_BUILD_COOLDOWN";;
+    pm)    cooldown="$FWF_PM_COOLDOWN";;
+    *) echo "fwf_plane_cooldown_remaining: unknown plane '$plane'" >&2; return 1;;
+  esac
+  last_up="$(fwf_plane_last_up_epoch "$plane")"
   [ -n "$last_up" ] || { printf '0'; return 0; }
   now="$(date +%s)"
-  remaining=$(( FWF_FLOOR_COOLDOWN - (now - last_up) ))
+  remaining=$(( cooldown - (now - last_up) ))
   [ "$remaining" -gt 0 ] || remaining=0
   printf '%s' "$remaining"
+}
+
+# --- per-plane deadlock guards (issue #105, acceptance criterion 1) ----------
+# A plane's down-command must REFUSE, not idle, whenever stranding is
+# possible. Both guards fail SAFE: any query error/ambiguity is treated as
+# "blocked" (stay up) — the safe direction on any ambiguity, per the ticket.
+# Neither is overridable by --force (--force only overrides the COOLDOWN
+# timer above, which is an anti-thrash pace-limiter, not a correctness guard).
+
+# Echoes a one-line reason if idling the BUILD floor could strand work, or ""
+# if safe. Blocked when: any open PR exists (a claim/draft/ready PR still
+# needs a role to act on it), OR staging is ahead of integration
+# (mid-promotion — the same check the conductor's own gate uses).
+fwf_build_plane_blocked() {
+  local pr_count staging_ahead
+  pr_count="$(gh pr list --state open --json number --jq 'length' 2>/dev/null)" \
+    || { printf 'could not query open PRs (gh failed) — assuming blocked'; return 0; }
+  case "$pr_count" in ''|*[!0-9]*) printf 'could not query open PRs (bad gh output) — assuming blocked'; return 0;; esac
+  if [ "$pr_count" -gt 0 ]; then
+    printf '%s open PR(s) still in flight' "$pr_count"; return 0
+  fi
+  git -C "$FWF_REPO" fetch origin "$STAGING_BRANCH" "$INTEGRATION_BRANCH" >/dev/null 2>&1 \
+    || { printf 'could not fetch %s/%s — assuming blocked' "$STAGING_BRANCH" "$INTEGRATION_BRANCH"; return 0; }
+  staging_ahead="$(git -C "$FWF_REPO" rev-list --count "origin/$INTEGRATION_BRANCH..origin/$STAGING_BRANCH" 2>/dev/null)" \
+    || { printf 'could not compare %s/%s — assuming blocked' "$STAGING_BRANCH" "$INTEGRATION_BRANCH"; return 0; }
+  case "$staging_ahead" in ''|*[!0-9]*) printf 'could not compare %s/%s (bad output) — assuming blocked' "$STAGING_BRANCH" "$INTEGRATION_BRANCH"; return 0;; esac
+  if [ "$staging_ahead" -gt 0 ]; then
+    printf 'mid-promotion: %s is %s commit(s) ahead of %s' "$STAGING_BRANCH" "$staging_ahead" "$INTEGRATION_BRANCH"; return 0
+  fi
+  printf ''
+}
+
+# Echoes a one-line reason if idling the PM could strand grooming, or "" if
+# safe. Blocked when any open "$WIP_LABEL"-labeled issue exists at all. This
+# is deliberately COARSER than the design's ideal ("only if it NEEDS action")
+# because every role authenticates as the same shared GitHub account (issue
+# #82's constraint): comment AUTHORSHIP can't mechanically distinguish "the
+# PM already responded" from "still awaiting the PM", so there is no reliable
+# signal here for "unaddressed feedback" the way #82 solved it with an
+# explicit sentinel-prefix convention. Treating ANY open draft as potential
+# pending work is the safe superset — it never wrongly allows an idle while
+# real work is pending. The captain's own per-tick judgment (it can actually
+# read the issue content) is the finer-grained layer on top of this
+# deterministic backstop, exactly like the dwell (soft) sits on the cooldown
+# (hard) above.
+fwf_pm_plane_blocked() {
+  local n
+  if [ "$FWF_ISSUES" = "local" ]; then
+    n="$("$FWF_LIB_DIR/fwf-issues.sh" list --state open --label "$WIP_LABEL" --json number --jq 'length' 2>/dev/null)" \
+      || { printf 'could not query %s drafts (local issues store) — assuming blocked' "$WIP_LABEL"; return 0; }
+  else
+    n="$(gh issue list --state open --label "$WIP_LABEL" --json number --jq 'length' 2>/dev/null)" \
+      || { printf 'could not query %s drafts (gh failed) — assuming blocked' "$WIP_LABEL"; return 0; }
+  fi
+  case "$n" in ''|*[!0-9]*) printf 'could not query %s drafts (bad output) — assuming blocked' "$WIP_LABEL"; return 0;; esac
+  if [ "$n" -gt 0 ]; then
+    printf '%s open %s draft(s) still need grooming' "$n" "$WIP_LABEL"; return 0
+  fi
+  printf ''
 }
 
 # --- e2e lock (issue #65) ----------------------------------------------------
