@@ -167,6 +167,15 @@ UTILITIES
                          is still in flight; --e2e additionally takes the
                          floor-wide e2e lock (issue #65) for a harness that
                          shares fixed ports across roles.
+  reconcile [--branch NAME ...] [--against BRANCH]
+                         Classify staging/integration against main (BEHIND ->
+                         fast-forward reconcile / AHEAD -> normal no-op /
+                         DIVERGED -> loud human-only halt / SUSPECT -> fail
+                         closed), issue #114. Called from the release runbook
+                         (write path) AND the captain's per-tick stale-base
+                         guard (read/safety-net path, before any assignment) —
+                         one shared classifier for both. Exits non-zero iff
+                         some branch is unsafe to build on right now.
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -569,6 +578,7 @@ case "$cmd" in
   usage)     engine fwf-usage.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
+  reconcile) engine fwf-reconcile.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

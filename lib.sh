@@ -1080,6 +1080,189 @@ fwf_budget_baseline_read() {
     "$BUDGET_BASELINE_FILE" 2>/dev/null
 }
 
+# --- branch reconcile (issue #114) -------------------------------------------
+# Stop the swarm building on a stale base. Two hook points share this ONE
+# classifier + FF-or-halt helper: (a) the release/direct-to-main write path
+# (RELEASING.md's runbook + .github/workflows/release.yml), and (b) the
+# captain's per-tick stale-base guard (see fwf-reconcile.sh, dispatched as
+# `fwf reconcile`). Backend-agnostic (pure git refs) so it behaves identically
+# whether FWF_ISSUES is "gh" or "local".
+#
+# Every branch is classified AGAINST $DEFAULT_BRANCH by ANCESTRY, never by
+# commit counts, into exactly one of five states:
+#   BEHIND    branch is a strict ancestor of main   -> stale base, FF-reconcile
+#   AHEAD     main is a strict ancestor of branch   -> normal in-flight
+#             promotion (staging/integration legitimately lead main between
+#             releases) -- NOT divergence, no halt, no mutation, ever
+#   EQUAL     branch already == main                -> clean no-op
+#   DIVERGED  each side has a commit the other lacks -> human-only halt, NEVER
+#             auto merge/rebase/force
+#   SUSPECT   fetch/rev-parse failed or a ref is missing/detached -> fail
+#             CLOSED: treated the same as a blocker, never silently skipped
+FWF_RECONCILE_LOCK_DIR="$FWF_STATE_DIR/reconcile-lock"
+FWF_RECONCILE_HISTORY_DIR="$FWF_STATE_DIR/reconcile-history"
+# How many consecutive RECONCILED outcomes for the same branch trip the flap
+# anomaly (issue #114 AC9) -- something is re-staling the branch between
+# ticks, which is never expected in steady state.
+FWF_RECONCILE_FLAP_THRESHOLD="${FWF_RECONCILE_FLAP_THRESHOLD:-2}"
+
+# $1=branch $2=mainbranch -> echoes "BEHIND <branch-sha> <main-sha>" /
+# "AHEAD ..." / "EQUAL ..." / "DIVERGED ..." / "SUSPECT <reason>". Always rc 0
+# (the STATE word, not the exit code, is the signal -- callers branch on the
+# first word). Fetches both refs fresh from origin so a caller never
+# classifies against a stale local view.
+fwf_reconcile_classify() {
+  local branch="$1" mainbranch="$2" b_sha m_sha
+  git -C "$FWF_REPO" fetch origin "$branch" "$mainbranch" >/dev/null 2>&1 \
+    || { printf 'SUSPECT could not fetch %s/%s from origin\n' "$branch" "$mainbranch"; return 0; }
+  b_sha="$(git -C "$FWF_REPO" rev-parse "origin/$branch" 2>/dev/null)" \
+    || { printf 'SUSPECT origin/%s does not resolve\n' "$branch"; return 0; }
+  m_sha="$(git -C "$FWF_REPO" rev-parse "origin/$mainbranch" 2>/dev/null)" \
+    || { printf 'SUSPECT origin/%s does not resolve\n' "$mainbranch"; return 0; }
+  if [ "$b_sha" = "$m_sha" ]; then
+    printf 'EQUAL %s %s\n' "$b_sha" "$m_sha"; return 0
+  fi
+  if git -C "$FWF_REPO" merge-base --is-ancestor "$b_sha" "$m_sha" 2>/dev/null; then
+    printf 'BEHIND %s %s\n' "$b_sha" "$m_sha"; return 0
+  fi
+  if git -C "$FWF_REPO" merge-base --is-ancestor "$m_sha" "$b_sha" 2>/dev/null; then
+    printf 'AHEAD %s %s\n' "$b_sha" "$m_sha"; return 0
+  fi
+  printf 'DIVERGED %s %s\n' "$b_sha" "$m_sha"
+}
+
+# Non-blocking single-flight lock so a release action and a captain tick can't
+# both be mid-reconcile on the same branch -- an OPTIMIZATION, not the
+# correctness guarantee (that's the CAS push below); a holder that isn't
+# actually alive is broken immediately so a crashed reconcile never wedges the
+# branch forever. $1=branch -> rc 0 acquired, rc 1 busy (skip this tick).
+fwf_reconcile_lock_try() {
+  local branch="$1"
+  local dir="$FWF_RECONCILE_LOCK_DIR/$branch" owner pid host
+  mkdir -p "$FWF_RECONCILE_LOCK_DIR" 2>/dev/null || true
+  if mkdir "$dir" 2>/dev/null; then
+    printf 'pid=%s\nhost=%s\n' "$$" "$(hostname)" > "$dir/owner"
+    return 0
+  fi
+  owner="$dir/owner"
+  pid="$(_fwf_e2e_owner_field pid "$owner")"
+  host="$(_fwf_e2e_owner_field host "$owner")"
+  if [ -n "$pid" ] && [ "$host" = "$(hostname)" ] && ! kill -0 "$pid" 2>/dev/null; then
+    rm -rf "$dir"
+    mkdir "$dir" 2>/dev/null && { printf 'pid=%s\nhost=%s\n' "$$" "$(hostname)" > "$dir/owner"; return 0; }
+  fi
+  return 1
+}
+fwf_reconcile_lock_release() { # $1=branch
+  rm -rf "${FWF_RECONCILE_LOCK_DIR:?}/$1"
+}
+
+# Record this tick's outcome for $1=branch ($2=state word) and echo "ANOMALY
+# ..." if this makes >= FWF_RECONCILE_FLAP_THRESHOLD consecutive RECONCILED
+# outcomes for that branch (issue #114 AC9) -- a reconcile storm must surface
+# AS a storm, never blend into steady-state noise. Any non-RECONCILED outcome
+# resets the streak.
+fwf_reconcile_record_history() {
+  local branch="$1" state="$2"
+  local f="$FWF_RECONCILE_HISTORY_DIR/$branch" streak=0
+  mkdir -p "$FWF_RECONCILE_HISTORY_DIR" 2>/dev/null || true
+  [ -f "$f" ] && streak="$(cat "$f" 2>/dev/null || echo 0)"
+  case "$streak" in ''|*[!0-9]*) streak=0;; esac
+  if [ "$state" = RECONCILED ]; then
+    streak=$((streak + 1))
+    printf '%s\n' "$streak" > "$f"
+    if [ "$streak" -ge "$FWF_RECONCILE_FLAP_THRESHOLD" ]; then
+      printf 'ANOMALY: %s reconciled on %s consecutive ticks -- something is re-staling it between ticks\n' "$branch" "$streak"
+    fi
+  else
+    printf '0\n' > "$f"
+  fi
+}
+
+# The FF-or-halt helper: classify $1=branch against $2=mainbranch and, iff
+# BEHIND, fast-forward it with a compare-and-swap push
+# (--force-with-lease=<branch>:<observed-sha>) so a racing writer that already
+# moved the ref aborts cleanly instead of double-moving or partially
+# interleaving (issue #114 AC8) -- the CAS is the load-bearing correctness
+# guarantee; the single-flight lock above is just an optimization that skips
+# redundant concurrent work.
+#
+# Echoes exactly one line for the captain/release-action report to surface
+# verbatim:
+#   "reconciled <branch> <old-sha> -> <new-sha>"
+#   "normal-ahead <branch> (leads main, no action)"
+#   "clean no-op <branch> (already == main)"
+#   "halted-diverged <branch> <branch-sha> <main-sha>"
+#   "suspect <branch> <reason>"
+#   "lock-busy <branch> (another reconcile in flight, skipping this tick)"
+#   "cas-lost <branch> (ref moved under us, re-check next tick)"
+# rc 0 = safe to proceed (reconciled / normal-ahead / clean no-op / lock-busy).
+# rc 1 = DO NOT assign new work onto this base (halted-diverged / suspect /
+# cas-lost -- cas-lost is transient-unsafe: re-classify next tick, don't
+# assume-safe in the meantime).
+fwf_reconcile_branch() {
+  local branch="$1" mainbranch="$2" classification state b_sha m_sha
+  if ! fwf_reconcile_lock_try "$branch"; then
+    printf 'lock-busy %s (another reconcile in flight, skipping this tick)\n' "$branch"
+    return 0
+  fi
+  classification="$(fwf_reconcile_classify "$branch" "$mainbranch")"
+  state="${classification%% *}"
+  case "$state" in
+    EQUAL)
+      fwf_reconcile_record_history "$branch" NOOP
+      printf 'clean no-op %s (already == main)\n' "$branch"
+      fwf_reconcile_lock_release "$branch"
+      return 0
+      ;;
+    AHEAD)
+      fwf_reconcile_record_history "$branch" NOOP
+      printf 'normal-ahead %s (leads main, no action)\n' "$branch"
+      fwf_reconcile_lock_release "$branch"
+      return 0
+      ;;
+    DIVERGED)
+      read -r _ b_sha m_sha <<<"$classification"
+      fwf_reconcile_record_history "$branch" NOOP
+      printf 'halted-diverged %s %s %s\n' "$branch" "$b_sha" "$m_sha"
+      fwf_reconcile_lock_release "$branch"
+      return 1
+      ;;
+    SUSPECT)
+      fwf_reconcile_record_history "$branch" NOOP
+      printf 'suspect %s %s\n' "$branch" "${classification#SUSPECT }"
+      fwf_reconcile_lock_release "$branch"
+      return 1
+      ;;
+    BEHIND)
+      read -r _ b_sha m_sha <<<"$classification"
+      if fwf_reconcile_cas_push "$branch" "$b_sha" "$m_sha"; then
+        fwf_reconcile_record_history "$branch" RECONCILED
+        printf 'reconciled %s %s -> %s\n' "$branch" "$b_sha" "$m_sha"
+        fwf_reconcile_lock_release "$branch"
+        return 0
+      else
+        fwf_reconcile_record_history "$branch" NOOP
+        printf 'cas-lost %s (ref moved under us, re-check next tick)\n' "$branch"
+        fwf_reconcile_lock_release "$branch"
+        return 1
+      fi
+      ;;
+  esac
+}
+
+# The CAS primitive itself, factored out so it's independently testable
+# (issue #114 AC8): pushes $3=new-sha to $1=branch ONLY if the remote ref
+# still matches $2=observed-old-sha. A racing writer that already moved the
+# ref past $2 gets rejected here (git's --force-with-lease "stale info"),
+# never a blind overwrite or an interleaved partial move. rc 0 = pushed, rc 1
+# = lease rejected (or any other push failure) -- the caller treats both
+# identically: re-classify, don't assume-safe.
+fwf_reconcile_cas_push() { # $1=branch $2=observed-old-sha $3=new-sha
+  local branch="$1" old_sha="$2" new_sha="$3"
+  git -C "$FWF_REPO" push origin --force-with-lease="refs/heads/$branch:$old_sha" "$new_sha:refs/heads/$branch" >/dev/null 2>&1
+}
+
 # Clear whatever is sitting in the pane's Claude composer before we type into it,
 # so a stale/half-typed buffer doesn't garble the next prompt (the "wedged buffer"
 # problem). Ctrl+U is the TUI's reliable line-clear; we repeat it to drain

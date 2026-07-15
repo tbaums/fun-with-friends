@@ -44,7 +44,10 @@ resolution — see [docs/dash.md](docs/dash.md).
    ```bash
    gh run watch
    ```
-   If `tag != VERSION` it fails fast — fix `VERSION`, re-tag, push again.
+   If `tag != VERSION` it fails fast — fix `VERSION`, re-tag, push again. The
+   workflow's last step also auto-reconciles `staging`/`integration` back to
+   `main` (issue #114 — see "Re-syncing staging/integration" below); no manual
+   step needed on the happy path.
 7. **Verify** the published release and the artifacts (the tarball AND the five
    `fwf-dash-*` assets — binaries + checksums):
    ```bash
@@ -53,6 +56,29 @@ resolution — see [docs/dash.md](docs/dash.md).
    tar -C /tmp/rel -xzf /tmp/rel/fwf-X.Y.Z.tar.gz
    /tmp/rel/fwf-X.Y.Z/fwf doctor
    ```
+
+## Re-syncing staging/integration (issue #114)
+
+Every release (or direct-to-`main` hotfix) can leave `staging`/`integration`
+stale — they were cut before `main` advanced. `.github/workflows/release.yml`'s
+final step runs `fwf reconcile` automatically so this can no longer be a
+forgotten manual step. It classifies each of `staging`/`integration` against
+`main` by ancestry and does exactly one of:
+- **stale (behind main)** → fast-forwards it to `main`, logs the old→new SHA.
+- **ahead of main** (normal mid-cycle state — carries promoted-but-unreleased
+  work) → no-op, reported as normal. This is never treated as stale.
+- **diverged** (each side has a commit the other lacks) → halts loudly and
+  names the divergent SHAs; it never auto-merges/rebases/force-pushes. Resolve
+  by hand:
+  ```bash
+  FWF_REPO="$PWD" ./fwf reconcile --branch staging --branch integration --against main
+  ```
+  then reconcile the named branch(es) yourself (e.g. `git push --force-with-lease`
+  after confirming which side should win).
+
+The same command is what the captain runs on every tick, before assigning new
+work, as a safety net for the case above (a hand-merge or a release predating
+this fix landed commits on `main` outside the automated path).
 
 ## Dry run (no release)
 
@@ -93,3 +119,5 @@ anything. Cut the release manually — same gates, run locally:
    them (plus the checksums file) by hand, or accept that `fwf dash` falls back
    to a local `cargo build` for this release.
 4. Verify with step 7 above.
+5. Since the workflow's reconcile step didn't run, do it yourself:
+   `FWF_REPO="$PWD" ./fwf reconcile` (see "Re-syncing staging/integration" above).

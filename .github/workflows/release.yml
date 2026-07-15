@@ -73,6 +73,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # full history: the reconcile step's ancestry checks need it
 
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
@@ -134,3 +136,14 @@ jobs:
             "${assets[@]}" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
+
+      - name: Reconcile staging/integration to main (issue #114)
+        env:
+          FWF_REPO: ${{ github.workspace }}
+        run: |
+          # Auto-fast-forwards staging/integration when they're stale (a
+          # strict ancestor of main); no-ops a branch that legitimately leads
+          # main (normal mid-cycle promotion); halts loudly (never
+          # merges/rebases/force-pushes) on a genuine divergence, which needs
+          # a human — don't fail the release for that, it already published.
+          ./fwf reconcile || echo "::warning::staging/integration reconcile needs a human look (see log above) — the release itself still succeeded"

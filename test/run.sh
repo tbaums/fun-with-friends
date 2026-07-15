@@ -2732,6 +2732,193 @@ for f in templates/_local-issues/*.tmpl; do
 done
 
 # --------------------------------------------------------------------------
+# branch reconcile (#114): stop the swarm building on a stale base. Real git
+# fixtures — a bare "origin.git", a "seed" repo that authors commits and
+# pushes them to origin, and a "drive" repo (a separate clone) that stands in
+# for the fwf-self checkout the classifier/reconcile helper actually runs
+# from. Every scenario gets its own fixture trio so ancestry states never leak
+# across tests. Never touches the real repo/network/gh.
+section "branch reconcile (#114): classifier (BEHIND/AHEAD/EQUAL/DIVERGED/SUSPECT) + FF-or-halt"
+
+rec_setup() { # $1=label -> creates $TMP/rec114-<label>/{origin.git,seed,drive}, all 3 branches synced at one commit
+  local label="$1"
+  local base="$TMP/rec114-$label"
+  REC_ORIGIN="$base/origin.git"; REC_SEED="$base/seed"; REC_DRIVE="$base/drive"; REC_RUN="$base/run"
+  mkdir -p "$REC_ORIGIN" "$REC_SEED" "$REC_DRIVE"
+  ( cd "$REC_ORIGIN" && git init -q --bare )
+  ( cd "$REC_SEED" && git init -q && git symbolic-ref HEAD refs/heads/main \
+    && git config user.email t@t.co && git config user.name t \
+    && echo a > f && git add -A && git commit -qm c1 \
+    && git remote add origin "$REC_ORIGIN" \
+    && git push -q origin main && git push -q origin main:staging && git push -q origin main:integration )
+  ( cd "$REC_DRIVE" && git init -q && git config user.email t@t.co && git config user.name t \
+    && git remote add origin "$REC_ORIGIN" && git fetch -q origin )
+}
+rec_advance() { # $1=branch to push a new commit onto (from the seed repo)
+  ( cd "$REC_SEED" && git checkout -q main && echo "$RANDOM$RANDOM" >> f && git commit -qam "advance $1" \
+    && git push -q origin "main:$1" )
+}
+rec_sha() { git -C "$REC_ORIGIN" rev-parse "refs/heads/$1"; } # authoritative: read the tip straight off origin
+rec_fork() { # $1=branch $2=base-sha -> a NEW commit forking off base-sha (independent of any later main advances), pushed to $1
+  ( cd "$REC_SEED" && git checkout -q "$2" && echo "$RANDOM$RANDOM" >> f && git commit -qam "fork $1 from $2" \
+    && git push -q origin "HEAD:$1" )
+}
+rec_run() { FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+
+# --- classifier: BEHIND -------------------------------------------------
+rec_setup behind
+rec_advance main   # main gets a commit staging/integration don't have -> staging is a strict ancestor of main
+CLS="$(rec_run 'fwf_reconcile_classify staging main')"
+assert_contains "BEHIND: classifier names the state" "$CLS" "BEHIND"
+assert_contains "BEHIND: reports the branch sha"     "$CLS" "$(rec_sha staging)"
+assert_contains "BEHIND: reports the main sha"       "$CLS" "$(rec_sha main)"
+
+# --- classifier: AHEAD (the false-positive guard, AC3) -------------------
+rec_setup ahead
+rec_advance integration   # integration carries a promoted-but-unreleased commit main doesn't have yet
+CLS="$(rec_run 'fwf_reconcile_classify integration main')"
+assert_contains "AHEAD: a legitimately-leading branch is reported normal, not diverged" "$CLS" "AHEAD"
+
+# --- classifier: EQUAL (clean no-op) --------------------------------------
+rec_setup equal
+CLS="$(rec_run 'fwf_reconcile_classify staging main')"
+assert_contains "EQUAL: freshly-synced branches classify as EQUAL" "$CLS" "EQUAL"
+
+# --- classifier: DIVERGED --------------------------------------------------
+rec_setup diverged
+DIV_BASE="$(rec_sha main)"       # common ancestor before either side moves
+rec_advance main                  # main moves forward from the common ancestor...
+rec_fork staging "$DIV_BASE"      # ...and staging forks independently FROM THAT SAME ancestor -> neither is an ancestor of the other
+CLS="$(rec_run 'fwf_reconcile_classify staging main')"
+assert_contains "DIVERGED: two independently-moved branches classify as DIVERGED" "$CLS" "DIVERGED"
+
+# --- classifier: SUSPECT (fail-closed on fetch failure, AC6) ---------------
+rec_setup suspect
+rm -rf "$REC_ORIGIN"   # origin vanishes -> fetch fails
+CLS="$(rec_run 'fwf_reconcile_classify staging main')"
+assert_contains "SUSPECT: an unfetchable origin fails CLOSED, never silently proceeds" "$CLS" "SUSPECT"
+
+# --- fwf_reconcile_branch: BEHIND -> actually reconciles (AC1) -------------
+rec_setup reconcile-behind
+rec_advance main
+OLD_SHA="$(rec_sha staging)"; NEW_SHA="$(rec_sha main)"
+rc=0; LINE="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq   "BEHIND reconcile: rc 0 (safe to proceed)" "0" "$rc"
+assert_contains "BEHIND reconcile: reports reconciled + old->new SHAs" "$LINE" "reconciled staging $OLD_SHA -> $NEW_SHA"
+POST="$(rec_run 'fwf_reconcile_classify staging main')"
+assert_contains "BEHIND reconcile: staging == main on origin afterward" "$POST" "EQUAL"
+
+# --- fwf_reconcile_branch: DIVERGED -> halts, never mutates (AC2) ---------
+rec_setup reconcile-diverged
+RD_BASE="$(rec_sha main)"
+rec_advance main
+rec_fork staging "$RD_BASE"
+PRE_STAGING_SHA="$(rec_sha staging)"
+rc=0; LINE="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq   "DIVERGED reconcile: rc 1 (do not build on this base)" "1" "$rc"
+assert_contains "DIVERGED reconcile: reports halted-diverged with both SHAs" "$LINE" "halted-diverged staging $PRE_STAGING_SHA $(rec_sha main)"
+POST_SHA="$(rec_run 'fwf_reconcile_classify staging main' | awk '{print $2}')"
+assert_eq   "DIVERGED reconcile: staging ref on origin is untouched (no auto merge/rebase/force)" "$PRE_STAGING_SHA" "$POST_SHA"
+
+# --- fwf_reconcile_branch: AHEAD -> zero mutation, zero halt (AC3) --------
+rec_setup reconcile-ahead
+rec_advance integration
+PRE_SHA="$(rec_sha integration)"
+rc=0; LINE="$(rec_run 'fwf_reconcile_branch integration main')" || rc=$?
+assert_eq   "AHEAD reconcile: rc 0, never treated as unsafe"    "0" "$rc"
+assert_contains "AHEAD reconcile: reports normal-ahead, no mutation/alarm" "$LINE" "normal-ahead integration"
+POST_SHA="$(rec_run 'fwf_reconcile_classify integration main' | awk '{print $2}')"
+assert_eq   "AHEAD reconcile: ref never moved" "$PRE_SHA" "$POST_SHA"
+
+# --- fwf_reconcile_branch: idempotent on an already-synced branch (AC7) ---
+rec_setup reconcile-idempotent
+rc=0; LINE="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq   "idempotent: rc 0 on an already-synced branch" "0" "$rc"
+assert_contains "idempotent: reports clean no-op, no spurious mutation" "$LINE" "clean no-op staging"
+rc=0; LINE2="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq   "idempotent: second run is still a clean no-op" "0" "$rc"
+assert_contains "idempotent: second run reports the same clean no-op" "$LINE2" "clean no-op staging"
+
+# --- fwf-reconcile.sh CLI: both branches, non-zero exit iff any is unsafe --
+rec_setup cli-mixed
+rec_advance main; rec_advance main           # main advances twice from the common base -> staging (still at base) is BEHIND by 2
+rec_advance integration                      # integration then advances PAST that (a descendant of the new main tip) -> AHEAD (safe, never a false alarm)
+CLI_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)"; rc=$?
+assert_eq   "CLI: exits 0 when every branch ends up safe (BEHIND auto-FF'd, AHEAD normal)" "0" "$rc"
+assert_contains "CLI: reports the staging reconcile" "$CLI_OUT" "reconciled staging"
+assert_contains "CLI: reports the integration normal-ahead" "$CLI_OUT" "normal-ahead integration"
+
+rec_setup cli-halts
+CH_BASE="$(rec_sha main)"
+rec_advance main
+rec_fork staging "$CH_BASE"   # staging forks independently from the common base -> DIVERGED from main
+CLI_RC=0; CLI_OUT2="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
+assert_eq   "CLI: exits non-zero when any branch is unsafe (halted-diverged)" "1" "$CLI_RC"
+assert_contains "CLI: names the diverged branch" "$CLI_OUT2" "halted-diverged staging"
+
+# --- flap detection (#114 AC9): repeated consecutive reconciles surface as an anomaly ---
+rec_setup flap
+rec_advance main
+rec_run 'fwf_reconcile_branch staging main' >/dev/null   # 1st consecutive reconcile
+rec_advance main
+FLAP_LINE="$(rec_run 'fwf_reconcile_branch staging main')"   # 2nd consecutive reconcile -> anomaly
+assert_contains "flap: 2 consecutive reconciles of the same branch trip an anomaly" "$FLAP_LINE" "ANOMALY"
+rec_run 'fwf_reconcile_branch staging main' >/dev/null   # clean no-op (already synced) -> resets the streak
+rec_advance main
+NOFLAP_LINE="$(rec_run 'fwf_reconcile_branch staging main')"
+case "$NOFLAP_LINE" in
+  *ANOMALY*) bad "flap: a reset streak must not immediately re-trip the anomaly" ;;
+  *) ok "flap: streak correctly reset by the intervening clean no-op" ;;
+esac
+
+# --- both backends (#114 AC10): classification is pure git, so FWF_ISSUES
+# (gh vs the local issue-tracking store) never changes its outcome ----------
+rec_setup backend
+rec_advance main
+GH_CLS="$(FWF_ISSUES=gh    rec_run 'fwf_reconcile_classify staging main')"
+LOCAL_CLS="$(FWF_ISSUES=local rec_run 'fwf_reconcile_classify staging main')"
+assert_eq "both backends: classification is identical regardless of FWF_ISSUES" "$GH_CLS" "$LOCAL_CLS"
+
+# --- concurrency (#114 AC8): the CAS-loser aborts cleanly, never a blind
+# overwrite or a partial/interleaved move. "Writer 1" observes a BEHIND
+# classification (capturing staging's then-current SHA as its lease, and
+# main's THEN tip as its intended target). Before writer 1 acts, main
+# advances AGAIN and "writer 2" wins the race first via the real
+# fwf_reconcile_branch path, reconciling staging to the NEWER tip. Writer 1's
+# late CAS push (stale lease AND a now-superseded target) must be rejected,
+# leaving the branch at exactly writer 2's SHA -- no double move, no
+# interleave. Drives the actual production primitive (fwf_reconcile_cas_push,
+# the same one fwf_reconcile_branch's BEHIND case calls), not a
+# re-implementation. (Deliberately does NOT reuse writer 2's target as writer
+# 1's push value -- pushing an already-current SHA can short-circuit as a
+# no-op regardless of the lease, which would test nothing.)
+rec_setup race
+rec_advance main
+RACE_CLS="$(rec_run 'fwf_reconcile_classify staging main')"
+read -r _ RACE_STALE_LEASE RACE_STALE_TARGET <<<"$RACE_CLS"   # writer 1's observed (soon-to-be-stale) lease + target
+rec_advance main                                               # main moves again, unbeknownst to writer 1
+rec_run 'fwf_reconcile_branch staging main' >/dev/null         # writer 2 (fresh classify) wins the race for real
+WINNER_SHA="$(rec_sha staging)"
+assert_eq "race: writer 2 (the real winner) reconciled staging to main's CURRENT tip" "$(rec_sha main)" "$WINNER_SHA"
+race_rc=0; rec_run "fwf_reconcile_cas_push staging '$RACE_STALE_LEASE' '$RACE_STALE_TARGET'" || race_rc=$?
+assert_eq   "race: writer 1's late CAS push (stale lease) is rejected"       "1" "$race_rc"
+assert_eq   "race: no partial/double move -- branch still at writer 2's SHA" "$WINNER_SHA" "$(rec_sha staging)"
+
+# --- captain-tick guard is wired at the template level (#114 AC4/AC5) ------
+# Every REAL captain template that owns a RELEASE ENGINEERING job (promotes
+# to __DEFAULT__ and assigns tickets) must carry the STALE-BASE GUARD
+# directive in its composed/rendered prompt -- same discipline as the
+# BUDGET CHECK check above, so a future prompt refactor can't silently drop
+# this guard with nothing to catch it.
+for t in dev dev-sre refactor; do
+  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
+  assert_contains "$t/captain: STALE-BASE GUARD present (composed/rendered)" "$rendered" "STALE-BASE GUARD"
+  assert_contains "$t/captain: names the fwf reconcile command"              "$rendered" "fwf reconcile"
+done
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

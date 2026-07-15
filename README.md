@@ -479,6 +479,23 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
   release. Authorize the PM to "lift the freeze" afterward.
+- **Branch reconcile** (`fwf reconcile`, issue #114): keeps `staging`/
+  `integration` from going stale after a release or a direct-to-`main`
+  change — the failure mode where the swarm keeps building on a base that's
+  missing just-shipped prior art. Classifies each branch against `main` by
+  ancestry into one of five states and acts accordingly: **behind** (a strict
+  ancestor of `main`) is fast-forward-reconciled automatically; **ahead**
+  (`main` is a strict ancestor of the branch — the normal state between
+  releases, since the conductor promotes onto it before a release ships) is a
+  no-op, never a false alarm; **diverged** (each side has a commit the other
+  lacks) halts loudly and names the SHAs — it never auto-merges, rebases, or
+  force-pushes; **equal** is a clean no-op; and an unfetchable/unclassifiable
+  branch fails closed as **suspect**. Wired into two places: the release
+  workflow's last step (`.github/workflows/release.yml`, so it can't be a
+  forgotten manual step — see `RELEASING.md`) and the captain's per-tick
+  stale-base guard, run before assigning any ticket. `fwf reconcile [--branch
+  NAME ...] [--against BRANCH]` — defaults to `staging`+`integration` against
+  `main`; exits non-zero iff some branch is unsafe to build on right now.
 - **Upgrade staleness check:** `fwf up` and `fwf doctor` check (never blocking —
   the network call, if any, always runs detached in the background) whether a
   newer fwf release exists and warn if you're behind. `fwf doctor` reports one
