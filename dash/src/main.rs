@@ -3422,4 +3422,56 @@ mod tests {
         assert_eq!(fmt_report_age(3600), "1h 00m ago");
         assert_eq!(fmt_report_age(3900), "1h 05m ago");
     }
+
+    // QA adversarial check (issue #126, issue #119 process): nothing sanitizes
+    // a role's tick-file content before it reaches the UI — `cat` in
+    // fwf-dash-data.sh's role_report_json preserves embedded newlines
+    // verbatim, and main.rs never truncates or single-lines `report` before
+    // rendering it. A role prompt is instructed to write "that same line",
+    // but a buggy or wedged role could still overwrite its tick file with
+    // multi-line or pathologically long content. This must never panic the
+    // dash, and it must never corrupt the rows around it.
+    #[test]
+    fn roles_a_malformed_multiline_or_oversized_report_never_panics_or_corrupts_other_rows() {
+        let mut app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.roles = vec![
+                data::Role {
+                    role: "impl1".into(),
+                    state: "live".into(),
+                    detail: String::new(),
+                    report: Some("impl1: line one\nimpl1: line two\nimpl1: line three".into()),
+                    report_age_secs: Some(5),
+                    report_stale: false,
+                },
+                data::Role {
+                    role: "impl2".into(),
+                    state: "live".into(),
+                    detail: String::new(),
+                    report: Some("x".repeat(500)),
+                    report_age_secs: Some(5),
+                    report_stale: false,
+                },
+                data::Role {
+                    role: "qa1".into(),
+                    state: "idle".into(),
+                    detail: String::new(),
+                    ..Default::default()
+                },
+            ];
+        }
+        let area = Rect::new(0, 0, 100, 12);
+        // The panic-safety assertion IS this call completing: render_roles
+        // must not panic on malformed report content.
+        let buf = render_buffer(area.width, area.height, |f| render_roles(f, area, &mut app));
+        let text = buffer_to_text(&buf);
+        let qa1_idx = text
+            .lines()
+            .position(|l| l.contains("qa1"))
+            .expect("qa1 row must still render after two malformed reports above it");
+        assert!(
+            qa1_idx > 0 && qa1_idx < area.height as usize,
+            "qa1's row must land within the rendered area, not be pushed out or corrupted: {qa1_idx}"
+        );
+    }
 }
