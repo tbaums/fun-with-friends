@@ -2881,6 +2881,43 @@ GH_CLS="$(FWF_ISSUES=gh    rec_run 'fwf_reconcile_classify staging main')"
 LOCAL_CLS="$(FWF_ISSUES=local rec_run 'fwf_reconcile_classify staging main')"
 assert_eq "both backends: classification is identical regardless of FWF_ISSUES" "$GH_CLS" "$LOCAL_CLS"
 
+# --- concurrency (#114 AC8): the CAS-loser aborts cleanly, never a blind
+# overwrite or a partial/interleaved move. "Writer 1" observes a BEHIND
+# classification (capturing staging's then-current SHA as its lease, and
+# main's THEN tip as its intended target). Before writer 1 acts, main
+# advances AGAIN and "writer 2" wins the race first via the real
+# fwf_reconcile_branch path, reconciling staging to the NEWER tip. Writer 1's
+# late CAS push (stale lease AND a now-superseded target) must be rejected,
+# leaving the branch at exactly writer 2's SHA -- no double move, no
+# interleave. Drives the actual production primitive (fwf_reconcile_cas_push,
+# the same one fwf_reconcile_branch's BEHIND case calls), not a
+# re-implementation. (Deliberately does NOT reuse writer 2's target as writer
+# 1's push value -- pushing an already-current SHA can short-circuit as a
+# no-op regardless of the lease, which would test nothing.)
+rec_setup race
+rec_advance main
+RACE_CLS="$(rec_run 'fwf_reconcile_classify staging main')"
+read -r _ RACE_STALE_LEASE RACE_STALE_TARGET <<<"$RACE_CLS"   # writer 1's observed (soon-to-be-stale) lease + target
+rec_advance main                                               # main moves again, unbeknownst to writer 1
+rec_run 'fwf_reconcile_branch staging main' >/dev/null         # writer 2 (fresh classify) wins the race for real
+WINNER_SHA="$(rec_sha staging)"
+assert_eq "race: writer 2 (the real winner) reconciled staging to main's CURRENT tip" "$(rec_sha main)" "$WINNER_SHA"
+race_rc=0; rec_run "fwf_reconcile_cas_push staging '$RACE_STALE_LEASE' '$RACE_STALE_TARGET'" || race_rc=$?
+assert_eq   "race: writer 1's late CAS push (stale lease) is rejected"       "1" "$race_rc"
+assert_eq   "race: no partial/double move -- branch still at writer 2's SHA" "$WINNER_SHA" "$(rec_sha staging)"
+
+# --- captain-tick guard is wired at the template level (#114 AC4/AC5) ------
+# Every REAL captain template that owns a RELEASE ENGINEERING job (promotes
+# to __DEFAULT__ and assigns tickets) must carry the STALE-BASE GUARD
+# directive in its composed/rendered prompt -- same discipline as the
+# BUDGET CHECK check above, so a future prompt refactor can't silently drop
+# this guard with nothing to catch it.
+for t in dev dev-sre refactor; do
+  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
+  assert_contains "$t/captain: STALE-BASE GUARD present (composed/rendered)" "$rendered" "STALE-BASE GUARD"
+  assert_contains "$t/captain: names the fwf reconcile command"              "$rendered" "fwf reconcile"
+done
+
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then

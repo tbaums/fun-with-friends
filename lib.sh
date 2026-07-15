@@ -1236,7 +1236,7 @@ fwf_reconcile_branch() {
       ;;
     BEHIND)
       read -r _ b_sha m_sha <<<"$classification"
-      if git -C "$FWF_REPO" push origin --force-with-lease="refs/heads/$branch:$b_sha" "$m_sha:refs/heads/$branch" >/dev/null 2>&1; then
+      if fwf_reconcile_cas_push "$branch" "$b_sha" "$m_sha"; then
         fwf_reconcile_record_history "$branch" RECONCILED
         printf 'reconciled %s %s -> %s\n' "$branch" "$b_sha" "$m_sha"
         fwf_reconcile_lock_release "$branch"
@@ -1249,6 +1249,18 @@ fwf_reconcile_branch() {
       fi
       ;;
   esac
+}
+
+# The CAS primitive itself, factored out so it's independently testable
+# (issue #114 AC8): pushes $3=new-sha to $1=branch ONLY if the remote ref
+# still matches $2=observed-old-sha. A racing writer that already moved the
+# ref past $2 gets rejected here (git's --force-with-lease "stale info"),
+# never a blind overwrite or an interleaved partial move. rc 0 = pushed, rc 1
+# = lease rejected (or any other push failure) -- the caller treats both
+# identically: re-classify, don't assume-safe.
+fwf_reconcile_cas_push() { # $1=branch $2=observed-old-sha $3=new-sha
+  local branch="$1" old_sha="$2" new_sha="$3"
+  git -C "$FWF_REPO" push origin --force-with-lease="refs/heads/$branch:$old_sha" "$new_sha:refs/heads/$branch" >/dev/null 2>&1
 }
 
 # Clear whatever is sitting in the pane's Claude composer before we type into it,
