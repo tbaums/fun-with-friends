@@ -11,6 +11,12 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-07-15
+
+### Added
+- **QA reviews adversarially on green gates** (#119, code 0ccd613, docs 0ccd613) — QA no longer just runs the gate + checks docs presence; on a green gate it also reads the diff adversarially (edge cases / failure paths), sanity-checks test efficacy, tries to break the change, checks docs quality, and verifies the artifact conforms to its source ticket — "the GV of the artifact."
+- **dash Usage tab: numeric columns no longer collide at large token counts** (#115, code 3a52de9, docs 3a52de9) — right-aligns/sizes the INPUT/CACHE-W/CACHE-R/OUTPUT columns so billion-scale values stay readable instead of merging into one unreadable blob.
+
 ## [0.25.1] - 2026-07-15
 
 ### Added
