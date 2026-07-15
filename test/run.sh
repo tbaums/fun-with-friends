@@ -2097,6 +2097,153 @@ assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
 case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
 
 # --------------------------------------------------------------------------
+# per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
+# the gate while its OWN prior run is still in flight must NOT stack a second
+# — it skips this tick instead. Non-blocking (unlike the e2e lock above): a
+# "live" holder here means "skip and report", never "wait". Same hermetic
+# simulation style as the e2e lock test — no real gate process is spawned.
+section "gate single-flight lock (#123): per-role guard against self-relaunch pileup"
+GATERUN="$TMP/gate123"
+cat > "$TMP/gate-lock-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  symmetry)
+    fwf_gate_lock_acquire testrole && echo ACQUIRED
+    [ -f "$(fwf_gate_lock_dir testrole)/owner" ] && echo STAMPED
+    grep -q '^role=testrole$' "$(fwf_gate_lock_dir testrole)/owner" && echo ROLEOK
+    fwf_gate_lock_release testrole
+    [ -d "$(fwf_gate_lock_dir testrole)" ] && echo STILLTHERE || echo RELEASED
+    ;;
+  dead)
+    mkdir -p "$(fwf_gate_lock_dir impl9)"
+    printf 'role=impl9\npid=999999999\nhost=%s\nacquired=%s\n' \
+      "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$(fwf_gate_lock_dir impl9)/owner"
+    rc=0; fwf_gate_lock_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    grep -q "^pid=$$" "$(fwf_gate_lock_dir impl9)/owner" 2>/dev/null && echo NEWOWNER
+    ;;
+  live-in-flight)
+    # AC1: a live same-host holder (this process's own pid) mid-run — a
+    # second tick must SKIP, never stack a concurrent gate.
+    mkdir -p "$(fwf_gate_lock_dir impl9)"
+    printf 'role=impl9\npid=%s\nhost=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$(date +%s)" > "$(fwf_gate_lock_dir impl9)/owner"
+    rc=0; fwf_gate_lock_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+  live-wedged)
+    # AC2b: a live same-host holder, but past the max-run ceiling — treated
+    # as wedged and reaped (never permanently wedges the role).
+    mkdir -p "$(fwf_gate_lock_dir impl9)"
+    printf 'role=impl9\npid=%s\nhost=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$(fwf_gate_lock_dir impl9)/owner"
+    rc=0; fwf_gate_lock_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+  indeterminate)
+    # AC2a: fail-closed — a stamp with no parseable host/pid must skip, not launch.
+    mkdir -p "$(fwf_gate_lock_dir impl9)"
+    printf 'garbage\n' > "$(fwf_gate_lock_dir impl9)/owner"
+    rc=0; fwf_gate_lock_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+esac
+EOSCRIPT
+
+GSYM_OUT="$(FWF_RUN_DIR="$GATERUN/sym" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" symmetry)"
+assert_contains "acquire succeeds and returns 0"        "$GSYM_OUT" "ACQUIRED"
+assert_contains "acquire writes a holder-identity stamp" "$GSYM_OUT" "STAMPED"
+assert_contains "stamp carries the caller's role label"  "$GSYM_OUT" "ROLEOK"
+assert_contains "release removes the lock dir"           "$GSYM_OUT" "RELEASED"
+case "$GSYM_OUT" in *STILLTHERE*) bad "release must remove the lock dir";; esac
+
+GDEAD_OUT="$(FWF_RUN_DIR="$GATERUN/dead" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" dead)"
+assert_contains "dead-PID holder is named an anomaly and reaped" "$GDEAD_OUT" "ANOMALY"
+assert_contains "dead-PID lock is re-acquired, not permanently wedged" "$GDEAD_OUT" "RC=0"
+assert_contains "the new stamp overwrites the dead one"  "$GDEAD_OUT" "NEWOWNER"
+
+section "gate single-flight lock AC1: a live in-flight gate is never double-launched"
+GLIVE_OUT="$(FWF_RUN_DIR="$GATERUN/live" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" live-in-flight)"
+assert_contains "second tick reports the prior gate still in flight" "$GLIVE_OUT" "already in flight"
+assert_contains "second tick skips rather than launching (RC=1)"     "$GLIVE_OUT" "RC=1"
+case "$GLIVE_OUT" in *ANOMALY*) bad "a healthy in-flight gate must not be reaped as an anomaly";; *) ok "healthy in-flight gate left alone (not reaped)";; esac
+
+section "gate single-flight lock AC2b: a wedged (past-ceiling) live holder is reaped, not a permanent block"
+GWEDGE_OUT="$(FWF_RUN_DIR="$GATERUN/wedge" FWF_GATE_LOCK_MAX_RUN_SECS=1 FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" live-wedged)"
+assert_contains "past-ceiling holder is flagged as an anomaly" "$GWEDGE_OUT" "ANOMALY"
+assert_contains "past-ceiling holder is reaped, not wedged forever (RC=0)" "$GWEDGE_OUT" "RC=0"
+assert_contains "reap names the max-run ceiling reason" "$GWEDGE_OUT" "max-run ceiling"
+
+section "gate single-flight lock AC2a: indeterminate liveness fails CLOSED (skip, never stack)"
+GIND_OUT="$(FWF_RUN_DIR="$GATERUN/ind" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" indeterminate)"
+assert_contains "indeterminate state is refused rather than launched (RC=1)" "$GIND_OUT" "RC=1"
+assert_contains "fail-closed reasoning is logged" "$GIND_OUT" "failing closed"
+
+# --------------------------------------------------------------------------
+# fwf gate hermeticity (#123 AC3/AC4): two overlapping e2e-class runs from
+# DIFFERENT roles must not mutually stall on a shared fixed resource — RED
+# against today's unwrapped/direct invocation (both would collide), GREEN
+# once routed through `fwf gate --e2e` (the existing issue #65 floor-wide
+# lock serializes them instead of letting them collide). The shared
+# resource is a fixed marker FILE, not a real socket, so this stays
+# hermetic/portable like the rest of the suite — same "everyone touches the
+# one fixed thing" shape a fixed TCP port has, without opening real sockets.
+section "fwf gate hermeticity (#123 AC3/AC4): overlapping e2e-class runs on a shared fixed resource"
+FIXEDRUN="$TMP/fixedport123"
+mkdir -p "$FIXEDRUN"
+FIXED_MARKER="$FIXEDRUN/held"
+
+cat > "$TMP/fixed-resource-harness.sh" <<'EOSCRIPT'
+set -uo pipefail
+marker="$1"; hold="$2"; wait_budget="$3"
+deadline=$(( $(date +%s) + wait_budget ))
+while [ -e "$marker" ]; do
+  [ "$(date +%s)" -lt "$deadline" ] || { echo "TIMEOUT waiting for the fixed resource"; exit 1; }
+  sleep 0.2
+done
+: > "$marker"
+sleep "$hold"
+rm -f "$marker"
+echo "DONE"
+EOSCRIPT
+
+# RED (today, unwrapped): both invocations touch the SAME fixed marker
+# directly with no coordination. The second's wait budget (2s) is
+# deliberately shorter than the first's hold (4s), so it deterministically
+# times out rather than getting a fair turn — exactly the "collide on the
+# fixed resource" failure mode a real fixed-port harness hits.
+rm -f "$FIXED_MARKER"
+bash "$TMP/fixed-resource-harness.sh" "$FIXED_MARKER" 4 10   > "$TMP/red-a.out" 2>&1 & RED_A_PID=$!
+sleep 0.5
+bash "$TMP/fixed-resource-harness.sh" "$FIXED_MARKER" 4 2 > "$TMP/red-b.out" 2>&1 & RED_B_PID=$!
+wait "$RED_A_PID"; RED_A_RC=$?
+wait "$RED_B_PID"; RED_B_RC=$?
+assert_eq "RED (unwrapped): first invocation completes" "0" "$RED_A_RC"
+[ "$RED_B_RC" != 0 ] && ok "RED (unwrapped): second invocation fails rather than silently succeeding" \
+  || bad "RED (unwrapped): second invocation should have failed on the shared fixed resource"
+assert_contains "RED (unwrapped): second invocation times out on the shared fixed resource" "$(cat "$TMP/red-b.out")" "TIMEOUT"
+
+# GREEN (through fwf gate --e2e): the SAME two invocations (different roles),
+# each routed through the shared guarded launcher — the floor-wide e2e lock
+# (issue #65) serializes them, so the second waits for the first to finish
+# instead of colliding on the still-held resource. Both complete.
+rm -f "$FIXED_MARKER"
+GATEHRUN="$TMP/gate-hermetic"
+run_gated() { # $1=role $2=hold $3=wait_budget $4=outfile
+  FWF_RUN_DIR="$GATEHRUN" FWF_PROFILE=example FWF_E2E_LOCK_POLL=1 FWF_E2E_LOCK_TIMEOUT=15 \
+    "$ROOT/fwf-gate.sh" "$1" --e2e -- bash "$TMP/fixed-resource-harness.sh" "$FIXED_MARKER" "$2" "$3" > "$4" 2>&1
+}
+run_gated hermetic-a 4 10  "$TMP/green-a.out" & GREEN_A_PID=$!
+sleep 0.5
+run_gated hermetic-b 4 2 "$TMP/green-b.out" & GREEN_B_PID=$!
+wait "$GREEN_A_PID"; GREEN_A_RC=$?
+wait "$GREEN_B_PID"; GREEN_B_RC=$?
+assert_eq "GREEN (through fwf gate --e2e): first invocation completes"      "0" "$GREEN_A_RC"
+assert_eq "GREEN (through fwf gate --e2e): second invocation ALSO completes (no longer times out)" "0" "$GREEN_B_RC"
+assert_contains "GREEN: second invocation's own output shows it actually ran, not skipped" "$(cat "$TMP/green-b.out")" "DONE"
+
+# --------------------------------------------------------------------------
 # fwf pr-review-state (#82): the shared-account qa<->impl handshake. Every
 # role authenticates as one GitHub user, so the formal review-decision API is
 # permanently empty here (#81's deadlock) — qa signals via a plain QA-* comment
