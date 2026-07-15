@@ -136,22 +136,33 @@ freeze" afterward.
 ## 3. Idle the floor, keep the captain (token conservation)
 
 An idle-but-looping floor is the factory's main token waste — nine agents
-re-checking empty queues. The fix (and the captain does this autonomously):
+re-checking empty queues. The fix (and the captain does this autonomously),
+and it idles the **build floor** and the **PM** independently — each on its
+own workload:
 
 ```bash
-fwf down --floor-only   # kill the build session + PM/GV panes; the CAPTAIN
-                        # pane and its session/context survive untouched
-fwf up --floor-only     # recreate and re-arm ONLY what's missing, around the
-                        # live captain — its conversation is never lost
+fwf down --build-only   # kill only the build session (impl/qa/conductor)
+fwf up   --build-only   # recreate it, around the live captain — its
+                        # conversation is never lost
+
+fwf down --pm-only      # kill only the PM pane (GV and captain untouched)
+fwf up   --pm-only      # recreate it
+
+fwf down --floor-only   # both together (--build-only + --pm-only) — the
+fwf up   --floor-only   # original all-or-nothing behavior, kept as an alias
 ```
 
-Both are idempotent and safe in partial states: `up --floor-only` on a fully
-running factory is a no-op; `down --floor-only` kills *everything in
-coordination except the captain* (PM, GV, and any extra pane like the SRE),
-so it works even if you forget which template is running.
+The **GV never idles** — no flag ever tears it down, so the captain can
+always summon it for a gate with no cold-boot latency. Every one of these is
+idempotent and safe in partial states (`up` on an already-running unit is a
+no-op), and every `down` refuses — even with `--force` — if idling would
+strand work: `--build-only` while a PR is open or a promotion is mid-flight,
+`--pm-only` while a `product-wip` draft still needs grooming. Each unit also
+has its own deterministic anti-thrash cooldown (`FWF_BUILD_COOLDOWN` /
+`FWF_PM_COOLDOWN`, default 300s — see the README).
 
-This is the cycle for "factory on demand": leave the captain up as your
-always-on copilot, spin the floor up when you queue work, down when it
+This is the cycle for "factory on demand": leave the captain (and GV) up as
+your always-on copilot, spin each plane up when it has work, down when it
 drains.
 
 ---
@@ -357,7 +368,8 @@ FWF_EXTRA_ROLES="${FWF_EXTRA_ROLES:-sre:coord:2m:colour208}"
 Each extra role needs a matching `<name>.tmpl` (own dir or base) and gets a
 worktree at provision, a pane at `up`, its own `/loop <interval>` prompt, and
 full `fwf respawn <name>` / floor-lifecycle support. Coordination-side extras
-are treated as floor: they die on `down --floor-only`, the captain survives.
+are treated as PM-plane: they die on `down --pm-only` (and so also on
+`--floor-only`), the captain and GV survive.
 
 **Placeholders.** `fwf render`s every `.tmpl` with these substitutions
 (whitespace is collapsed to one line — write prose, not ASCII art):

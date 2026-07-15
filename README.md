@@ -178,14 +178,29 @@ instead of stalling silently (issue #99).
   **releases `integration → main`** when you choose — landing the `Closes #N`
   commits on the default branch and **auto-closing the issues**. It hones its own
   work with the GV but still confirms irreversible actions (deploys, releases)
-  with you. It also manages cost autonomously: when the queue is empty it can
-  **idle the whole floor** (`fwf down --floor-only`) without losing its own
-  session, and bring it back (`fwf up --floor-only`) when work arrives — logged
-  so `fwf dash` shows a calm **IDLE (captain)** state, never conflated with a
-  crash (see [`docs/dash.md`](docs/dash.md)). `fwf down --floor-only` refuses
-  to fire again within `FWF_FLOOR_COOLDOWN` seconds (default 300) of the last
-  floor-up unless `--force` is passed — the deterministic guard against
-  down→up→down token thrash. The
+  with you. It also manages cost autonomously, and does so **per plane,
+  independently**: the **build floor** (impl/qa/conductor, `--build-only`)
+  idles whenever the claimable queue is empty and nothing is in flight; the
+  **PM** pane (`--pm-only`) idles whenever no `product-wip` draft needs
+  grooming — each evaluated on its own workload, so a long build stretch with
+  no grooming pending can idle the PM while the floor stays up (or vice
+  versa). `fwf down --floor-only` / `fwf up --floor-only` remain as an alias
+  for `--build-only` + `--pm-only` together (today's original all-or-nothing
+  behavior, unchanged). The **GV never idles** — it stays reachable on demand
+  for a gate or verification the whole time the captain is up. Every idle is
+  logged per-plane to the same `floor-events.log` (issue #85, extended by
+  #105); `fwf dash` itself still reads only the **build** plane's state as
+  its calm **IDLE (captain)** badge (v1 — PM-plane idle isn't surfaced there
+  yet), never conflated with a crash (see [`docs/dash.md`](docs/dash.md)).
+  Each
+  plane enforces its own deterministic cooldown — `fwf down --build-only`
+  refuses within `FWF_BUILD_COOLDOWN` seconds (default 300, alias of the
+  legacy `FWF_FLOOR_COOLDOWN`) of that plane's last up, and `--pm-only`
+  refuses within `FWF_PM_COOLDOWN` seconds (default 300) — the deterministic
+  guard against down→up→down token thrash. Each plane also refuses to idle at
+  all if doing so would strand work (an open PR or promotion-in-flight blocks
+  `--build-only`; an ungroomed `product-wip` draft blocks `--pm-only`), even
+  with `--force`. The
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
@@ -289,8 +304,10 @@ fwf suggest "<what you're trying to do>"            describe your goal; get a fa
 fwf start <url|path> [--name N] [--yes] [--build]   clone → detect → confirm → provision → up
 fwf init  <url|path> [--name N] [--yes]             clone → detect → scaffold profile
 fwf provision [--build]                             create worktrees + dev data
-fwf up [--floor-only]                               launch both sessions (--floor-only: rebuild just the
-                                                    floor around a live captain)
+fwf up [--build-only|--pm-only|--floor-only]        launch both sessions (--build-only: rebuild just the
+                                                    build session; --pm-only: rebuild just the PM pane
+                                                    (GV, which never idles, is left alone); --floor-only:
+                                                    both together, around a live captain)
 fwf attach [coord|build]                            attach to coordination (default) or implementation
 fwf captain [--print]                               copy/print the CAPTAIN prompt
 fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain);
@@ -298,10 +315,14 @@ fwf respawn <role>                                  hot-swap one pane (implN|qaN
                                                     the role's heartbeat to confirm the loop is really
                                                     ticking before reporting success (issue #99)
 fwf stop | resume [--clear-only]                    graceful halt / clear sentinel + re-arm all roles
-fwf down [--purge|--floor-only [--force]]           kill both sessions (--purge: remove worktrees too;
-                                                    --floor-only: keep the captain running; refuses
-                                                    within FWF_FLOOR_COOLDOWN secs of the last floor-up
-                                                    unless --force)
+fwf down [--purge|--build-only|--pm-only|--floor-only [--force]]
+                                                    kill both sessions (--purge: remove worktrees too;
+                                                    --build-only: kill only the build session;
+                                                    --pm-only: kill only the PM pane; --floor-only: both
+                                                    together — each refuses within its own
+                                                    FWF_BUILD_COOLDOWN/FWF_PM_COOLDOWN secs of that
+                                                    plane's last up, and refuses (even with --force) if
+                                                    idling it could strand work; GV is never torn down)
 fwf issues <create|list|view|edit|comment|close|reopen|export>
                                                     the local issue tracker (--issues local):
                                                     gh-shaped CLI over a markdown store
@@ -440,7 +461,8 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   read, no network, ever), not just the banner.
 - **Token budget enforcement** (`--budget-usd N` recommended, or `--token-budget
   N` for a raw-token ceiling; opt-in, unset = unlimited): caps spend across
-  every role. `fwf up`/`fwf up --floor-only` arms a background WRITER
+  every role. Any `fwf up` invocation (full, `--build-only`, `--pm-only`, or
+  `--floor-only`) arms a background WRITER
   (`fwf-budget-check.sh --loop`, ~60s cadence, zero network calls — it only
   re-reads the local transcripts `fwf usage` already reads) only when a
   ceiling is set; every role checks a sentinel at its own step-0 and, if held,
@@ -476,10 +498,10 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   and the dash Usage tab both show an explicit **ARMED (ceiling N) / NOT
   ARMED** line, this-run-vs-cumulative spend, and the current hold, so a
   budget set mid-run without a re-`fwf up` (the only place the WRITER gets
-  armed) is visibly, not silently, off. `fwf down` (including `--floor-only`)
-  stops the WRITER and clears any hold — a downed floor spends nothing, so
-  there's nothing left to enforce against — but only a full `fwf down` also
-  clears the baseline.
+  armed) is visibly, not silently, off. `fwf down` (including `--build-only`/
+  `--floor-only`) stops the WRITER and clears any hold — a downed build floor
+  spends nothing, so there's nothing left to enforce against — but only a
+  full `fwf down` also clears the baseline.
 
 ## Learn more
 
