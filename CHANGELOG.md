@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-07-15
+
+### Added
+- **Auto-reconcile staging/integration to main after a release** (#114, code 08182c2, docs 08182c2) — after a release lands on `main`, the swarm's lower branches (`staging`, `integration`) would sit behind, so agents kept building on a stale base until someone hand-reset them. A new `fwf-reconcile.sh` helper fast-forwards `staging` and `integration` up to `main` post-release (wired into the captain templates), so the floor always builds on the just-released base.
+
 ## [0.25.4] - 2026-07-15
 
 ### Fixed
