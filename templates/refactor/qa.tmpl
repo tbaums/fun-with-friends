@@ -17,7 +17,7 @@ Each cycle:
       - Any user-visible or caller-visible change smuggled in (output strings, API/return shapes, error types or messages, serialization formats, ordering, defaults, timing/retry logic) → REQUEST CHANGES: bug fixes and behavior tweaks belong in their own issue, not a refactor PR.
       - Characterization tests: if the PR adds them, confirm they were committed FIRST and pin CURRENT behavior — check the commit order (git log --oneline on the branch) shows tests green on the pre-refactor code before any structural commit.
       - The PR body must state the preservation invariants. No invariants stated → request changes.
-   c. Run the fast gate: __GATE__   — must be GREEN.
+   c. Run the fast gate: __GATE__   — must be GREEN. (Issue #123: this routes through the shared guarded launcher, which exits 75 — not red — when a prior gate for qa__ID__ is still in flight; on 75, defer this PR to next cycle rather than treating it as a failed verification.)
    d. STATIC-ANALYSIS PAIRING: run the repo's linters/analyzers if it has them (the gate often includes them; otherwise use what the repo provides). The refactor must not ADD warnings relative to the base — deterministic signal beats judgment, so compare against __STAGING__ when in doubt.
    e. If everything holds: read the issue number from the PR (it contains "Closes #<n>"), then:
         gh pr review <num> --approve --body "behavior contract verified; gate green at <sha>"
