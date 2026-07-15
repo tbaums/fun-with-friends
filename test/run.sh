@@ -2148,6 +2148,23 @@ case "$1" in
     rc=0; fwf_gate_lock_acquire impl9 2>&1 || rc=$?
     echo "RC=$rc"
     ;;
+  race-contestant)
+    # QA adversarial check (issue #119): the prior tests simulate an
+    # already-in-flight lock sequentially (mkdir it first, THEN call
+    # acquire) — that exercises the liveness-check branch but never the
+    # mkdir-itself race two ticks firing at THE SAME INSTANT would hit.
+    # This contestant races a sibling process for the SAME never-before-held
+    # role, holding the lock briefly if it wins, so a real double-mkdir race
+    # is exercised, not just simulated post-hoc state.
+    rc=0; fwf_gate_lock_acquire raceRole 2>&1 || rc=$?
+    if [ "$rc" = 0 ]; then
+      echo "WON pid=$$"
+      sleep 0.3
+      fwf_gate_lock_release raceRole
+    else
+      echo "LOST pid=$$ rc=$rc"
+    fi
+    ;;
 esac
 EOSCRIPT
 
@@ -2162,6 +2179,19 @@ GDEAD_OUT="$(FWF_RUN_DIR="$GATERUN/dead" FWF_PROFILE=example ROOT_PATH="$ROOT" b
 assert_contains "dead-PID holder is named an anomaly and reaped" "$GDEAD_OUT" "ANOMALY"
 assert_contains "dead-PID lock is re-acquired, not permanently wedged" "$GDEAD_OUT" "RC=0"
 assert_contains "the new stamp overwrites the dead one"  "$GDEAD_OUT" "NEWOWNER"
+
+section "QA adversarial check (#119): a REAL simultaneous race for a never-before-held lock is still atomic (not just the sequential simulated states above)"
+RACERUN="$TMP/gate123-race"
+FWF_RUN_DIR="$RACERUN" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" race-contestant > "$TMP/race-a.out" 2>&1 &
+RACE_A_PID=$!
+FWF_RUN_DIR="$RACERUN" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" race-contestant > "$TMP/race-b.out" 2>&1 &
+RACE_B_PID=$!
+wait "$RACE_A_PID"; wait "$RACE_B_PID"
+RACE_COMBINED="$(cat "$TMP/race-a.out" "$TMP/race-b.out")"
+RACE_WON_COUNT="$(printf '%s\n' "$RACE_COMBINED" | grep -c '^WON ')"
+RACE_LOST_COUNT="$(printf '%s\n' "$RACE_COMBINED" | grep -c '^LOST ')"
+assert_eq "exactly one contestant wins a truly simultaneous race" "1" "$RACE_WON_COUNT"
+assert_eq "exactly one contestant loses (skips, never stacks)"    "1" "$RACE_LOST_COUNT"
 
 section "gate single-flight lock AC1: a live in-flight gate is never double-launched"
 GLIVE_OUT="$(FWF_RUN_DIR="$GATERUN/live" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" live-in-flight)"
