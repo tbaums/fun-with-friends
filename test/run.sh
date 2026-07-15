@@ -372,6 +372,20 @@ assert_eq "every issue-closing template wires in the context-fold CLI" "" "$MISS
 assert_eq "no stray __CREDIT__ after render" "" \
   "$(prov_env "fwf_render '$ROOT/templates/dev/qa.tmpl' 1" | /usr/bin/grep -o '__CREDIT__' | head -1)"
 
+section "QA adversarial artifact review on green gates (issue #119)"
+# Composed/rendered, not a raw-file grep — proves the c2 step actually
+# survives fwf_render (a future edit/rebase that silently strips or rewords
+# it away would go red here, per the test-efficacy check c2.2 itself demands).
+DEVQA_RENDERED="$(prov_env "fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+assert_contains "dev/qa composed/rendered prompt carries the ADVERSARIAL ARTIFACT REVIEW step" \
+  "$DEVQA_RENDERED" "ADVERSARIAL ARTIFACT REVIEW"
+assert_contains "dev/qa composed/rendered prompt cites issue #119" \
+  "$DEVQA_RENDERED" "issue #119"
+assert_contains "dev/qa composed/rendered prompt requires trying to break load-bearing changes" \
+  "$DEVQA_RENDERED" "TRY TO BREAK IT"
+assert_contains "dev/qa composed/rendered prompt checks conformance to the source ticket" \
+  "$DEVQA_RENDERED" "CONFORMANCE TO THE SOURCE TICKET"
+
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
 hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }
