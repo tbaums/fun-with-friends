@@ -688,8 +688,13 @@ EOS
   F85CSESS="fwf-selftest-85c-$$"
   tmux new-session -d -s "${F85CSESS}-coord" -c "$F85CWT/ex-captain"
   tmux set -p -t "${F85CSESS}-coord" @l "CAPTAIN"
+  # issue #116: the stub claude never ticks, so fwf-respawn.sh's post-arm
+  # verify legitimately runs out its full window before returning — override
+  # the interval/margin/poll to keep that window (and this test) fast instead
+  # of waiting out the real ~5m30s PM default.
   env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
       FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      FWF_PM_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
       "$ROOT/fwf-respawn.sh" pm >/dev/null 2>&1
   assert_contains "fwf-respawn.sh of a floor role (pm) appends floor-up" "$(tail -n1 "$F85CLOG")" "floor-up"
   # respawning the CAPTAIN itself must NOT append floor-up — it was never the
@@ -697,6 +702,7 @@ EOS
   printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F85CLOG"
   env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
       FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      FWF_CAPTAIN_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
       "$ROOT/fwf-respawn.sh" captain >/dev/null 2>&1
   case "$(tail -n1 "$F85CLOG")" in
     *floor-up*) bad "respawning the captain must not clear floor_idle";;
