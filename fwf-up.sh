@@ -9,25 +9,46 @@
 # Each implementer/QA pair shares one color; the active pane is highlighted hard.
 # Assumes fwf-provision.sh has created the worktrees.
 #
-# --floor-only (issue #6): (re)create ONLY the floor — the BUILD session plus
-# the PM/GV panes — around a LIVE captain pane, which is left completely
-# untouched so the captain can cycle the floor without losing its own context.
+# Per-UNIT recreation (issue #105, generalizing issue #6's single
+# --floor-only): (re)create just the BUILD session, just the PM pane, or both
+# — around a LIVE captain pane, which (and GV, which never idles) is left
+# completely untouched so the captain can cycle either unit without losing
+# its own context.
+#   --build-only   (re)create only the BUILD session (impl/qa/conductor).
+#   --pm-only      (re)create only the PM pane (ensuring GV exists too, as a
+#                  defensive invariant check — GV should already be there
+#                  since it's never torn down, but this is the natural place
+#                  to self-heal if it somehow isn't).
+#   --floor-only   KEPT for back-compat: equivalent to --build-only +
+#                  --pm-only together (today's exact prior behavior).
 # Idempotent: pieces that already exist are left alone; only panes created by
-# THIS run get claude launched + a prompt delivered.
+# THIS run get claude launched + a prompt delivered. Every up-path here logs
+# a floor-up event (issue #85, now plane-tagged) for the plane(s) it targets,
+# clearing any logged IDLE for them, even when nothing new was created.
 #
-# Usage: [FWF_PROFILE=example] fwf-up.sh [--floor-only]
+# Usage: [FWF_PROFILE=example] fwf-up.sh [--build-only|--pm-only|--floor-only]
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 # Role prompts resolve via fwf_tmpl_path (selected template, falling back to
 # its FWF_TEMPLATE_BASE for files the template doesn't override).
 
-FLOOR_ONLY=0
+build_only=0; pm_only=0
 case "${1:-}" in
   "") ;;
-  --floor-only) FLOOR_ONLY=1;;
-  *) echo "usage: fwf-up.sh [--floor-only]" >&2; exit 1;;
+  --floor-only) build_only=1; pm_only=1;;
+  --build-only) build_only=1;;
+  --pm-only) pm_only=1;;
+  *) echo "usage: fwf-up.sh [--build-only|--pm-only|--floor-only]" >&2; exit 1;;
 esac
+FULL=1
+{ [ "$build_only" = 1 ] || [ "$pm_only" = 1 ]; } && FULL=0
+# FLOOR_ONLY: true whenever this run is a partial (non-full) recreation —
+# used below only to pick the anchor-around-a-live-captain precondition and
+# the final echo, not to decide WHICH unit(s) get touched (build_only/pm_only
+# already carry that).
+FLOOR_ONLY=0
+[ "$FULL" = 0 ] && FLOOR_ONLY=1
 
 # user-testing (issue #42): refuse a prod-looking target BEFORE any pane boots —
 # whacky source-blind personas must only ever hit an isolated scratch/UAT app.
@@ -87,17 +108,17 @@ style_session() { # $1=session
 }
 
 if [ "$FLOOR_ONLY" = 1 ]; then
-  # Rebuilding the floor around a live captain: the coord session + captain
+  # Rebuilding a UNIT around a live captain: the coord session + captain
   # pane must already exist (otherwise a full launch is what you want).
   tmux has-session -t "$COORD_SESSION" 2>/dev/null \
-    || { echo "fwf-up --floor-only: no '$COORD_SESSION' session — run a full 'fwf up' instead." >&2; exit 1; }
+    || { echo "fwf-up: no '$COORD_SESSION' session — run a full 'fwf up' instead." >&2; exit 1; }
   CAPTAIN_PANE="$(fwf_find_pane "$COORD_SESSION" CAPTAIN || true)"
   [ -n "$CAPTAIN_PANE" ] \
-    || { echo "fwf-up --floor-only: no CAPTAIN pane in '$COORD_SESSION' — run a full 'fwf up' instead." >&2; exit 1; }
+    || { echo "fwf-up: no CAPTAIN pane in '$COORD_SESSION' — run a full 'fwf up' instead." >&2; exit 1; }
 else
   for s in "$COORD_SESSION" "$BUILD_SESSION"; do
     if tmux has-session -t "$s" 2>/dev/null; then
-      echo "tmux session '$s' already exists — run fwf-down.sh first (or 'fwf up --floor-only' to rebuild just the floor around a live captain)." >&2; exit 1
+      echo "tmux session '$s' already exists — run fwf-down.sh first (or 'fwf up --build-only'/'--pm-only'/'--floor-only' to rebuild part of it around a live captain)." >&2; exit 1
     fi
   done
 fi
@@ -120,7 +141,11 @@ echo "fwf: sessions: $COORD_SESSION (coordination) + $BUILD_SESSION (floor)"
 BUILD_CREATED=0; PM_CREATED=0; GV_CREATED=0; CAPTAIN_CREATED=0
 
 # --- IMPLEMENTATION session: N impl/qa columns + a full-height conductor ------
+# issue #105: this unit is touched whenever build_only is set, OR this is a
+# full (unflagged) launch — a --pm-only run skips it entirely.
 declare -a TP BP   # TP[id]=impl pane ; BP[id]=qa pane (id = 1..FWF_PAIRS)
+CONDUCTOR_PANE=""
+if [ "$FULL" = 1 ] || [ "$build_only" = 1 ]; then
 if tmux has-session -t "$BUILD_SESSION" 2>/dev/null; then
   echo "build session '$BUILD_SESSION' already up — leaving it untouched."
 else
@@ -140,7 +165,6 @@ else
     tmux select-layout -t "$BUILD_SESSION" even-horizontal >/dev/null 2>&1
   done
   # A template may suppress the conductor (e.g. user-testing has no gate pipeline).
-  CONDUCTOR_PANE=""
   if ! fwf_role_suppressed conductor; then
     CONDUCTOR_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$prev" -c "$(fwf_role_cwd conductor)")
   fi
@@ -156,27 +180,18 @@ else
   [ -n "$CONDUCTOR_PANE" ] && label_role "$CONDUCTOR_PANE" conductor
   style_session "$BUILD_SESSION"
 fi
+fi   # end build-session block (issue #105: FULL or build_only)
 
 # --- COORDINATION session: PM · GV · CAPTAIN (you talk to the captain) --------
-if [ "$FLOOR_ONLY" = 1 ]; then
-  # Recreate only the PM/GV panes that are missing, splitting LEFT of the
-  # captain (-b) so the familiar PM · GV · CAPTAIN order is preserved.
-  GV_PANE=""
-  if ! fwf_role_suppressed gv; then
-    GV_PANE="$(fwf_find_pane "$COORD_SESSION" "GRAND VIZIER" || true)"
-    if [ -z "$GV_PANE" ]; then
-      GV_CREATED=1
-      GV_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "$CAPTAIN_PANE" -c "$(fwf_role_cwd gv)")
-    fi
-  fi
-  PM_PANE="$(fwf_find_pane "$COORD_SESSION" "PM ·" || true)"
-  if [ -z "$PM_PANE" ]; then
-    PM_CREATED=1
-    # split left of the GV if there is one, else left of the captain.
-    PM_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "${GV_PANE:-$CAPTAIN_PANE}" -c "$(fwf_role_cwd pm)")
-  fi
-  tmux select-layout -t "$COORD_SESSION" even-horizontal
-else
+# issue #105: only touched when this is a full launch (both PM and GV get
+# created) or --pm-only (PM recreated; GV existence is defensively verified —
+# it should already be there, since no down-path ever tears it down, but this
+# is the natural self-heal point if it somehow isn't). A pure --build-only
+# run skips this block entirely — GV_PANE/PM_PANE/CAPTAIN_PANE stay unset and
+# the [ "$X_CREATED" = 1 ] guards below short-circuit before ever expanding
+# them.
+GV_PANE=""
+if [ "$FULL" = 1 ]; then
   CAPTAIN_CREATED=1; PM_CREATED=1; GV_CREATED=0
   tmux new-session -d -s "$COORD_SESSION" -c "$(fwf_role_cwd pm)"
   PM_PANE=$(tmux display -p -t "$COORD_SESSION" '#{pane_id}')
@@ -191,6 +206,23 @@ else
   CAPTAIN_PANE=$(tmux split-window -h -P -F '#{pane_id}' -t "$cap_anchor" -c "$(fwf_role_cwd captain)")
   tmux select-layout -t "$COORD_SESSION" even-horizontal
   style_session "$COORD_SESSION"
+elif [ "$pm_only" = 1 ]; then
+  # Recreate the PM pane (and defensively ensure GV exists), splitting LEFT
+  # of the captain (-b) so the familiar PM · GV · CAPTAIN order is preserved.
+  if ! fwf_role_suppressed gv; then
+    GV_PANE="$(fwf_find_pane "$COORD_SESSION" "GRAND VIZIER" || true)"
+    if [ -z "$GV_PANE" ]; then
+      GV_CREATED=1
+      GV_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "$CAPTAIN_PANE" -c "$(fwf_role_cwd gv)")
+    fi
+  fi
+  PM_PANE="$(fwf_find_pane "$COORD_SESSION" "PM ·" || true)"
+  if [ -z "$PM_PANE" ]; then
+    PM_CREATED=1
+    # split left of the GV if there is one, else left of the captain.
+    PM_PANE=$(tmux split-window -h -b -P -F '#{pane_id}' -t "${GV_PANE:-$CAPTAIN_PANE}" -c "$(fwf_role_cwd pm)")
+  fi
+  tmux select-layout -t "$COORD_SESSION" even-horizontal
 fi
 [ "$PM_CREATED" = 1 ] && label_role "$PM_PANE" pm
 [ "$GV_CREATED" = 1 ] && label_role "$GV_PANE" gv
@@ -198,12 +230,16 @@ fi
 
 # --- extra roles declared by the template (e.g. dev-sre's SRE pane) -----------
 # Idempotent like everything else: create only the panes that are missing;
-# only those get launched + armed below.
+# only those get launched + armed below. issue #105: an extra role in the
+# coord session is part of the PM plane (touched on FULL or --pm-only); one
+# in the build session is part of the build plane (FULL or --build-only) —
+# a --build-only run must not reach into the coord session at all, and
+# vice versa.
 EXTRA_PANES=(); EXTRA_NAMES=()
 for er in $(fwf_extra_names); do
   case "$(fwf_extra_session "$er")" in
-    coord) er_sess="$COORD_SESSION";;
-    build) er_sess="$BUILD_SESSION";;
+    coord) er_sess="$COORD_SESSION"; { [ "$FULL" = 1 ] || [ "$pm_only" = 1 ]; } || continue;;
+    build) er_sess="$BUILD_SESSION"; { [ "$FULL" = 1 ] || [ "$build_only" = 1 ]; } || continue;;
     *) echo "fwf-up: extra role '$er' declares unknown session '$(fwf_extra_session "$er")' (use coord|build)" >&2; exit 1;;
   esac
   er_tok="$(printf '%s' "$er" | tr '[:lower:]' '[:upper:]')"
@@ -234,8 +270,17 @@ fi
 if [ "${#EXTRA_PANES[@]}" -gt 0 ]; then
   NEW_PANES+=( "${EXTRA_PANES[@]}" ); NEW_ROLES+=( "${EXTRA_NAMES[@]}" )
 fi
+# issue #105: log floor-up for exactly the plane(s) THIS invocation targets
+# (FULL touches both; --build-only/--pm-only touch just their own) — even
+# when nothing new gets created below, since an up-path was still invoked
+# for that plane and confirms it up, clearing any logged IDLE (issue #85).
+_fwf_log_plane_up_events() {
+  { [ "$FULL" = 1 ] || [ "$build_only" = 1 ]; } && fwf_floor_event floor-up "" "" build
+  { [ "$FULL" = 1 ] || [ "$pm_only" = 1 ]; }    && fwf_floor_event floor-up "" "" pm
+}
+
 if [ "${#NEW_PANES[@]}" = 0 ]; then
-  fwf_floor_event floor-up "" ""   # issue #85: every up-path clears IDLE, even a no-op one
+  _fwf_log_plane_up_events
   echo "fwf is already fully up — nothing to do."
   exit 0
 fi
@@ -272,13 +317,17 @@ while [ "$i" -lt "${#EXTRA_PANES[@]}" ]; do
   i=$((i+1))
 done
 
-fwf_floor_event floor-up "" ""   # issue #85: this run just (re)built the floor — clear any logged IDLE
+_fwf_log_plane_up_events   # issue #85/#105: this run just (re)built its plane(s) — clear any logged IDLE for them
 
 echo
-if [ "$FLOOR_ONLY" = 1 ]; then
-  echo "floor is up (captain untouched):"
-else
+if [ "$FULL" = 1 ]; then
   echo "fwf is up (two sessions):"
+elif [ "$build_only" = 1 ] && [ "$pm_only" = 1 ]; then
+  echo "floor is up (captain and GV untouched):"
+elif [ "$build_only" = 1 ]; then
+  echo "build floor is up (coordination untouched):"
+else
+  echo "PM is up (captain, GV, and the build floor untouched):"
 fi
 echo "  coordination: tmux attach -t $COORD_SESSION   ($FWF_DISPLAY_PM · GV · CAPTAIN — talk to the captain)"
 echo "  floor [$FWF_TEMPLATE]: tmux attach -t $BUILD_SESSION   ($FWF_PAIRS $FWF_DISPLAY_IMPL/$FWF_DISPLAY_QA pair(s) + $FWF_DISPLAY_CONDUCTOR)"
