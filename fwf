@@ -159,6 +159,14 @@ UTILITIES
                          dash's Usage tab too). --clear-hold lifts a
                          BUDGET_HOLD by hand (the writer re-writes it next
                          tick if still over budget).
+  gate <role> [--e2e] -- <cmd...>
+                         The shared guarded gate/e2e launcher (issue #123):
+                         every role prompt's __GATE__/__E2E__ placeholder
+                         renders through this. Skips (exit 75) rather than
+                         stacking a second run when <role>'s own prior gate
+                         is still in flight; --e2e additionally takes the
+                         floor-wide e2e lock (issue #65) for a harness that
+                         shares fixed ports across roles.
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -554,6 +562,7 @@ case "$cmd" in
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
+  gate)      engine fwf-gate.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
