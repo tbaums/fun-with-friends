@@ -408,6 +408,21 @@ assert_contains "never-ticking pane: clear failure message" "$(cat "$VT/out3.txt
 assert_contains "never-ticking pane: exits nonzero" "$(cat "$VT/out3.txt")" "RC=1"
 case "$(cat "$VT/out3.txt")" in *"respawn verified"*) bad "never-ticking pane must NEVER print a success line";; *) ok "never-ticking pane must NEVER print a success line";; esac
 
+section "fwf_interval_seconds: normalizes /loop-style intervals for arithmetic (issue #116)"
+ivs_test() { bash -c "source '$ROOT/lib.sh'; $1"; }
+assert_eq "3m -> 180"   "180"   "$(ivs_test 'fwf_interval_seconds 3m')"
+assert_eq "2m -> 120"   "120"   "$(ivs_test 'fwf_interval_seconds 2m')"
+assert_eq "2h -> 7200"  "7200"  "$(ivs_test 'fwf_interval_seconds 2h')"
+assert_eq "45s -> 45"   "45"    "$(ivs_test 'fwf_interval_seconds 45s')"
+assert_eq "1d -> 86400" "86400" "$(ivs_test 'fwf_interval_seconds 1d')"
+assert_eq "bare integer passes through unchanged" "300" "$(ivs_test 'fwf_interval_seconds 300')"
+IVS_BAD_RC="$(ivs_test 'fwf_interval_seconds bogus >/dev/null 2>&1; echo $?')"
+assert_eq "malformed interval -> rc 1, not a crash" "1" "$IVS_BAD_RC"
+IVS_BAD_MSG="$(ivs_test 'fwf_interval_seconds bogus 2>&1 >/dev/null')"
+assert_contains "malformed interval names the bad value" "$IVS_BAD_MSG" "invalid interval 'bogus'"
+IVS_EMPTY_RC="$(ivs_test 'fwf_interval_seconds "" >/dev/null 2>&1; echo $?')"
+assert_eq "empty interval -> rc 1, not a crash" "1" "$IVS_EMPTY_RC"
+
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
 assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
@@ -689,6 +704,35 @@ EOS
   esac
   tmux kill-session -t "${F85CSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F85CSESS}-build" 2>/dev/null
+
+  # --- issue #116: fwf-respawn.sh must not crash on a unit-suffixed interval -
+  # ("3m"/"2m"/etc — the real default shape of every *_INTERVAL) when computing
+  # its post-arm verify window. Uses a fast interval + margin so the (expected,
+  # legitimate) never-ticks timeout resolves in a couple seconds instead of
+  # fwf-respawn.sh's real ~minutes-long window.
+  F116WT="$TMP/wt116"; mkdir -p "$F116WT/ex-captain" "$F116WT/ex-pm"
+  F116RUN="$TMP/run116"; mkdir -p "$F116RUN/state/example"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' \
+    > "$F116RUN/state/example/floor-events.log"
+  F116SESS="fwf-selftest-116-$$"
+  tmux new-session -d -s "${F116SESS}-coord" -c "$F116WT/ex-captain"
+  tmux set -p -t "${F116SESS}-coord" @l "CAPTAIN"
+  F116OUT="$TMP/f116out.txt"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F116RUN" FWF_SESSION="$F116SESS" \
+      FWF_WT_BASE="$F116WT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+      FWF_PM_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
+      "$ROOT/fwf-respawn.sh" pm >"$F116OUT" 2>&1
+  case "$(cat "$F116OUT")" in
+    *"value too great for base"*) bad "#116: unit-suffixed interval must not crash the verify-window arithmetic";;
+    *"unbound variable"*)         bad "#116: unit-suffixed interval must not leave \$window unbound";;
+    *) ok "#116: unit-suffixed interval (3m-shaped) no longer crashes fwf-respawn.sh's arithmetic";;
+  esac
+  # the stub claude never touches a heartbeat, so verification legitimately
+  # times out — proving the run got PAST the arithmetic into the real check.
+  assert_contains "#116: past the arithmetic, reaches the real (legitimate) tick-timeout path" \
+    "$(cat "$F116OUT")" "did NOT tick"
+  tmux kill-session -t "${F116SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F116SESS}-build" 2>/dev/null
 else
   printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
 fi

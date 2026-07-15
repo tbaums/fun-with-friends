@@ -100,7 +100,8 @@ case "$role" in
     ;;
 esac
 
-window=$((interval + FWF_RESPAWN_VERIFY_MARGIN))
+interval_secs="$(fwf_interval_seconds "$interval")" || exit 1
+window=$((interval_secs + FWF_RESPAWN_VERIFY_MARGIN))
 if fwf_verify_respawn_tick "$role" "$arm_epoch" "$window" _fwf_respawn_renudge; then
   echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"
 else
