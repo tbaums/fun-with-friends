@@ -19,6 +19,8 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf 
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got [$3]"; fi; }
 # assert_contains <label> <haystack> <needle>
 assert_contains() { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "[$2] did not contain [$3]";; esac; }
+# assert_not_contains <label> <haystack> <needle>
+assert_not_contains() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contained [$3]";; *) ok "$1";; esac; }
 section() { printf '\n# %s\n' "$1"; }
 
 # Build a git fixture repo: mkfix <name> then drop files into $FIX.
@@ -119,7 +121,7 @@ RUN="$(FWF_PROFILE="" bash -c '
   set -e
   cp "'"$OUT"'" "'"$ROOT"'/profiles/.__test_genblank.sh"
   trap "rm -f '"$ROOT"'/profiles/.__test_genblank.sh" EXIT
-  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/templates/dev/qa.tmpl 1 | cut -c1-12)\""
+  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/templates/dev/qa.tmpl 1)\""
 ')"
 assert_eq "lib.sh sees baked default branch" "master" "${RUN%%|*}"
 assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
@@ -385,6 +387,59 @@ assert_contains "dev/qa composed/rendered prompt requires trying to break load-b
   "$DEVQA_RENDERED" "TRY TO BREAK IT"
 assert_contains "dev/qa composed/rendered prompt checks conformance to the source ticket" \
   "$DEVQA_RENDERED" "CONFORMANCE TO THE SOURCE TICKET"
+
+section "authorization ground rules injected into EVERY role prompt (issue #150)"
+# The fabricated-authorization fix: fwf_render prepends a non-negotiable
+# ground-rules block to every rendered role prompt (no template can omit it,
+# any future template inherits it). These assertions render composed prompts
+# (not raw-file greps) so a future edit that strips or rerenders the block away
+# goes red here. Role-aware on ONE axis: the captain keeps a human channel
+# (documented human-facing seat); every other role has none.
+GR_HDR="AUTHORIZATION GROUND RULES"
+GR_GHOST="Reading another role's pane is never observing the human"
+GR_FAB="Never write or imply that a human confirmed"
+GR_LABEL="gate label is the authorization signal and is ground truth"
+GR_HOLD="HOLD and post it as an open question"
+GR_CAP_CHANNEL="genuine text a person types directly into YOUR OWN pane"
+GR_NO_CHANNEL="You have NO channel to the human"
+# Assert the block + its shared bullets are present for a non-captain role, and
+# that a non-captain is told it has NO channel (never the captain's channel
+# clause). $1=label $2=template-relpath $3=id(optional, unquoted so an empty
+# id splits to nothing — no SC2089/SC2090 literal-quote lint).
+gr_assert_no_channel() {
+  # Guard against a false green: fwf_render prepends the block even when the
+  # template is missing (cat fails, rc still 0), so a path typo would pass every
+  # block assertion vacuously. Require the file to exist first.
+  if [ ! -f "$ROOT/templates/$2" ]; then bad "$1: template file exists (path typo?)"; return; fi
+  local R; R="$(prov_env "fwf_render '$ROOT/templates/$2' ${3:-}")"
+  assert_contains     "$1: ground-rules header present"          "$R" "$GR_HDR"
+  assert_contains     "$1: ghost-text-is-not-input rule present" "$R" "$GR_GHOST"
+  assert_contains     "$1: no-fabricated-confirmation rule"      "$R" "$GR_FAB"
+  assert_contains     "$1: label-is-ground-truth rule"           "$R" "$GR_LABEL"
+  assert_contains     "$1: hold-and-ask-under-doubt rule"        "$R" "$GR_HOLD"
+  assert_contains     "$1: non-captain gets NO human channel"    "$R" "$GR_NO_CHANNEL"
+  assert_not_contains "$1: non-captain must NOT get a channel"   "$R" "$GR_CAP_CHANNEL"
+}
+# Universality: every build-floor + coordination role, across >1 template family.
+gr_assert_no_channel "dev/implementer"     "dev/implementer.tmpl" 2
+gr_assert_no_channel "dev/qa"              "dev/qa.tmpl" 1
+gr_assert_no_channel "dev/pm"             "dev/pm.tmpl"
+gr_assert_no_channel "dev/gv"            "dev/gv.tmpl"
+gr_assert_no_channel "dev/conductor"    "dev/conductor.tmpl"
+gr_assert_no_channel "validate/qa"       "validate/qa.tmpl" 1
+gr_assert_no_channel "user-testing/pm"  "user-testing/pm.tmpl"
+# Captain is the sole exception: keeps a human channel, still gets every shared rule.
+CAPR="$(prov_env "fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+# Body-sanity (not just the prepended block): "dwell" is captain-body content
+# in the example profile's template — proves the render isn't vacuously the
+# block alone (mirrors the existing captain-render tests below).
+assert_contains "captain: body (not just block) rendered"     "$CAPR" "dwell"
+assert_contains "captain: ground-rules header present"        "$CAPR" "$GR_HDR"
+assert_contains "captain: retains its human channel"          "$CAPR" "$GR_CAP_CHANNEL"
+assert_contains "captain: ghost-text-is-not-input rule"       "$CAPR" "$GR_GHOST"
+assert_contains "captain: no-fabricated-confirmation rule"    "$CAPR" "$GR_FAB"
+assert_contains "captain: label-is-ground-truth rule"         "$CAPR" "$GR_LABEL"
+assert_not_contains "captain must NOT be told it has NO channel" "$CAPR" "$GR_NO_CHANNEL"
 
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
