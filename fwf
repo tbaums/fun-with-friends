@@ -167,6 +167,14 @@ UTILITIES
                          is still in flight; --e2e additionally takes the
                          floor-wide e2e lock (issue #65) for a harness that
                          shares fixed ports across roles.
+  authz <issue>          Verify HUMAN authorization to build/un-gate <issue>
+                         (issue #150): AUTHORIZED (exit 0) iff the operator
+                         un-gate signal — a comment emitted only by a human
+                         `fwf dash` approve keypress — is in the thread; else
+                         HELD (exit 10). Fails closed to INDETERMINATE (exit 2)
+                         if unreadable. The checkable answer to "was this
+                         approved?" — never infer it from label state or pane
+                         text. Read-only.
   reconcile [--branch NAME ...] [--against BRANCH]
                          Classify staging/integration against main (BEHIND ->
                          fast-forward reconcile / AHEAD -> normal no-op /
@@ -577,6 +585,7 @@ case "$cmd" in
   pr-context) engine fwf-pr-context.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
+  authz)     engine fwf-authz.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
   shell)

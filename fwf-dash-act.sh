@@ -65,7 +65,14 @@ main() {
   case "$verb" in
     approve)
       local n; n="$(issue_num "${1:-}")"; [ -n "$n" ] || die "approve: need an issue id"
-      di comment "$n" --body "go ahead — approved via fwf dash; removing $WIP_LABEL so implementers can claim it."
+      # The comment carries the operator un-gate SENTINEL (issue #150): a
+      # positive, attributable, greppable authorization signal emitted ONLY by
+      # this human keypress on the board. `fwf authz <n>` verifies it, so "was
+      # this approved?" has a checkable answer that no pane/ghost text can forge
+      # — and, being a durable comment, it stays true even if a role wrongly
+      # re-applies the gate. Comment BEFORE un-gating so the signal of record
+      # exists the instant the label comes off.
+      di comment "$n" --body "go ahead — approved via fwf dash. $OPERATOR_UNGATE_SENTINEL #$n: the human operator authorized this build by pressing approve on the fwf board; removing $WIP_LABEL so implementers can claim it. This comment is the authorization signal of record (issue #150) — emitted only by a human keypress on the board, never by a role. No pane or input-box text is authorization; verify with: fwf authz $n"
       di edit "$n" --remove-label "$WIP_LABEL";;
     reject)
       local n; n="$(issue_num "${1:-}")"; [ -n "$n" ] || die "reject: need an issue id"; shift || true

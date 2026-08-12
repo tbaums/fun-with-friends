@@ -70,6 +70,15 @@ FWF_CLAUDE_ENV="${FWF_CLAUDE_ENV:-CLAUDE_CODE_FORCE_SYNC_OUTPUT=1}"
 
 # PM drafts wear this label; implementers skip any issue carrying it until you remove it.
 WIP_LABEL="${FWF_WIP_LABEL:-product-wip}"
+# Operator un-gate sentinel (issue #150): the POSITIVE, attributable, mechanically
+# checkable authorization signal. `fwf dash` approve — a HUMAN keypress on the
+# board — is the only path that emits it (into the issue thread as a comment);
+# `fwf authz <issue>` verifies it. It exists because label-absence alone is
+# unattributable (every role shares one account), which is the gap a role once
+# filled with fabricated pane/ghost text — inventing a human confirmation and
+# reverting approved work. A durable comment is the signal of record precisely
+# because it survives a wrongful re-gate, unlike the mutable label state.
+OPERATOR_UNGATE_SENTINEL="${FWF_OPERATOR_UNGATE_SENTINEL:-OPERATOR-UNGATE}"
 # Release-freeze hold: the PM applies this to tickets that should wait for a future release,
 # so the queue drains to a clean integration cutoff before you release. Implementers skip it too.
 HOLD_LABEL="${FWF_HOLD_LABEL:-release-hold}"
