@@ -303,21 +303,68 @@ for p in "${NEW_PANES[@]}"; do tmux send-keys -t "$p" Enter; done   # clear one-
 sleep 2
 
 # --- deliver prompts to the panes THIS run created -----------------------------
+# Track every role we arm (role / pane / tmpl / id / interval) so the boot
+# health-gate below can re-arm any that fails to fire a first tick (issue #133).
+ARM_ROLES=(); ARM_PANES=(); ARM_TMPLS=(); ARM_IDS=(); ARM_INTERVALS=()
+arm_and_track() { # $1=pane $2=role $3=tmpl $4=id $5=interval
+  fwf_arm_pane "$1" "$2" "$3" "$4" "$5"
+  ARM_ROLES+=("$2"); ARM_PANES+=("$1"); ARM_TMPLS+=("$3"); ARM_IDS+=("$4"); ARM_INTERVALS+=("$5")
+}
+BOOT_EPOCH="$(date +%s)"   # first tick must land at/after here — capture pre-arm
 if [ "$BUILD_CREATED" = 1 ]; then
   for id in "${PAIRS[@]}"; do
-    fwf_arm_pane "${TP[$id]}" "impl$id" implementer "$id" "$IMPL_INTERVAL"
-    [ -n "${BP[$id]:-}" ] && fwf_arm_pane "${BP[$id]}" "qa$id" qa "$id" "$QA_LOOP_INTERVAL"
+    arm_and_track "${TP[$id]}" "impl$id" implementer "$id" "$IMPL_INTERVAL"
+    [ -n "${BP[$id]:-}" ] && arm_and_track "${BP[$id]}" "qa$id" qa "$id" "$QA_LOOP_INTERVAL"
   done
-  [ -n "$CONDUCTOR_PANE" ] && fwf_arm_pane "$CONDUCTOR_PANE" conductor conductor "" "$CONDUCTOR_INTERVAL"
+  [ -n "$CONDUCTOR_PANE" ] && arm_and_track "$CONDUCTOR_PANE" conductor conductor "" "$CONDUCTOR_INTERVAL"
 fi
-[ "$PM_CREATED" = 1 ]      && fwf_arm_pane "$PM_PANE"      pm pm "" "$PM_INTERVAL"
-[ "$GV_CREATED" = 1 ]      && fwf_arm_pane "$GV_PANE"      gv gv "" "$GV_INTERVAL"
-[ "$CAPTAIN_CREATED" = 1 ] && fwf_arm_pane "$CAPTAIN_PANE" captain captain "" "$CAPTAIN_INTERVAL"
+[ "$PM_CREATED" = 1 ]      && arm_and_track "$PM_PANE"      pm pm "" "$PM_INTERVAL"
+[ "$GV_CREATED" = 1 ]      && arm_and_track "$GV_PANE"      gv gv "" "$GV_INTERVAL"
+[ "$CAPTAIN_CREATED" = 1 ] && arm_and_track "$CAPTAIN_PANE" captain captain "" "$CAPTAIN_INTERVAL"
 i=0
 while [ "$i" -lt "${#EXTRA_PANES[@]}" ]; do
-  fwf_arm_pane "${EXTRA_PANES[$i]}" "${EXTRA_NAMES[$i]}" "${EXTRA_NAMES[$i]}" "" "$(fwf_extra_interval "${EXTRA_NAMES[$i]}")"
+  arm_and_track "${EXTRA_PANES[$i]}" "${EXTRA_NAMES[$i]}" "${EXTRA_NAMES[$i]}" "" "$(fwf_extra_interval "${EXTRA_NAMES[$i]}")"
   i=$((i+1))
 done
+
+# --- boot health-gate (issue #133) ---------------------------------------------
+# PROCESS-ALIVE IS NOT LOOP-ALIVE: confirm every armed role actually fired a
+# real first tick before we call the floor up. Re-arm any laggard once; hard-
+# respawn any that STILL won't loop — so a wedged role is recovered automatically
+# at boot, never left for a human to notice and `fwf respawn` by hand. Set
+# FWF_SKIP_BOOT_GATE=1 to bypass (e.g. a deliberately parked bring-up).
+if [ "${FWF_SKIP_BOOT_GATE:-0}" != 1 ] && [ "${#ARM_ROLES[@]}" -gt 0 ]; then
+  BOOT_VERIFY_MARGIN="${FWF_BOOT_VERIFY_MARGIN:-45}"
+  # Re-arm callback: re-deliver the role prompt + lean /loop to the named role's
+  # own pane (looked up from the tracking arrays).
+  _fwf_boot_renudge() { # $1=role
+    local r="$1" j=0
+    while [ "$j" -lt "${#ARM_ROLES[@]}" ]; do
+      if [ "${ARM_ROLES[$j]}" = "$r" ]; then
+        fwf_arm_pane "${ARM_PANES[$j]}" "${ARM_ROLES[$j]}" "${ARM_TMPLS[$j]}" "${ARM_IDS[$j]}" "${ARM_INTERVALS[$j]}"
+        return 0
+      fi
+      j=$((j+1))
+    done
+  }
+  BOOT_SPECS=(); j=0
+  while [ "$j" -lt "${#ARM_ROLES[@]}" ]; do
+    isecs="$(fwf_interval_seconds "${ARM_INTERVALS[$j]}" 2>/dev/null || echo 180)"
+    BOOT_SPECS+=("${ARM_ROLES[$j]}:$((isecs + BOOT_VERIFY_MARGIN))")
+    j=$((j+1))
+  done
+  echo "verifying every role fired a first loop tick (re-arming laggards)…"
+  if fwf_verify_boot_ticks "$BOOT_EPOCH" _fwf_boot_renudge "${BOOT_SPECS[@]}"; then
+    echo "boot health-gate: all ${#ARM_ROLES[@]} role(s) ticking."
+  else
+    # Automated recovery: hard-respawn (kill pane → relaunch → re-arm → verify)
+    # each role that never looped even after a re-arm. No manual respawn needed.
+    for dr in "${FWF_BOOT_DEAD_ROLES[@]}"; do
+      echo "boot health-gate: hard-respawning wedged role '$dr'…" >&2
+      "$DIR/fwf-respawn.sh" "$dr" || echo "warning: automated respawn of '$dr' did not verify — run 'fwf respawn $dr' and check its pane" >&2
+    done
+  fi
+fi
 
 _fwf_log_plane_up_events   # issue #85/#105: this run just (re)built its plane(s) — clear any logged IDLE for them
 

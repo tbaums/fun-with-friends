@@ -102,8 +102,32 @@ esac
 
 interval_secs="$(fwf_interval_seconds "$interval")" || exit 1
 window=$((interval_secs + FWF_RESPAWN_VERIFY_MARGIN))
+
+# issue #133 (failure mode 2 — the "reported-success respawn that still doesn't
+# loop"): the soft re-nudge inside fwf_verify_respawn_tick only RE-SENDS the
+# /loop line into the same pane. If that pane's claude never armed the loop (or
+# is wedged at its prompt), re-typing the same line cannot revive it — so on a
+# soft-verify failure we escalate ONCE to a HARD recycle: kill the pane's
+# claude, relaunch it fresh, re-arm from scratch, and re-verify. We NEVER print
+# a success line without a real heartbeat tick, and we don't give up until the
+# pane itself has actually been recycled.
+_fwf_respawn_hard_rearm() {
+  echo "fwf-respawn: soft re-nudge did not tick — escalating to a hard kill+relaunch of $role's pane $CP" >&2
+  tmux respawn-pane -k -t "$CP" -c "$(fwf_role_cwd "$role")" 2>/dev/null || true
+  fwf_ensure_claude "$CP" "$(fwf_claude_cmd "$role")" || echo "warning: claude did not come up in $role pane $CP on escalation" >&2
+  sleep 2; tmux send-keys -t "$CP" Enter; sleep 2
+  arm_epoch="$(date +%s)"
+  fwf_arm_pane "$CP" "$role" "$tmpl" "$id" "$interval"
+}
+
 if fwf_verify_respawn_tick "$role" "$arm_epoch" "$window" _fwf_respawn_renudge; then
   echo "$role respawned and armed in $CP (role prompt once + lean $interval tick)"
 else
-  exit 1
+  _fwf_respawn_hard_rearm
+  if fwf_verify_respawn_tick "$role" "$arm_epoch" "$window" _fwf_respawn_renudge; then
+    echo "$role respawned and armed in $CP after a hard pane relaunch (escalated recovery)"
+  else
+    echo "fwf-respawn: $role STILL not ticking after a hard relaunch — the pane is wedged at a deeper level; inspect it manually (tmux attach; pane $CP)" >&2
+    exit 1
+  fi
 fi

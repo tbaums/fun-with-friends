@@ -632,6 +632,20 @@ case "$cmd" in
   provision) engine fwf-provision.sh "$@";;
   up)        engine fwf-up.sh "$@";;
   respawn)   engine fwf-respawn.sh "$@";;
+  tick)
+    # issue #133: a looping role's step-0 heartbeat, upgraded to a monotonic
+    # per-role loop-tick counter. Deliberately tiny (no engine indirection) —
+    # every agent runs it every cycle. Echoes the new count.
+    FWF_PROFILE="$(resolve_profile)"
+    source "$FWF_DIR/lib.sh"
+    role="${1:-}"; [ -n "$role" ] || die "tick: usage: fwf tick <role>"
+    fwf_tick_bump "$role";;
+  stub-sweep)
+    # issue #133: auto-close claim-only draft PRs (zero changed files) that a
+    # dead loop opened and abandoned. Idempotent; safe to run from a caretaker.
+    FWF_PROFILE="$(resolve_profile)"
+    source "$FWF_DIR/lib.sh"
+    fwf_stub_sweep "$@";;
   stop)      engine fwf-stop.sh "$@";;
   resume)    engine fwf-resume.sh "$@";;
   down)      engine fwf-down.sh "$@";;

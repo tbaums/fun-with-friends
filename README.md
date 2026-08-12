@@ -106,14 +106,41 @@ Every looped role is armed the same way: its full role prompt is delivered
 once at launch and persisted to `~/.fun-with-friends/prompts/<profile>-<role>.prompt`,
 then its loop fires a one-line tick on the role's interval — an agent that has
 compacted re-reads its role from that file instead of having the whole prompt
-re-injected every tick. Every role's tick also touches a step-0 **heartbeat**
-(`~/.fun-with-friends/state/<profile>/heartbeat/<role>`) before doing any
-work — a durable "this cycle started" signal, deliberately never the pane's
-animation glyph (which stays looking alive even on a wedged role). `fwf
-respawn <role>` waits for that heartbeat to advance after arming, for up to
-the role's loop interval plus `FWF_RESPAWN_VERIFY_MARGIN` seconds (default
-30) with one re-nudge, before reporting success — so a respawn can no longer
-look "verified" while the role never actually ticks (issue #99).
+re-injected every tick. Every role's tick runs `fwf tick <role>` at step-0,
+before doing any work: this bumps a **monotonic per-role loop-tick counter**
+(`~/.fun-with-friends/state/<profile>/tick/<role>`) and refreshes a
+**heartbeat** file (`.../heartbeat/<role>`). The two answer different
+questions and neither is the pane's animation glyph (which stays looking alive
+even on a wedged role): the heartbeat mtime is a recency signal ("a cycle
+started recently"), while the counter is the reliable liveness signal the
+mtime cannot be — because a wedged role, a healthy-but-mid-long-task role, and
+an intentionally parked one all present an equally-stale mtime, whereas the
+counter *strictly increases* once per real iteration, so comparing two samples
+reads **working** (advancing) vs **parked/wedged** (static) unambiguously.
+
+Two automated checks lean on this signal (issue #133):
+
+- **Boot health-gate.** `fwf up` no longer declares the floor up the instant
+  claude launches in each pane — *process-alive is not loop-alive*: the `/loop`
+  arm can silently fail to register and the role then sits forever without
+  claiming a ticket. After arming, the gate confirms **every** role fired a
+  real first tick (its heartbeat advanced past the pre-arm epoch), **re-arms**
+  any laggard once, and **hard-respawns** (kill pane → relaunch → re-arm →
+  re-verify) any role that still won't loop — so a wedged boot self-recovers
+  with no manual `fwf respawn`. Per-role window is the loop interval plus
+  `FWF_BOOT_VERIFY_MARGIN` (default 45s); set `FWF_SKIP_BOOT_GATE=1` to bypass
+  for a deliberately parked bring-up.
+- **`fwf respawn <role>`** waits for the tick/heartbeat to advance after arming,
+  for up to the role's loop interval plus `FWF_RESPAWN_VERIFY_MARGIN` seconds
+  (default 30) with one re-nudge; if that soft re-nudge doesn't produce a tick
+  it **escalates once** to a hard kill+relaunch of the pane and re-verifies,
+  before reporting success — so a respawn can no longer look "verified" while
+  the role never actually ticks (issues #99, #133).
+
+`fwf stub-sweep` auto-closes claim-only **draft** PRs (zero changed files —
+the claim commit *is* the mutex) left untouched past `FWF_STUB_GRACE_SECS`
+(default 15m), reaping the orphan stub a dead boot loop opens before it dies
+(issue #133).
 
 An implementer treats its own open draft PR — even one that's still just the
 empty `claim #<num>` commit — as the current cycle's work to resume (checkout

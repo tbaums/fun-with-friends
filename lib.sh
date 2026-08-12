@@ -578,6 +578,10 @@ $text"
   text="${text//__STOPFILE__/$STOP_FILE}"
   text="${text//__BUDGET_HOLD_FILE__/$BUDGET_HOLD_FILE}"
   text="${text//__HEARTBEAT__/$FWF_STATE_DIR/heartbeat/$role_tag}"
+  # Issue #133: the resolved role tag (impl1/qa2/pm/…) so a template can name
+  # its own role in a command — notably `fwf tick __ROLETAG__`, the step-0
+  # loop-tick bump that supersedes the bare `touch __HEARTBEAT__`.
+  text="${text//__ROLETAG__/$role_tag}"
   # Build-provenance trailer for PR bodies + squash-merge commits. Guarded so
   # the git/version lookup only runs for templates that actually use it.
   case "$text" in *__PROVENANCE__*) text="${text//__PROVENANCE__/$(fwf_provenance_block)}";; esac
@@ -1408,6 +1412,41 @@ fwf_file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null ||
 # actually advances a cycle.
 fwf_heartbeat_path() { echo "$FWF_STATE_DIR/heartbeat/$1"; } # $1=role tag
 
+# --- monotonic loop-tick counter (issue #133) -------------------------------
+# The heartbeat's mtime answers "did a cycle START recently?" but NOT "is this
+# role making progress or wedged?": a wedged agent, a healthy-but-mid-long-task
+# agent, and an intentionally parked one all present an equally-stale mtime, and
+# a single touch can't be told from real work. The tick counter fixes that: it
+# STRICTLY INCREASES once per real loop iteration, so a reader comparing two
+# samples over time reads working (advancing) vs parked/wedged (static) with no
+# ambiguity — the one reliable per-role liveness signal the ticket asks for.
+# It is bumped by the agent at cycle step-0 via `fwf tick <role>`, which both
+# increments this counter AND refreshes the heartbeat, so every heartbeat-based
+# check (boot gate, respawn verify) keeps working unchanged.
+fwf_tick_path() { echo "$FWF_STATE_DIR/tick/$1"; } # $1=role tag
+
+# Current tick count for role $1 (0 if it has never ticked / file absent or
+# malformed — never errors, so callers can use it in arithmetic directly).
+fwf_tick_read() { # $1=role
+  local n; n="$(cat "$(fwf_tick_path "$1")" 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) echo 0;; *) echo "$n";; esac
+}
+
+# Atomically bump role $1's tick counter and refresh its heartbeat — the single
+# cycle-start action a looping role runs at step-0. Read-inc-write is safe
+# because each role is the SOLE writer of its own counter (one pane, one serial
+# loop); the write goes through a temp+mv so a reader never catches a half-
+# written value. Echoes the new count.
+fwf_tick_bump() { # $1=role
+  local role="$1" tf hb cur next
+  tf="$(fwf_tick_path "$role")"; hb="$(fwf_heartbeat_path "$role")"
+  mkdir -p "$(dirname "$tf")" "$(dirname "$hb")" 2>/dev/null || true
+  cur="$(fwf_tick_read "$role")"; next=$((cur + 1))
+  printf '%s\n' "$next" > "$tf.tmp.$$" && mv -f "$tf.tmp.$$" "$tf"
+  touch "$hb" 2>/dev/null || true
+  echo "$next"
+}
+
 # Poll for role $1's heartbeat to reach or pass epoch $2 (typically "when we
 # armed the pane"), for up to $3 seconds. This verifies the loop STARTED a
 # cycle since arming — not that any cycle FINISHED — so a healthy first cycle
@@ -1449,6 +1488,103 @@ fwf_verify_respawn_tick() { # $1=role $2=arm_epoch $3=window_secs $4=renudge_fn_
   fi
   echo "fwf-respawn: $role did NOT tick after arming + one re-nudge (no heartbeat within $((window * 2))s total) — respawn NOT verified; the pane may still be alive but wedged" >&2
   return 1
+}
+
+# Boot health-gate (issue #133). `fwf up` used to declare the floor "up" the
+# instant claude launched in each pane — but PROCESS-ALIVE IS NOT LOOP-ALIVE:
+# the /loop arm can silently fail to register (the nudge races pane readiness,
+# or the agent is still churning its first cycle when the slash line lands) and
+# the role then sits forever without ever claiming a ticket. This gate closes
+# that hole: after arming, it confirms EACH role fired a real first tick (its
+# heartbeat advanced past the pre-arm epoch), RE-ARMS any laggard once via the
+# caller's renudge fn, and re-checks. Roles that STILL never ticked are named
+# in the global FWF_BOOT_DEAD_ROLES array (for the caller to escalate, e.g. a
+# hard respawn) and the function returns 1 — so a wedged floor is shouted about,
+# never silently reported "up". Pure heartbeat + callback (no tmux), so it is
+# unit-testable against fake heartbeat files and a fake renudge.
+#   $1 = boot epoch (first tick must be at/after this; capture BEFORE arming)
+#   $2 = renudge fn name, invoked as: <fn> <role>
+#   $3.. = one "role:window_secs" spec per armed role
+FWF_BOOT_DEAD_ROLES=()
+fwf_verify_boot_ticks() {
+  local boot_epoch="$1" renudge_fn="$2"; shift 2
+  local spec role window ok_roles=""
+  FWF_BOOT_DEAD_ROLES=()
+  # Pass 1: verify each role; re-arm (once) any that hasn't ticked yet. A
+  # healthy role usually returns immediately, so only genuine laggards wait out
+  # a full window here.
+  for spec in "$@"; do
+    role="${spec%%:*}"; window="${spec##*:}"
+    if fwf_wait_heartbeat "$role" "$boot_epoch" "$window" >/dev/null; then
+      echo "boot: first tick verified — $role"
+      ok_roles="$ok_roles $role"
+    else
+      echo "boot: $role did NOT tick within ${window}s of arming — re-arming once" >&2
+      "$renudge_fn" "$role"
+    fi
+  done
+  # Pass 2: re-check only the re-armed laggards, one more window each.
+  for spec in "$@"; do
+    role="${spec%%:*}"; window="${spec##*:}"
+    case " $ok_roles " in *" $role "*) continue;; esac
+    if fwf_wait_heartbeat "$role" "$boot_epoch" "$window" >/dev/null; then
+      echo "boot: first tick verified after re-arm — $role"
+    else
+      echo "boot: $role STILL not ticking after one re-arm — needs recovery" >&2
+      FWF_BOOT_DEAD_ROLES+=("$role")
+    fi
+  done
+  if [ "${#FWF_BOOT_DEAD_ROLES[@]}" -gt 0 ]; then
+    echo "boot health-gate: roles that never fired a first tick: ${FWF_BOOT_DEAD_ROLES[*]}" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Empty-stub-PR decision (issue #133). A dead boot loop once opened a claim-only
+# draft PR (zero changed files — the claim commit IS the mutex) and then never
+# advanced it, leaving an orphan stub a human had to close by hand. This is the
+# pure predicate a sweeper uses: a draft PR with ZERO changed files that has sat
+# untouched past the grace window is a stub to auto-close. Kept side-effect-free
+# (no gh) so it is unit-testable; fwf_stub_sweep wires it to the live PR list.
+# Returns 0 (close it) / 1 (leave it).
+#   $1 = isDraft (true/false)  $2 = changed-file count  $3 = age secs  $4 = grace secs
+fwf_pr_is_stale_stub() {
+  local is_draft="$1" files="$2" age="$3" grace="$4"
+  [ "$is_draft" = "true" ] || return 1          # only ever touch drafts
+  [ "$files" = "0" ] || return 1                # a real diff exists → not a stub
+  [ "$age" -ge "$grace" ] 2>/dev/null || return 1   # give a live loop time to push
+  return 0
+}
+
+# Parse an ISO-8601 UTC timestamp (e.g. gh's 2026-08-11T14:03:22Z) to epoch
+# seconds, portably across GNU and BSD date; echoes nothing on failure.
+fwf_iso_to_epoch() { # $1=iso8601
+  date -u -d "$1" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || true
+}
+
+# Sweep abandoned claim-only draft PRs (issue #133). Lists open draft PRs, and
+# for each one whose diff is EMPTY (zero changed files — a claim stub a dead
+# loop opened and never advanced) and whose last update is older than the grace
+# window, closes it with an explanatory comment. Uses updatedAt (last activity)
+# not createdAt, so a draft a healthy loop is still pushing to is never touched.
+# Grace defaults to 15m; override with FWF_STUB_GRACE_SECS. Prints one line per
+# PR acted on; a no-op run prints nothing and returns 0.
+fwf_stub_sweep() {
+  local grace="${FWF_STUB_GRACE_SECS:-900}" now n updated files age
+  now="$(date -u +%s)"
+  local prs; prs="$(gh pr list --state open --draft --json number,updatedAt --jq '.[] | "\(.number) \(.updatedAt)"' 2>/dev/null || true)"
+  [ -n "$prs" ] || return 0
+  while read -r n updated; do
+    [ -n "$n" ] || continue
+    files="$(gh pr diff "$n" --name-only 2>/dev/null | grep -c . || true)"
+    age="$(( now - $(fwf_iso_to_epoch "$updated" 2>/dev/null || echo "$now") ))"
+    if fwf_pr_is_stale_stub true "${files:-0}" "$age" "$grace"; then
+      gh pr close "$n" --comment "Auto-closed by fwf stub-sweep (issue #133): claim-only draft with zero changed files, untouched for $((age / 60))m (grace $((grace / 60))m). The claiming loop appears to have died before pushing any work; reclaim the ticket on a fresh cycle." >/dev/null 2>&1 \
+        && echo "stub-sweep: closed empty draft PR #$n (idle $((age / 60))m)"
+    fi
+  done <<< "$prs"
+  return 0
 }
 
 # Arm a pane (issue #38): the full rendered role prompt is delivered ONCE as a
