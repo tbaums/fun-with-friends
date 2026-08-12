@@ -804,8 +804,13 @@ EOS
   F85ASESS="fwf-selftest-85a-$$"
   tmux new-session -d -s "${F85ASESS}-coord" -c "$F85AWT/ex-captain"
   tmux set -p -t "${F85ASESS}-coord" @l "CAPTAIN"
+  # FWF_SKIP_BOOT_GATE=1: this test asserts floor-EVENT logging, not the boot
+  # health-gate — and the stub claude never ticks, so the gate would otherwise
+  # wait out a full window per role (then hard-respawn each) before returning.
+  # The gate itself is covered in isolation above (fwf_verify_boot_ticks).
   env FWF_PROFILE=example FWF_RUN_DIR="$F85ARUN" FWF_SESSION="$F85ASESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F85AWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
       "$ROOT/fwf-up.sh" --floor-only >/dev/null 2>&1
   assert_contains "fwf-up.sh --floor-only appends floor-up" "$(tail -n1 "$F85ALOG")" "floor-up"
   tmux kill-session -t "${F85ASESS}-coord" 2>/dev/null
@@ -821,6 +826,7 @@ EOS
   F85BSESS="fwf-selftest-85b-$$"
   env FWF_PROFILE=example FWF_RUN_DIR="$F85BRUN" FWF_SESSION="$F85BSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F85BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
       "$ROOT/fwf-up.sh" >/dev/null 2>&1
   assert_contains "a full 'fwf up' appends floor-up" "$(tail -n1 "$F85BLOG")" "floor-up"
   tmux kill-session -t "${F85BSESS}-coord" 2>/dev/null
