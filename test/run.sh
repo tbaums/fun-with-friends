@@ -616,6 +616,44 @@ assert_contains "help mentions --floor-only" "$HELP_OUT" "--floor-only"
 assert_contains "help mentions --build-only" "$HELP_OUT" "--build-only"
 assert_contains "help mentions --pm-only"    "$HELP_OUT" "--pm-only"
 
+section "full-down cooldown + audit trail (issue #133): full 'fwf down' honors the anti-thrash cooldown and logs floor-down"
+# Before #133 the #88 cooldown and the #85 floor-down audit rows guarded/annotated
+# ONLY the per-plane (--build-only/--pm-only) paths; a FULL `fwf down` bypassed both.
+# That let an automated actor tear down a floor seconds after boot (up -> "0/2, no
+# work") and leave the log trailing on floor-up (audit/dash read the dead floor as
+# still UP). Hermetic: a stub tmux, no real sessions.
+F133RUN="$TMP/run133"; mkdir -p "$F133RUN/state/example"
+F133LOG="$F133RUN/state/example/floor-events.log"
+F133BIN="$TMP/tmux133bin"; mkdir -p "$F133BIN"
+cat > "$F133BIN/tmux" <<'STUB'
+#!/usr/bin/env bash
+# stub: report both sessions present so a proceeding full down "kills" + logs them
+case "$1" in has-session) exit 0;; kill-session) exit 0;; list-panes) exit 0;; *) exit 0;; esac
+STUB
+chmod +x "$F133BIN/tmux"
+F133ENV="FWF_PROFILE=example FWF_RUN_DIR=$F133RUN FWF_SESSION=fwf-selftest-133-$$ FWF_MIN_FREE_GB=0"
+# (a) a floor that came up SECONDS ago -> full down is REFUSED without --force,
+#     and refusing must NOT append a floor-down row.
+NOW_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; NOW_EP="$(date +%s)"
+printf '%s\t%s\tfloor-up\t\t\tbuild\n' "$NOW_TS" "$NOW_EP" >  "$F133LOG"
+printf '%s\t%s\tfloor-up\t\t\tpm\n'    "$NOW_TS" "$NOW_EP" >> "$F133LOG"
+F133OUT="$(PATH="$F133BIN:$PATH" env $F133ENV "$ROOT/fwf-down.sh" 2>&1)" && bad "full down refused within cooldown" || ok "full down refused within cooldown"
+assert_contains "refusal names the cooldown"          "$F133OUT" "refusing full down"
+assert_eq "no floor-down logged on a refused down"    "0" "$(grep -c 'floor-down' "$F133LOG")"
+# (b) --force overrides the cooldown AND logs floor-down for both planes.
+PATH="$F133BIN:$PATH" env $F133ENV "$ROOT/fwf-down.sh" --force >/dev/null 2>&1
+assert_eq "forced full down logs floor-down for build+pm" "2" "$(grep -c 'floor-down' "$F133LOG")"
+# (c) an ELAPSED cooldown -> a normal full down proceeds WITHOUT --force and the
+#     audit row carries the caller's --actor/--reason (the incident's exact shape).
+: > "$F133LOG"
+OLD_EP=$(( $(date +%s) - 100000 ))
+printf 'old\t%s\tfloor-up\t\t\tbuild\n' "$OLD_EP" >  "$F133LOG"
+printf 'old\t%s\tfloor-up\t\t\tpm\n'    "$OLD_EP" >> "$F133LOG"
+PATH="$F133BIN:$PATH" env $F133ENV "$ROOT/fwf-down.sh" --actor usage-guard --reason "supervisor dead" >/dev/null 2>&1
+F133DLAST="$(grep 'floor-down' "$F133LOG" | tail -n1)"
+assert_contains "elapsed-cooldown down proceeds + records actor"  "$F133DLAST" "usage-guard"
+assert_contains "elapsed-cooldown down records the reason"        "$F133DLAST" "supervisor dead"
+
 section "floor-lifecycle event log (issue #85, per-plane by #105): fwf_floor_event / fwf_plane_idle_state"
 # Pure file I/O (lib.sh) — no tmux/gh needed for the read/write primitives.
 F85RUN="$TMP/run85"; mkdir -p "$F85RUN"

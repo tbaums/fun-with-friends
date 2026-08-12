@@ -119,6 +119,32 @@ if [ "$build_only" = 1 ] || [ "$pm_only" = 1 ]; then
   exit 0
 fi
 
+# Anti-thrash cooldown on the FULL teardown too (issue #133). The #88 cooldown
+# used to guard ONLY the per-plane (--build-only/--pm-only) paths; a full
+# `fwf down` bypassed it entirely. That let an automated actor (e.g. a usage
+# dead-man's switch firing every few minutes) tear down a floor that had come
+# up seconds earlier — `up` → sessions killed ~cooldown-window later → "0/2, no
+# work done", repeatably. A full down is refused while EITHER plane is still in
+# its up-cooldown, unless --force. A human retiring the floor passes --force;
+# a genuine emergency-stop actor (real usage breach) should also pass --force,
+# but a MISFIRING one that doesn't is now stopped from insta-killing a fresh
+# floor. --purge is exempt (deliberate retire), as is --force.
+if [ "$purge" != 1 ] && [ "$force" != 1 ]; then
+  build_remaining="$(fwf_plane_cooldown_remaining build)"
+  pm_remaining="$(fwf_plane_cooldown_remaining pm)"
+  if [ "$build_remaining" -gt 0 ] || [ "$pm_remaining" -gt 0 ]; then
+    echo "fwf-down: refusing full down — a floor came up too recently (build cooldown ${build_remaining}s, pm cooldown ${pm_remaining}s remaining; pass --force to override)" >&2
+    exit 1
+  fi
+fi
+
+# Snapshot which planes were actually up BEFORE we kill them, so the floor-down
+# audit rows below reflect reality rather than logging a down for a plane that
+# was never up.
+_build_was_up=0; _pm_was_up=0
+tmux has-session -t "$BUILD_SESSION" 2>/dev/null && _build_was_up=1
+tmux has-session -t "$COORD_SESSION" 2>/dev/null && _pm_was_up=1
+
 for s in "$COORD_SESSION" "$BUILD_SESSION"; do
   if tmux kill-session -t "$s" 2>/dev/null; then echo "killed tmux session '$s'"; else echo "no tmux session '$s'"; fi
 done
@@ -127,6 +153,17 @@ fwf_budget_writer_stop
 fwf_budget_baseline_clear   # issue #108: full teardown ends this run — the next full 'fwf up' snapshots a fresh baseline
 rm -f "$FWF_RUN/template"   # clear the persisted running-template marker (#51) so it can't go stale once the factory is down
 rm -f "$FWF_TMUX_SOCKET_FILE"   # clear the persisted launch-socket marker (#62) alongside it
+
+# Record floor-down for the planes we just tore down (issue #133). The full
+# teardown previously logged NOTHING — only the per-plane paths called
+# fwf_floor_event — so a full `fwf down` (incl. an automated one) left the
+# floor-events log with a trailing floor-up, i.e. the audit trail + dash read
+# the floor as still UP after its sessions were killed. That is the "silent
+# teardown / unreliable liveness signal" in #133: you could not tell from the
+# log that the floor was gone, or who took it down and why. Now every full down
+# is auditable with its --actor/--reason, exactly like the per-plane paths.
+[ "$_build_was_up" = 1 ] && fwf_floor_event floor-down "$actor" "$reason" build
+[ "$_pm_was_up" = 1 ]    && fwf_floor_event floor-down "$actor" "$reason" pm
 
 if [ "$purge" = 1 ]; then
   echo "purging worktrees and impl dev-data…"
