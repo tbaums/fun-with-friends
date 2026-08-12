@@ -11,6 +11,9 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Fixed
+- **Factory boot loop-death — first-tick health-gate + monotonic loop-tick counter** (#133, code a908052, docs a908052) — `fwf up` declared the floor "up" the instant claude launched in each pane, but *process-alive is not loop-alive*: an implementer's `/loop` arm could silently fail to register and the role then sat idle forever, never claiming a ticket (last seen: booted, idle ~58min, built nothing). Three fixes: (1) a boot health-gate (`fwf_verify_boot_ticks`) confirms every role fired a REAL first tick, re-arms any laggard once, and hard-respawns any that still won't loop — no manual `fwf respawn` needed (`FWF_SKIP_BOOT_GATE=1` bypasses; window = interval + `FWF_BOOT_VERIFY_MARGIN`, default 45s); (2) a monotonic per-role loop-tick counter (`fwf tick <role>`, superseding the ambiguous heartbeat-mtime touch) that strictly increases once per real iteration, so working (advancing) is unambiguously distinguishable from parked/wedged (static); (3) `fwf-respawn.sh` escalates a failed soft re-nudge to a hard kill+relaunch of the pane and re-verifies, so a respawn can no longer report success while the loop stays dead. Plus `fwf stub-sweep` auto-closes claim-only draft PRs (zero changed files) a dead loop orphaned. Full unit coverage; shellcheck clean.
+
 ## [0.27.1] - 2026-07-17
 
 ### Fixed
