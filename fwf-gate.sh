@@ -68,6 +68,13 @@ if [ "$want_e2e" = 1 ]; then
   e2e_held=1
 fi
 
+# Per-worktree cargo target isolation (issue #151): guarantee this gate builds
+# ONLY its own worktree's source — never a dir shared with a sibling worktree,
+# which is the one mechanism that lets a gate go GREEN on code not on its branch.
+# cwd here is the pane's worktree. No-op for non-Rust gates. Fail CLOSED: if
+# isolation can't be established, do NOT run the command — a red gate is safe.
+fwf_cargo_isolate || { echo "fwf gate: could not isolate cargo target — refusing to run gate" >&2; exit 1; }
+
 rc=0
 "$@" || rc=$?
 exit "$rc"

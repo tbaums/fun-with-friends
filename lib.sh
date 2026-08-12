@@ -306,6 +306,59 @@ fwf_provenance_block() {
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
 wt_dir() { echo "$WT_BASE/${WT_PREFIX}-$1"; }
 
+# Per-worktree cargo target isolation (issue #151) ---------------------------
+# THE cardinal false-GREEN this factory must never emit: a gate that goes GREEN
+# on code that is not on the branch under test. Its one known mechanism is a
+# SHARED cargo output dir. Cargo keys build artifacts by crate name+version, NOT
+# by content — so two worktrees building the same workspace crate (same name,
+# same version) from DIFFERENT source (the entire point of worktrees) clobber
+# each other's rlibs in a shared dir. Last writer wins: a gate can compile/run
+# the OTHER worktree's code and pass. It also serializes builds (cargo takes an
+# exclusive file lock on the output dir).
+#
+# Fix: before any cargo build/test/gate runs in a worktree, GUARANTEE its target
+# is private to that worktree. Two vectors are neutralized, both idempotent and
+# both no-ops for the healthy case (and for non-Rust profiles):
+#   (1) An ambient CARGO_TARGET_DIR that resolves OUTSIDE this worktree — a
+#       shared env value — is dropped, so cargo falls back to its per-worktree
+#       default `<worktree>/target`. A value already INSIDE the worktree is a
+#       legitimate private choice and is kept.
+#   (2) A legacy `<worktree>/target` SYMLINK pointing outside the worktree — the
+#       pre-#151 shared-cache link — is removed so cargo recreates a real, local
+#       target. If it cannot be removed we FAIL CLOSED (return non-zero): a red
+#       gate is always safe; a green one built against a shared dir is not.
+# RUSTC_WRAPPER (sccache) is deliberately left untouched: sccache is a
+# content-addressed compile cache, so sharing it across worktrees is SOUND and
+# is the right way to recover cross-worktree cache speed without the name+version
+# clobber. Private target dir + shared sccache compose cleanly.
+# Run with the current directory inside the worktree (the gate and the warm
+# build both are). Emits a loud line on any repair — GREEN gates are audited.
+fwf_cargo_isolate() {
+  local root; root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [ -n "$root" ] || return 0
+  # (1) shared ambient CARGO_TARGET_DIR
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    local ctd
+    ctd="$(cd "$CARGO_TARGET_DIR" 2>/dev/null && pwd -P)" || ctd="$CARGO_TARGET_DIR"
+    case "$ctd/" in
+      "$root"/*) : ;;   # private to this worktree — keep
+      *) echo "fwf#151: dropping shared CARGO_TARGET_DIR=$CARGO_TARGET_DIR (outside $root) — using this worktree's own target/" >&2
+         unset CARGO_TARGET_DIR ;;
+    esac
+  fi
+  # (2) legacy shared-target symlink
+  local t="$root/target"
+  if [ -L "$t" ]; then
+    local dst; dst="$(cd "$t" 2>/dev/null && pwd -P)" || dst=""
+    case "${dst:-x}/" in
+      "$root"/*) : ;;   # symlink stays within the worktree — harmless
+      *) echo "fwf#151: removing shared target symlink $t -> ${dst:-?} (pre-#151 shared cache)" >&2
+         rm -f "$t" || { echo "fwf#151: FAILED to remove $t — refusing to gate against a shared target dir" >&2; return 1; } ;;
+    esac
+  fi
+  return 0
+}
+
 # Shared scratch root for source-blind (worktree-less) roles: per-profile, OUTSIDE
 # any repo, so personas have a place for browser-driver plumbing and screenshot
 # evidence without ever touching the target's source tree. __UT_ROOT__ resolves here.

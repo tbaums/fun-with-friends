@@ -2974,6 +2974,55 @@ for t in dev dev-sre refactor; do
 done
 
 # --------------------------------------------------------------------------
+section "cargo target isolation (issue #151)"
+# fwf_cargo_isolate must guarantee a build in a worktree writes ONLY to that
+# worktree's own target — the fix for the shared-target false-GREEN. Each case
+# runs in its own subshell (the `unset` must not leak) inside a fresh git
+# fixture, and prints "<CARGO_TARGET_DIR|UNSET>|<target-state>|<rc>|<wrapper>".
+ci_run() { # $1 = setup snippet (runs with $wt=worktree, $shared=out-of-tree dir)
+  FWF_PROFILE=example bash -c '
+    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
+    shared="$(mktemp -d "${TMPDIR:-/tmp}/fwf-shared.XXXXXX")"
+    '"$1"'
+    fwf_cargo_isolate; rc=$?
+    ts=none; [ -L target ] && ts=symlink; { [ -d target ] && [ ! -L target ]; } && ts=dir
+    printf "%s|%s|%s|%s" "${CARGO_TARGET_DIR:-UNSET}" "$ts" "$rc" "${RUSTC_WRAPPER:-UNSET}"
+    rm -rf "$wt" "$shared"
+  '
+}
+ci_f() { printf '%s' "$2" | cut -d'|' -f"$1"; }
+
+# A. shared ambient CARGO_TARGET_DIR (outside the worktree) is dropped.
+R="$(ci_run 'export CARGO_TARGET_DIR="$shared"')"
+assert_eq "shared ambient CARGO_TARGET_DIR is dropped" "UNSET" "$(ci_f 1 "$R")"
+assert_eq "  ...and isolate succeeds"                  "0"     "$(ci_f 3 "$R")"
+
+# B. a private CARGO_TARGET_DIR already inside the worktree is kept.
+R="$(ci_run 'mkdir -p "$wt/target"; export CARGO_TARGET_DIR="$wt/target"')"
+assert_not_contains "in-worktree CARGO_TARGET_DIR is kept" "$(ci_f 1 "$R")" "UNSET"
+
+# C. a legacy shared-target symlink (pointing out of tree) is removed.
+R="$(ci_run 'ln -s "$shared" target')"
+assert_eq "shared target symlink removed" "none" "$(ci_f 2 "$R")"
+assert_eq "  ...and isolate succeeds"     "0"    "$(ci_f 3 "$R")"
+
+# D. an in-worktree symlink is harmless and left alone.
+R="$(ci_run 'mkdir -p "$wt/sub"; ln -s "$wt/sub" target')"
+assert_eq "in-worktree target symlink kept" "symlink" "$(ci_f 2 "$R")"
+
+# E. healthy case: nothing set, nothing to repair — a clean no-op.
+R="$(ci_run ':')"
+assert_eq "healthy no-op leaves CARGO_TARGET_DIR unset" "UNSET" "$(ci_f 1 "$R")"
+assert_eq "healthy no-op creates no target"             "none"  "$(ci_f 2 "$R")"
+assert_eq "healthy no-op succeeds"                      "0"     "$(ci_f 3 "$R")"
+
+# F. sccache (RUSTC_WRAPPER) is content-addressed and shared-safe — never touched.
+R="$(ci_run 'export RUSTC_WRAPPER=sccache; export CARGO_TARGET_DIR="$shared"')"
+assert_eq "sccache RUSTC_WRAPPER preserved"        "sccache" "$(ci_f 4 "$R")"
+assert_eq "  ...while shared target dir is dropped" "UNSET"  "$(ci_f 1 "$R")"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

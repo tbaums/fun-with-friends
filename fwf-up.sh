@@ -70,8 +70,10 @@ fwf_budget_writer_start
 
 # Disk-pressure guard: on a shared host a full disk fails not just builds
 # but PROD writes too — it once wedged a release.
-# Refuse to bring up / cycle the floor below a free-space floor. The swarm's
-# shared CARGO_TARGET_DIR keeps steady state bounded; this is the backstop.
+# Refuse to bring up / cycle the floor below a free-space floor. Each worktree
+# builds into its OWN private target (issue #151 — a shared target dir is a
+# false-GREEN mechanism, not a disk optimization), so N worktrees cost N targets;
+# this floor + a prune policy are the disk backstop, not a shared cache.
 # Tunable via FWF_MIN_FREE_GB (set 0 to disable).
 fwf_min_free_gb="${FWF_MIN_FREE_GB:-50}"
 # POSIX df (-Pk): 1024-byte blocks, one line per fs — portable across macOS/Linux

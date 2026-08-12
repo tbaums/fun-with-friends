@@ -21,6 +21,13 @@ INTEGRATION_BRANCH="${FWF_INTEGRATION_BRANCH:-integration}" # conductor e2e-prom
 DEFAULT_BRANCH="${FWF_DEFAULT_BRANCH:-main}"                # released by you; the swarm never touches it
 
 # Commands run inside a worktree ---------------------------------------------
+# Cargo note (issue #151): the engine guarantees each worktree's gate/build uses
+# its OWN target dir — do NOT point CARGO_TARGET_DIR at a shared path here. A
+# shared cargo output dir is a false-GREEN mechanism: cargo keys artifacts by
+# crate name+version (not content), so sibling worktrees clobber each other's
+# rlibs and a gate can pass on code that is not on its branch. For cross-worktree
+# cache SPEED without that hazard, use sccache (content-addressed) instead —
+# e.g. `export RUSTC_WRAPPER=sccache` — which the engine leaves untouched.
 GATE_CMD='make test'              # fast gate QA runs before merging to staging (tests + typecheck/lint)
 BUILD_CMD='true'                  # warm-build per worktree at provision (use 'true' if none)
 E2E_CMD='true'                    # full e2e the conductor runs before promoting to integration ('true' = none)
