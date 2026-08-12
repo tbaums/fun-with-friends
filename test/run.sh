@@ -150,25 +150,28 @@ assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
 DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
 assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
 
-section "step-0 heartbeat: a durable cycle-start signal, never the pane glyph (#99 Fix 2)"
+section "step-0 tick: a monotonic loop-tick bump, never the pane glyph (#99 Fix 2 / #133)"
 assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
 assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
 assert_eq "pm (no id) -> pm"       "pm"        "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/pm.tmpl' ''")"
 assert_eq "captain (no id) -> captain" "captain" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/captain.tmpl' ''")"
 assert_eq "extra role (sre) -> its own basename" "sre" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev-sre/sre.tmpl' ''")"
 HB_QA3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 3")"
-assert_contains "rendered heartbeat path is per-role, under FWF_STATE_DIR" "$HB_QA3" "state/example/heartbeat/qa3"
-assert_contains "heartbeat write is framed as durable, NOT the pane glyph" "$HB_QA3" "never the pane glyph"
+assert_contains "rendered step-0 bumps the per-role tick counter (#133)" "$HB_QA3" "fwf tick qa3"
+assert_contains "tick write is framed as durable, NOT the pane glyph" "$HB_QA3" "never the pane glyph"
 # every base role template (every factory design, excluding _local-issues
 # overlay fragments, which compose onto a base and have no loop of their own)
-# carries the heartbeat write.
-MISSING_HEARTBEAT=""
+# carries the step-0 tick bump — the monotonic loop-tick counter (#133) that
+# superseded the bare heartbeat touch. __ROLETAG__ renders to the role tag.
+MISSING_TICK=""
 while IFS= read -r -d '' f; do
-  /usr/bin/grep -q "__HEARTBEAT__" "$f" || MISSING_HEARTBEAT="$MISSING_HEARTBEAT $f"
+  /usr/bin/grep -q "fwf tick __ROLETAG__" "$f" || MISSING_TICK="$MISSING_TICK $f"
 done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
-assert_eq "every role template (all factory designs) carries the heartbeat write" "" "$MISSING_HEARTBEAT"
+assert_eq "every role template (all factory designs) carries the step-0 tick bump" "" "$MISSING_TICK"
+assert_eq "no template still uses the superseded bare heartbeat touch" "0" \
+  "$(find "$ROOT/templates" -name "*.tmpl" -exec /usr/bin/grep -l "touch __HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
 assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
-  "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "__HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
+  "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "fwf tick __ROLETAG__" {} \; | wc -l | tr -d ' ')"
 
 # --------------------------------------------------------------------------
 section "build-provenance stamp: role->model map recorded on every PR"
@@ -485,6 +488,72 @@ vt_run 'rm -f "$(fwf_heartbeat_path impl9)"
 assert_contains "never-ticking pane: clear failure message" "$(cat "$VT/out3.txt")" "did NOT tick after arming"
 assert_contains "never-ticking pane: exits nonzero" "$(cat "$VT/out3.txt")" "RC=1"
 case "$(cat "$VT/out3.txt")" in *"respawn verified"*) bad "never-ticking pane must NEVER print a success line";; *) ok "never-ticking pane must NEVER print a success line";; esac
+
+section "fwf tick: monotonic per-role loop-tick counter — the reliable liveness signal (#133)"
+TK="$TMP/tick-test"; mkdir -p "$TK"
+tk() { FWF_PROFILE=example FWF_RUN_DIR="$TK/run" bash -c "source '$ROOT/lib.sh'; $1"; }
+assert_eq "unticked role reads 0 (never errors)"       "0" "$(tk 'fwf_tick_read impl9')"
+assert_eq "first bump returns 1"                        "1" "$(tk 'fwf_tick_bump impl9')"
+assert_eq "counter STRICTLY increases across bumps"     "3" "$(tk 'fwf_tick_bump impl9 >/dev/null; fwf_tick_bump impl9 >/dev/null; fwf_tick_read impl9')"
+assert_eq "per-role: bumping impl9 leaves qa9 at 0"     "0" "$(tk 'fwf_tick_read qa9')"
+assert_eq "a bump also refreshes the heartbeat (boot-gate/respawn stay wired)" "yes" \
+  "$(tk 'fwf_tick_bump impl9 >/dev/null; [ -f "$(fwf_heartbeat_path impl9)" ] && echo yes || echo no')"
+# malformed counter file must degrade to 0, never crash arithmetic.
+assert_eq "malformed counter file -> reads 0"          "0" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_read impl9')"
+# the `fwf tick` subcommand is the agent-facing entrypoint and echoes the count.
+assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run2" "$ROOT/fwf" tick impl9)"
+TICK_USAGE="$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run3" "$ROOT/fwf" tick 2>&1 || true)"
+assert_contains "fwf tick with no role errors with usage" "$TICK_USAGE" "usage: fwf tick <role>"
+
+section "fwf_verify_boot_ticks: boot health-gate — first-tick verify + re-arm + dead-role escalation (#133)"
+BG="$TMP/boot-gate"; mkdir -p "$BG"
+bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
+# All-healthy floor: every role already ticking -> gate passes, no dead roles.
+bg 'now=$(date +%s); for r in impl1 impl2 conductor; do touch "$(fwf_heartbeat_path $r)"; done
+  _n() { :; }
+  fwf_verify_boot_ticks "$((now-2))" _n "impl1:2" "impl2:2" "conductor:2"; echo "RC=$?"; echo "DEAD=[${FWF_BOOT_DEAD_ROLES[*]}]"' > "$BG/out1.txt" 2>&1
+assert_contains "all-healthy floor: every role verifies"      "$(cat "$BG/out1.txt")" "first tick verified — impl1"
+assert_contains "all-healthy floor: gate returns 0"           "$(cat "$BG/out1.txt")" "RC=0"
+assert_contains "all-healthy floor: no dead roles"            "$(cat "$BG/out1.txt")" "DEAD=[]"
+# A laggard that the re-arm (renudge) actually revives -> verified, not dead.
+bg 'now=$(date +%s); touch "$(fwf_heartbeat_path impl1)"; rm -f "$(fwf_heartbeat_path impl2)"
+  _n() { case "$1" in impl2) touch "$(fwf_heartbeat_path impl2)";; esac; }
+  fwf_verify_boot_ticks "$((now-2))" _n "impl1:2" "impl2:2"; echo "RC=$?"; echo "DEAD=[${FWF_BOOT_DEAD_ROLES[*]}]"' > "$BG/out2.txt" 2>&1
+assert_contains "re-armed laggard that ticks verifies on pass 2"  "$(cat "$BG/out2.txt")" "first tick verified after re-arm — impl2"
+assert_contains "revived laggard: gate returns 0"                 "$(cat "$BG/out2.txt")" "RC=0"
+assert_contains "revived laggard: no dead roles"                  "$(cat "$BG/out2.txt")" "DEAD=[]"
+# A role that never ticks even after re-arm -> named dead, gate returns 1.
+bg 'now=$(date +%s); touch "$(fwf_heartbeat_path impl1)"; rm -f "$(fwf_heartbeat_path conductor)"
+  _n() { :; }
+  fwf_verify_boot_ticks "$((now-2))" _n "impl1:2" "conductor:2"; echo "RC=$?"; echo "DEAD=[${FWF_BOOT_DEAD_ROLES[*]}]"' > "$BG/out3.txt" 2>&1
+assert_contains "never-ticking role: named as dead"           "$(cat "$BG/out3.txt")" "never fired a first tick: conductor"
+assert_contains "never-ticking role: gate returns 1"          "$(cat "$BG/out3.txt")" "RC=1"
+assert_contains "never-ticking role: exported in FWF_BOOT_DEAD_ROLES" "$(cat "$BG/out3.txt")" "DEAD=[conductor]"
+case "$(cat "$BG/out3.txt")" in *"first tick verified after re-arm — conductor"*) bad "dead role must NEVER print a verified line";; *) ok "dead role must NEVER print a verified line";; esac
+# fwf up must actually WIRE the gate: run it after arming, and hard-respawn any
+# role it reports dead — so a wedged boot self-recovers with no manual respawn.
+assert_contains "fwf up runs the boot health-gate after arming" \
+  "$(cat "$ROOT/fwf-up.sh")" "fwf_verify_boot_ticks"
+assert_contains "fwf up hard-respawns any role the gate reports dead" \
+  "$(cat "$ROOT/fwf-up.sh")" "hard-respawning wedged role"
+assert_contains "fwf up captures the boot epoch BEFORE arming (first tick counts)" \
+  "$(cat "$ROOT/fwf-up.sh")" "BOOT_EPOCH="
+
+section "fwf_pr_is_stale_stub: only auto-close empty, stale, DRAFT claim stubs (#133)"
+sp() { bash -c "source '$ROOT/lib.sh'; $1; echo \$?"; }
+assert_eq "empty draft older than grace -> close (0)"    "0" "$(sp 'fwf_pr_is_stale_stub true 0 1000 900')"
+assert_eq "draft WITH a real diff -> keep (1)"           "1" "$(sp 'fwf_pr_is_stale_stub true 3 1000 900')"
+assert_eq "empty draft younger than grace -> keep (1)"   "1" "$(sp 'fwf_pr_is_stale_stub true 0 100 900')"
+assert_eq "empty but NOT a draft (ready PR) -> keep (1)" "1" "$(sp 'fwf_pr_is_stale_stub false 0 1000 900')"
+assert_eq "iso8601 UTC parses to epoch"  "1786457002" "$(bash -c "source '$ROOT/lib.sh'; fwf_iso_to_epoch 2026-08-11T14:03:22Z")"
+
+section "fwf-respawn.sh: hardens a silent no-op respawn with a kill+relaunch escalation (#133)"
+assert_contains "respawn escalates to a hard pane recycle when the soft re-nudge doesn't tick" \
+  "$(cat "$ROOT/fwf-respawn.sh")" "escalating to a hard kill+relaunch"
+assert_contains "respawn never reports success without a re-verified tick after escalation" \
+  "$(cat "$ROOT/fwf-respawn.sh")" "after a hard pane relaunch (escalated recovery)"
 
 section "fwf_interval_seconds: normalizes /loop-style intervals for arithmetic (issue #116)"
 ivs_test() { bash -c "source '$ROOT/lib.sh'; $1"; }
