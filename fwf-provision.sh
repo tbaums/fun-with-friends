@@ -97,7 +97,10 @@ add_detached_wt() { # $1=tag
 warm() { # $1=tag
   $DO_BUILD || return 0
   log "build: $(wt_dir "$1")"
-  ( cd "$(wt_dir "$1")" && eval "$BUILD_CMD" ) || log "build FAILED: $1"
+  # Isolate the warm build to this worktree's own target (issue #151) so the
+  # warm cache the gate later reuses is never a dir shared with a sibling — and
+  # so a legacy shared-target symlink is cleaned at provision, not first gate.
+  ( cd "$(wt_dir "$1")" && { fwf_cargo_isolate || log "cargo isolation failed in $1"; } && eval "$BUILD_CMD" ) || log "build FAILED: $1"
 }
 
 # A worktree-less role (FWF_NO_WORKTREE_ROLES — e.g. a source-blind user-testing
