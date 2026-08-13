@@ -507,6 +507,33 @@ assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
 TICK_USAGE="$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run3" "$ROOT/fwf" tick 2>&1 || true)"
 assert_contains "fwf tick with no role errors with usage" "$TICK_USAGE" "usage: fwf tick <role>"
 
+section "fwf_wedge_verdict: steady-state wedge classifier — PURE (delta_tick, delta_tokens, elapsed) -> verdict (#165)"
+# Pure predicate: sample tuples in -> asserted verdict out, exactly like
+# fwf_pr_is_stale_stub. FWF_WEDGE_MIN_SECS pinned so the flat-for threshold is
+# deterministic (600s here). No state, no tmux, no tokens sampled.
+wv() { FWF_PROFILE=example FWF_WEDGE_MIN_SECS=600 bash -c "source '$ROOT/lib.sh'; fwf_wedge_verdict $1"; }
+# HEALTHY: the tick advanced — alive regardless of tokens or elapsed.
+assert_eq "tick advanced -> HEALTHY"                         "HEALTHY" "$(wv '1 0 9999')"
+assert_eq "tick advanced even with tokens flowing -> HEALTHY" "HEALTHY" "$(wv '5 4000 30')"
+# WORKING (the whole point of the ticket): tick STATIC but tokens still flowing
+# past the threshold is a healthy long cycle — must NOT be reaped as WEDGED.
+assert_eq "tick static BUT tokens flowing past threshold -> WORKING (not WEDGED)" \
+  "WORKING" "$(wv '0 12000 9999')"
+assert_eq "tick static, one token of flow -> WORKING"        "WORKING" "$(wv '0 1 700')"
+# WORKING (grace): both static but not yet past the flat-for threshold.
+assert_eq "both flat but within grace (elapsed < threshold) -> WORKING" \
+  "WORKING" "$(wv '0 0 120')"
+assert_eq "both flat exactly at threshold-1 -> WORKING"      "WORKING" "$(wv '0 0 599')"
+# WEDGED: tick static AND tokens flat, sustained past the threshold — the ONLY
+# reapable verdict, and only when BOTH signals are dead.
+assert_eq "tick static AND tokens flat past threshold -> WEDGED" "WEDGED" "$(wv '0 0 600')"
+assert_eq "tick static AND tokens flat well past threshold -> WEDGED" "WEDGED" "$(wv '0 0 3600')"
+# Robustness: malformed/negative inputs degrade to 0 — never crash, never a
+# fabricated WEDGED from garbage.
+assert_eq "malformed tick delta degrades to 0 (flat) -> WEDGED at threshold" "WEDGED" "$(wv 'x 0 600')"
+assert_eq "malformed token delta treated as flat -> WEDGED"  "WEDGED" "$(wv '0 x 600')"
+assert_eq "negative token delta (cache reset) treated as flat -> WEDGED" "WEDGED" "$(wv '0 -50 600')"
+
 section "fwf_verify_boot_ticks: boot health-gate — first-tick verify + re-arm + dead-role escalation (#133)"
 BG="$TMP/boot-gate"; mkdir -p "$BG"
 bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
