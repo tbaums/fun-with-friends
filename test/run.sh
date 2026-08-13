@@ -1794,6 +1794,34 @@ assert_contains "pr diff --name-only: includes a page-2 file (proves pagination 
 DIFFOUT2="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/fwf-ghcache.sh" serve pr diff 55 --patch 2>/dev/null)"
 assert_contains "pr diff (no --name-only) is not modeled, falls back to real gh" "$DIFFOUT2" "REAL-GH-DIFF-FALLBACK"
 
+# fwf-ghcache.sh (#167): `invalidate <issue|pr> <n>` is the write-through
+# cache-bust the operator un-gate fires so a just-approved ticket is visible on
+# the NEXT read, not up to a full TTL later. It drops ONLY the `.ts` staleness
+# stamps of the two signals a role reads — the canonical open-issues snapshot
+# (the removed WIP label) and the issue's comment thread (the operator sentinel)
+# — while KEEPING their `.etag` files so the forced refresh stays a cheap
+# conditional, and never deleting the cached bodies (a failed refresh falls back).
+IROOT="$TMP/ghcache-invalidate"; mkdir -p "$IROOT/x__y/views"
+printf 'x' > "$IROOT/x__y/issues.json"; touch "$IROOT/x__y/issues.ts"; printf 'E-ISSUES' > "$IROOT/x__y/issues.etag"
+printf 'x' > "$IROOT/x__y/prs.json";    touch "$IROOT/x__y/prs.ts";    printf 'E-PRS'    > "$IROOT/x__y/prs.etag"
+printf 'x' > "$IROOT/x__y/views/42-comments.json"; touch "$IROOT/x__y/views/42-comments.ts"; printf 'E-CMT' > "$IROOT/x__y/views/42-comments.etag"
+GHI() { FWF_GHCACHE_DIR="$IROOT" FWF_GHCACHE_REPO=x/y FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GHI invalidate issue 42
+[ ! -f "$IROOT/x__y/issues.ts" ]            && ok "invalidate issue drops the canonical issues .ts"    || bad "invalidate issue drops the canonical issues .ts"
+[ ! -f "$IROOT/x__y/views/42-comments.ts" ] && ok "invalidate issue drops the comment-thread .ts"      || bad "invalidate issue drops the comment-thread .ts"
+[ -f "$IROOT/x__y/issues.etag" ]            && ok "invalidate KEEPS the canonical issues .etag"        || bad "invalidate KEEPS the canonical issues .etag"
+[ -f "$IROOT/x__y/views/42-comments.etag" ] && ok "invalidate KEEPS the comment-thread .etag"          || bad "invalidate KEEPS the comment-thread .etag"
+[ -f "$IROOT/x__y/issues.json" ] && [ -f "$IROOT/x__y/views/42-comments.json" ] && ok "invalidate preserves the cached bodies" || bad "invalidate preserves the cached bodies"
+[ -f "$IROOT/x__y/prs.ts" ] && ok "invalidate issue leaves the prs snapshot .ts alone" || bad "invalidate issue leaves the prs snapshot .ts alone"
+# the pr topic busts the prs snapshot instead (dash-act only fires `issue`, but
+# the verb models both — a PR is an issue in GitHub's data model).
+GHI invalidate pr 42
+[ ! -f "$IROOT/x__y/prs.ts" ] && ok "invalidate pr drops the prs snapshot .ts" || bad "invalidate pr drops the prs snapshot .ts"
+[ -f "$IROOT/x__y/prs.etag" ] && ok "invalidate pr KEEPS the prs snapshot .etag" || bad "invalidate pr KEEPS the prs snapshot .etag"
+# a bad topic / non-numeric id is rejected, never a silent wrong-file removal.
+GHI invalidate bogus 42 && bad "invalidate rejects an unknown topic" || ok "invalidate rejects an unknown topic"
+GHI invalidate issue nope && bad "invalidate rejects a non-numeric id" || ok "invalidate rejects a non-numeric id"
+
 section "pane recovery helpers (issue #36)"
 RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"
 assert_contains "dev impl label canonical" "$RL_DEV" "IMPL2 · any issue → instant draft PR · impl2/*"
@@ -1830,6 +1858,10 @@ section "dash act: gh backend constructs the right writes"
 A_OUT="$(act approve 40)"
 assert_contains "approve posts go-ahead comment" "$A_OUT" "gh issue comment 40 --body go ahead"
 assert_contains "approve un-gates the label"     "$A_OUT" "gh issue edit 40 --remove-label product-wip"
+# The un-gate must ALSO write-through-bust the gh read cache (#167), or a role
+# stays blind to the fresh approval for up to a full TTL. Asserted via the same
+# DRYRUN seam.
+assert_contains "approve fires the write-through cache-bust (#167)" "$A_OUT" "fwf-ghcache.sh invalidate issue 40"
 # The un-gate comment MUST carry the operator sentinel (#150): the positive,
 # attributable authorization signal `fwf authz` later verifies. reject must NOT.
 assert_contains     "approve emits the operator un-gate sentinel"  "$A_OUT" "OPERATOR-UNGATE #40"
@@ -1849,6 +1881,9 @@ L_OUT="$(loc approve LI-3)"
 assert_contains "local approve uses fwf-issues.sh" "$L_OUT" "fwf-issues.sh comment 3 --body go ahead"
 assert_contains "local approve un-gates"           "$L_OUT" "fwf-issues.sh edit 3 --remove-label product-wip"
 case "$(loc approve LI-3)" in *"gh issue"*) bad "local backend must not call gh";; *) ok "local backend never calls gh";; esac
+# The local store has no REST cache, so the un-gate must NOT invoke the ghcache
+# invalidate there (#167) — gh backend only.
+assert_not_contains "local approve does not touch the gh cache (#167)" "$L_OUT" "ghcache"
 
 section "dash act: role controls + validation"
 assert_contains "respawn wraps fwf-respawn.sh" "$(act respawn impl2)" "fwf-respawn.sh impl2"
