@@ -44,6 +44,17 @@ is_url git@github.com:a/b.git     && ok "ssh is url"     || bad "ssh is url"
 is_url /tmp/local                 && bad "path not url"  || ok "path not url"
 
 # --------------------------------------------------------------------------
+section "fwf_repo_slug: gh -R scope resolves the factory repo, not CWD (#145)"
+assert_eq "env FWF_GHCACHE_REPO wins" "foo/bar" \
+  "$(FWF_GHCACHE_REPO=foo/bar bash -c "source '$ROOT/lib.sh'; fwf_repo_slug")"
+mkfix slug-ssh; ( cd "$FIX" && git remote add origin git@github.com:foo/baz.git )
+assert_eq "derive from ssh remote"    "foo/baz" \
+  "$(FWF_REPO="$FIX" bash -c "unset FWF_GHCACHE_REPO; source '$ROOT/lib.sh'; fwf_repo_slug")"
+mkfix slug-https; ( cd "$FIX" && git remote add origin https://github.com/foo/qux.git )
+assert_eq "derive from https remote"  "foo/qux" \
+  "$(FWF_REPO="$FIX" bash -c "unset FWF_GHCACHE_REPO; source '$ROOT/lib.sh'; fwf_repo_slug")"
+
+# --------------------------------------------------------------------------
 section "detection: rust workspace"
 mkfix rust; printf '[workspace]\nmembers=["a"]\n' > "$FIX/Cargo.toml"
 fwf_detect "$FIX"

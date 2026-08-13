@@ -850,9 +850,22 @@ fwf_plane_cooldown_remaining() {
 # if safe. Blocked when: any open PR exists (a claim/draft/ready PR still
 # needs a role to act on it), OR staging is ahead of integration
 # (mid-promotion — the same check the conductor's own gate uses).
+# owner/name slug for `gh -R` — from the ghcache env, else parsed from the
+# repo's origin remote (no API call). Mirrors fwf-ghcache.sh's repo_slug so a
+# gh query resolves the FACTORY repo regardless of CWD: an operator running
+# `fwf down` from $HOME (real gh, no cache shim on PATH) must not silently
+# query whatever repo happens to sit under the current directory (#145).
+fwf_repo_slug() {
+  if [ -n "${FWF_GHCACHE_REPO:-}" ]; then printf '%s' "$FWF_GHCACHE_REPO"; return; fi
+  local url
+  url="$(git -C "${FWF_REPO:-.}" config --get remote.origin.url 2>/dev/null)"
+  url="${url%.git}"; url="${url#git@github.com:}"; url="${url#https://github.com/}"; url="${url#ssh://git@github.com/}"
+  printf '%s' "$url"
+}
+
 fwf_build_plane_blocked() {
   local pr_count staging_ahead
-  pr_count="$(gh pr list --state open --json number --jq 'length' 2>/dev/null)" \
+  pr_count="$(gh pr list -R "$(fwf_repo_slug)" --state open --json number --jq 'length' 2>/dev/null)" \
     || { printf 'could not query open PRs (gh failed) — assuming blocked'; return 0; }
   case "$pr_count" in ''|*[!0-9]*) printf 'could not query open PRs (bad gh output) — assuming blocked'; return 0;; esac
   if [ "$pr_count" -gt 0 ]; then
