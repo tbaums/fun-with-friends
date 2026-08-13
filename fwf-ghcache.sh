@@ -26,6 +26,7 @@
 #
 # Entry: fwf-ghcache.sh serve <issue|pr> <list|view> [gh-args…]
 #        fwf-ghcache.sh serve pr diff [gh-args…]
+#        fwf-ghcache.sh invalidate <issue|pr> <n>   (write-through cache-bust, #167)
 # Env  : FWF_REAL_GH (real gh path), FWF_GHCACHE_DIR (cache root),
 #        FWF_GHCACHE_REPO (owner/name) or FWF_REPO (git dir to derive it),
 #        FWF_GHCACHE_TTL (seconds, default 60), FWF_GHCACHE_OFF=1 to bypass.
@@ -485,7 +486,40 @@ tier1() { # $@ = full gh argv (e.g. issue list --search …)
   real_gh "$@"
 }
 
+# --- write-through invalidation (#167) --------------------------------------
+# The operator un-gate (fwf-dash-act.sh: approve) posts the sentinel comment +
+# removes the WIP label, then calls this. Without it the two signals a role reads
+# through this cache stay up to a full TTL stale: the operator sentinel (in the
+# issue's comment thread) and the removed WIP label (in the canonical open-issues
+# snapshot) — so a just-un-gated ticket is invisible to authz/impl-survey for up
+# to TTL seconds. We drop ONLY the `.ts` staleness stamps of those two views so
+# the NEXT `serve` re-checks upstream, while KEEPING their `.etag` files so that
+# re-check is a cheap conditional (304 when nothing else changed => near-free).
+# The cached bodies are left in place, so a failed refresh still falls back to
+# the last-known-good snapshot rather than an empty result.
+invalidate() { # $1=issue|pr  $2=number
+  local topic="$1" n="$2"
+  case "$topic" in issue|pr) ;; *) return 1;; esac
+  case "$n" in ''|*[!0-9]*) return 1;; esac
+  # canonical open-set snapshot — the WIP label lives here.
+  case "$topic" in
+    issue) rm -f "$ROOT/issues.ts";;
+    pr)    rm -f "$ROOT/prs.ts";;
+  esac
+  # the issue/PR comment thread — the operator sentinel lives here. Comments are
+  # keyed by number alone (a PR is an issue in GitHub's data model), matching
+  # ensure_view_comments.
+  rm -f "$ROOT/views/$n-comments.ts"
+  return 0
+}
+
 # --- entry ------------------------------------------------------------------
+# `invalidate` is handled BEFORE the OFF passthrough: it's a local cache-file op
+# (never an upstream call), so it's a harmless no-op — not a real-gh passthrough
+# — even when the cache is bypassed.
+case "${1:-} ${2:-}" in
+  "invalidate issue"|"invalidate pr") invalidate "$2" "${3:-}"; exit $?;;
+esac
 [ "${1:-}" = serve ] && shift     # drop the 'serve' subcommand verb
 [ "${FWF_GHCACHE_OFF:-0}" = 1 ] && { real_gh "$@"; exit $?; }
 case "${1:-} ${2:-}" in

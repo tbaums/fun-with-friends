@@ -48,7 +48,12 @@ thread=""
 if [ "$FWF_ISSUES" = "local" ]; then
   thread="$("$DIR/fwf-issues.sh" view "$num" --comments 2>/dev/null || true)"
 else
-  thread="$(FWF_REAL_GH="$(command -v gh)" "$DIR/fwf-ghcache.sh" serve issue view "$num" --comments 2>/dev/null || true)"
+  # Belt-and-suspenders for a just-un-gated ticket (issue #167): read the thread
+  # through a short TTL so the operator sentinel is seen within ~10s even if the
+  # approve path's write-through invalidate was somehow missed. The comment-view
+  # ETag conditional keeps this forced-fresh read near-free (304 when unchanged),
+  # so the tighter window costs a role nothing in the common case.
+  thread="$(FWF_GHCACHE_TTL=10 FWF_REAL_GH="$(command -v gh)" "$DIR/fwf-ghcache.sh" serve issue view "$num" --comments 2>/dev/null || true)"
 fi
 
 if [ -z "$thread" ]; then

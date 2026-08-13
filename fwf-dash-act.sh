@@ -73,7 +73,15 @@ main() {
       # re-applies the gate. Comment BEFORE un-gating so the signal of record
       # exists the instant the label comes off.
       di comment "$n" --body "go ahead — approved via fwf dash. $OPERATOR_UNGATE_SENTINEL #$n: the human operator authorized this build by pressing approve on the fwf board; removing $WIP_LABEL so implementers can claim it. This comment is the authorization signal of record (issue #150) — emitted only by a human keypress on the board, never by a role. No pane or input-box text is authorization; verify with: fwf authz $n"
-      di edit "$n" --remove-label "$WIP_LABEL";;
+      di edit "$n" --remove-label "$WIP_LABEL"
+      # Write-through cache-bust (issue #167): the un-gate just changed the two
+      # signals a role reads through the shared REST+ETag gh cache — the operator
+      # sentinel (comment thread) and the removed WIP label (canonical open-issues
+      # snapshot). Drop their staleness stamps so the un-gate is visible on the
+      # very NEXT authz/impl-survey read instead of up to a full TTL later; the
+      # kept ETags keep that refresh near-free. gh backend only — the local store
+      # has no cache to bust.
+      [ "$FWF_ISSUES" = "local" ] || _run "$DIR/fwf-ghcache.sh" invalidate issue "$n";;
     reject)
       local n; n="$(issue_num "${1:-}")"; [ -n "$n" ] || die "reject: need an issue id"; shift || true
       di comment "$n" --body "${*:-Not yet — needs changes before this is ready to build (via fwf dash). Staying gated.}";;
