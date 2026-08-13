@@ -584,6 +584,7 @@ case "$cmd" in
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
+  supervise) engine fwf-supervise.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;

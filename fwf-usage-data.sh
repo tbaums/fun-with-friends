@@ -21,7 +21,6 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
-command -v jq >/dev/null 2>&1 || { echo '{"error":"jq is required for fwf usage"}'; exit 1; }
 
 # Overridable for tests; real usage always wants the actual Claude Code dir.
 FWF_CLAUDE_PROJECTS_DIR="${FWF_CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
@@ -173,6 +172,12 @@ _fwf_usage_emit() { # $1=state $2=role $3=age_secs $4=model(may be empty) $5=tot
      tokens:$tokens, cost_usd:$cost}'
 }
 
+# Main body: emit the whole-factory usage roll-up. Guarded so this file can also
+# be SOURCED (e.g. by fwf-supervise.sh, #165) purely to reuse _fwf_usage_role for
+# per-role token sampling, without triggering an all-roles poll + JSON dump.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+command -v jq >/dev/null 2>&1 || { echo '{"error":"jq is required for fwf usage"}'; exit 1; }
+
 roles_json="[]"
 for role in $(fwf_all_roles); do
   r="$(_fwf_usage_role "$role")"
@@ -194,3 +199,4 @@ jq -nc --argjson roles "$roles_json" --argjson stale_secs "$FWF_USAGE_STALE_SECS
      },
      cost_usd: ($roles | map(.cost_usd // 0) | add // 0)
    }}'
+fi

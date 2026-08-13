@@ -1557,6 +1557,36 @@ fwf_pr_is_stale_stub() {
   return 0
 }
 
+# Steady-state wedge classifier (issue #165). PURE: three scalar inputs -> one
+# verdict word on stdout, no side effects, so it unit-tests exactly like
+# fwf_pr_is_stale_stub above. It exists to tell a GENUINE wedge apart from a
+# healthy-but-long productive cycle, using the two per-role liveness signals that
+# already exist but nothing consumed in steady state: the monotonic loop tick
+# (#133) and per-role token flow (#95). Given two samples over a window it emits:
+#   HEALTHY  the tick advanced -> the loop iterated; unambiguously alive.
+#   WORKING  tick static BUT tokens flowed -> a healthy long cycle mid-flight;
+#            OR both static but not yet past the flat-for threshold (grace).
+#            The "do NOT reap, keep watching" umbrella — nothing to act on.
+#   WEDGED   tick static AND tokens flat, sustained past FWF_WEDGE_MIN_SECS of
+#            elapsed -> the ONLY verdict a supervisor may reap on.
+# The point of the ticket is the WORKING-not-WEDGED boundary: a role that hasn't
+# ticked for a long time is NOT wedged as long as its tokens are still moving.
+# The threshold is env-tunable (FWF_WEDGE_MIN_SECS, default 600s) rather than a
+# 4th argument so the signature stays (delta_tick, delta_tokens, elapsed_secs).
+# Non-numeric / negative inputs degrade to 0 (a bad sample never crashes the
+# arithmetic nor fabricates a WEDGED verdict).
+#   $1 = delta_tick  $2 = delta_tokens  $3 = elapsed secs since the prior sample
+fwf_wedge_verdict() {
+  local dtick="$1" dtok="$2" elapsed="$3" min="${FWF_WEDGE_MIN_SECS:-600}"
+  case "$dtick"   in ''|*[!0-9]*) dtick=0;;   esac
+  case "$dtok"    in ''|*[!0-9]*) dtok=0;;     esac
+  case "$elapsed" in ''|*[!0-9]*) elapsed=0;;  esac
+  if [ "$dtick" -gt 0 ]; then echo HEALTHY; return 0; fi   # loop advanced
+  if [ "$dtok"  -gt 0 ]; then echo WORKING; return 0; fi   # long cycle, tokens flowing
+  if [ "$elapsed" -ge "$min" ]; then echo WEDGED; return 0; fi
+  echo WORKING                                             # both flat but still in grace
+}
+
 # Parse an ISO-8601 UTC timestamp (e.g. gh's 2026-08-11T14:03:22Z) to epoch
 # seconds, portably across GNU and BSD date; echoes nothing on failure.
 fwf_iso_to_epoch() { # $1=iso8601
