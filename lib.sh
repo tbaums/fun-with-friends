@@ -306,6 +306,22 @@ fwf_provenance_block() {
 # Worktree directory for a role tag (impl1 / qa1 / pm / conductor).
 wt_dir() { echo "$WT_BASE/${WT_PREFIX}-$1"; }
 
+# fwf-up.sh assumes fwf-provision.sh already created worktrees (issue #142) —
+# on a never-provisioned profile, `tmux new-session -c <missing dir>` silently
+# falls back to $HOME instead of erroring, so the floor LOOKS up but has no
+# worktree to build in. Echoes the space-separated role tags (of the ones
+# given) whose worktree/cwd doesn't exist yet; empty if all are present.
+# Worktree-less roles (FWF_NO_WORKTREE_ROLES) are always fine — fwf_role_cwd
+# creates their scratch dir on demand.
+fwf_missing_worktrees() { # $@=role tags to check
+  local missing="" r
+  for r in "$@"; do
+    fwf_role_no_worktree "$r" && continue
+    [ -d "$(wt_dir "$r")" ] || missing="$missing $r"
+  done
+  printf '%s' "${missing# }"
+}
+
 # Per-worktree cargo target isolation (issue #151) ---------------------------
 # THE cardinal false-GREEN this factory must never emit: a gate that goes GREEN
 # on code that is not on the branch under test. Its one known mechanism is a

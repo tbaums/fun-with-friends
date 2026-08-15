@@ -930,6 +930,45 @@ EOS
     "$(cat "$F116OUT")" "did NOT tick"
   tmux kill-session -t "${F116SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F116SESS}-build" 2>/dev/null
+
+  section "fwf up on a never-provisioned profile fails loud, never launches into \$HOME (issue #142)"
+  # WT_BASE exists but is EMPTY — no worktrees at all, exactly the
+  # never-provisioned state (fwf up run instead of fwf start/provision).
+  F142WT="$TMP/wt142-empty"; mkdir -p "$F142WT"
+  F142RUN="$TMP/run142"; mkdir -p "$F142RUN"
+  F142SESS="fwf-selftest-142-$$"
+  F142OUT="$TMP/f142out.txt"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F142RUN" FWF_SESSION="$F142SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F142WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" >"$F142OUT" 2>&1
+  F142RC=$?
+  assert_eq "fwf up on an unprovisioned profile exits nonzero" "1" "$F142RC"
+  assert_contains "error names the missing worktrees" "$(cat "$F142OUT")" "no worktrees for profile"
+  assert_contains "error points at the fix" "$(cat "$F142OUT")" "fwf provision"
+  if tmux has-session -t "${F142SESS}-build" 2>/dev/null; then bad "no build session created"; else ok "no build session created"; fi
+  if tmux has-session -t "${F142SESS}-coord" 2>/dev/null; then bad "no coord session created"; else ok "no coord session created"; fi
+  tmux kill-session -t "${F142SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F142SESS}-build" 2>/dev/null
+
+  # Regression: --floor-only around a live captain, where only PM/GV already
+  # have worktrees (captain's is created for the tmux anchor) but impl/qa
+  # don't — the build-plane preflight must still catch it even though the
+  # coord session is already up and untouched by this run.
+  F142BWT="$TMP/wt142-partial"; mkdir -p "$F142BWT/ex-captain" "$F142BWT/ex-pm" "$F142BWT/ex-gv"
+  F142BSESS="fwf-selftest-142b-$$"
+  tmux new-session -d -s "${F142BSESS}-coord" -c "$F142BWT/ex-captain"
+  tmux set -p -t "${F142BSESS}-coord" @l "CAPTAIN"
+  F142BOUT="$TMP/f142bout.txt"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F142RUN" FWF_SESSION="$F142BSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F142BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" --floor-only >"$F142BOUT" 2>&1
+  assert_eq "--floor-only on missing impl/qa worktrees also fails loud" "1" "$?"
+  assert_contains "--floor-only error names impl1" "$(cat "$F142BOUT")" "impl1"
+  if tmux has-session -t "${F142BSESS}-build" 2>/dev/null; then bad "--floor-only: no build session created"; else ok "--floor-only: no build session created"; fi
+  tmux kill-session -t "${F142BSESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F142BSESS}-build" 2>/dev/null
 else
   printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
 fi
