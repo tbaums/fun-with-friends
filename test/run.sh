@@ -1021,7 +1021,7 @@ EOS
     bad "FWF_PANE_ENV var reaches the pane's actual process env" "could not find impl1 pane pid"
   fi
   assert_eq "pane-env file is chmod 600" "600" \
-    "$(stat -f '%Lp' "$F143RUN/state/example/pane-env.sh" 2>/dev/null || stat -c '%a' "$F143RUN/state/example/pane-env.sh" 2>/dev/null)"
+    "$(stat -c '%a' "$F143RUN/state/example/pane-env.sh" 2>/dev/null || stat -f '%Lp' "$F143RUN/state/example/pane-env.sh" 2>/dev/null)"
   tmux kill-session -t "${F143SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F143SESS}-build" 2>/dev/null
 

@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.27.5] - 2026-08-15
+
+### Fixed
+- **Release CI: pane-env chmod assertion is now Linux-portable** (#143 follow-up, code 57ae3fa, docs 57ae3fa) — the `test/run.sh` check for the 0600 pane-env file ran BSD `stat -f '%Lp'` first, which "succeeds" with filesystem output on GNU stat, so the `|| stat -c '%a'` fallback never fired and the test failed only on the Linux release runner (v0.27.4 tag built but never published its binaries). Try GNU `stat -c '%a'` first, BSD `-f '%Lp'` as fallback — passes on both.
+
 ## [0.27.4] - 2026-08-15
 
 ### Fixed
