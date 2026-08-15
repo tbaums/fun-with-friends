@@ -152,13 +152,26 @@ section "resume re-validates the gate label: a re-gated issue must not resume fo
 # Step 1a already bails on one sibling condition (already built elsewhere) but
 # never checked product-wip/release-hold — so re-gating a claimed issue never
 # stopped the resuming draft. The fix mirrors that precedent one clause over.
+# Scoped to the step 1a bullet itself (not the whole rendered template): the
+# label names product-wip/release-hold ALSO appear, unrelated, in step 3's
+# survey/eligibility text and in the Hard rules line — an unscoped substring
+# check on $IMPL_RUN passes even if the new clause's trigger condition were
+# silently wired to the wrong label (verified: swapping the trigger to an
+# unrelated placeholder while keeping the "close the draft" wording still
+# passed the old unscoped asserts). A single connected phrase spanning the
+# condition AND the action is what actually pins them together.
+step1a() { local r="${1#*a. It is a DRAFT}"; printf '%s' "${r%%b. \`fwf pr-review-state*}"; }
+STEP1A_DEV="$(step1a "$IMPL_RUN")"
+STEP1A_DEVSRE="$(step1a "$DEVSRE_RUN")"
 assert_contains "step 1a still bails on already-built-elsewhere (regression)" \
-  "$IMPL_RUN" "already be built elsewhere"
-assert_contains "step 1a bails on a re-applied product-wip label" "$IMPL_RUN" "product-wip"
-assert_contains "step 1a bails on a re-applied release-hold label" "$IMPL_RUN" "release-hold"
+  "$STEP1A_DEV" "already be built elsewhere"
+assert_contains "step 1a's re-gate condition ties BOTH labels to closing the draft (connected phrase)" \
+  "$STEP1A_DEV" "carries \`product-wip\` or \`release-hold\`"
 assert_contains "step 1a instructs closing the draft, not resuming it" \
-  "$IMPL_RUN" "close the draft and yield instead of resuming it"
-assert_contains "dev-sre inherits the re-gate bail-out from dev" "$DEVSRE_RUN" "close the draft and yield instead of resuming it"
+  "$STEP1A_DEV" "close the draft and yield instead of resuming it"
+assert_contains "dev-sre inherits the re-gate condition+action as one connected phrase" \
+  "$STEP1A_DEVSRE" "carries \`product-wip\` or \`release-hold\`"
+assert_contains "dev-sre inherits the re-gate bail-out from dev" "$STEP1A_DEVSRE" "close the draft and yield instead of resuming it"
 
 section "step-0 heartbeat: a durable cycle-start signal, never the pane glyph (#99 Fix 2)"
 assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
