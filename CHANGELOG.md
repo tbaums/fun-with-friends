@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-08-15
+
+### Fixed
+- **`fwf up` auto-provisions when worktrees are missing, instead of failing silently** (#142, code da4a16d, docs da4a16d) — launching with absent worktrees no longer dies quietly; `fwf up` detects the missing state and provisions (or reports clearly) rather than leaving the floor half-created.
+
 ## [0.27.2] - 2026-08-15
 
 ### Fixed
