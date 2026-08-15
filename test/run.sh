@@ -148,6 +148,18 @@ assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
 DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
 assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
 
+section "resume re-validates the gate label: a re-gated issue must not resume forever (#148)"
+# Step 1a already bails on one sibling condition (already built elsewhere) but
+# never checked product-wip/release-hold — so re-gating a claimed issue never
+# stopped the resuming draft. The fix mirrors that precedent one clause over.
+assert_contains "step 1a still bails on already-built-elsewhere (regression)" \
+  "$IMPL_RUN" "already be built elsewhere"
+assert_contains "step 1a bails on a re-applied product-wip label" "$IMPL_RUN" "product-wip"
+assert_contains "step 1a bails on a re-applied release-hold label" "$IMPL_RUN" "release-hold"
+assert_contains "step 1a instructs closing the draft, not resuming it" \
+  "$IMPL_RUN" "close the draft and yield instead of resuming it"
+assert_contains "dev-sre inherits the re-gate bail-out from dev" "$DEVSRE_RUN" "close the draft and yield instead of resuming it"
+
 section "step-0 heartbeat: a durable cycle-start signal, never the pane glyph (#99 Fix 2)"
 assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
 assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
