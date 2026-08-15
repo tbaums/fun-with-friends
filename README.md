@@ -119,7 +119,11 @@ An implementer treats its own open draft PR — even one that's still just the
 empty `claim #<num>` commit — as the current cycle's work to resume (checkout
 + re-read the issue), never a satisfied "one PR in flight" slot to idle
 behind; a draft that genuinely can't progress escalates to the captain
-instead of stalling silently (issue #99).
+instead of stalling silently (issue #99). Resuming also re-validates the
+gate: if the claimed issue is re-labeled `product-wip` or `release-hold`
+after the claim (or turns out to already be built elsewhere), the
+implementer closes the draft and yields instead of resuming it forever
+(issue #148).
 
 - **PM** (loop): turns rough ideas into **draft** GitHub issues labeled
   `product-wip` (hidden from implementers) via back-and-forth, and on a loop
