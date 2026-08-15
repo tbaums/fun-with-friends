@@ -814,6 +814,29 @@ assert_eq "floor_idle_json.active" "true"  "$(printf '%s' "$F85TOP" | jq -r '.ac
 assert_eq "floor_idle_json.actor"  "human" "$(printf '%s' "$F85TOP" | jq -r '.actor')"
 assert_eq "floor_idle_json.reason" "manual test" "$(printf '%s' "$F85TOP" | jq -r '.reason')"
 
+section "fwf_write_pane_env: malformed FWF_PANE_ENV entries are skipped, not sourced (issue #181 review)"
+# The written file is SOURCED by every pane (fwf_claude_cmd) — a name that
+# only passes a first-char check (the original bug) would let an embedded
+# command substitution execute during that source. Validate the WHOLE name.
+PE_RUN="$TMP/paneenv-inject"; mkdir -p "$PE_RUN"
+PE_MARKER="$TMP/paneenv-pwned-$$"
+rm -f "$PE_MARKER"
+GOOD_VAR=plain_value
+env GOOD_VAR="$GOOD_VAR" FWF_RUN_DIR="$PE_RUN" FWF_PROFILE=example \
+  FWF_PANE_ENV="GOOD_VAR,FOO\$(touch $PE_MARKER)BAR,;rm -rf /tmp,9BADSTART" \
+  bash -c "source '$ROOT/lib.sh'; fwf_write_pane_env"
+PE_FILE="$PE_RUN/state/example/pane-env.sh"
+[ -f "$PE_FILE" ] || bad "pane-env file written even with a mixed good/malformed list"
+assert_contains "well-formed var still written" "$(cat "$PE_FILE" 2>/dev/null)" "export GOOD_VAR=plain_value"
+assert_not_contains "command-substitution name not written" "$(cat "$PE_FILE" 2>/dev/null)" 'FOO$('
+assert_not_contains "semicolon-leading name not written" "$(cat "$PE_FILE" 2>/dev/null)" 'rm -rf'
+assert_not_contains "digit-leading name not written" "$(cat "$PE_FILE" 2>/dev/null)" '9BADSTART'
+# The real end-to-end proof: actually SOURCE the written file, the same way
+# every pane does, and confirm the injection never fires.
+bash -c "source '$PE_FILE'" >/dev/null 2>&1
+if [ -e "$PE_MARKER" ]; then bad "sourcing the file never executes an injected command"; else ok "sourcing the file never executes an injected command"; fi
+rm -f "$PE_MARKER"
+
 if command -v tmux >/dev/null 2>&1; then
   section "floor-lifecycle wiring (issue #85): fwf-up.sh / fwf-respawn.sh append floor-up on success (real tmux, stubbed claude)"
   # A fast, non-shell "claude" stand-in: tmux reports its pane_current_command
@@ -969,6 +992,52 @@ EOS
   if tmux has-session -t "${F142BSESS}-build" 2>/dev/null; then bad "--floor-only: no build session created"; else ok "--floor-only: no build session created"; fi
   tmux kill-session -t "${F142BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F142BSESS}-build" 2>/dev/null
+
+  section "agent panes reliably get FWF_PANE_ENV-forwarded vars, even on a pre-existing tmux server (issue #143)"
+  # The whole point of the bug: a NEW pane inherits the tmux SERVER's env from
+  # whenever the server itself first started, not the shell that just ran
+  # `fwf up` — so this uses the shared default-socket server (already running
+  # on this box from earlier tests, i.e. genuinely pre-existing), never a
+  # freshly-started one, or the test would pass by accident.
+  F143WT="$TMP/wt143"; mkdir -p "$F143WT/ex-impl1" "$F143WT/ex-qa1" "$F143WT/ex-conductor" "$F143WT/ex-pm" "$F143WT/ex-gv" "$F143WT/ex-captain"
+  F143RUN="$TMP/run143"; mkdir -p "$F143RUN/state/example"
+  F143SESS="fwf-selftest-143-$$"
+  F143_SECRET="shh-$$-$(date +%N 2>/dev/null || echo x)"; export F143_SECRET   # a value the ambient server never saw
+  env FWF_PROFILE=example FWF_RUN_DIR="$F143RUN" FWF_SESSION="$F143SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F143WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F143_SECRET \
+      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  IMPL1_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+  # pane_pid is the pane's ORIGINAL shell — `ps eww` on macOS/Linux reflects
+  # a process's environ as captured at ITS OWN exec() time, never live-updated
+  # by that shell's own later `export`, so the sourced var only shows up on
+  # the CHILD it forks (the claude stub) — walk to that child.
+  SHELL_PID="$([ -n "$IMPL1_PANE" ] && tmux display -p -t "$IMPL1_PANE" '#{pane_pid}' 2>/dev/null || true)"
+  IMPL1_PID="$([ -n "$SHELL_PID" ] && pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
+  if [ -n "$IMPL1_PID" ]; then
+    assert_contains "FWF_PANE_ENV var reaches the pane's actual process env" \
+      "$(ps eww "$IMPL1_PID" 2>/dev/null)" "F143_SECRET=$F143_SECRET"
+  else
+    bad "FWF_PANE_ENV var reaches the pane's actual process env" "could not find impl1 pane pid"
+  fi
+  assert_eq "pane-env file is chmod 600" "600" \
+    "$(stat -f '%Lp' "$F143RUN/state/example/pane-env.sh" 2>/dev/null || stat -c '%a' "$F143RUN/state/example/pane-env.sh" 2>/dev/null)"
+  tmux kill-session -t "${F143SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F143SESS}-build" 2>/dev/null
+
+  # Regression: without FWF_PANE_ENV set, no pane-env file, no source prefix —
+  # existing behavior (and existing tests above) must be untouched.
+  F143BWT="$TMP/wt143b"; mkdir -p "$F143BWT/ex-impl1" "$F143BWT/ex-qa1" "$F143BWT/ex-conductor" "$F143BWT/ex-pm" "$F143BWT/ex-gv" "$F143BWT/ex-captain"
+  F143BRUN="$TMP/run143b"; mkdir -p "$F143BRUN/state/example"
+  F143BSESS="fwf-selftest-143b-$$"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F143BRUN" FWF_SESSION="$F143BSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F143BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  if [ -e "$F143BRUN/state/example/pane-env.sh" ]; then bad "no pane-env file when FWF_PANE_ENV unset"; else ok "no pane-env file when FWF_PANE_ENV unset"; fi
+  tmux kill-session -t "${F143BSESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F143BSESS}-build" 2>/dev/null
+  unset F143_SECRET
 else
   printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
 fi

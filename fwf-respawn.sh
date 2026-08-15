@@ -17,6 +17,9 @@ source "$DIR/lib.sh"
 # $TMUX), leave whatever `fwf up` already persisted in place rather than
 # blanking it to the "default" marker — the factory itself hasn't moved.
 [ -n "${TMUX:-}" ] && fwf_persist_tmux_socket "$(fwf_tmux_socket_value)"
+# Keep the pane-env file (issue #143) fresh even for a standalone respawn
+# that ran with no preceding `fwf up` in this run dir.
+fwf_write_pane_env
 
 role="${1:-}"
 case "$role" in

@@ -498,6 +498,18 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   shared host a full disk fails not just builds but prod writes — it once wedged
   a release. Don't `--purge` between runs unless retiring the factory; keep
   builds warm.
+- **Passing secrets/creds to agent panes:** a NEW tmux pane inherits the tmux
+  *server's* environment from whenever the server itself first started, not
+  the shell that just ran `fwf up` — the classic tmux gotcha. So exports set
+  right before `fwf up` silently never reach panes whenever the server
+  already existed (issue #143). `FWF_PANE_ENV` (comma/space-separated var
+  NAMES, e.g. `FWF_PANE_ENV=MY_API_KEY`) forwards each named var's current
+  value into every pane reliably, regardless of server age: their values are
+  snapshotted to a private, `chmod 600` file outside the repo
+  (`~/.fun-with-friends/state/<profile>/pane-env.sh`), which every pane
+  sources fresh right before `claude` launches — never typed into a pane's
+  visible scrollback, never committed. Regenerated on every `fwf up`/`fwf
+  respawn`, so re-running always forwards the latest value.
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.
