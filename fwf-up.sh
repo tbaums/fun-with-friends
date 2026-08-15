@@ -156,6 +156,10 @@ fwf_persist_tmux_socket "$(fwf_tmux_socket_value)"    # learn the launch socket 
 # every mode, plus the fail-closed write guard in local mode (#34/#57). Idempotent,
 # and `fwf up` must never depend on provision having been recent.
 fwf_install_ghguard
+# (Re)write the pane-env file every pane's claude launch sources (issue #143):
+# regenerated fresh on every `up` so panes reliably get FWF_PANE_ENV-listed
+# vars regardless of whether the tmux server predates this launch.
+fwf_write_pane_env
 
 # Say what is about to launch BEFORE ten panes boot (issue #30): a profile/env
 # mismatch should be visible here, not discovered by briefing the captain.

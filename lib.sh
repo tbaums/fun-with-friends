@@ -278,11 +278,35 @@ fwf_model_for() { # $1=role -> prints model name (empty string = CLI default)
   printf '%s' "$m"
 }
 
+# Snapshot FWF_PANE_ENV's named vars to a private, chmod-600, gitignored-by-
+# construction file (outside the repo, under $FWF_RUN) that every pane SOURCES
+# right before launching claude (see fwf_claude_cmd) — the documented pattern
+# for passing secrets to agents (issue #143), never committed, never typed
+# into a pane's scrollback. FWF_PANE_ENV is a comma/space-separated list of
+# var NAMES (not values); each one's CURRENT value is captured fresh on every
+# call, so re-running `fwf up`/`fwf respawn` always forwards the latest value.
+# No-op (and clears any stale file) when FWF_PANE_ENV is unset/empty.
+fwf_write_pane_env() {
+  if [ -z "${FWF_PANE_ENV:-}" ]; then rm -f "$FWF_PANE_ENV_FILE"; return 0; fi
+  mkdir -p "$(dirname "$FWF_PANE_ENV_FILE")"
+  : > "$FWF_PANE_ENV_FILE"; chmod 600 "$FWF_PANE_ENV_FILE"
+  local v
+  for v in $(printf '%s' "$FWF_PANE_ENV" | tr ',' ' '); do
+    case "$v" in [A-Za-z_]*) ;; *) continue;; esac   # only well-formed var names
+    printf 'export %s=%s\n' "$v" "$(printf '%q' "${!v-}")" >> "$FWF_PANE_ENV_FILE"
+  done
+}
+
 # The claude launch command for a role, honoring the per-role model overrides.
 # $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
 fwf_claude_cmd() { # $1=role
-  local m; m="$(fwf_model_for "$1")"
-  if [ -n "$m" ]; then printf '%s --model %s' "$CLAUDE_CMD" "$m"; else printf '%s' "$CLAUDE_CMD"; fi
+  local m src=""; m="$(fwf_model_for "$1")"
+  # Sourcing bypasses tmux's server-env-inheritance gotcha entirely (#143):
+  # this is typed fresh into the pane's shell at launch time, so it reads
+  # whatever fwf_write_pane_env most recently wrote to disk — regardless of
+  # when the tmux server itself started.
+  [ -n "${FWF_PANE_ENV:-}" ] && src=". $(printf '%q' "$FWF_PANE_ENV_FILE") 2>/dev/null; "
+  if [ -n "$m" ]; then printf '%s%s --model %s' "$src" "$CLAUDE_CMD" "$m"; else printf '%s%s' "$src" "$CLAUDE_CMD"; fi
 }
 
 # One-line build-provenance trailer stamped into every PR body + squash-merge
@@ -749,6 +773,13 @@ FWF_BUDGET_WRITER_PID_FILE="$FWF_STATE_DIR/budget-writer.pid"
 # a full teardown (fwf-down.sh's non-floor-only path, via
 # fwf_budget_baseline_clear) so the next full `fwf up` gets a fresh baseline.
 BUDGET_BASELINE_FILE="$FWF_STATE_DIR/budget-baseline.json"
+# Explicit env-forwarding for agent panes (issue #143): tmux's classic gotcha —
+# a NEW pane inherits the tmux SERVER's environment from when the server
+# itself started, not the launching shell's — so exports set right before
+# `fwf up` (e.g. a live API key) silently never reach panes whenever the
+# server already existed. FWF_PANE_ENV_FILE is regenerated on every `fwf up`
+# (fwf_write_pane_env) as long as the file isn't left stale by a prior run.
+FWF_PANE_ENV_FILE="$FWF_STATE_DIR/pane-env.sh"
 fwf_tmux_socket_value() {   # echoes what should be persisted, from the CURRENT $TMUX
   if [ -n "${TMUX:-}" ]; then printf '%s\n' "${TMUX%%,*}"; else printf '%s\n' default; fi
 }
