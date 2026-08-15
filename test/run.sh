@@ -814,6 +814,29 @@ assert_eq "floor_idle_json.active" "true"  "$(printf '%s' "$F85TOP" | jq -r '.ac
 assert_eq "floor_idle_json.actor"  "human" "$(printf '%s' "$F85TOP" | jq -r '.actor')"
 assert_eq "floor_idle_json.reason" "manual test" "$(printf '%s' "$F85TOP" | jq -r '.reason')"
 
+section "fwf_write_pane_env: malformed FWF_PANE_ENV entries are skipped, not sourced (issue #181 review)"
+# The written file is SOURCED by every pane (fwf_claude_cmd) — a name that
+# only passes a first-char check (the original bug) would let an embedded
+# command substitution execute during that source. Validate the WHOLE name.
+PE_RUN="$TMP/paneenv-inject"; mkdir -p "$PE_RUN"
+PE_MARKER="$TMP/paneenv-pwned-$$"
+rm -f "$PE_MARKER"
+GOOD_VAR=plain_value
+env GOOD_VAR="$GOOD_VAR" FWF_RUN_DIR="$PE_RUN" FWF_PROFILE=example \
+  FWF_PANE_ENV="GOOD_VAR,FOO\$(touch $PE_MARKER)BAR,;rm -rf /tmp,9BADSTART" \
+  bash -c "source '$ROOT/lib.sh'; fwf_write_pane_env"
+PE_FILE="$PE_RUN/state/example/pane-env.sh"
+[ -f "$PE_FILE" ] || bad "pane-env file written even with a mixed good/malformed list"
+assert_contains "well-formed var still written" "$(cat "$PE_FILE" 2>/dev/null)" "export GOOD_VAR=plain_value"
+assert_not_contains "command-substitution name not written" "$(cat "$PE_FILE" 2>/dev/null)" 'FOO$('
+assert_not_contains "semicolon-leading name not written" "$(cat "$PE_FILE" 2>/dev/null)" 'rm -rf'
+assert_not_contains "digit-leading name not written" "$(cat "$PE_FILE" 2>/dev/null)" '9BADSTART'
+# The real end-to-end proof: actually SOURCE the written file, the same way
+# every pane does, and confirm the injection never fires.
+bash -c "source '$PE_FILE'" >/dev/null 2>&1
+if [ -e "$PE_MARKER" ]; then bad "sourcing the file never executes an injected command"; else ok "sourcing the file never executes an injected command"; fi
+rm -f "$PE_MARKER"
+
 if command -v tmux >/dev/null 2>&1; then
   section "floor-lifecycle wiring (issue #85): fwf-up.sh / fwf-respawn.sh append floor-up on success (real tmux, stubbed claude)"
   # A fast, non-shell "claude" stand-in: tmux reports its pane_current_command

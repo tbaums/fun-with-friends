@@ -292,7 +292,11 @@ fwf_write_pane_env() {
   : > "$FWF_PANE_ENV_FILE"; chmod 600 "$FWF_PANE_ENV_FILE"
   local v
   for v in $(printf '%s' "$FWF_PANE_ENV" | tr ',' ' '); do
-    case "$v" in [A-Za-z_]*) ;; *) continue;; esac   # only well-formed var names
+    # Validate the WHOLE name (not just the first char, issue #181 review):
+    # this file is SOURCED by every pane, so a stray char here (e.g. an
+    # embedded `$(...)`) would execute as a command during that source, not
+    # just fail as a bad identifier.
+    [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     printf 'export %s=%s\n' "$v" "$(printf '%q' "${!v-}")" >> "$FWF_PANE_ENV_FILE"
   done
 }
