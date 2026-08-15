@@ -125,6 +125,29 @@ else
   done
 fi
 
+# Preflight (issue #142): fwf-up.sh assumes fwf-provision.sh already ran —
+# on a never-provisioned profile this used to launch every pane into $HOME
+# (tmux -c on a missing worktree dir silently falls back there) with no
+# error, looking healthy while unable to actually pipeline. Fail loud
+# instead, scoped to only the roles THIS run will actually launch.
+preflight_roles=()
+if [ "$FULL" = 1 ] || [ "$build_only" = 1 ]; then
+  for id in "${PAIRS[@]}"; do
+    preflight_roles+=("impl$id")
+    fwf_role_suppressed "qa$id" || preflight_roles+=("qa$id")
+  done
+  fwf_role_suppressed conductor || preflight_roles+=(conductor)
+fi
+if [ "$FULL" = 1 ] || [ "$pm_only" = 1 ]; then
+  preflight_roles+=(pm captain)
+  fwf_role_suppressed gv || preflight_roles+=(gv)
+fi
+if [ "${#preflight_roles[@]}" -gt 0 ]; then
+  missing_wt="$(fwf_missing_worktrees "${preflight_roles[@]}")"
+  [ -z "$missing_wt" ] \
+    || { echo "fwf-up: no worktrees for profile '$PROFILE' (missing:$missing_wt) — run 'fwf provision' or 'fwf start' first." >&2; exit 1; }
+fi
+
 mkdir -p "$FWF_RUN"
 rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
 printf '%s\n' "$FWF_TEMPLATE" > "$FWF_RUN/template"   # persist the running template so read-only tools (the dash) resolve it, not the dev default (#51)
