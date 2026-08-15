@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-15
+
+### Added
+- **`fwf flag-captain` — a persisted needs-captain signal** (#113, code 88c5bab, docs 88c5bab) — any role can raise a `needs-captain` flag on an issue/PR (`flag-captain <n> --role R --reason TEXT`), clear it (`--clear [--note]`), or list every open flag (`sweep` → `# · [role] · reason · age`). Works identically in gh-issues and local-issues mode; the label is provisioned at setup and the captain sweeps it every tick. Rebased onto v0.27.5 (the PR had been red for a month purely from a stale July base); shellcheck-clean, +24 passing assertions covering every acceptance criterion.
+
 ## [0.27.5] - 2026-08-15
 
 ### Fixed
