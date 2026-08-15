@@ -1532,6 +1532,41 @@ grep -q "fwf no-push guard" "$PUSHHOOK" 2>/dev/null && bad "guard removed in gh 
 git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/integration && ok "gh mode pushes the ladder" || bad "gh mode pushes the ladder"
 rm -f "$ROOT/profiles/.__pushtest.sh"
 
+section "fwf up/provision on a local/remoteless repo (issue #141) — real git fixture, no origin at all"
+# Symptom 1: fwf_install_ghguard's origin-remote lookup used to abort the
+# WHOLE caller under set -e when there is no origin remote at all (not just
+# an unreachable one) — silently, before any pane work ran.
+NOREMOTE="$TMP/noremote141"; mkdir -p "$NOREMOTE"
+git -C "$NOREMOTE" init -q
+git -C "$NOREMOTE" config user.email t@t.co && git -C "$NOREMOTE" config user.name t
+NRRUN="$TMP/norun141"
+NROUT="$(FWF_RUN_DIR="$NRRUN" FWF_REPO="$NOREMOTE" FWF_ISSUES=local FWF_PROFILE=example \
+  bash -c "set -euo pipefail; source '$ROOT/lib.sh'; fwf_install_ghguard; echo GHGUARD-DONE" 2>&1)"
+assert_contains "ghguard install completes under set -e with no remote at all (doesn't silently abort)" \
+  "$NROUT" "GHGUARD-DONE"
+[ -x "$NRRUN/ghguard/gh" ] && ok "guard still installed with no remote" || bad "guard still installed with no remote"
+
+# Symptom 2: fwf-provision.sh's unconditional `git fetch origin` used to abort
+# the same way, before even reaching the local-mode branch ladder / worktrees.
+NR2="$TMP/noremote141b"; mkdir -p "$NR2"
+git -C "$NR2" init -q
+git -C "$NR2" config user.email t@t.co && git -C "$NR2" config user.name t
+( cd "$NR2" && echo hi > README && git add -A && git commit -qm init && git branch -M main )
+cat > "$ROOT/profiles/.__noremote141.sh" <<EOF
+FWF_REPO="$NR2"
+WT_PREFIX="nr"
+WT_BASE="$TMP/wt141"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+NR2OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$TMP/run141b" FWF_PROFILE=.__noremote141 "$ROOT/fwf-provision.sh" 2>&1)"
+NR2RC=$?
+assert_eq "provision succeeds on a fresh git-init repo with no remote at all" "0" "$NR2RC"
+assert_contains "provision warns loudly instead of aborting silently" "$NR2OUT" "could not fetch origin"
+git -C "$NR2" show-ref --verify --quiet refs/heads/staging && ok "staging created locally with no remote" || bad "staging created locally with no remote"
+git -C "$NR2" show-ref --verify --quiet refs/heads/integration && ok "integration created locally with no remote" || bad "integration created locally with no remote"
+rm -f "$ROOT/profiles/.__noremote141.sh"
+
 section "no-push flow in the rendered prompts (issue #28)"
 NPIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "impl: never push"            "$NPIMPL" "NEVER run \`git push\`"
