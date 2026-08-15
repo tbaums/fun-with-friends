@@ -53,7 +53,8 @@ elif [ -e "$HOOK" ] && grep -q "fwf no-push guard" "$HOOK"; then
   log "removed the fwf no-push guard (gh mode)"
 fi
 
-git fetch origin -q
+git fetch origin -q 2>/dev/null \
+  || log "WARNING: could not fetch origin (no remote, or unreachable — e.g. a local/remoteless repo, issue #141) — continuing with local branches only"
 ensure_branch() { # $1=branch  $2=base-branch (created from origin/$2 if missing)
   git show-ref --verify --quiet "refs/heads/$1" \
     || { log "creating $1 from $2"; git branch "$1" "origin/$2" 2>/dev/null || git branch "$1" "$2"; }

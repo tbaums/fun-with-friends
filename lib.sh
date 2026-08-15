@@ -146,7 +146,7 @@ export FWF_REPO
 fwf_install_ghguard() {
   local real_gh slug
   real_gh="$(command -v gh || true)"
-  slug="$(git -C "$FWF_REPO" config --get remote.origin.url 2>/dev/null)"
+  slug="$(git -C "$FWF_REPO" config --get remote.origin.url 2>/dev/null || true)"
   slug="${slug%.git}"; slug="${slug#git@github.com:}"; slug="${slug#https://github.com/}"; slug="${slug#ssh://git@github.com/}"
   mkdir -p "$FWF_GHGUARD_DIR"
   ln -sf "$FWF_LIB_DIR/fwf" "$FWF_GHGUARD_DIR/fwf"

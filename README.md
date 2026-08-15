@@ -465,6 +465,14 @@ wins.
                      Issue refs become LI-N so nothing links upstream.
 ```
 
+`--issues local` also works on a repo with **no `origin` remote at all** —
+`fwf up`/`fwf provision` degrade gracefully (a loud warning, not a silent
+`set -e` abort) and keep the staging/integration ladder purely local (issue
+#141). A fresh `git init` repo with no remote is enough; no bare/dummy origin
+needed.
+
+
+
 All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
 `FWF_MODEL_<ROLE>`, `FWF_ISSUES`. A template may ship its own defaults
 (`template.sh`); precedence is CLI/env → profile → template → stock.
