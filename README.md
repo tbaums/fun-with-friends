@@ -363,7 +363,10 @@ fwf provision [--build]                             create worktrees + dev data
 fwf up [--build-only|--pm-only|--floor-only]        launch both sessions (--build-only: rebuild just the
                                                     build session; --pm-only: rebuild just the PM pane
                                                     (GV, which never idles, is left alone); --floor-only:
-                                                    both together, around a live captain)
+                                                    both together, around a live captain). Refuses to
+                                                    launch (loud error, never a silent $HOME pane) if the
+                                                    profile hasn't been provisioned yet — run `fwf
+                                                    provision` or `fwf start` first (issue #142)
 fwf attach [coord|build]                            attach to coordination (default) or implementation
 fwf captain [--print]                               copy/print the CAPTAIN prompt
 fwf respawn <role>                                  hot-swap one pane (implN|qaN|conductor|pm|gv|captain);
