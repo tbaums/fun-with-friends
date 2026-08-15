@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.27.4] - 2026-08-15
+
+### Fixed
+- **Agent panes inherit env/creds even when the tmux server predates the launch** (#143, code d7a3aaf, docs d7a3aaf) — when the tmux server was already running from an older environment, freshly-created agent panes could miss env/credentials; the launch now ensures each pane gets the current environment.
+
 ## [0.27.3] - 2026-08-15
 
 ### Fixed
