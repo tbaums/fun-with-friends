@@ -245,8 +245,8 @@ fwf_credit_block() {
     off) return 0;;
   esac
   local link='[fun-with-friends](https://github.com/tbaums/fun-with-friends)'
-  local role m seen="" models=""
-  while IFS=$'\t' read -r role m; do
+  local m seen="" models=""
+  while IFS=$'\t' read -r _ m; do
     # Unconfigured seat (no override, no floor default): omit it rather than
     # rendering a blank model — never "()" or a stray leading/trailing comma.
     [ -n "$m" ] || continue
