@@ -284,6 +284,22 @@ Both locks are released by `fwf gate`'s own `EXIT` trap the moment it exits —
 success, failure, or a kill — so no role has to manage them by hand; see
 `fwf gate` in `fwf help` and `fwf-gate.sh`.
 
+- **`fwf tick`'s heartbeat trusts the worktree, not ambient env** (issue #182)
+  — `fwf tick <role>` has no `--profile` flag, so any ambient `FWF_PROFILE` it
+  sees can only be leftover env from an unrelated shell, never a deliberate
+  pin; blindly trusting it can silently write a live role's heartbeat under
+  the WRONG profile's state dir, which makes health-gate/respawn see that
+  role as DEAD and risks an unwanted respawn that discards in-flight
+  progress. `fwf-provision.sh` now drops a `.fwf-profile` marker at the root
+  of every worktree/scratch dir it creates, naming the profile it was
+  provisioned for; `fwf tick` prefers that marker over ambient `FWF_PROFILE`
+  whenever one is present (a mismatch is logged as a warning, not silently
+  swallowed). Outside a provisioned worktree — no marker to consult — `fwf
+  tick` falls back to today's ambient/single-profile resolution, but warns if
+  the ambient profile has no live tick activity while another profile
+  demonstrably does (the swarm is running elsewhere and this heartbeat is
+  likely about to land in a phantom dir).
+
 ## Factory templates
 
 The pipeline above is the **dev** template — one of eight shipped factory

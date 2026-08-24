@@ -583,6 +583,62 @@ assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
 TICK_USAGE="$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run3" "$ROOT/fwf" tick 2>&1 || true)"
 assert_contains "fwf tick with no role errors with usage" "$TICK_USAGE" "usage: fwf tick <role>"
 
+section "fwf tick: context-derived profile beats ambient env, so a live role's heartbeat never misroutes (#182)"
+# A worktree carrying a `.fwf-profile` marker (as fwf-provision.sh now writes)
+# must win over a stray/leftover ambient FWF_PROFILE for the tick/heartbeat
+# write — that's the concretely-reproduced bug: an ambient value from an
+# unrelated shell silently misrouting a live role's heartbeat, making it look
+# DEAD to health-gate/respawn.
+MARKED="$TMP/marked-worktree"; mkdir -p "$MARKED"
+( cd "$MARKED" && git init -q && printf 'example\n' > .fwf-profile )
+CTX_RUN="$TK/run-ctx"
+CTX_OUT="$(cd "$MARKED" && FWF_PROFILE=WRONG-AMBIENT FWF_RUN_DIR="$CTX_RUN" "$ROOT/fwf" tick impl9 2>"$CTX_RUN.stderr")"
+assert_eq "marked worktree: tick still echoes the bumped count" "1" "$CTX_OUT"
+assert_eq "marked worktree: heartbeat lands under the MARKER's profile (example), not ambient" \
+  "yes" "$([ -f "$CTX_RUN/state/example/tick/impl9" ] && echo yes || echo no)"
+assert_eq "marked worktree: nothing written under the wrong ambient profile" \
+  "no" "$([ -e "$CTX_RUN/state/WRONG-AMBIENT" ] && echo yes || echo no)"
+assert_contains "marked worktree: mismatch is logged with the issue number" \
+  "$(cat "$CTX_RUN.stderr" 2>/dev/null)" "issue #182"
+assert_contains "marked worktree: mismatch log names both the ambient and context values" \
+  "$(cat "$CTX_RUN.stderr" 2>/dev/null)" "WRONG-AMBIENT"
+
+# No marker (not a provisioned worktree) + ambient set to a profile with NO
+# live activity while another profile demonstrably IS live: warn (phantom
+# alarm), but this is advisory-only — there is no marker to confirm the
+# correct profile, so tick still falls back to today's ambient-trust write
+# (LAST RESORT), unchanged from pre-#182 behavior. Needs a second REAL
+# profile file (a phantom ambient profile still has to pass lib.sh's own
+# "unknown profile" check, unrelated to #182) — same throwaway-visible-profile
+# pattern as the --profile position-independence tests above.
+cat > "$ROOT/profiles/zzp182.sh" <<EOF
+FWF_REPO="$TMP/x182"; WT_PREFIX="zzp182"; WT_BASE="$TMP"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+FWF_ISSUES=local
+EOF
+UNMARKED="$TMP/unmarked-plain-dir"; mkdir -p "$UNMARKED"
+PHANTOM_RUN="$TK/run-phantom"
+mkdir -p "$PHANTOM_RUN/state/example/tick"
+touch "$PHANTOM_RUN/state/example/tick/qa1"   # "example" has live activity
+PHANTOM_OUT="$(cd "$UNMARKED" && FWF_PROFILE=zzp182 FWF_RUN_DIR="$PHANTOM_RUN" "$ROOT/fwf" tick impl9 2>"$PHANTOM_RUN.stderr")"
+assert_eq "no marker + phantom ambient: tick STILL succeeds (warn-only, never blocks)" "1" "$PHANTOM_OUT"
+assert_eq "no marker + phantom ambient: still writes under ambient (no marker to redirect to)" \
+  "yes" "$([ -f "$PHANTOM_RUN/state/zzp182/tick/impl9" ] && echo yes || echo no)"
+assert_contains "no marker + phantom ambient: alarms that the swarm looks live elsewhere" \
+  "$(cat "$PHANTOM_RUN.stderr" 2>/dev/null)" "may be misrouting"
+
+# No marker, ambient set, but NO other profile is live either (cold start) —
+# must NOT alarm: a role legitimately first-up in a fresh profile is healthy.
+COLD_RUN="$TK/run-cold"
+COLD_OUT="$(cd "$UNMARKED" && FWF_PROFILE=zzp182 FWF_RUN_DIR="$COLD_RUN" "$ROOT/fwf" tick impl9 2>"$COLD_RUN.stderr")"
+assert_eq "cold start: tick succeeds" "1" "$COLD_OUT"
+case "$(cat "$COLD_RUN.stderr" 2>/dev/null)" in
+  *"#182"*) bad "cold start (no sibling profile live) must NOT alarm";;
+  *)        ok  "cold start (no sibling profile live) must NOT alarm";;
+esac
+rm -f "$ROOT/profiles/zzp182.sh"
+
 section "fwf_wedge_verdict: steady-state wedge classifier — PURE (delta_tick, delta_tokens, elapsed) -> verdict (#165)"
 # Pure predicate: sample tuples in -> asserted verdict out, exactly like
 # fwf_pr_is_stale_stub. FWF_WEDGE_MIN_SECS pinned so the flat-for threshold is

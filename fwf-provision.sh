@@ -87,17 +87,28 @@ else
   log "gh-write guard installed ($FWF_GHGUARD_DIR): gh mutations blocked in panes unless FWF_ALLOW_GH=1"
 fi
 
+# issue #182: drop a `.fwf-profile` marker at the worktree/scratch dir's root
+# naming the profile it was provisioned for — the one point a role's state
+# writes (chiefly `fwf tick`) can trust over ambient $FWF_PROFILE, since it is
+# written here, once, by the process that resolved the profile correctly at
+# creation time and can never be stale leftover env from an unrelated shell.
+mark_profile() { # $1=dir
+  printf '%s\n' "$PROFILE" > "$1/.fwf-profile"
+}
+
 add_branch_wt() { # $1=tag  $2=branch
   local d; d="$(wt_dir "$1")"
   [ -d "$d" ] && { log "exists: $d"; return; }
   log "worktree $d ($2)"
   git worktree add "$d" -b "$2" "$DEFAULT_BRANCH" 2>/dev/null || git worktree add "$d" "$2"
+  mark_profile "$d"
 }
 add_detached_wt() { # $1=tag
   local d; d="$(wt_dir "$1")"
   [ -d "$d" ] && { log "exists: $d"; return; }
   log "worktree $d (detached)"
   git worktree add --detach "$d" "$DEFAULT_BRANCH"
+  mark_profile "$d"
 }
 warm() { # $1=tag
   $DO_BUILD || return 0
@@ -113,6 +124,7 @@ warm() { # $1=tag
 # since there is no source to build). A suppressed role gets nothing at all.
 ut_scratch() { # $1=role tag — create + announce the role's scratch dir
   local d; d="$(fwf_role_cwd "$1")"; log "scratch $d ($1: source-blind, no worktree)"
+  mark_profile "$d"
 }
 for id in "${PAIRS[@]}"; do
   if fwf_role_no_worktree "impl$id"; then

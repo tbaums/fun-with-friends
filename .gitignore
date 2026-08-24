@@ -9,3 +9,7 @@ profiles/*.sh
 .DS_Store
 *.swp
 *~
+
+# Per-worktree profile marker (issue #182), written by fwf-provision.sh at
+# each worktree/scratch dir's root; local runtime state, never committed.
+.fwf-profile
