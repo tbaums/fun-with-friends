@@ -497,6 +497,8 @@ fwf_gate_rust_scope_decide() {
     [ -n "$f" ] || continue
     matched=0
     for pat in ${safe[@]+"${safe[@]}"}; do
+      # shellcheck disable=SC2254  # deliberately UNQUOTED: --safe globs (e.g.
+      # 'docs/*') are meant to expand as case-pattern globs, not match literally.
       case "$f" in $pat) matched=1; break;; esac
     done
     if [ "$matched" -eq 0 ]; then
