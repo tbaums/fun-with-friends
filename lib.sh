@@ -252,6 +252,13 @@ if [ -n "${FWF_TOKEN_BUDGET:-}" ] && [ -n "${FWF_BUDGET_USD:-}" ]; then
   exit 1
 fi
 
+# The six fwf agent seats, in render order. Single source of truth for
+# fwf_provenance_block (machine trailer) AND fwf_credit_block (human credit,
+# lib/pr_context.sh) — #134 was credit drifting to a hardcoded "impl qa" while
+# provenance already looped all six; both now read this one roster instead of
+# each carrying their own copy.
+FWF_SEAT_ROLES="captain pm gv impl qa conductor"
+
 # Resolve the model NAME for a role, honoring the per-role overrides
 # (FWF_MODEL_<ROLE>, falling back to FWF_MODEL, falling back to "" = CLI default).
 # $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
@@ -276,6 +283,19 @@ fwf_model_for() { # $1=role -> prints model name (empty string = CLI default)
       unset _fwf_up;;
   esac
   printf '%s' "$m"
+}
+
+# Seat->model pairs for the active profile, one "role<TAB>model" line per
+# FWF_SEAT_ROLES entry (render order). model is the empty string for a seat
+# with no override and no floor default (fwf_model_for's "CLI default" case)
+# — callers decide how to render that: fwf_provenance_block stamps
+# "cli-default" (machine record, wants every seat explicit); fwf_credit_block
+# (lib/pr_context.sh) omits the seat rather than showing a blank model.
+fwf_seat_model_pairs() {
+  local role
+  for role in $FWF_SEAT_ROLES; do
+    printf '%s\t%s\n' "$role" "$(fwf_model_for "$role")"
+  done
 }
 
 # Snapshot FWF_PANE_ENV's named vars to a private, chmod-600, gitignored-by-
@@ -324,10 +344,10 @@ fwf_provenance_block() {
   local ver sha role m seats=""
   ver="$(cat "$FWF_LIB_DIR/VERSION" 2>/dev/null)"; : "${ver:=unknown}"
   sha="$(git -C "$FWF_LIB_DIR" rev-parse --short HEAD 2>/dev/null)"; : "${sha:=unknown}"
-  for role in captain pm gv impl qa conductor; do
-    m="$(fwf_model_for "$role")"; [ -n "$m" ] || m="cli-default"
+  while IFS=$'\t' read -r role m; do
+    [ -n "$m" ] || m="cli-default"
     seats="${seats:+$seats }$role=$m"
-  done
+  done <<< "$(fwf_seat_model_pairs)"
   printf 'fwf-Provenance: fwf=%s@%s profile=%s seats=[%s]' "$ver" "$sha" "$PROFILE" "$seats"
 }
 

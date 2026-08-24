@@ -230,22 +230,33 @@ fwf_context_block() {
 # --- reviewer-facing "built with fwf + Claude" credit (Part B) ----------------
 # Policy: FWF_CREDIT=on|minimal|off (set in lib.sh — default on for our own
 # repos, off when --issues local, since local mode IS the "not our repo"
-# signal until #107 gives this a real per-target dial). `minimal` omits the
-# per-seat model list; `off` prints nothing (the placeholder substitutes to
-# empty, never a stray line). Reuses fwf_model_for so new model families show
-# up automatically — no second provenance system (#80 owns the machine
-# trailer; this is the human-facing companion, kept in its own block).
+# signal until #107 gives this a real per-target dial). `off` prints nothing
+# (the placeholder substitutes to empty, never a stray line); `minimal` drops
+# the descriptive "(a multi-agent Claude Code dev factory)" aside but keeps
+# the full model list — the disclosure bar (every seat's model, #134) holds
+# for minimal too, it only shortens the surrounding prose.
+#
+# Reads the seat roster from fwf_seat_model_pairs (lib.sh) — the SAME source
+# fwf_provenance_block consumes — rather than its own hardcoded seat list.
+# #134 was exactly this drifting: credit looped only "impl qa" while
+# provenance already looped all six seats.
 fwf_credit_block() {
   case "${FWF_CREDIT:-on}" in
     off) return 0;;
   esac
   local link='[fun-with-friends](https://github.com/tbaums/fun-with-friends)'
-  local line="🏭 Built with $link (a multi-agent Claude Code dev factory) + Claude."
-  if [ "${FWF_CREDIT:-on}" = "minimal" ]; then printf '%s' "$line"; return 0; fi
   local role m seen="" models=""
-  for role in impl qa; do
-    m="$(fwf_model_for "$role")"; [ -n "$m" ] || m="cli-default"
+  while IFS=$'\t' read -r role m; do
+    # Unconfigured seat (no override, no floor default): omit it rather than
+    # rendering a blank model — never "()" or a stray leading/trailing comma.
+    [ -n "$m" ] || continue
     case " $seen " in *" $m "*) ;; *) seen="$seen $m"; models="${models:+$models, }$m";; esac
-  done
-  printf '%s (%s)' "$line" "$models"
+  done <<< "$(fwf_seat_model_pairs)"
+  local line
+  if [ "${FWF_CREDIT:-on}" = "minimal" ]; then
+    line="🏭 Built with $link + Claude."
+  else
+    line="🏭 Built with $link (a multi-agent Claude Code dev factory) + Claude."
+  fi
+  if [ -n "$models" ]; then printf '%s (%s)' "$line" "$models"; else printf '%s' "$line"; fi
 }
