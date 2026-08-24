@@ -667,6 +667,15 @@ $text"
   # cross-role serialization for a harness whose ports are fixed.
   text="${text//__GATE__/fwf gate $role_tag -- bash -c $(printf '%q' "$GATE_CMD")}"
   text="${text//__E2E__/fwf gate $role_tag --e2e -- bash -c $(printf '%q' "$E2E_CMD")}"
+  # __PROMOTE_GATE__ (issue #202): the conductor's promote-into-integration
+  # gate specifically — same as __E2E__, plus --tip-cmd so a tick that finds
+  # __STAGING__ unchanged since the last COMPLETED gate skips before ever
+  # taking the lock, and a tip that moves mid-run reports EX_STALE (76)
+  # instead of a false-promotable green. Deliberately its OWN macro, not a
+  # change to __E2E__: __E2E__ is also used for an implementer's own local
+  # self-verification (dev/implementer.tmpl), which has no "watched shared
+  # ref" to key a skip on.
+  text="${text//__PROMOTE_GATE__/fwf gate $role_tag --e2e --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") -- bash -c $(printf '%q' "$E2E_CMD")}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
@@ -1151,6 +1160,48 @@ fwf_gate_lock_acquire() {
 
 fwf_gate_lock_release() {
   rm -rf "$(fwf_gate_lock_dir "${1:?fwf_gate_lock_release needs a role}")"
+}
+
+# --- tip-triggered gating (issue #202) ---------------------------------------
+# A TIMER-triggered gate (e.g. the conductor's promote-e2e) gates whatever the
+# watched ref happens to be when its cadence fires, wastes the shared e2e lane
+# re-deriving a verdict for a tip that was already gated, and can produce a
+# verdict for a tip that moved out from under it mid-run — which must never
+# read as promotable. A prompt-level guard that depends on a ROLE to journal
+# "the SHA I last gated" is not a mechanism, it silently stops firing the
+# moment a role skips writing it (this is exactly how the captain-authored
+# TIP-CHANGED guard died: nothing ever wrote its marker). So this state is
+# persisted BY THE GATE SCRIPT itself (fwf-gate.sh's --tip-cmd), never by a
+# role's memory or a template instruction.
+fwf_gate_tip_marker_path() { echo "$FWF_STATE_DIR/gate-tip/$1"; } # $1=role
+
+# $1=role $2=current tip value. Echoes the prior verdict (green/red) and
+# returns 0 when a COMPLETED marker exists for this exact tip (safe to skip
+# re-gating); returns 1 (no output) when there is nothing to skip on — no
+# marker, a different tip, a non-terminal (stale) verdict, or the caller set
+# FWF_GATE_FORCE=1 to force a re-run (the "explicit captain resume" escape
+# hatch called for by the ticket).
+fwf_gate_tip_unchanged() {
+  local role="${1:?fwf_gate_tip_unchanged needs a role}" tip="${2:?fwf_gate_tip_unchanged needs a tip value}" f marker_tip verdict
+  [ -n "${FWF_GATE_FORCE:-}" ] && return 1
+  f="$(fwf_gate_tip_marker_path "$role")"
+  [ -f "$f" ] || return 1
+  marker_tip="$(_fwf_gate_owner_field tip "$f")"
+  [ -n "$marker_tip" ] && [ "$marker_tip" = "$tip" ] || return 1
+  verdict="$(_fwf_gate_owner_field verdict "$f")"
+  case "$verdict" in
+    green|red) printf '%s' "$verdict"; return 0 ;;
+    *) return 1 ;; # stale (or unrecognized) verdicts are never terminal — always re-gate
+  esac
+}
+
+# $1=role $2=tip $3=verdict(green|red|stale). Records the ONLY state
+# fwf_gate_tip_unchanged reads — overwrites any prior marker for this role.
+fwf_gate_tip_record() {
+  local role="${1:?fwf_gate_tip_record needs a role}" tip="${2:?fwf_gate_tip_record needs a tip}" verdict="${3:?fwf_gate_tip_record needs a verdict}" f
+  f="$(fwf_gate_tip_marker_path "$role")"
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  printf 'tip=%s\nverdict=%s\nrecorded=%s\n' "$tip" "$verdict" "$(date +%s)" > "$f"
 }
 
 # --- token-budget WRITER lifecycle (issue #96) -------------------------------

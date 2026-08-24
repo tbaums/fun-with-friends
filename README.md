@@ -299,6 +299,22 @@ not a per-role copy:
   is why a `GATE_CMD` does not need an `env -u FWF_*` guard of its own
   (`_fwf_gate_env_restore` in `fwf-gate.sh`).
 
+- **Tip-triggered, not just timer-triggered** (issue #202) — the conductor's
+  promotion e2e renders as `__PROMOTE_GATE__` (a distinct macro from
+  `__E2E__`, which implementers also use for their own local self-verification
+  and has no shared ref to key on) and adds `fwf gate`'s `--tip-cmd 'CMD'`:
+  CMD (e.g. `git rev-parse origin/staging`) is checked BEFORE the lock is
+  ever taken, and a tick that finds the watched ref unchanged since the last
+  COMPLETED gate for that role never acquires it — `fwf gate` exits `75`
+  exactly like a busy lock. If the ref moves DURING the run, the result is
+  for a superseded tip and must never read as promotable, so the run exits
+  `76` instead, regardless of the wrapped command's own exit code. State is
+  persisted BY THE GATE SCRIPT itself on exit (`~/.fun-with-friends/state/<profile>/gate-tip/<role>`),
+  never by a role's memory — a captain-authored prompt guard with the same
+  intent had silently stopped firing because nothing ever wrote its marker.
+  `FWF_GATE_FORCE=1` forces a re-run of an otherwise-skippable unchanged tip
+  (`fwf_gate_tip_unchanged` / `fwf_gate_tip_record` in `lib.sh`).
+
 Both locks are released by `fwf gate`'s own `EXIT` trap the moment it exits —
 success, failure, or a kill — so no role has to manage them by hand; see
 `fwf gate` in `fwf help` and `fwf-gate.sh`.

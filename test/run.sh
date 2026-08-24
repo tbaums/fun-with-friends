@@ -3915,6 +3915,85 @@ assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue c
 assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"
 
 # --------------------------------------------------------------------------
+section "fwf gate --tip-cmd: tip-triggered gating, not timer-triggered (#202)"
+# A prompt-level TIP-CHANGED guard died silently because nothing ever wrote
+# its marker (a role's memory is not a mechanism). This state is persisted BY
+# THE GATE SCRIPT itself, so it can never rot the same way. Uses a throwaway
+# git repo as the "watched ref" and a THROWAWAY FWF_RUN_DIR so this never
+# touches real shared state.
+F202RUN="$TMP/run202"; mkdir -p "$F202RUN"
+F202REPO="$TMP/f202-repo"; mkdir -p "$F202REPO"
+git -C "$F202REPO" init -q
+git -C "$F202REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+F202SHA1="$(git -C "$F202REPO" rev-parse HEAD)"
+f202gate() { # extra fwf-gate.sh args...
+  ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" "$@" )
+}
+
+# first run at a fresh tip: no marker exists yet, so it proceeds and records GREEN
+rc=0; f202gate -- true >/dev/null 2>&1 || rc=$?
+assert_eq "first run at a tip proceeds (rc 0)" "0" "$rc"
+
+# same tip again: skipped BEFORE the lock is ever taken
+rc=0; f202gate -- true >/dev/null 2>&1 || rc=$?
+assert_eq "unchanged tip after GREEN is skipped (rc 75)" "75" "$rc"
+OUT="$(f202gate -- true 2>&1)"
+assert_contains "skip message names the unchanged tip"     "$OUT" "$F202SHA1"
+assert_contains "skip message names the prior verdict"     "$OUT" "last verdict green"
+LOCKDIR="$F202RUN/state/example/gate-lock/f202role"
+[ ! -d "$LOCKDIR" ] || bad "skip never leaves the per-role lock held" "lock dir exists: $LOCKDIR"
+[ -d "$LOCKDIR" ] || ok "skip never leaves the per-role lock held"
+
+# a command that moves the tip mid-run: the verdict is for a superseded SHA.
+# FWF_GATE_FORCE=1 here only bypasses the PRE-run "unchanged, skip" check
+# (the tip has not moved YET when that check runs) so the wrapped command
+# actually executes and gets the chance to move it out from under the run.
+rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" -- \
+        bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2; true' ) >/dev/null 2>&1 || rc=$?
+assert_eq "tip moving mid-run reports EX_STALE (76), not green" "76" "$rc"
+F202SHA2="$(git -C "$F202REPO" rev-parse HEAD)"
+[ "$F202SHA2" != "$F202SHA1" ] || bad "the fixture actually moved the tip" "still at $F202SHA1"
+
+# the new tip (never gated) is NOT skipped, even though a marker exists for the old one
+rc=0; f202gate -- false >/dev/null 2>&1 || rc=$?
+assert_eq "a genuinely new tip is re-gated, not skipped" "1" "$rc"
+
+# a RED terminal verdict is remembered too -- re-running the same failing tip
+# would just fail again, so it is skipped exactly like a GREEN one
+rc=0; f202gate -- true >/dev/null 2>&1 || rc=$?
+assert_eq "unchanged tip after RED is skipped (rc 75)" "75" "$rc"
+OUT="$(f202gate -- true 2>&1)"
+assert_contains "skip message reports the RED verdict" "$OUT" "last verdict red"
+
+# FWF_GATE_FORCE=1 is the "explicit resume" escape hatch: it re-runs an
+# otherwise-skippable unchanged tip
+rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" -- true ) >/dev/null 2>&1 || rc=$?
+assert_eq "FWF_GATE_FORCE=1 bypasses an unchanged-tip skip" "0" "$rc"
+
+# --tip-cmd is fully optional: every existing (no-flag) caller is unaffected
+rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
+assert_eq "no --tip-cmd: behaves exactly as before" "0" "$rc"
+rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
+assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
+
+# __PROMOTE_GATE__ (the conductor's macro) composes --tip-cmd with --e2e and
+# names the tracked staging branch, without touching the generic __E2E__ macro
+# implementers' own self-verification renders (it has no shared ref to key on)
+RENDERED="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''" 2>&1)"
+assert_contains "dev conductor template's promote gate takes --e2e"     "$RENDERED" "--e2e"
+assert_contains "dev conductor template's promote gate takes --tip-cmd" "$RENDERED" "--tip-cmd"
+assert_contains "dev conductor template's promote gate watches origin/staging" "$RENDERED" "origin/staging"
+assert_not_contains "dev conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED" "__PROMOTE_GATE__"
+RENDERED_REFACTOR="$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/conductor.tmpl' ''" 2>&1)"
+assert_contains "refactor conductor template's promote gate takes --tip-cmd" "$RENDERED_REFACTOR" "--tip-cmd"
+assert_not_contains "refactor conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED_REFACTOR" "__PROMOTE_GATE__"
+
+# --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
 # A bash script's status is that of its LAST executed command, so the gate
