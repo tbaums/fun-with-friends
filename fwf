@@ -271,6 +271,92 @@ resolve_profile() {
   exit 1
 }
 
+# --- context-derived profile resolution (issue #182) ------------------------
+# `resolve_profile()` above trusts ambient $FWF_PROFILE unconditionally. That
+# is fine for an explicit per-invocation --profile pin (engine() folds it into
+# $FWF_PROFILE before calling resolve_profile), but a STATE-WRITING/liveness
+# call like `tick` has no --profile flag at all — any $FWF_PROFILE it sees can
+# only be leftover ambient env from an unrelated shell/profile, never a
+# deliberate override. Confirmed live: a role's `fwf tick` heartbeat landing
+# under the WRONG profile's state dir makes health-gate/respawn see it as
+# DEAD while it is actively working, risking a destructive respawn that
+# discards in-flight context. Do not reuse this for engine()-routed commands
+# (up/gate/dash/...) — those DO support an explicit --profile override that
+# must keep winning over context.
+#
+# A worktree `fwf-provision.sh` creates carries a `.fwf-profile` marker (at
+# its root) naming the profile it was provisioned for — written once, by the
+# process that resolved the profile correctly at creation time. That marker
+# is a stronger signal than ambient env for "which profile is THIS role's
+# heartbeat for" because it can never be stale-leftover from an unrelated
+# shell. Echoes the marker's profile name; returns 1 (nothing echoed) if this
+# isn't a provisioned worktree/scratch dir, or its marker names an unknown
+# profile.
+fwf_context_profile() {
+  local dir marker name
+  dir="$(git rev-parse --show-toplevel 2>/dev/null)" || dir="$PWD"
+  marker="$dir/.fwf-profile"
+  [ -f "$marker" ] || return 1
+  name="$(cat "$marker" 2>/dev/null)"
+  [ -n "$name" ] || return 1
+  [ -f "$(profiles_dir)/$name.sh" ] || return 1
+  echo "$name"
+}
+
+# True (rc 0) if profile $1's state dir shows no liveness activity yet (no
+# role has ever ticked under it) — a "phantom" profile dir, as opposed to one
+# the running swarm actually writes to.
+fwf_profile_ticks_phantom() {
+  local d="$FWF_RUN/state/$1/tick"
+  [ -d "$d" ] || return 0
+  local f; for f in "$d"/*; do [ -e "$f" ] && return 1; done
+  return 0
+}
+
+# True (rc 0) if some OTHER existing profile (not $1) has live tick activity.
+# Used only to sharpen the phantom-profile alarm below — never fires on a
+# fresh/cold-start profile that simply hasn't ticked yet, since that requires
+# NO other profile to be live either.
+fwf_other_profile_live() {
+  local skip="$1" name
+  while read -r name; do
+    [ -n "$name" ] && [ "$name" != "$skip" ] || continue
+    fwf_profile_ticks_phantom "$name" || return 0
+  done <<< "$(list_profiles)"
+  return 1
+}
+
+# Resolve the profile for a state-writing/liveness call (currently: `tick`).
+# Priority, most to least trustworthy (issue #182):
+#   1. PRIMARY   — this worktree's `.fwf-profile` marker (fwf_context_profile).
+#                  Never trusts ambient env, so a stray FWF_PROFILE=wrong can't
+#                  misroute the heartbeat. This is the real fix.
+#   2. BACKSTOP  — no marker found (not a provisioned worktree/scratch dir):
+#                  fall back to ambient/single-profile resolution, but if
+#                  ambient is set to a profile with NO live activity while
+#                  some OTHER profile demonstrably IS live, warn loudly — the
+#                  swarm is running elsewhere and this heartbeat is likely
+#                  about to land in a phantom dir. Warns only; tick must never
+#                  hard-fail on a liveness call.
+#   3. LAST RESORT — resolve_profile()'s existing behavior (today's ambient
+#                  trust / single-profile default), unchanged.
+resolve_profile_liveness() {
+  local ctx amb
+  if ctx="$(fwf_context_profile)"; then
+    amb="${FWF_PROFILE:-}"
+    if [ -n "$amb" ] && [ "$amb" != "$ctx" ]; then
+      echo "fwf: WARNING ambient FWF_PROFILE=$amb does not match this worktree's provisioned profile '$ctx' (issue #182) — using '$ctx' (context-derived), not the ambient value, to avoid misrouting the heartbeat" >&2
+    fi
+    echo "$ctx"
+    return 0
+  fi
+  amb="${FWF_PROFILE:-}"
+  if [ -n "$amb" ] && fwf_profile_ticks_phantom "$amb" && fwf_other_profile_live "$amb"; then
+    echo "fwf: WARNING ambient FWF_PROFILE=$amb has no live tick activity while another profile does — this heartbeat may be misrouting to a phantom profile dir (issue #182); no worktree marker found to confirm the correct profile" >&2
+  fi
+  resolve_profile
+}
+
 # Run an engine script with the resolved profile exported. Accepts a
 # post-subcommand --profile/--profile=NAME (issue #69) for commands that
 # don't otherwise take runtime flags (dash, issues, pr-review-state, stop);
@@ -650,7 +736,12 @@ case "$cmd" in
     # issue #133: a looping role's step-0 heartbeat, upgraded to a monotonic
     # per-role loop-tick counter. Deliberately tiny (no engine indirection) —
     # every agent runs it every cycle. Echoes the new count.
-    FWF_PROFILE="$(resolve_profile)"
+    # issue #182: resolve via resolve_profile_liveness(), NOT resolve_profile()
+    # — tick has no --profile flag, so any ambient $FWF_PROFILE it sees can
+    # only be stale leftover env, never a deliberate pin; trusting it blindly
+    # can misroute the heartbeat and make a live role look dead to
+    # health-gate/respawn.
+    FWF_PROFILE="$(resolve_profile_liveness)"
     source "$FWF_DIR/lib.sh"
     role="${1:-}"; [ -n "$role" ] || die "tick: usage: fwf tick <role>"
     fwf_tick_bump "$role";;
