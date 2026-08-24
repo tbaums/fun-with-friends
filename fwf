@@ -52,13 +52,19 @@ GETTING STARTED
 
 RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
   provision [--build]    Create worktrees + dev data (one-time per repo).
-  up [--build-only|--pm-only|--floor-only]
+  up [--build-only|--pm-only|--floor-only|--coord-only]
                          Launch both tmux sessions and deliver prompts.
-                         --build-only: (re)create just the build session.
-                         --pm-only: (re)create just the PM pane (GV, which
-                         never idles, is left alone). --floor-only: both
-                         together (back-compat alias), around a LIVE captain
-                         pane, untouched. See "PER-PLANE IDLING" below (#105).
+                         --build-only: (re)create just the build session,
+                         around a LIVE captain pane (requires an existing
+                         coordination session). --pm-only: (re)create just
+                         the PM pane (GV, which never idles, is left alone;
+                         also requires an existing coordination session).
+                         --floor-only: both together (back-compat alias).
+                         --coord-only: bring up the coordination session
+                         (PM/GV/Captain) from a cold/fully-down state,
+                         leaving any build floor (up, down, or absent)
+                         completely untouched; a no-op if coordination is
+                         already up. See "PER-PLANE IDLING" below (#105).
   attach [coord|build]   tmux attach to coordination (default) or implementation.
   dash                   Read-only status board (Rust + ratatui TUI): roles,
                          pipeline, prod, and the human-gated decision list.

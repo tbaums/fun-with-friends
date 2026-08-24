@@ -152,6 +152,26 @@ fwf down --floor-only   # both together (--build-only + --pm-only) — the
 fwf up   --floor-only   # original all-or-nothing behavior, kept as an alias
 ```
 
+Those all assume a live captain to build/recreate around. To stand up **just
+coordination from a cold, fully-down factory** — e.g. to groom the
+`product-wip` backlog before spinning up any build floor at all — use
+`--coord-only` instead (issue #155):
+
+```bash
+fwf up --coord-only     # brings up PM/GV/Captain from cold; no build floor
+                        # created. A clean no-op if coordination is already
+                        # up. A later plain `fwf up` or `fwf up --build-only`
+                        # adds the floor alongside it without disruption —
+                        # this also works in reverse (floor already up,
+                        # coordination crashed: `--coord-only` brings it back
+                        # without touching the running floor).
+```
+
+There is no `fwf down --coord-only` — tearing down coordination while
+leaving a floor running isn't a supported per-plane teardown (`--build-only`
+already tears down just the floor; nothing else is a "coord-only teardown"
+distinct from a full `fwf down`).
+
 The **GV never idles** — no flag ever tears it down, so the captain can
 always summon it for a gate with no cold-boot latency. Every one of these is
 idempotent and safe in partial states (`up` on an already-running unit is a

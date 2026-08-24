@@ -237,6 +237,25 @@ instead of stalling silently (issue #99).
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
+  **Per-plane `up`/`down` flag matrix** (issue #155 — `--coord-only` is the
+  non-destructive mirror of `--build-only`, for standing up just coordination
+  from a cold/fully-down state, e.g. to groom the `product-wip` backlog
+  before spinning up the build floor at all):
+
+  | flag | `fwf up` brings up | `fwf up` requires already up | `fwf down` tears down | always survives |
+  |---|---|---|---|---|
+  | *(none, full)* | coord (PM+GV+Captain) + build floor | neither session | both sessions entirely | — |
+  | `--build-only` | build floor | coord (a live captain to build around) | build floor only | Captain, GV, PM |
+  | `--pm-only` | PM pane (+GV self-heal check) | coord (a live captain) | PM pane (+ any extra coord role) | Captain, GV |
+  | `--coord-only` | PM+GV+Captain, from cold | *(refuses if already up — no-op, not an error)* | *n/a — up-only flag* | build floor (never touched) |
+  | `--floor-only` | build floor + PM pane together | coord (a live captain) | build floor + PM pane together | Captain, GV |
+
+  `--floor-only` is a back-compat **alias** for `--build-only` + `--pm-only`
+  together, not a synonym for "just the build floor" — despite the name, it
+  also brings up/tears down the PM pane. **Captain and GV are the only panes
+  every flag leaves untouched** — no `down` path, floor-only included, ever
+  tears down either.
+
 Every `__GATE__`/`__E2E__` a role runs is rendered as a call to `fwf gate`
 (issue #123), the one shared guarded launcher every tick-driven gate/e2e
 invocation routes through — qa's fast-gate review, an implementer's own gate
@@ -391,10 +410,16 @@ fwf suggest "<what you're trying to do>"            describe your goal; get a fa
 fwf start <url|path> [--name N] [--yes] [--build]   clone → detect → confirm → provision → up
 fwf init  <url|path> [--name N] [--yes]             clone → detect → scaffold profile
 fwf provision [--build]                             create worktrees + dev data
-fwf up [--build-only|--pm-only|--floor-only]        launch both sessions (--build-only: rebuild just the
-                                                    build session; --pm-only: rebuild just the PM pane
-                                                    (GV, which never idles, is left alone); --floor-only:
-                                                    both together, around a live captain). Refuses to
+fwf up [--build-only|--pm-only|--floor-only|--coord-only]
+                                                    launch both sessions (--build-only: rebuild just the
+                                                    build session, around a live captain — requires an
+                                                    existing coordination session; --pm-only: rebuild just
+                                                    the PM pane (GV, which never idles, is left alone) —
+                                                    also requires an existing coordination session;
+                                                    --floor-only: both together; --coord-only: bring up
+                                                    coordination (PM/GV/Captain) from cold, leaving any
+                                                    build floor — up, down, or absent — untouched; a
+                                                    no-op if coordination is already up). Refuses to
                                                     launch (loud error, never a silent $HOME pane) if the
                                                     profile hasn't been provisioned yet — run `fwf
                                                     provision` or `fwf start` first (issue #142)
