@@ -123,7 +123,15 @@ anything. Cut the release manually — same gates, run locally:
    `reconcile` job in `.github/workflows/ci.yml` fires on *every* push to `main`,
    tagged or not, so the fallback path is covered even if you skip this step. It
    runs `fwf reconcile-guard`, which files one durable, self-closing tracking
-   issue and goes red if it finds a divergence.
+   issue if it finds a **real** divergence. As of #238, a `lock-busy` or
+   `cas-lost` verdict (this reconcile lost a race against a concurrent,
+   benign writer — another reconcile tick, a second release step) is treated
+   as the self-healing race it is: no artifact is filed and none is closed
+   either (a check may still show red for that one run, but nothing durable
+   is created — the next push re-classifies). Only `halted-diverged`/
+   `suspect` ever file/update an artifact; three consecutive indeterminate
+   verdicts with no intervening clean escalate to `suspect` on their own, so
+   a race that is not actually transient still gets a durable consequence.
 
    Run it yourself anyway for the immediate answer:
    `FWF_REPO="$PWD" ./fwf reconcile` (see "Re-syncing staging/integration" above).

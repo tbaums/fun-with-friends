@@ -26,9 +26,22 @@
 # edit it in place, and close it when reconcile next comes back clean.
 #
 # Usage: fwf reconcile-guard [--against BRANCH] [--branch NAME ...]
-#   Arguments are passed straight through to `fwf reconcile`.
-#   Exit 0 = reconcile clean (and any open artifact was closed).
-#   Exit 1 = divergence persists; an open artifact exists and names it.
+#   Arguments are passed straight through to `fwf reconcile`. Branches on
+#   `fwf reconcile`'s EXIT CODE (issue #238 AC6), never on the text of its
+#   report -- substring-matching human-readable prose to make a safety
+#   decision breaks silently the moment someone rewords the message (the
+#   same class of defect as #218's sentinel and #236's marker).
+#   Exit 0 = reconcile confirmed CLEAN (rc 0: reconciled/normal-ahead/clean
+#            no-op on every branch) -- any open artifact is closed.
+#   Exit 1 = ESCALATE (rc 1: halted-diverged/suspect on any branch, including
+#            one reached via the AC7 consecutive-indeterminate counter) -- an
+#            open artifact exists and names it.
+#   Exit 2 = INDETERMINATE (rc 2: lock-busy/cas-lost on some branch, nothing
+#            escalated) -- a lost race against a CONCURRENT, benign writer
+#            (another reconcile tick, a release), not a divergence. Neither
+#            files nor closes an artifact (issue #238 AC1/AC3/AC5): this run
+#            simply could not confirm either way, so it must touch nothing.
+#            Self-healing -- re-classified next tick.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -43,6 +56,10 @@ GUARD_MARKER_KEY="fwf-reconcile-guard:v1"
 GUARD_MARKER="<!-- $GUARD_MARKER_KEY -- do not remove, this key is how the guard finds this issue -->"
 GUARD_TITLE="[reconcile] staging/integration diverged from ${DEFAULT_BRANCH}"
 GH="${FWF_GH:-gh}"
+# Overridable the same way GH is above, so a test can substitute a stub that
+# emits deterministic report lines instead of racing a REAL concurrent CAS
+# push to reproduce cas-lost (issue #238).
+RECONCILE_SCRIPT="${FWF_RECONCILE_SCRIPT:-$DIR/fwf-reconcile.sh}"
 
 # Echo the number of the single open guard artifact, or nothing.
 # Uses gh's built-in --jq rather than a python/jq dependency, so the guard
@@ -92,33 +109,51 @@ BODY
 }
 
 main() {
-  local out rc=0 existing
-  out="$("$DIR/fwf-reconcile.sh" "$@" 2>&1)" || rc=$?
+  local out grc existing
+  grc=0
+  out="$("$RECONCILE_SCRIPT" "$@" 2>&1)" || grc=$?
   printf '%s\n' "$out"
 
   existing="$(guard_find)"
 
-  if [ "$rc" -eq 0 ]; then
-    if [ -n "$existing" ]; then
-      echo "reconcile-guard: clean — closing artifact #$existing"
-      "$GH" issue comment "$existing" --body "Resolved: \`fwf reconcile\` returned clean on a later push to \`${DEFAULT_BRANCH}\`. Closing automatically." >/dev/null 2>&1 || true
-      "$GH" issue close "$existing" >/dev/null 2>&1 || true
-    else
-      echo "reconcile-guard: clean — no artifact to close"
-    fi
-    return 0
-  fi
-
-  if [ -n "$existing" ]; then
-    # AC4: the divergence persisted across another push. Update in place.
-    # Never file a second artifact.
-    echo "reconcile-guard: divergence persists — updating existing artifact #$existing (no duplicate filed)"
-    guard_body "$out" | "$GH" issue edit "$existing" --body-file - >/dev/null 2>&1 || true
-  else
-    echo "reconcile-guard: divergence detected — filing durable artifact"
-    guard_body "$out" | "$GH" issue create --title "$GUARD_TITLE" --body-file - 2>&1 | tail -1
-  fi
-  return 1
+  case "$grc" in
+    0)
+      # SAFE: confirmed clean on every branch. Only THIS verdict may close.
+      if [ -n "$existing" ]; then
+        echo "reconcile-guard: clean — closing artifact #$existing"
+        "$GH" issue comment "$existing" --body "Resolved: \`fwf reconcile\` returned clean on a later push to \`${DEFAULT_BRANCH}\`. Closing automatically." >/dev/null 2>&1 || true
+        "$GH" issue close "$existing" >/dev/null 2>&1 || true
+      else
+        echo "reconcile-guard: clean — no artifact to close"
+      fi
+      return 0
+      ;;
+    2)
+      # INDETERMINATE (issue #238 AC1/AC3/AC5): lock-busy/cas-lost, nothing
+      # escalated. Touch NOTHING either direction -- this run could not
+      # confirm safe or unsafe, so it is not evidence for either a close or
+      # a file. lib.sh's own AC7 counter escalates this to rc 1 (a "suspect"
+      # verdict) if it recurs 3 times running with no intervening clean, so
+      # a race that is not actually transient still gets a durable
+      # consequence eventually -- just not from a single indeterminate tick.
+      echo "reconcile-guard: indeterminate (lock-busy/cas-lost — a lost race against a concurrent, benign writer) — not filing, not closing, re-checking next tick"
+      return 2
+      ;;
+    *)
+      # ESCALATE (rc 1, or any other unexpected nonzero -- fail toward
+      # escalation, never toward silently doing nothing).
+      if [ -n "$existing" ]; then
+        # AC4 (#179): the divergence persisted across another push. Update
+        # in place. Never file a second artifact.
+        echo "reconcile-guard: divergence persists — updating existing artifact #$existing (no duplicate filed)"
+        guard_body "$out" | "$GH" issue edit "$existing" --body-file - >/dev/null 2>&1 || true
+      else
+        echo "reconcile-guard: divergence detected — filing durable artifact"
+        guard_body "$out" | "$GH" issue create --title "$GUARD_TITLE" --body-file - 2>&1 | tail -1
+      fi
+      return 1
+      ;;
+  esac
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi

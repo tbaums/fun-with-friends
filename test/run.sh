@@ -3609,6 +3609,35 @@ CLI_RC=0; CLI_OUT2="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=e
 assert_eq   "CLI: exits non-zero when any branch is unsafe (halted-diverged)" "1" "$CLI_RC"
 assert_contains "CLI: names the diverged branch" "$CLI_OUT2" "halted-diverged staging"
 
+# --- indeterminate is its own THIRD exit code, not folded into 0 or 1 (issue
+# #238 AC1/AC5/AC6): lock-busy is the deterministic way to force it without a
+# real concurrent process -- seed the lock's owner file with THIS test
+# process's own (genuinely live) PID before calling fwf_reconcile_branch/CLI
+# in a fresh subshell, so it observes an already-held, live lock exactly as
+# a real concurrent reconcile would leave it.
+rec_seed_busy_lock() { # $1=branch (uses the current REC_RUN/PROFILE=example)
+  local dir="$REC_RUN/state/example/reconcile-lock/$1"
+  mkdir -p "$dir"
+  printf 'pid=%s\nhost=%s\n' "$$" "$(hostname)" > "$dir/owner"
+}
+
+rec_setup cli-indeterminate
+rec_seed_busy_lock staging
+CLI_RC=0; CLI_OUT3="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
+assert_eq       "CLI: lock-busy alone is its own exit code (2), not 0 or 1" "2" "$CLI_RC"
+assert_contains "CLI: reports the lock-busy branch" "$CLI_OUT3" "lock-busy staging"
+assert_contains "CLI: still reports the unaffected branch normally" "$CLI_OUT3" "clean no-op integration"
+
+rec_setup cli-indeterminate-plus-escalate
+CH2_BASE="$(rec_sha main)"
+rec_advance main
+rec_fork staging "$CH2_BASE"        # staging genuinely diverged -> escalate
+rec_seed_busy_lock integration      # integration merely lock-busy -> indeterminate
+CLI_RC=0; CLI_OUT4="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
+assert_eq "CLI: ESCALATE(1) always wins the aggregate over INDETERMINATE(2)" "1" "$CLI_RC"
+
 # --- flap detection (#114 AC9): repeated consecutive reconciles surface as an anomaly ---
 rec_setup flap
 rec_advance main
@@ -3656,6 +3685,63 @@ assert_eq "race: writer 2 (the real winner) reconciled staging to main's CURRENT
 race_rc=0; rec_run "fwf_reconcile_cas_push staging '$RACE_STALE_LEASE' '$RACE_STALE_TARGET'" || race_rc=$?
 assert_eq   "race: writer 1's late CAS push (stale lease) is rejected"       "1" "$race_rc"
 assert_eq   "race: no partial/double move -- branch still at writer 2's SHA" "$WINNER_SHA" "$(rec_sha staging)"
+
+# --- indeterminate is INDETERMINATE, not SAFE (issue #238 AC5): lock-busy
+# returned rc 0 ("safe to proceed") before this fix, which is the exact bug
+# AC5 names as the more dangerous, quiet half -- a concurrent reconcile-guard
+# run in this state used to fall into the SAME code path as a genuinely
+# clean verdict. fwf_reconcile_branch itself must now report rc 2, distinct
+# from both 0 (confirmed clean) and 1 (escalate).
+rec_setup lockbusy
+rec_seed_busy_lock staging
+rc=0; LBR_OUT="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "fwf_reconcile_branch: lock-busy returns rc 2 (INDETERMINATE), not 0" "2" "$rc"
+assert_contains "fwf_reconcile_branch: lock-busy line unchanged" "$LBR_OUT" "lock-busy staging (another reconcile in flight, skipping this tick)"
+
+# --- AC7: N=3 consecutive indeterminate verdicts (no intervening clean)
+# escalate to a suspect -- an indeterminate that is NOT actually transient
+# (a permanently stuck lock, overlapping schedulers) must not silently
+# re-check forever, re-opening the hole from the silent side.
+rec_setup indeterminate-escalate
+rec_seed_busy_lock staging
+rc=0; IE1="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "AC7: 1st consecutive indeterminate is still just indeterminate (rc 2)" "2" "$rc"
+assert_contains "AC7: 1st tick reports lock-busy, not yet escalated" "$IE1" "lock-busy staging"
+rc=0; IE2="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "AC7: 2nd consecutive indeterminate is STILL just indeterminate (rc 2)" "2" "$rc"
+rc=0; IE3="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "AC7: 3rd consecutive indeterminate escalates (rc 1, suspect)" "1" "$rc"
+assert_contains "AC7: escalated line names it a suspect"                       "$IE3" "suspect staging"
+assert_contains "AC7: escalated line names the streak count"                   "$IE3" "3 consecutive indeterminate"
+
+# --- AC7: an intervening CLEAN verdict resets the streak -- 2 indeterminate
+# ticks, then a genuine clean, then 2 more must NOT escalate (needs a fresh
+# run of 3 CONSECUTIVE, "no intervening clean" is load-bearing in the wording).
+rec_setup indeterminate-reset
+rec_seed_busy_lock staging
+rec_run 'fwf_reconcile_branch staging main' >/dev/null   # 1/3
+rec_run 'fwf_reconcile_branch staging main' >/dev/null   # 2/3
+IR_LOCKDIR="$REC_RUN/state/example/reconcile-lock/staging"
+rm -rf "$IR_LOCKDIR"   # release the seeded lock -> the NEXT tick classifies for real
+rec_run 'fwf_reconcile_branch staging main' >/dev/null   # clean no-op (EQUAL) -> resets the streak
+rec_seed_busy_lock staging
+rc=0; IR_AFTER1="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "AC7: after a reset, indeterminate #1 is not escalated" "2" "$rc"
+rc=0; IR_AFTER2="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "AC7: after a reset, indeterminate #2 is STILL not escalated (needs a fresh 3, not the pre-reset count)" "2" "$rc"
+
+# --- the counter primitive itself, directly (increment / reset / threshold),
+# persisted under FWF_RUN so it survives across separate invocations exactly
+# like the existing flap-detector's streak file does.
+rec_setup indeterminate-streak-unit
+S1="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
+assert_eq "fwf_reconcile_indeterminate_streak: first call increments 0 -> 1" "1" "$S1"
+S2="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
+assert_eq "fwf_reconcile_indeterminate_streak: persisted across invocations, increments 1 -> 2" "2" "$S2"
+S3="$(rec_run 'fwf_reconcile_indeterminate_streak staging 0')"
+assert_eq "fwf_reconcile_indeterminate_streak: a clean(0) call resets it to 0" "0" "$S3"
+S4="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
+assert_eq "fwf_reconcile_indeterminate_streak: the next increment starts from the reset value, not the old streak" "1" "$S4"
 
 # --- captain-tick guard is wired at the template level (#114 AC4/AC5) ------
 # Every REAL captain template that owns a RELEASE ENGINEERING job (promotes
@@ -3913,6 +3999,114 @@ assert_eq       "AC3: clean verdict -> guard exits 0" "0" "$rc"
 assert_contains "AC3: clean verdict closes the open artifact" "$OUT3" "closing artifact"
 assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue close')"
 assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"
+
+# --------------------------------------------------------------------------
+section "reconcile-guard: indeterminate is neither clean nor a divergence (#238)"
+# fwf_reconcile_branch (lib.sh) used to return the SAME rc 1 for
+# halted-diverged, suspect, AND cas-lost, and rc 0 (folded in with genuinely
+# SAFE states) for lock-busy -- but none of those three groupings were
+# right. halted-diverged/suspect genuinely need a human. cas-lost and
+# lock-busy are both a lost race against a CONCURRENT, benign writer (lib.sh's
+# own comment on cas-lost: "re-classify next tick, don't assume-safe in the
+# meantime") -- self-healing, not a divergence, but ALSO not confirmed safe
+# (AC5: lock-busy at rc 0 could close a real, open divergence artifact --
+# "the quiet half," more dangerous than cas-lost's noisy false alarm). The
+# fix is a genuine THIRD exit code (rc 2, "indeterminate") that the guard
+# branches on directly (AC6) -- no text parsing anywhere in this file.
+# Drives the REAL, unmodified fwf-reconcile-guard.sh (no logic is
+# duplicated/re-implemented here) with FWF_RECONCILE_SCRIPT pointed at a
+# stub -- the same substitution pattern FWF_GH already uses -- so exact exit
+# codes can be asserted deterministically instead of chasing a live race.
+guard_reconcile_stub() { # $1=dir $2=stub stdout (fwf-reconcile.sh's report lines) $3=stub exit code -> echoes the stub's path
+  mkdir -p "$1"
+  cat > "$1/fwf-reconcile.sh" <<STUBEOF
+#!/usr/bin/env bash
+cat <<'OUTEOF'
+$2
+OUTEOF
+exit $3
+STUBEOF
+  chmod +x "$1/fwf-reconcile.sh"
+  printf '%s/fwf-reconcile.sh' "$1"
+}
+rec_setup guard-caslost   # any valid repo; the stub never actually classifies it
+
+# AC1: indeterminate (rc 2) ALONE -> do not file, exit 2 (not 0 -- AC1
+# revised: rc 0 IS the artifact-close path, so 0 is reserved exclusively for
+# confirmed-clean; using it for indeterminate would risk closing a real
+# artifact the moment this code is refactored back toward two branches).
+CL_DIR="$TMP/rec238-indeterminate"
+CL_STUB="$(guard_reconcile_stub "$CL_DIR" "cas-lost staging (ref moved under us, re-check next tick)" 2)"
+CL_GH="$TMP/rec238-indeterminate-gh"; guard_stub "$CL_GH"
+rc=0; CL_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$CL_STUB" FWF_GH="$CL_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1)" || rc=$?
+GH_LOG="$CL_GH/calls.log"
+assert_eq       "AC1: indeterminate alone -> guard exits its OWN code (2), never 0" "2" "$rc"
+assert_contains "AC1: guard reports it, does not file" "$CL_OUT" "indeterminate"
+assert_eq       "AC1: no artifact filed for a self-healing race" "0" "$(gh_calls 'issue create')"
+
+# AC3: indeterminate must not close an EXISTING artifact either -- it is not
+# evidence a real divergence resolved, only that this run couldn't confirm
+# either way.
+CL2_DIR="$TMP/rec238-indeterminate-existing"
+CL2_STUB="$(guard_reconcile_stub "$CL2_DIR" "cas-lost integration (ref moved under us, re-check next tick)" 2)"
+CL2_GH="$TMP/rec238-indeterminate-existing-gh"; guard_stub "$CL2_GH"
+printf 'OPEN\n' > "$CL2_GH/issues.json"   # a real divergence artifact is already open
+rc=0; CL2_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$CL2_STUB" FWF_GH="$CL2_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch integration 2>&1)" || rc=$?
+GH_LOG="$CL2_GH/calls.log"
+assert_eq       "AC3: indeterminate with an existing artifact still exits 2" "2" "$rc"
+assert_eq       "AC3: indeterminate does NOT close the existing artifact" "0" "$(gh_calls 'issue close')"
+assert_eq       "AC3: indeterminate does NOT edit the existing artifact either" "0" "$(gh_calls 'issue edit')"
+assert_eq       "AC3: indeterminate still files nothing" "0" "$(gh_calls 'issue create')"
+
+# AC5 (the qa2 finding this ticket was reopened for): lock-busy specifically
+# -- fixed at its OWN root (fwf_reconcile_branch now returns rc 2 for it, see
+# the lib.sh-level tests above) -- must not close an existing artifact when
+# it reaches the guard, exactly like cas-lost.
+LB_DIR="$TMP/rec238-lockbusy-guard"
+LB_STUB="$(guard_reconcile_stub "$LB_DIR" "lock-busy staging (another reconcile in flight, skipping this tick)" 2)"
+LB_GH="$TMP/rec238-lockbusy-guard-gh"; guard_stub "$LB_GH"
+printf 'OPEN\n' > "$LB_GH/issues.json"   # a real divergence artifact is already open
+rc=0; LB_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$LB_STUB" FWF_GH="$LB_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1)" || rc=$?
+GH_LOG="$LB_GH/calls.log"
+assert_eq "AC5: lock-busy alone must NOT close an existing (real) divergence artifact" "0" "$(gh_calls 'issue close')"
+
+# AC2: halted-diverged/suspect are UNCHANGED -- still escalate.
+MIX_DIR="$TMP/rec238-mixed"
+MIX_STUB="$(guard_reconcile_stub "$MIX_DIR" "halted-diverged staging abc1234 def5678" 1)"
+MIX_GH="$TMP/rec238-mixed-gh"; guard_stub "$MIX_GH"
+rc=0; MIX_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$MIX_STUB" FWF_GH="$MIX_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+GH_LOG="$MIX_GH/calls.log"
+assert_eq       "AC2: a genuine divergence still escalates (rc 1, unchanged)" "1" "$rc"
+assert_eq       "AC2: an artifact is still filed for the real divergence" "1" "$(gh_calls 'issue create')"
+assert_contains "AC2: guard surfaces the real divergence verdict" "$MIX_OUT" "halted-diverged staging"
+
+# AC6: the guard branches on the EXIT CODE, never on $out's text -- proven by
+# giving it text that names NEITHER "cas-lost" NOR "lock-busy" NOR
+# "halted-diverged"/"suspect" at all (a deliberately unrecognizable message)
+# and confirming the exit code alone still drives the correct decision both
+# ways: rc 2 -> indeterminate (no file/close) even though the text doesn't
+# say so, and rc 1 -> escalate (files) even though the text doesn't say so
+# either.
+AC6_IND_DIR="$TMP/rec238-ac6-indeterminate"
+AC6_IND_STUB="$(guard_reconcile_stub "$AC6_IND_DIR" "totally-opaque-message-mentioning-nothing-recognizable" 2)"
+AC6_IND_GH="$TMP/rec238-ac6-indeterminate-gh"; guard_stub "$AC6_IND_GH"
+printf 'OPEN\n' > "$AC6_IND_GH/issues.json"
+rc=0; AC6_IND_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$AC6_IND_STUB" FWF_GH="$AC6_IND_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+GH_LOG="$AC6_IND_GH/calls.log"
+assert_eq "AC6: exit code 2 alone (unrecognizable text) still means indeterminate -- no close" "0" "$(gh_calls 'issue close')"
+
+AC6_ESC_DIR="$TMP/rec238-ac6-escalate"
+AC6_ESC_STUB="$(guard_reconcile_stub "$AC6_ESC_DIR" "totally-opaque-message-mentioning-nothing-recognizable" 1)"
+AC6_ESC_GH="$TMP/rec238-ac6-escalate-gh"; guard_stub "$AC6_ESC_GH"
+rc=0; AC6_ESC_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$AC6_ESC_STUB" FWF_GH="$AC6_ESC_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+GH_LOG="$AC6_ESC_GH/calls.log"
+assert_eq "AC6: exit code 1 alone (unrecognizable text) still means escalate -- files" "1" "$(gh_calls 'issue create')"
 
 # --------------------------------------------------------------------------
 section "fwf gate --tip-cmd: tip-triggered gating, not timer-triggered (#202)"

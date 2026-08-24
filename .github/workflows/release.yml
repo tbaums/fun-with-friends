@@ -210,5 +210,15 @@ jobs:
           # the case a `::warning::` inside a green run would bury. Route it to
           # the same durable, self-closing artifact ci.yml uses, then keep the
           # release green.
-          ./fwf reconcile-guard \
-            || echo "::warning::post-publish reconcile needs a human — a tracking issue has been filed; the release itself succeeded"
+          #
+          # Issue #238: reconcile-guard now also exits 2 for an INDETERMINATE
+          # verdict (lock-busy/cas-lost -- a lost race against a concurrent,
+          # benign writer, not a divergence), which files no artifact at all.
+          # Claiming "a tracking issue has been filed" on that exit code would
+          # be false, so the warning is worded from the exit code, not assumed.
+          rc=0; ./fwf reconcile-guard || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::post-publish reconcile hit a transient, self-healing race (lock-busy/cas-lost) — no tracking issue filed, next run re-classifies; the release itself succeeded"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::warning::post-publish reconcile needs a human — a tracking issue has been filed; the release itself succeeded"
+          fi

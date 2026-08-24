@@ -33,10 +33,16 @@
 #                    staleness, not divergence, and must not block a release.
 #
 # Prints one report line per branch (see fwf_reconcile_branch's header for the
-# exact line shapes) and exits 0 iff EVERY branch is safe to build on
-# (reconciled / normal-ahead / clean no-op / lock-busy); exits 1 if ANY branch
-# is halted-diverged, suspect, or cas-lost -- the caller (captain tick) MUST
-# treat a non-zero exit as "do not assign new work onto that base".
+# exact line shapes and the full three-way rc contract, issue #238 AC6).
+# Exit 0 = EVERY branch confirmed SAFE (reconciled / normal-ahead / clean
+#          no-op) -- safe to build on, and safe to close a stale artifact
+#          about it.
+# Exit 1 = ANY branch is halted-diverged or suspect (ESCALATE) -- the caller
+#          MUST treat this as "do not assign new work onto that base" and,
+#          for reconcile-guard specifically, file/update a durable artifact.
+# Exit 2 = no branch escalated, but ANY branch is lock-busy or cas-lost
+#          (INDETERMINATE) -- not confirmed safe, not an escalation either;
+#          re-classify next tick. --check never returns 2 (see below).
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -54,14 +60,25 @@ main() {
   done
   [ "${#branches[@]}" -gt 0 ] || branches=("$STAGING_BRANCH" "$INTEGRATION_BRANCH")
 
-  local rc=0 line
+  # Aggregate rc across all branches (issue #238 AC6): ESCALATE(1) always
+  # wins over INDETERMINATE(2), which always wins over SAFE(0) -- so a caller
+  # gets the single WORST class present, never masked by a later safe branch.
+  # --check never returns 2 (fwf_reconcile_check_branch has no lock-busy/
+  # cas-lost concept -- it never mutates, so nothing to race), so this stays
+  # the existing binary 0/1 contract for the pre-publish gate.
+  local rc=0 line branch_rc
   for b in "${branches[@]}"; do
+    branch_rc=0
     if [ "$check" -eq 1 ]; then
-      line="$(fwf_reconcile_check_branch "$b" "$against")" || rc=1
+      line="$(fwf_reconcile_check_branch "$b" "$against")" || branch_rc=$?
     else
-      line="$(fwf_reconcile_branch "$b" "$against")" || rc=1
+      line="$(fwf_reconcile_branch "$b" "$against")" || branch_rc=$?
     fi
     printf '%s\n' "$line"
+    case "$branch_rc" in
+      1) rc=1 ;;
+      2) [ "$rc" -eq 0 ] && rc=2 ;;
+    esac
   done
   return "$rc"
 }

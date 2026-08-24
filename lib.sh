@@ -1320,6 +1320,12 @@ FWF_RECONCILE_HISTORY_DIR="$FWF_STATE_DIR/reconcile-history"
 # anomaly (issue #114 AC9) -- something is re-staling the branch between
 # ticks, which is never expected in steady state.
 FWF_RECONCILE_FLAP_THRESHOLD="${FWF_RECONCILE_FLAP_THRESHOLD:-2}"
+FWF_RECONCILE_INDETERMINATE_DIR="$FWF_STATE_DIR/reconcile-indeterminate"
+# How many CONSECUTIVE indeterminate verdicts (lock-busy / cas-lost) for the
+# same branch, with no intervening clean, escalate to suspect (issue #238
+# AC7) -- an indeterminate that never resolves (a permanently-overlapping
+# scheduler, a stuck lock) must not silently re-check forever.
+FWF_RECONCILE_INDETERMINATE_THRESHOLD="${FWF_RECONCILE_INDETERMINATE_THRESHOLD:-3}"
 
 # $1=branch $2=mainbranch -> echoes "BEHIND <branch-sha> <main-sha>" /
 # "AHEAD ..." / "EQUAL ..." / "DIVERGED ..." / "SUSPECT <reason>". Always rc 0
@@ -1394,6 +1400,25 @@ fwf_reconcile_record_history() {
   fi
 }
 
+# $1=branch $2=1(indeterminate: lock-busy/cas-lost)|0(clean: reset) -> updates
+# the PERSISTED consecutive-indeterminate streak for $1 (issue #238 AC7) and
+# echoes the streak AFTER this update. Only a genuinely SAFE verdict
+# (EQUAL/AHEAD/reconciled) resets it -- "no intervening clean" per the AC's
+# own wording, so a halted-diverged/suspect in between does NOT reset it
+# (that state already escalates on its own merit regardless of this counter).
+# Separate from fwf_reconcile_record_history: that tracks RECONCILED-flap,
+# an unrelated concept, and conflating the two files would corrupt both.
+fwf_reconcile_indeterminate_streak() {
+  local branch="$1" indeterminate="$2" f streak=0
+  f="$FWF_RECONCILE_INDETERMINATE_DIR/$branch"
+  mkdir -p "$FWF_RECONCILE_INDETERMINATE_DIR" 2>/dev/null || true
+  [ -f "$f" ] && streak="$(cat "$f" 2>/dev/null || echo 0)"
+  case "$streak" in ''|*[!0-9]*) streak=0;; esac
+  if [ "$indeterminate" -eq 1 ]; then streak=$((streak + 1)); else streak=0; fi
+  printf '%s\n' "$streak" > "$f"
+  printf '%s' "$streak"
+}
+
 # The FF-or-halt helper: classify $1=branch against $2=mainbranch and, iff
 # BEHIND, fast-forward it with a compare-and-swap push
 # (--force-with-lease=<branch>:<observed-sha>) so a racing writer that already
@@ -1411,27 +1436,49 @@ fwf_reconcile_record_history() {
 #   "suspect <branch> <reason>"
 #   "lock-busy <branch> (another reconcile in flight, skipping this tick)"
 #   "cas-lost <branch> (ref moved under us, re-check next tick)"
-# rc 0 = safe to proceed (reconciled / normal-ahead / clean no-op / lock-busy).
-# rc 1 = DO NOT assign new work onto this base (halted-diverged / suspect /
-# cas-lost -- cas-lost is transient-unsafe: re-classify next tick, don't
-# assume-safe in the meantime).
+#   "suspect <branch> <N> consecutive indeterminate verdicts ..." (escalated,
+#     issue #238 AC7 -- an indeterminate that never resolves)
+#
+# THREE-WAY return protocol (issue #238 AC6 -- callers branch on the EXIT
+# CODE, never on $out's text; substring-matching human-readable prose to make
+# a safety decision breaks silently the moment someone rewords the message):
+#   rc 0 = SAFE -- confirmed clean, fine to proceed AND fine to close a stale
+#          artifact about this branch (reconciled / normal-ahead / clean no-op).
+#   rc 1 = ESCALATE -- DO NOT assign new work onto this base; a durable,
+#          human-addressed consequence is warranted (halted-diverged / suspect,
+#          including a suspect reached via the AC7 counter below).
+#   rc 2 = INDETERMINATE -- lock-busy / cas-lost. NOT confirmed safe (do not
+#          assign new work, do not close an existing artifact) and NOT (yet)
+#          an escalation either (do not file one) -- this run simply could not
+#          confirm either way. Self-healing: re-classify next tick. Distinct
+#          from rc 0 specifically so a caller can never again reach a "confirmed
+#          clean" code path by accident on an unconfirmed state (issue #238's
+#          own root cause: rc 0 doubled as "nothing to report" AND "safe to
+#          close an artifact," and lock-busy/cas-lost got the former for free).
 fwf_reconcile_branch() {
-  local branch="$1" mainbranch="$2" classification state b_sha m_sha
+  local branch="$1" mainbranch="$2" classification state b_sha m_sha streak
   if ! fwf_reconcile_lock_try "$branch"; then
+    streak="$(fwf_reconcile_indeterminate_streak "$branch" 1)"
+    if [ "$streak" -ge "$FWF_RECONCILE_INDETERMINATE_THRESHOLD" ]; then
+      printf 'suspect %s %s consecutive indeterminate verdicts (lock-busy/cas-lost) with no intervening clean\n' "$branch" "$streak"
+      return 1
+    fi
     printf 'lock-busy %s (another reconcile in flight, skipping this tick)\n' "$branch"
-    return 0
+    return 2
   fi
   classification="$(fwf_reconcile_classify "$branch" "$mainbranch")"
   state="${classification%% *}"
   case "$state" in
     EQUAL)
       fwf_reconcile_record_history "$branch" NOOP
+      fwf_reconcile_indeterminate_streak "$branch" 0
       printf 'clean no-op %s (already == main)\n' "$branch"
       fwf_reconcile_lock_release "$branch"
       return 0
       ;;
     AHEAD)
       fwf_reconcile_record_history "$branch" NOOP
+      fwf_reconcile_indeterminate_streak "$branch" 0
       printf 'normal-ahead %s (leads main, no action)\n' "$branch"
       fwf_reconcile_lock_release "$branch"
       return 0
@@ -1453,14 +1500,20 @@ fwf_reconcile_branch() {
       read -r _ b_sha m_sha <<<"$classification"
       if fwf_reconcile_cas_push "$branch" "$b_sha" "$m_sha"; then
         fwf_reconcile_record_history "$branch" RECONCILED
+        fwf_reconcile_indeterminate_streak "$branch" 0
         printf 'reconciled %s %s -> %s\n' "$branch" "$b_sha" "$m_sha"
         fwf_reconcile_lock_release "$branch"
         return 0
       else
         fwf_reconcile_record_history "$branch" NOOP
-        printf 'cas-lost %s (ref moved under us, re-check next tick)\n' "$branch"
+        streak="$(fwf_reconcile_indeterminate_streak "$branch" 1)"
         fwf_reconcile_lock_release "$branch"
-        return 1
+        if [ "$streak" -ge "$FWF_RECONCILE_INDETERMINATE_THRESHOLD" ]; then
+          printf 'suspect %s %s consecutive indeterminate verdicts (lock-busy/cas-lost) with no intervening clean\n' "$branch" "$streak"
+          return 1
+        fi
+        printf 'cas-lost %s (ref moved under us, re-check next tick)\n' "$branch"
+        return 2
       fi
       ;;
   esac
