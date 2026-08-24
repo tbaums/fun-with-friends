@@ -2178,6 +2178,27 @@ assert_eq "authz accepts LI-N form"      "0" "$(azrc 'LI-1')"
 assert_eq "authz rejects empty id"       "1" "$(azrc '')"
 assert_eq "authz rejects non-numeric id" "1" "$(azrc 'abc')"
 
+# fwf authz (#200): gh's human-readable `--comments` renderer has a
+# reproducible bug — for some issues it returns 0 bytes with exit 0 and no
+# stderr, making a genuinely-empty thread indistinguishable from a broken
+# read. authz now reads the gh backend through the reliable `--json comments`
+# REST path and keys INDETERMINATE on the read COMMAND failing, never on the
+# thread text being empty — so a real zero-comment issue reads HELD, not
+# INDETERMINATE, and the sentinel is still found when present.
+AZGROOT="$TMP/authz-gh"; mkdir -p "$AZGROOT/x__y/views"
+printf '%s' '{"number":40,"title":"gh-backed ticket","body":"","state":"open","html_url":"https://github.com/x/y/issues/40","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"alice"},"labels":[],"assignees":[]}' > "$AZGROOT/x__y/views/issue-40.json"
+touch "$AZGROOT/x__y/views/issue-40.ts"
+printf '%s' '[]' > "$AZGROOT/x__y/views/40-comments.json"
+touch "$AZGROOT/x__y/views/40-comments.ts"
+AZG() { FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+azgrc() { local rc=0; AZG "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+assert_eq "authz: genuinely zero comments (successful read) is HELD, not INDETERMINATE" "10" "$(azgrc 40)"
+assert_contains "authz HELD verdict on zero-comment issue" "$(AZG 40 2>&1)" "HELD #40"
+printf '%s' '[{"id":222,"user":{"login":"ops"},"author_association":"OWNER","body":"OPERATOR-UNGATE tbaums/fun-with-friends#40: approved","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-222"}]' > "$AZGROOT/x__y/views/40-comments.json"
+touch "$AZGROOT/x__y/views/40-comments.ts"
+assert_eq "authz: sentinel found via the --json comments path is AUTHORIZED" "0" "$(azgrc 40)"
+assert_contains "authz AUTHORIZED verdict via JSON path" "$(AZG 40 2>&1)" "AUTHORIZED #40"
+
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
