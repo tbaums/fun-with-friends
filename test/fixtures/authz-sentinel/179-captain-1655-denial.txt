@@ -1,0 +1,37 @@
+GV-CHANGES: posting this marker deliberately to **supersede my 2026-08-15 GV-SIGNOFF**, which is now stale and must not be read as covering this ticket. That sign-off was against a one-off cleanup spec for an acute divergence. The goal is now durable prevention, which is a different work product at a much higher bar. **#179 is not GV-signed-off.** The PM's refinement has not landed yet, so there is nothing to review — this is advisory input so the rewrite starts from the right premise.
+
+**Authorization, verified independently rather than taken from the thread:** I ran `fwf authz 179` myself and it returns **HELD** — no OPERATOR-UNGATE signal. That matches what the captain reported. The captain's handling here was correct and I want to say so explicitly, because this is the exact shape that went wrong on transom #1149: it separated *priority direction* from *authorization*, stated plainly that typed pane text is not the authorization artifact regardless of who typed it, and told impls not to claim on the strength of the comment. That is the right discipline. I'll note for the record that I cannot verify the provenance of the relayed directive and am not asserting it — but I don't need to, because the technical ask stands on its own merits and my reviewing a gated draft needs no authorization.
+
+---
+
+**On the central design question you directed at me — I went and looked, and the answer is none of your three options.**
+
+You asked whether #114 was never invoked on the direct-to-main path, invoked but silently failing, or correct-but-bypassable. It is a fourth thing, and the distinction matters for the spec:
+
+> **#114 did not regress. It was never enforceable.** The classifier works correctly and every one of its call sites is free to discard the result.
+
+Four invocation points, all verified in source:
+
+1. **`.github/workflows/release.yml:149`** — `./fwf reconcile || echo "::warning::staging/integration reconcile needs a human look … the release itself still succeeded"`. `fwf reconcile` exits 1 precisely on `halted-diverged`/`suspect`/`cas-lost` (`fwf-reconcile.sh:28-31`) — it detects the #179 condition correctly — and the `||` converts that into a GitHub Actions warning that does not fail anything. The step's own comment states the intent: *"don't fail the release for that, it already published."* The mechanism fires, reports correctly, and its verdict is thrown away at the call site.
+2. **`templates/dev/captain.tmpl:57`** — the stale-base guard: *"On a non-zero exit, do NOT assign new work onto that base."* That is **a prose instruction to an agent**, not an enforcement.
+3. **`templates/dev/captain.tmpl:64`** — *"After releasing (or any direct-to-`main` hotfix), run `fwf reconcile`."* Also prose.
+4. **`RELEASING.md:122-123`** — the hand-rolled fallback release path: *"Since the workflow's reconcile step didn't run, do it yourself."* A manual prose step — **which is verbatim the original #114 failure mode.** `fwf-reconcile.sh:5-7` says #114 exists because *"the release runbook's re-sync step was a MANUAL prose instruction and got skipped (the 2026-07-14 incident)."* #114 automated the happy path and left the manual path as prose. If the rewrite does not cover the hand-rolled release path, it reproduces #114's own history exactly.
+
+So the spec should not be written as "find the regression and prevent it." It should be written as: **the classifier is sound; build the enforcement it never had.** That reframing changes what gets built.
+
+**Dissolving the dichotomy in `release.yml:149`.** The `||` is there for a *legitimate* reason — failing a publish job after the artifacts already published is confusing and trains people to ignore red releases. So don't argue "fail the release" against "swallow the warning." A post-release divergence is not a release failure; it is a **durable, tracked obligation**:
+
+- reconcile exit-1 in the workflow creates or updates a **persistent artifact** (a labeled issue, or a state marker the dash surfaces) that survives until the divergence is resolved — not a warning that collapses in the Actions log and is never read;
+- the publish job still goes green, because the release genuinely succeeded.
+
+**And the enforcement belongs where work starts, which means #179 should not build its own.** "Self-enforcing" in the directive should be read as: *no ticket can be assigned or claimed onto a diverged base.* That is mechanically identical to **#207** (enforce authorization at the point of action rather than the point of belief) — same shape, same failure mode, same fix. `captain.tmpl:57` is a point-of-belief check in exactly the sense #207 describes. **@tbaums my recommendation is that #179 becomes the first consumer of #207's enforcement mechanism rather than growing a parallel one** — otherwise we ship two half-enforcements that each cover one path, which is how #114 got here.
+
+**Acceptance criteria that would actually go RED on the recurrence**, per your ask:
+
+- **(1)** Fixture: `staging` genuinely diverged from `main`. Run the release workflow's reconcile step. Assert it produces a **durable artifact** that outlives the run. Today's `|| echo ::warning::` fails this — that is the regression test for the specific mode.
+- **(2)** With a diverged base recorded, assert an assignment/claim onto that base is **refused mechanically**, not merely discouraged in a prompt.
+- **(3)** The hand-rolled release path (`RELEASING.md:122`) is covered — either the manual path invokes the same enforcement, or the manual path is removed. A prose step here is the original bug.
+- **(4)** Discriminating half, or (2) passes by refusing everything: a branch that legitimately **leads** `main` mid-promotion (`normal-ahead`) must still allow assignment. `fwf reconcile` already classifies this correctly and the enforcement must not flatten it.
+- **(5)** A resolved divergence clears the artifact and unblocks assignment, so the mechanism cannot wedge the floor after the problem is fixed.
+
+**One scoping caution.** The title and body still describe the 2026-08-15 acute incident, which is resolved. Rewrite the body rather than appending — a ticket whose Problem section describes a fixed condition invites an implementer to verify the branches are equal, find they are, and close it having built nothing. That is the outcome the captain's comment is trying to prevent, and the body is currently working against it.

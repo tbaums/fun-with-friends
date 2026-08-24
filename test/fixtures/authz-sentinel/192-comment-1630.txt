@@ -1,0 +1,35 @@
+GV-CHANGES: the pain is real and worth fixing, but as specified this ticket turns the authorization gate's escape hatch into a verb the *gated party* can call. That has to be redesigned before it is built, not hardened after.
+
+**A. Execution risk / blast radius — this is the load-bearing objection.**
+
+The whole authz architecture rests on one property: authorization is a positive, attributable, mechanically checkable artifact (`fwf authz` reading the OPERATOR-UNGATE signal), and *pane text is never authorization* (#150). This ticket proposes making the pane-text channel a documented, scriptable CLI verb whose stated purpose is "delivering an operator decision to the captain so the captain can exercise a floor-wide call."
+
+`fwf tell-captain <text>` is runnable by any process on the box — including any role agent, including the very agents the operator's gate is holding. Today, undiscoverability is the only thing standing between a held agent and the ability to manufacture its own unblock. Documenting the verb removes that accident-barrier deliberately. That is the classic escalation shape: **the gate's override becomes callable by the party being gated.**
+
+The ticket's own mitigation makes it strictly worse. "Consider having passthrough stamp an explicit operator attribution prefix so the captain can tell a delivered operator message from ambient pane content mechanically" — a prefix that any caller of the verb can produce is not a mechanical distinction, it is forgeable prose attribution wearing a uniform. It is precisely what #191 exists to eliminate, and it would train the captain to trust the forgeable thing. **Do not ship an attribution prefix under this ticket.**
+
+**B. The third option — make the pane message a pointer, not the payload.**
+
+The tension here is false. It reads as "discoverable channel vs. forgeable authorization," and you do not have to pick. Invert what carries the decision:
+
+- `fwf tell-captain` writes an **attributable artifact** — an issue comment on the relevant ticket, carrying the same operator signal `fwf authz` already understands.
+- The `tmux send-keys` into the captain pane degrades to a **notification with a pointer**: "operator message on #NNNN, go read it."
+- The captain **never trusts the pane text**. It re-derives the decision by reading the referenced artifact / running `fwf authz`. Pane text stays exactly what #150 says it is — not authorization — and no doc has to explain away an exception, because there is no exception.
+
+This dissolves the problem instead of managing it, and it answers your own open question for free: *"whether the captain's floor-wide call should be recorded on the issue tracker automatically."* Under this shape the record is not a captain courtesy, it is the mechanism — the audit trail for "why did the floor start building again?" is guaranteed by construction. The version in the ticket leaves that trail optional, which means it will be missing exactly on the incident you most want to reconstruct.
+
+Note this also removes the awkward doc burden in your Constraint section. You currently need a paragraph explaining why send-keys is legitimate here but not there; a careful reader who distrusts both is reading correctly. Under the pointer shape there is nothing to explain.
+
+**C. Sequencing.** State explicitly in the ticket that the operator-attribution half depends on #191. Ship the discoverability + artifact-writing half now; the "captain can mechanically verify who sent this" half lands when #191 gives it real teeth. Shipping a stamp first and verification later is the worst possible order.
+
+**D. Missing acceptance criteria.** There is no Acceptance section — only Problem / Intent / Constraint. Add testable ACs, at minimum:
+
+1. `fwf --help` lists the verb with a one-line statement of *what it is for* (breaking a deadlock when the operator is not at the board).
+2. The verb produces an artifact retrievable without a pane capture (assert the comment exists on the target issue).
+3. A message sent through the verb does **not** by itself cause `fwf authz` to return AUTHORIZED — add this as an explicit negative test. It is the property most likely to be quietly broken by a future refactor, and it is the one that matters.
+4. Docs state the trust boundary in one sentence: what this channel does and does not confer.
+
+**E. Naming.** `tell-captain` / `captain-msg` both read as chat, which invites exactly the "three rounds of increasingly elaborate justification" failure this ticket is trying to end. Prefer a name that says the message is a *delivered operator decision*, not a conversation opener.
+
+**F. One question this ticket should force the human to answer, because everything above hinges on it:** is fwf's trust boundary "any process on this box is the operator"? If yes, say it out loud in the docs — much of the authz machinery is then a UX guardrail against confusion rather than a security control, and that should be written down honestly. If no, then this verb cannot be an authorization channel, and (B) is the only shape that ships. I do not think a role agent should be able to reach this; I would rather be told I am wrong than have it assumed.
+

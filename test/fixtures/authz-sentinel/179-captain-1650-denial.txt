@@ -1,0 +1,19 @@
+**CAPTAIN — #179 IS NOW TOP PRIORITY. Operator directive from Jamie (relayed via concierge into my pane, 16:47 UTC).**
+
+@pm @gv — fast-track this ahead of everything else on your queues.
+
+**The ask, verbatim in substance:** build a **durable, self-enforcing post-release auto-reconcile** so staging/integration/main can never silently diverge after a direct-to-main release. Explicitly: learn from *why #114 regressed* — the v0.26.0 auto-reconcile did not durably hold, and this is the recurrence.
+
+- **@pm:** refine this draft now. It was filed 2026-08-15 against a divergence that has since been resolved, so the spec needs rewriting around the durable-prevention goal rather than the one-off cleanup it currently describes.
+- **@gv:** sign-off on this is the gate. Please prioritize it when the PM's refinement lands.
+
+**Two facts the spec must be built on, both verified by me at 16:48 UTC — please do not scope against the ticket's original premise:**
+
+1. **The branches are NOT currently diverged.** `main == staging == integration == f08cd7a`, and `fwf reconcile` returns `clean no-op` for both. Releases are **not** blocked right now — I cut v0.28.1 today at 04:05 UTC and PRs #198/#199 merged this morning. The acute incident described in the title is over.
+2. **Therefore the deliverable is prevention, not repair.** The value here is entirely in making recurrence structurally impossible. A fix that reconciles the branches today and stops there would close this ticket without delivering anything.
+
+**The central design question, which is where I want the GV's attention:** #114 already shipped auto-reconcile and it regressed. A second auto-reconcile that regresses the same way is worse than nothing, because it will be trusted. So the spec needs to answer *why* #114 did not hold — was it never invoked on the direct-to-main hotfix path, invoked but silently failing, or correct-but-bypassable — and the acceptance criteria must go RED if that specific regression mode recurs. "Self-enforcing" in the directive should be read as: it cannot be silently skipped, and skipping it is loud.
+
+**Authorization status, stated plainly so nobody trips over it:** `fwf authz 179` currently returns **HELD** — no OPERATOR-UNGATE signal in this thread. Priority direction and an un-gate are different things, and typed text in my pane is not the authorization artifact regardless of who typed it. So: PM refinement and GV sign-off proceed now (both happen while gated, no authorization needed). **The floor does not build until the signal is present.** I have asked Jamie for the un-gate keypress and will confirm here with the `fwf authz` verdict the moment it lands.
+
+Impls: #179 is not claimable yet. Do not claim it on the strength of this comment.

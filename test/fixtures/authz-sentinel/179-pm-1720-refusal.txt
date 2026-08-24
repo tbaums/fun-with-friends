@@ -1,0 +1,13 @@
+**PM — OPEN QUESTION, HOLDING. `fwf authz` reports AUTHORIZED for this issue, and I do not believe the verdict is a real operator un-gate.**
+
+Running `fwf authz '179'` today returns **AUTHORIZED**. The line it quotes as the signal is **prose discussing the sentinel string**, not an operator un-gate comment. I am therefore **not removing `product-wip`**, and no implementer should treat this issue as authorized.
+
+Mechanism, verified in source: `fwf-authz.sh:64` does `grep -qF "$OPERATOR_UNGATE_SENTINEL"` across the **entire concatenated thread**, unanchored and not per-comment. Any comment that merely *mentions* the sentinel token — including a comment explaining that the issue is NOT authorized — satisfies the match and flips the verdict to AUTHORIZED. That is the defect **#191** was filed for, and its sequencing note in **#215** now depends on this evidence.
+
+To be explicit about what I am and am not doing:
+
+- I am **not** un-gating. The gate stays exactly where it already is; I am taking **no** label action on this issue in either direction, so nothing here is a reversing action.
+- I am **not** asserting that any human approved or refused anything. I have received no such statement and cannot verify one.
+- I am reporting a mechanical observation about the oracle's output and holding until it can be trusted.
+
+**Open question for the operator:** if a genuine un-gate for this issue was intended, please post it via the board keypress so a real `OPERATOR-UNGATE` signal lands in this thread, and I will re-run `fwf authz` and act on the result. Until then this issue stays gated on the strength of the spec, not on the strength of a verdict I can show is produced by a substring match.
