@@ -3634,8 +3634,8 @@ CH2_BASE="$(rec_sha main)"
 rec_advance main
 rec_fork staging "$CH2_BASE"        # staging genuinely diverged -> escalate
 rec_seed_busy_lock integration      # integration merely lock-busy -> indeterminate
-CLI_RC=0; CLI_OUT4="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
+CLI_RC=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main >/dev/null 2>&1 || CLI_RC=$?
 assert_eq "CLI: ESCALATE(1) always wins the aggregate over INDETERMINATE(2)" "1" "$CLI_RC"
 
 # --- flap detection (#114 AC9): repeated consecutive reconciles surface as an anomaly ---
@@ -3707,7 +3707,7 @@ rec_seed_busy_lock staging
 rc=0; IE1="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
 assert_eq       "AC7: 1st consecutive indeterminate is still just indeterminate (rc 2)" "2" "$rc"
 assert_contains "AC7: 1st tick reports lock-busy, not yet escalated" "$IE1" "lock-busy staging"
-rc=0; IE2="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+rc=0; rec_run 'fwf_reconcile_branch staging main' >/dev/null 2>&1 || rc=$?
 assert_eq       "AC7: 2nd consecutive indeterminate is STILL just indeterminate (rc 2)" "2" "$rc"
 rc=0; IE3="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
 assert_eq       "AC7: 3rd consecutive indeterminate escalates (rc 1, suspect)" "1" "$rc"
@@ -3725,9 +3725,9 @@ IR_LOCKDIR="$REC_RUN/state/example/reconcile-lock/staging"
 rm -rf "$IR_LOCKDIR"   # release the seeded lock -> the NEXT tick classifies for real
 rec_run 'fwf_reconcile_branch staging main' >/dev/null   # clean no-op (EQUAL) -> resets the streak
 rec_seed_busy_lock staging
-rc=0; IR_AFTER1="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+rc=0; rec_run 'fwf_reconcile_branch staging main' >/dev/null 2>&1 || rc=$?
 assert_eq       "AC7: after a reset, indeterminate #1 is not escalated" "2" "$rc"
-rc=0; IR_AFTER2="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+rc=0; rec_run 'fwf_reconcile_branch staging main' >/dev/null 2>&1 || rc=$?
 assert_eq       "AC7: after a reset, indeterminate #2 is STILL not escalated (needs a fresh 3, not the pre-reset count)" "2" "$rc"
 
 # --- the counter primitive itself, directly (increment / reset / threshold),
@@ -4052,8 +4052,8 @@ CL2_DIR="$TMP/rec238-indeterminate-existing"
 CL2_STUB="$(guard_reconcile_stub "$CL2_DIR" "cas-lost integration (ref moved under us, re-check next tick)" 2)"
 CL2_GH="$TMP/rec238-indeterminate-existing-gh"; guard_stub "$CL2_GH"
 printf 'OPEN\n' > "$CL2_GH/issues.json"   # a real divergence artifact is already open
-rc=0; CL2_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$CL2_STUB" FWF_GH="$CL2_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch integration 2>&1)" || rc=$?
+rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$CL2_STUB" FWF_GH="$CL2_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch integration >/dev/null 2>&1 || rc=$?
 GH_LOG="$CL2_GH/calls.log"
 assert_eq       "AC3: indeterminate with an existing artifact still exits 2" "2" "$rc"
 assert_eq       "AC3: indeterminate does NOT close the existing artifact" "0" "$(gh_calls 'issue close')"
@@ -4068,8 +4068,8 @@ LB_DIR="$TMP/rec238-lockbusy-guard"
 LB_STUB="$(guard_reconcile_stub "$LB_DIR" "lock-busy staging (another reconcile in flight, skipping this tick)" 2)"
 LB_GH="$TMP/rec238-lockbusy-guard-gh"; guard_stub "$LB_GH"
 printf 'OPEN\n' > "$LB_GH/issues.json"   # a real divergence artifact is already open
-rc=0; LB_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$LB_STUB" FWF_GH="$LB_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1)" || rc=$?
+rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$LB_STUB" FWF_GH="$LB_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging >/dev/null 2>&1 || rc=$?
 GH_LOG="$LB_GH/calls.log"
 assert_eq "AC5: lock-busy alone must NOT close an existing (real) divergence artifact" "0" "$(gh_calls 'issue close')"
 
@@ -4095,16 +4095,16 @@ AC6_IND_DIR="$TMP/rec238-ac6-indeterminate"
 AC6_IND_STUB="$(guard_reconcile_stub "$AC6_IND_DIR" "totally-opaque-message-mentioning-nothing-recognizable" 2)"
 AC6_IND_GH="$TMP/rec238-ac6-indeterminate-gh"; guard_stub "$AC6_IND_GH"
 printf 'OPEN\n' > "$AC6_IND_GH/issues.json"
-rc=0; AC6_IND_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$AC6_IND_STUB" FWF_GH="$AC6_IND_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$AC6_IND_STUB" FWF_GH="$AC6_IND_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
 GH_LOG="$AC6_IND_GH/calls.log"
 assert_eq "AC6: exit code 2 alone (unrecognizable text) still means indeterminate -- no close" "0" "$(gh_calls 'issue close')"
 
 AC6_ESC_DIR="$TMP/rec238-ac6-escalate"
 AC6_ESC_STUB="$(guard_reconcile_stub "$AC6_ESC_DIR" "totally-opaque-message-mentioning-nothing-recognizable" 1)"
 AC6_ESC_GH="$TMP/rec238-ac6-escalate-gh"; guard_stub "$AC6_ESC_GH"
-rc=0; AC6_ESC_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$AC6_ESC_STUB" FWF_GH="$AC6_ESC_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$AC6_ESC_STUB" FWF_GH="$AC6_ESC_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
 GH_LOG="$AC6_ESC_GH/calls.log"
 assert_eq "AC6: exit code 1 alone (unrecognizable text) still means escalate -- files" "1" "$(gh_calls 'issue create')"
 
