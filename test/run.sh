@@ -3993,6 +3993,24 @@ RENDERED_REFACTOR="$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '
 assert_contains "refactor conductor template's promote gate takes --tip-cmd" "$RENDERED_REFACTOR" "--tip-cmd"
 assert_not_contains "refactor conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED_REFACTOR" "__PROMOTE_GATE__"
 
+# (qa2 adversarial, issue #202): if --tip-cmd cannot be RE-READ after the
+# wrapped command exits (the ref it names becomes transiently unreadable —
+# e.g. a concurrent prune/repack, a momentarily-missing ref), fwf-gate.sh
+# must NOT silently treat that as "tip unchanged" and record a real,
+# promotable green/red verdict. The whole point of --tip-cmd (per #202's own
+# proposal item 3) is "a verdict for a superseded tip must never read as
+# promotable" — an unreadable post-run tip means we genuinely do not know
+# whether it moved, which is the same uncertainty a moved tip carries, not
+# less. This must fail closed (EX_STALE / 76), exactly like a confirmed move.
+F202YREPO="$TMP/f202y-repo"; mkdir -p "$F202YREPO"
+printf 'sha-A' > "$F202YREPO/tipfile"
+F202YRUN="$TMP/run202y"; mkdir -p "$F202YRUN"
+rc=0
+( cd "$F202YREPO" && FWF_RUN_DIR="$F202YRUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f202yrole --tip-cmd "cat tipfile" -- \
+  bash -c 'rm tipfile; true' ) >/dev/null 2>&1 || rc=$?
+assert_eq "tip-cmd unreadable on exit fails closed (EX_STALE), never a silent promotable verdict" "76" "$rc"
+
 # --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
