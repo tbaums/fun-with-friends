@@ -1527,7 +1527,7 @@ STYLECMD="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd c
 assert_contains "default output style is Concise" "$STYLECMD" '--settings \{\"outputStyle\":\"Concise\"\}'
 STYLEOVERRIDE="$(FWF_OUTPUT_STYLE=Explanatory FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
 assert_contains "FWF_OUTPUT_STYLE override honored" "$STYLEOVERRIDE" '--settings \{\"outputStyle\":\"Explanatory\"\}'
-STYLEOFF="$(FWF_OUTPUT_STYLE= FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+STYLEOFF="$(FWF_OUTPUT_STYLE='' FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
 case "$STYLEOFF" in *--settings*) bad "FWF_OUTPUT_STYLE=\"\" disables --settings";; *) ok "FWF_OUTPUT_STYLE=\"\" disables --settings";; esac
 STYLEWITHMODEL="$(FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
 assert_contains "output style composes with --model (model)" "$STYLEWITHMODEL" "--model sonnet"
