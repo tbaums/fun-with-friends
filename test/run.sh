@@ -44,6 +44,23 @@ assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got
 assert_contains() { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "[$2] did not contain [$3]";; esac; }
 # assert_not_contains <label> <haystack> <needle>
 assert_not_contains() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contained [$3]";; *) ok "$1";; esac; }
+# assert_log_eventually_contains <label> <logfile> <needle> [timeout-secs]
+# Bounded wait-for-condition, for asserting on an async log append (issue
+# #185) instead of a single fixed-time read that can sample before the append
+# lands. Presence-based (grep over the whole file, not the last line only) so
+# it stays correct even if a later line changes the tail -- e.g. floor-up
+# followed by an immediate floor-down. On a genuine miss it times out and
+# fails with a clear message; it does not silently pass.
+assert_log_eventually_contains() {
+  local label="$1" log="$2" needle="$3" timeout="${4:-5}" tries i=0
+  tries=$((timeout * 5)) # poll every 0.2s
+  while [ "$i" -lt "$tries" ]; do
+    grep -q -F -- "$needle" "$log" 2>/dev/null && { ok "$label"; return; }
+    sleep 0.2
+    i=$((i + 1))
+  done
+  bad "$label" "no [$needle] line appeared in $log within ${timeout}s (last line: $(tail -n1 "$log" 2>/dev/null))"
+}
 section() { printf '\n# %s\n' "$1"; }
 
 # Build a git fixture repo: mkfix <name> then drop files into $FIX.
@@ -1020,7 +1037,10 @@ EOS
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F85BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
       "$ROOT/fwf-up.sh" >/dev/null 2>&1
-  assert_contains "a full 'fwf up' appends floor-up" "$(tail -n1 "$F85BLOG")" "floor-up"
+  # #185: the floor-up append lands asynchronously relative to fwf-up.sh
+  # returning, so a single fixed-time tail -n1 right after can flake by
+  # sampling before it lands. Bounded poll for presence instead.
+  assert_log_eventually_contains "a full 'fwf up' appends floor-up" "$F85BLOG" "floor-up"
   tmux kill-session -t "${F85BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F85BSESS}-build" 2>/dev/null
 
