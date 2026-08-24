@@ -11,6 +11,12 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-08-23
+
+### Fixed
+- **`fwf gate` no longer leaks its own profile resolution into the wrapped command** (#175, code 2715947, docs 2715947) — `fwf-gate.sh` sources `lib.sh` to resolve a profile for its lock paths, and doing so sets `FWF_PROFILE`/`FWF_PAIRS`/`FWF_REPO` in its own shell. The wrapped command then inherited an ambient profile it never asked for, silently overriding any fixture env it pinned for itself. The gate now snapshots the caller's real environment BEFORE that resolution and restores it verbatim before handing over — a var the caller had keeps its ORIGINAL value, one the caller lacked is left unset rather than blanked (an empty `FWF_PROFILE` is not the same as an absent one to a `${VAR:-default}` reader). A CORRECT inherited value overrides a fixture exactly as destructively as a wrong one, so this is about provenance, not validity: as a factory `GATE_CMD` — where those vars are always set — it made `test/run.sh` report 41 otherwise-passing tests as RED, so the gate was false-RED on *every* cycle and no implementer could ever reach green. `test/run.sh` additionally unsets `FWF_REPO`/`FWF_PROFILE`/`FWF_PAIRS` for its own hermeticity, so a green run means the code is good rather than that the operator's shell happened to be clean. README documents the gate's environment contract, so a `GATE_CMD` no longer needs an `env -u FWF_*` guard of its own.
+- **Test-suite tmux fixtures are isolated onto a throwaway tmux server** (#197, code 01b70e4, docs none — internal) — `test/run.sh`'s real-tmux blocks (the `fwf-up.sh`/`fwf-down.sh` fixtures and their kill-session cleanup) ran against whatever tmux server the caller happened to be on. Run as a factory `GATE_CMD` that caller is a pane INSIDE a live factory, so the fixtures operated on the operator's own tmux server alongside the running swarm and their unrelated sessions — the suite could tear down live factory sessions as "cleanup". It now points `TMUX_TMPDIR` at a per-run directory and unsets `TMUX` before any fixture runs, giving the fixtures a server reachable by nothing else and torn down with the tmpdir; the `EXIT` trap's `tmux kill-server` is scoped to that throwaway socket by the redirected `TMUX_TMPDIR` and cannot reach the caller's server.
+
 ## [0.28.0] - 2026-08-15
 
 ### Added
