@@ -787,6 +787,15 @@ HELP_OUT="$("$ROOT/fwf" help)"
 assert_contains "help mentions --floor-only" "$HELP_OUT" "--floor-only"
 assert_contains "help mentions --build-only" "$HELP_OUT" "--build-only"
 assert_contains "help mentions --pm-only"    "$HELP_OUT" "--pm-only"
+assert_contains "help mentions --coord-only" "$HELP_OUT" "--coord-only"
+# up --coord-only is the ONE partial-up flag that must NOT require a live
+# coord session (issue #155 — it's the cold-bootstrap path for coordination,
+# the opposite precondition of --floor-only/--build-only/--pm-only above).
+UPCOOUT="$(env $FU_ENV "$ROOT/fwf-up.sh" --coord-only 2>&1)"
+case "$UPCOOUT" in
+  *"run a full 'fwf up' instead"*) bad "up --coord-only must not require an existing coord session" "$UPCOOUT";;
+  *) ok "up --coord-only does not require an existing coord session";;
+esac
 
 section "floor-lifecycle event log (issue #85, per-plane by #105): fwf_floor_event / fwf_plane_idle_state"
 # Pure file I/O (lib.sh) — no tmux/gh needed for the read/write primitives.
@@ -957,6 +966,65 @@ EOS
   assert_contains "a full 'fwf up' appends floor-up" "$(tail -n1 "$F85BLOG")" "floor-up"
   tmux kill-session -t "${F85BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F85BSESS}-build" 2>/dev/null
+
+  # --- (issue #155) fwf-up.sh --coord-only: bring up coordination alone -----
+  # (a) from a fully cold state: creates coord (PM+GV+CAPTAIN), no build floor.
+  F155AWT="$TMP/wt155a"; mkdir -p "$F155AWT/ex-pm" "$F155AWT/ex-gv" "$F155AWT/ex-captain"
+  F155ARUN="$TMP/run155a"; mkdir -p "$F155ARUN/state/example"
+  F155ALOG="$F155ARUN/state/example/floor-events.log"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' > "$F155ALOG"
+  F155ASESS="fwf-selftest-155a-$$"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F155ARUN" FWF_SESSION="$F155ASESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F155AWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" --coord-only >/dev/null 2>&1
+  assert_eq "--coord-only from cold: exits 0" "0" "$?"
+  if tmux has-session -t "${F155ASESS}-coord" 2>/dev/null; then ok "--coord-only from cold: coord session created"; else bad "--coord-only from cold: coord session created"; fi
+  if tmux has-session -t "${F155ASESS}-build" 2>/dev/null; then bad "--coord-only from cold: no build session created"; else ok "--coord-only from cold: no build session created"; fi
+  assert_contains "--coord-only from cold: appends floor-up (pm plane)" "$(tail -n1 "$F155ALOG")" "floor-up"
+  tmux kill-session -t "${F155ASESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F155ASESS}-build" 2>/dev/null
+
+  # (b) coord already up: a clean no-op, not an error — pane count unchanged,
+  # no build session created either.
+  F155BWT="$TMP/wt155b"; mkdir -p "$F155BWT/ex-captain"
+  F155BRUN="$TMP/run155b"; mkdir -p "$F155BRUN/state/example"
+  F155BSESS="fwf-selftest-155b-$$"
+  tmux new-session -d -s "${F155BSESS}-coord" -c "$F155BWT/ex-captain"
+  tmux set -p -t "${F155BSESS}-coord" @l "CAPTAIN"
+  PANES155B_BEFORE="$(tmux list-panes -t "${F155BSESS}-coord" | wc -l)"
+  F155BOUT="$TMP/f155bout.txt"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F155BRUN" FWF_SESSION="$F155BSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F155BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" --coord-only >"$F155BOUT" 2>&1
+  assert_eq "--coord-only on an already-up coord: exits 0 (no-op, not an error)" "0" "$?"
+  assert_contains "--coord-only on an already-up coord: says nothing to do" "$(cat "$F155BOUT")" "already up"
+  PANES155B_AFTER="$(tmux list-panes -t "${F155BSESS}-coord" | wc -l)"
+  assert_eq "--coord-only no-op: coord pane count unchanged" "$PANES155B_BEFORE" "$PANES155B_AFTER"
+  if tmux has-session -t "${F155BSESS}-build" 2>/dev/null; then bad "--coord-only no-op: no build session created"; else ok "--coord-only no-op: no build session created"; fi
+  tmux kill-session -t "${F155BSESS}-coord" 2>/dev/null
+
+  # (c) SYMMETRIC RECOVERY (acceptance criterion): build floor already UP,
+  # coord DOWN -> --coord-only brings up coord alongside it WITHOUT disrupting
+  # the running floor (the mirror of --build-only-alongside-coord).
+  F155CWT="$TMP/wt155c"; mkdir -p "$F155CWT/ex-impl1" "$F155CWT/ex-pm" "$F155CWT/ex-gv" "$F155CWT/ex-captain"
+  F155CRUN="$TMP/run155c"; mkdir -p "$F155CRUN/state/example"
+  F155CSESS="fwf-selftest-155c-$$"
+  tmux new-session -d -s "${F155CSESS}-build" -c "$F155CWT/ex-impl1"
+  tmux set -p -t "${F155CSESS}-build" @l "IMPL1"
+  BUILD155C_BEFORE="$(tmux list-panes -t "${F155CSESS}-build" | wc -l)"
+  F155COUT="$TMP/f155cout.txt"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F155CRUN" FWF_SESSION="$F155CSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F155CWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" --coord-only >"$F155COUT" 2>&1
+  assert_eq "--coord-only symmetric recovery (floor up, coord down): exits 0" "0" "$?"
+  if tmux has-session -t "${F155CSESS}-coord" 2>/dev/null; then ok "--coord-only symmetric recovery: coord session created"; else bad "--coord-only symmetric recovery: coord session created"; fi
+  BUILD155C_AFTER="$(tmux list-panes -t "${F155CSESS}-build" | wc -l)"
+  assert_eq "--coord-only symmetric recovery: running build floor left untouched (pane count)" "$BUILD155C_BEFORE" "$BUILD155C_AFTER"
+  tmux kill-session -t "${F155CSESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F155CSESS}-build" 2>/dev/null
 
   # --- a floor-role fwf-respawn.sh (pm) -- captain is excluded (never torn ---
   # down by --floor-only, so respawning it is not an "IDLE cleared" signal).
