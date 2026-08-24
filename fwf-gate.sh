@@ -157,7 +157,14 @@ rc=0
 
 if [ -n "$tip_cmd" ]; then
   tip_after="$(eval "$tip_cmd" 2>/dev/null)" || tip_after=""
-  if [ -n "$tip_after" ] && [ "$tip_after" != "$tip_before" ]; then
+  # A failed/empty re-read is the SAME uncertainty as a confirmed move -- we
+  # genuinely don't know whether the ref changed, so this must fail closed to
+  # STALE, never fall through to recording a real (and promotable) verdict.
+  if [ -z "$tip_after" ]; then
+    echo "fwf gate: could not re-read the tip after this run (ref transiently unreadable) — verdict is STALE, not promotable" >&2
+    fwf_gate_tip_record "$role" "$tip_before" "stale"
+    rc="$EX_STALE"
+  elif [ "$tip_after" != "$tip_before" ]; then
     echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) — verdict is STALE, not promotable" >&2
     fwf_gate_tip_record "$role" "$tip_before" "stale"
     rc="$EX_STALE"
