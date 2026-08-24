@@ -402,7 +402,11 @@ sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
 `FWF_TEMPLATE`) from the next section. Every seat launches with Claude Code's
 `Concise` output style by default (`FWF_OUTPUT_STYLE`, passed via `--settings`;
 set to `""` to opt a floor back out). Role prompts are the source of truth and
-live in `templates/<name>/` (one directory per factory design).
+live in `templates/<name>/` (one directory per factory design). For a
+deployment with an external operator/concierge above the factory,
+`FWF_OPERATOR_DRIVEN=1` (+ `FWF_OPERATOR_INBOX_ISSUE`) rewrites the captain to
+cede the human-co-pilot role and never stall in a caretaker-hold — see
+[docs/operator-driven-mode.md](docs/operator-driven-mode.md).
 
 ## Commands
 

@@ -139,6 +139,28 @@ FWF_BUDGET_CHECK_INTERVAL="${FWF_BUDGET_CHECK_INTERVAL:-60}"
 # other role only ever reads it.
 BUDGET_HOLD_FILE="$FWF_RUN/BUDGET_HOLD"
 
+# Operator-driven mode (issue #166): when an external operator/concierge sits
+# above the factory (the human talks to the concierge, not the captain), set
+# this so the captain cedes the human-co-pilot self-conception, never
+# self-authorizes, and never stalls in a caretaker-hold over a lane question —
+# it writes any human-needing question to the operator-facing tracker (see
+# FWF_OPERATOR_INBOX_ISSUE) and keeps driving the floor. Default (0) keeps the
+# captain as the human's co-pilot, unchanged. CLI: none yet — profile/env only.
+FWF_OPERATOR_DRIVEN="${FWF_OPERATOR_DRIVEN:-0}"
+# The standing, pinned issue the captain comments on for a FLOOR-WIDE
+# operator-facing question that has no single ticket to attach to (a
+# ticket-scoped question instead goes on that ticket's own issue thread).
+# Required when FWF_OPERATOR_DRIVEN=1 — lib.sh fails closed if it's unset,
+# since an unpinned surface is the same stall relocated, not fixed.
+FWF_OPERATOR_INBOX_ISSUE="${FWF_OPERATOR_INBOX_ISSUE:-}"
+# Release-pause handshake (issue #166): same tick-checked hold-sentinel shape
+# as STOP_FILE/BUDGET_HOLD_FILE, reusing that family rather than inventing a
+# channel. The operator/concierge writes it before a release gate (CPU/shared-
+# target contention); the captain reads it on its tick, parks the floor
+# (pauses, does not stop), and auto-resumes once it's removed — no operator
+# reach-in (no `fwf stop`) required.
+RELEASE_HOLD_FILE="$FWF_RUN/RELEASE_HOLD"
+
 # Per-worktree dev data. Default to no-ops so a profile for a repo with no dev
 # data can omit them entirely; a profile may override these to seed an
 # isolated data dir per tree. data_dir echoes nothing by default (so a
