@@ -11,6 +11,15 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Changed
+- **Concise output style is the floor-wide default for every seat** (#187, code d0719a4, docs d0719a4) — panes coordinate through the issue tracker and git rather than their own narration, so Claude Code's default prose was pure token cost. Every role now launches with `--settings {"outputStyle":"Concise"}`. Set `FWF_OUTPUT_STYLE` to another style to override, or to an *explicitly empty* value (`FWF_OUTPUT_STYLE=""`, not merely unset) to opt out entirely.
+
+### Fixed
+- **`test/run.sh`'s pass/fail gate could not fail** (#242, code 022e14e, docs none — internal) — #179 appended a test section *below* the terminal `[ "$FAIL" -eq 0 ]`, and a bash script's exit status is that of its last command, so the suite's status stopped reflecting `$FAIL`. Because `bad()` returns 0 whenever it is called with a message, the final assertion returned 0 whether it passed or failed: the suite exited 0 **unconditionally** from 2026-08-24 19:15Z, so `ci.yml`'s functional-suite job and `fwf gate --e2e` had no path to red and a `1121 passed, 2 failed` run was reported green. The gate now sits at the true end of the file and exits explicitly, with an in-suite assertion that fails loudly if a future section is appended below it.
+
+### Internal
+- **Quote the empty `FWF_OUTPUT_STYLE` in the #187 opt-out test** (#241, code 24f0181, docs none — internal) — `FWF_OUTPUT_STYLE=` tripped SC1007, which `ci.yml` treats as a failure, leaving `staging` red on lint and every branch cut from it inheriting that red. `''` is identical to bash and silences the warning.
+
 ## [0.30.0] - 2026-08-24
 
 ### Added
