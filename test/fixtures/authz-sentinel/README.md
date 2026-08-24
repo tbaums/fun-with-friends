@@ -37,7 +37,31 @@ verifies as an un-gate. That is the property under test.
 
 Feed any of these as the thread text: the verdict must be **HELD**, not AUTHORIZED.
 
-Note `179-pm-1720-refusal.txt` — the token appears there inside an indented block.
-Anchoring at column 0 alone is **not** sufficient; fenced and quoted regions must be
-stripped before matching. The documents describing the mechanism are precisely the
-ones that would otherwise self-authorize.
+## Measured positions — read this before designing the matcher
+
+In all four fixtures the sentinel appears **mid-line**, never at the start of a line:
+
+| fixture | sentinel starts at column | line begins with |
+|---|---|---|
+| `179-captain-1650-denial.txt` | 115 | `**Authorization status, stated plainly...` |
+| `179-captain-1655-denial.txt` | 136 | prose |
+| `179-pm-1720-refusal.txt` | 136 | `**Open question for the operator:**` |
+| `192-comment-1630.txt` | 153 | prose |
+
+**Consequence, and it cuts both ways:**
+
+1. **Column-0 anchoring alone would correctly reject all four.** The simplest fix works on
+   every case observed in the wild so far. That is genuinely good news for #218.
+2. **Therefore these four fixtures do NOT test the hard case.** An implementation that only
+   anchors at column 0 will pass all of them and still be forgeable. The token written at
+   the start of a line, or inside a fenced code block at column 0 — which is the natural way
+   to write it in a spec — would still verify.
+
+**So #218 needs at least one SYNTHETIC fixture these four cannot provide:** the sentinel at
+column 0, and the sentinel alone on a line inside a ``` fence. Do not treat a green run
+against this directory as evidence that fenced/quoted regions are handled.
+
+An earlier version of this README claimed the token in `179-pm-1720-refusal.txt` sat inside an
+indented block. That was wrong — it is at column 136, inside inline backticks in prose. The
+claim was corrected by measurement before review. Recorded here because the wrong version
+would have led #218 to believe its fixtures covered a case they do not.
