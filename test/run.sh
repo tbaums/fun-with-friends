@@ -3767,8 +3767,6 @@ assert_contains "caller's own FWF_PAIRS is preserved"   "$(cat "$F175REPORT")" "
 assert_contains "caller's own FWF_REPO is preserved"    "$(cat "$F175REPORT")" "REPO=$ROOT"
 
 # --------------------------------------------------------------------------
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-[ "$FAIL" -eq 0 ]
 
 # --------------------------------------------------------------------------
 # reconcile ENFORCEMENT (#179): the classifier was always sound; what was
@@ -3904,3 +3902,28 @@ assert_eq       "AC3: clean verdict -> guard exits 0" "0" "$rc"
 assert_contains "AC3: clean verdict closes the open artifact" "$OUT3" "closing artifact"
 assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue close')"
 assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"
+
+# --------------------------------------------------------------------------
+section "the suite's own exit gate cannot be shadowed by an append (#242)"
+# f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
+# A bash script's status is that of its LAST executed command, so the gate
+# stopped reflecting $FAIL and 1121-passed/2-failed runs shipped as green.
+# This asserts the structural property that made that possible is gone.
+_gate_tail="$(grep -vE '^\s*(#|$)' "$ROOT/test/run.sh" | tail -1)"
+assert_eq "the last executable line of test/run.sh is an explicit exit" \
+  "exit \"\$_rc\"" "$_gate_tail"
+assert_eq "no bare [ \"\$FAIL\" -eq 0 ] survives as the gate" "0" \
+  "$(grep -cE '^\[ "\$FAIL" -eq 0 \]$' "$ROOT/test/run.sh")"
+
+# --------------------------------------------------------------------------
+# THE PASS/FAIL GATE. It MUST stay last, and it MUST exit explicitly.
+#
+# Do NOT append a section below this block. A bare `[ "$FAIL" -eq 0 ]` as the
+# final statement is silently shadowed by anything appended after it, because
+# the script's exit status is that of the last command it runs -- that is
+# exactly how #242 happened, and how two real failures shipped green. An
+# explicit `exit` cannot be shadowed by an append, only preceded by one, and
+# the section above fails loudly if someone tries.
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+_rc=0; [ "$FAIL" -eq 0 ] || _rc=1
+exit "$_rc"
