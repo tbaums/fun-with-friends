@@ -216,6 +216,14 @@ assert_eq "fwf_model_for impl2 -> floor default"  "claude-sonnet-5" "$(prov_env 
 assert_eq "fwf_model_for qa1 -> floor default"    "claude-sonnet-5" "$(prov_env 'fwf_model_for qa1')"
 assert_eq "fwf_model_for gv -> override"          "claude-opus-4-8" "$(prov_env 'fwf_model_for gv')"
 assert_eq "fwf_model_for unset role -> empty (CLI default)" "" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_model_for impl2")"
+# fwf_seat_model_pairs: the single roster both fwf_provenance_block AND
+# fwf_credit_block (lib/pr_context.sh, #134) consume, so they can't drift
+# apart the way credit did (hardcoded "impl qa" while provenance already
+# looped all six seats).
+SEAT_PAIRS="$(prov_env 'fwf_seat_model_pairs')"
+assert_eq "seat roster covers all six seats" "6" "$(printf '%s\n' "$SEAT_PAIRS" | grep -c .)"
+assert_contains "seat roster carries the pm seat's resolved model" "$SEAT_PAIRS" "$(printf 'pm\tclaude-opus-4-8')"
+assert_contains "seat roster carries the impl seat's resolved model" "$SEAT_PAIRS" "$(printf 'impl\tclaude-sonnet-5')"
 # fwf_provenance_block: exactly one fwf-Provenance trailer carrying fwf@sha,
 # profile, and every seat's model.
 PROV="$(prov_env 'fwf_provenance_block')"
@@ -289,14 +297,48 @@ case "$SEC_OUT" in
   *) ok "sensitive-data scrub redacts secret-shaped tokens";;
 esac
 
-# fwf_credit_block: on (default) / minimal / off, model-family-agnostic via fwf_model_for.
-CRED_ON="$(FWF_PROFILE=example FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
+# fwf_credit_block: on (default) / minimal / off, model-family-agnostic via
+# fwf_model_for, reading the SAME six-seat roster as fwf_provenance_block
+# (#134 — credit used to hardcode "impl qa" and drop every other seat).
+cred_env() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+# Mixed-model profile (pm on opus, everyone else on the sonnet floor default):
+# credit must list BOTH models, not just the ones "impl qa" used to loop.
+CRED_ON="$(FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 cred_env "fwf_credit_block")"
 assert_contains "credit (on) carries the fwf link"       "$CRED_ON" "github.com/tbaums/fun-with-friends"
 assert_contains "credit (on) carries the Claude mention"  "$CRED_ON" "Claude"
-assert_contains "credit (on) lists a seat's model"        "$CRED_ON" "claude-sonnet-5"
-CRED_MIN="$(FWF_PROFILE=example FWF_CREDIT=minimal bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
-assert_contains "credit (minimal) still carries the link" "$CRED_MIN" "github.com/tbaums/fun-with-friends"
-case "$CRED_MIN" in *claude-sonnet-5*|*cli-default*) bad "credit (minimal) omits the model list" "$CRED_MIN";; *) ok "credit (minimal) omits the model list";; esac
+assert_contains "credit (on) lists the floor-default seats' model" "$CRED_ON" "claude-sonnet-5"
+assert_contains "credit (on) lists the pm-only seat's model (was dropped pre-#134)" "$CRED_ON" "claude-opus-4-8"
+# A third distinct model (conductor) must also survive — groupings are derived
+# from the profile's real model values at render time, not a hardcoded split.
+CRED_THREE="$(FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 FWF_MODEL_CONDUCTOR=claude-haiku-4-5 cred_env "fwf_credit_block")"
+for tok in claude-sonnet-5 claude-opus-4-8 claude-haiku-4-5; do
+  assert_contains "credit (on, 3 distinct models) lists $tok" "$CRED_THREE" "$tok"
+done
+# Homogeneous profile (every seat the SAME model): legitimately collapses to
+# one model line, not the bug — asserted, not just left untested.
+CRED_UNIFORM="$(FWF_MODEL=claude-sonnet-5 cred_env "fwf_credit_block")"
+assert_contains "credit (on, uniform profile) lists the one model" "$CRED_UNIFORM" "claude-sonnet-5"
+assert_eq "credit (on, uniform profile) lists it exactly once" "1" \
+  "$(printf '%s' "$CRED_UNIFORM" | grep -o "claude-sonnet-5" | wc -l | tr -d ' ')"
+# No overrides at all -> every seat is CLI-default (unconfigured): omitted
+# from the model list entirely, never rendered as a blank "()" or "cli-default".
+CRED_UNSET="$(cred_env "fwf_credit_block")"
+assert_contains "credit (on, no seats configured) still carries the link" "$CRED_UNSET" "github.com/tbaums/fun-with-friends"
+case "$CRED_UNSET" in
+  *"()"*|*cli-default*) bad "credit (on, no seats configured) never renders a blank/cli-default model" "$CRED_UNSET";;
+  *) ok "credit (on, no seats configured) never renders a blank/cli-default model";;
+esac
+# minimal: shortens the surrounding prose but keeps FULL model disclosure —
+# the disclosure bar isn't a coverage knob (this is the behavior #134 fixed;
+# minimal used to drop the model list entirely).
+CRED_MIN="$(FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 FWF_CREDIT=minimal cred_env "fwf_credit_block")"
+assert_contains "credit (minimal) still carries the link"        "$CRED_MIN" "github.com/tbaums/fun-with-friends"
+assert_contains "credit (minimal) still discloses every model (floor default)" "$CRED_MIN" "claude-sonnet-5"
+assert_contains "credit (minimal) still discloses every model (pm override)"   "$CRED_MIN" "claude-opus-4-8"
+case "$CRED_MIN" in
+  *"multi-agent Claude Code dev factory"*) bad "credit (minimal) drops the descriptive aside" "$CRED_MIN";;
+  *) ok "credit (minimal) drops the descriptive aside";;
+esac
 CRED_OFF="$(FWF_PROFILE=example FWF_CREDIT=off bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
 assert_eq "credit (off) prints nothing" "" "$CRED_OFF"
 # --issues local defaults FWF_CREDIT to off (constraint 4/5: not our repo until configured).

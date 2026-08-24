@@ -541,9 +541,15 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   help`). Alongside it, a reviewer-facing "🏭 Built with fun-with-friends +
   Claude" credit line (distinct from — and coexists with — the `fwf-
   Provenance:` machine trailer). `FWF_CREDIT=on|minimal|off` controls it:
-  `on` (every model that touched the work), `minimal` (link only, no model
-  list), `off` (nothing). Defaults `on` for a normal GitHub-backed profile and
-  `off` for `--issues local` (a repo you don't control, until you opt it in).
+  `on` (full line + every distinct model that touched the work, one entry per
+  seat's *actual* model — a mixed-model profile lists every model, a
+  single-model profile legitimately collapses to one), `minimal` (drops the
+  "(a multi-agent Claude Code dev factory)" aside but keeps the same full
+  model list — the disclosure bar isn't a coverage knob), `off` (nothing). A
+  seat left on the CLI default (no override, no floor default) is omitted
+  from the list rather than shown blank. Defaults `on` for a normal
+  GitHub-backed profile and `off` for `--issues local` (a repo you don't
+  control, until you opt it in).
 - **Release freeze:** ask the PM to "freeze for release" and it labels tickets
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
