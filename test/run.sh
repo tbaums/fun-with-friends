@@ -3683,11 +3683,24 @@ ci_run() { # $1 = setup snippet (runs with $wt=worktree, $shared=out-of-tree dir
     '"$1"'
     fwf_cargo_isolate; rc=$?
     ts=none; [ -L target ] && ts=symlink; { [ -d target ] && [ ! -L target ]; } && ts=dir
-    printf "%s|%s|%s|%s" "${CARGO_TARGET_DIR:-UNSET}" "$ts" "$rc" "${RUSTC_WRAPPER:-UNSET}"
+    printf "%s|%s|%s|%s|%s" "${CARGO_TARGET_DIR:-UNSET}" "$ts" "$rc" "${RUSTC_WRAPPER:-UNSET}" "${SCCACHE_DIR:-UNSET}"
     rm -rf "$wt" "$shared"
   '
 }
 ci_f() { printf '%s' "$2" | cut -d'|' -f"$1"; }
+# Like ci_run, but with cargo/sccache's directory stripped from PATH — for
+# asserting the "sccache not installed -> no-op" fail-open branch regardless
+# of whether THIS box happens to have sccache installed.
+ci_run_nosccache() {
+  FWF_PROFILE=example PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash -c '
+    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
+    '"$1"'
+    fwf_cargo_isolate; rc=$?
+    printf "%s|%s|%s" "${RUSTC_WRAPPER:-UNSET}" "${SCCACHE_DIR:-UNSET}" "$rc"
+    rm -rf "$wt"
+  '
+}
 
 # A. shared ambient CARGO_TARGET_DIR (outside the worktree) is dropped.
 R="$(ci_run 'export CARGO_TARGET_DIR="$shared"')"
@@ -3717,6 +3730,33 @@ assert_eq "healthy no-op succeeds"                      "0"     "$(ci_f 3 "$R")"
 R="$(ci_run 'export RUSTC_WRAPPER=sccache; export CARGO_TARGET_DIR="$shared"')"
 assert_eq "sccache RUSTC_WRAPPER preserved"        "sccache" "$(ci_f 4 "$R")"
 assert_eq "  ...while shared target dir is dropped" "UNSET"  "$(ci_f 1 "$R")"
+
+# G. issue #138 piece A: sccache auto-configured when installed + not already
+# set — points RUSTC_WRAPPER + SCCACHE_DIR at a shared, profile-scoped cache.
+if command -v sccache >/dev/null 2>&1; then
+  R="$(FWF_RUN_DIR="$TMP/ci-sccache-run" ci_run ':')"
+  assert_eq "sccache auto-configured when installed and unset" "sccache" "$(ci_f 4 "$R")"
+  assert_not_contains "SCCACHE_DIR points at a real path"       "$(ci_f 5 "$R")" "UNSET"
+  assert_contains     "SCCACHE_DIR is profile-scoped"           "$(ci_f 5 "$R")" "/example"
+  # ...and still composes with target-dir isolation (both fire together).
+  R2="$(FWF_RUN_DIR="$TMP/ci-sccache-run2" ci_run 'export CARGO_TARGET_DIR="$shared"')"
+  assert_eq "sccache auto-config composes with target isolation (target dropped)" "UNSET"   "$(ci_f 1 "$R2")"
+  assert_eq "  ...and sccache still auto-configured"                              "sccache" "$(ci_f 4 "$R2")"
+else
+  echo "  skip sccache auto-configure positive tests (sccache not installed on this box)"
+fi
+
+# H. sccache NOT installed -> no forced tooling, unchanged from today (fail-open).
+RN="$(ci_run_nosccache ':')"
+assert_eq "no sccache on PATH -> RUSTC_WRAPPER stays unset" "UNSET" "$(printf '%s' "$RN" | cut -d'|' -f1)"
+assert_eq "  ...and isolate still succeeds"                 "0"     "$(printf '%s' "$RN" | cut -d'|' -f3)"
+
+# I. an explicit RUSTC_WRAPPER the caller already set is never overridden,
+# even when sccache is installed (mirrors #151's rule for CARGO_TARGET_DIR).
+if command -v sccache >/dev/null 2>&1; then
+  R="$(ci_run 'export RUSTC_WRAPPER=some-other-wrapper')"
+  assert_eq "an explicit non-sccache RUSTC_WRAPPER is never overridden" "some-other-wrapper" "$(ci_f 4 "$R")"
+fi
 
 # --------------------------------------------------------------------------
 section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"

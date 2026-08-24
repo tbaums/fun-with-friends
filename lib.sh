@@ -393,9 +393,20 @@ fwf_missing_worktrees() { # $@=role tags to check
 #       target. If it cannot be removed we FAIL CLOSED (return non-zero): a red
 #       gate is always safe; a green one built against a shared dir is not.
 # RUSTC_WRAPPER (sccache) is deliberately left untouched: sccache is a
-# content-addressed compile cache, so sharing it across worktrees is SOUND and
-# is the right way to recover cross-worktree cache speed without the name+version
-# clobber. Private target dir + shared sccache compose cleanly.
+# content-addressed compile cache, so sharing it is name+version-safe (unlike
+# a shared target/). MEASURED (issue #138 piece A, 2026-08-24, sccache 0.17.0
+# / cargo 1.98.0, this repo's dash/ crate): sccache's Rust hash key includes
+# the resolved --out-dir/-L dependency= paths (i.e. CARGO_TARGET_DIR itself),
+# so two DIFFERENT worktrees — which by design (#151, above) have DIFFERENT
+# CARGO_TARGET_DIRs — get a 0% cross-worktree hit rate; isolated retests ruled
+# out the local crate's manifest path, invocation cwd, and --remap-path-prefix
+# as the cause; forcing CARGO_TARGET_DIR identical across worktrees restored a
+# 50% hit rate (all dependency compiles) but reintroduces the exact
+# cross-worktree collision #151 fixed unless serialized (piece C). So sharing
+# sccache here delivers a real but NARROWER win than hoped: repeat builds
+# WITHIN one worktree after a target wipe/`cargo clean` hit the shared cache;
+# cross-worktree compile-time sharing needs piece C's concurrency bound first
+# — see docs/gate-throughput.md for the full numbers.
 # Run with the current directory inside the worktree (the gate and the warm
 # build both are). Emits a loud line on any repair — GREEN gates are audited.
 fwf_cargo_isolate() {
@@ -421,7 +432,35 @@ fwf_cargo_isolate() {
          rm -f "$t" || { echo "fwf#151: FAILED to remove $t — refusing to gate against a shared target dir" >&2; return 1; } ;;
     esac
   fi
+  # (3) issue #138 piece A: auto-configure a shared sccache cache. MEASURED
+  # (see fwf_cargo_sccache_configure's header and docs/gate-throughput.md):
+  # this delivers a same-worktree win (a repeat build after a target wipe hits
+  # the shared cache) but NOT cross-worktree compile sharing — sccache's Rust
+  # hash key includes CARGO_TARGET_DIR's own path, which #151 (above)
+  # deliberately keeps different per worktree. No-op for a caller that already
+  # chose an explicit RUSTC_WRAPPER (#151's same rule), and a no-op entirely
+  # if sccache isn't installed — this never forces new tooling onto a profile
+  # that doesn't have it.
+  fwf_cargo_sccache_configure
   return 0
+}
+
+# issue #138 piece A: point RUSTC_WRAPPER at a profile-scoped shared sccache
+# cache dir — SOUND to share (content-addressed, unlike a shared target/), but
+# MEASURED to only pay off for a REPEAT build within the same worktree (e.g.
+# after a target wipe/`cargo clean`), not across worktrees: sccache's Rust
+# hash key includes CARGO_TARGET_DIR's own path, and every worktree
+# deliberately has a different one (#151). See docs/gate-throughput.md for
+# the numbers. Called by fwf_cargo_isolate; also safe to call standalone.
+# Idempotent and a no-op if: sccache isn't installed (nothing changes for a
+# box/profile without it), or RUSTC_WRAPPER is already set to something else
+# (an explicit caller choice always wins — never silently overridden).
+fwf_cargo_sccache_configure() {
+  command -v sccache >/dev/null 2>&1 || return 0
+  [ -z "${RUSTC_WRAPPER:-}" ] || return 0
+  export RUSTC_WRAPPER=sccache
+  export SCCACHE_DIR="${SCCACHE_DIR:-$FWF_RUN/sccache/$PROFILE}"
+  mkdir -p "$SCCACHE_DIR" 2>/dev/null || true
 }
 
 # Gate-throughput (issue #138, piece B — SHADOW MODE): classify whether the
