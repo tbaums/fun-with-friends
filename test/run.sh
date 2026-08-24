@@ -3649,3 +3649,138 @@ assert_contains "caller's own FWF_REPO is preserved"    "$(cat "$F175REPORT")" "
 # --------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
+
+# --------------------------------------------------------------------------
+# reconcile ENFORCEMENT (#179): the classifier was always sound; what was
+# missing is a call site OBLIGED to act on its verdict. These four cases are
+# deliberately SEPARATE -- they bite different paths with different
+# consequences, and collapsing any two lets a faithful reproduction of the
+# original bug pass. Reuses the #114 rec_* git fixtures above.
+section "reconcile enforcement (#179): obliged call sites on both release paths"
+
+CI_YML="$(cat "$ROOT/.github/workflows/ci.yml")"
+REL_YML="$(cat "$ROOT/.github/workflows/release.yml")"
+
+# --- AC1: untagged direct-to-main push -> reconcile EXECUTES --------------
+# RED before #179: the reconcile step lived only in release.yml, which is
+# `on: push: tags`, so an untagged hotfix push never ran it at all.
+assert_contains "AC1: ci.yml fires on push to main" "$CI_YML" "branches: [main]"
+assert_contains "AC1: ci.yml has a reconcile job" "$CI_YML" "reconcile:"
+assert_contains "AC1: the reconcile job actually invokes reconcile" "$CI_YML" "./fwf reconcile-guard"
+assert_contains "AC1: reconcile job is scoped to push-to-main only" "$CI_YML" \
+  "if: github.event_name == 'push' && github.ref == 'refs/heads/main'"
+assert_contains "AC1: reconcile job fetches full ancestry (a shallow tip misclassifies)" "$CI_YML" "fetch-depth: 0"
+# The trap this AC cannot catch on its own -- hence AC3. Asserted against
+# EXECUTABLE lines only: ci.yml's comments deliberately quote the anti-pattern
+# to warn implementers off it, and a naive grep over the whole file matches
+# that warning and calls it the bug.
+CI_CODE="$(grep -v '^[[:space:]]*#' "$ROOT/.github/workflows/ci.yml")"
+assert_not_contains "AC1: ci.yml does NOT swallow the verdict into a warning (Hole 2 on the new path)" \
+  "$CI_CODE" './fwf reconcile || echo "::warning'
+
+# --- AC2: tagged release + genuine divergence -> publish PREVENTED --------
+# Wiring: every publishing job hangs off the pre-publish check.
+assert_contains "AC2: release.yml has a pre-publish preflight job" "$REL_YML" "preflight:"
+assert_contains "AC2: preflight runs the non-mutating check" "$REL_YML" "./fwf reconcile --check"
+assert_contains "AC2: artifact build is gated on preflight" "$REL_YML" "needs: preflight"
+assert_contains "AC2: publish is gated on preflight" "$REL_YML" "needs: [preflight, dash-binaries]"
+
+# Behaviour: DIVERGED must fail the check, and the refusal must be ROUTED --
+# naming the branch, what it diverged against, and the resolving command. A
+# refusal that strands the operator with no next step is what produced the
+# out-of-band workarounds this ticket exists to stop.
+rec_setup check-diverged
+rec_advance main
+PRE_STAGING_SHA="$(rec_sha staging)"
+rec_fork staging "$(rec_sha staging)"
+PRE_STAGING_SHA="$(rec_sha staging)"
+rc=0; LINE="$(rec_run 'fwf_reconcile_check_branch staging main')" || rc=$?
+assert_eq       "AC2: DIVERGED -> check exits non-zero (publish is blocked)" "1" "$rc"
+assert_contains "AC2: refusal names the branch"            "$LINE" "check-diverged staging"
+assert_contains "AC2: refusal names the resolving command" "$LINE" "fwf reconcile --branch staging --against main"
+assert_contains "AC2: refusal says a human decides, not a rerun" "$LINE" "needs a human decision"
+POST_SHA="$(rec_run 'fwf_reconcile_classify staging main' | awk '{print $2}')"
+assert_eq "AC2: --check NEVER mutates the ref (safe to run pre-publish)" "$PRE_STAGING_SHA" "$POST_SHA"
+
+# BEHIND is staleness, NOT divergence: blocking a release for it would be
+# wrong, and the post-publish reconcile fast-forwards it anyway.
+rec_setup check-behind
+rec_advance main
+rc=0; LINE="$(rec_run 'fwf_reconcile_check_branch staging main')" || rc=$?
+assert_eq       "AC2: BEHIND -> check exits 0 (staleness must not block a release)" "0" "$rc"
+assert_contains "AC2: BEHIND check reports ok, not a divergence" "$LINE" "check-ok staging"
+POST_SHA="$(rec_run 'fwf_reconcile_classify staging main' | awk '{print $2}')"
+assert_eq "AC2: --check does not fast-forward a BEHIND branch either" "$(rec_sha staging)" "$POST_SHA"
+
+# --- AC3/AC4: durable, blocking, IDEMPOTENT artifact on the untagged path --
+# A stub `gh` stands in for GitHub: it logs every subcommand and remembers the
+# one issue it "created", so the guard's find->create/edit path is exercised
+# for real. Injected per-process via $FWF_GH -- never by mutating PATH, which
+# would race a parallel suite (the #175 lesson).
+guard_stub() { # $1=dir
+  mkdir -p "$1"
+  GH_LOG="$1/calls.log"; GH_STATE="$1/issues.json"
+  : > "$GH_LOG"; printf '[]\n' > "$GH_STATE"
+  cat > "$1/gh" <<STUB
+#!/usr/bin/env bash
+# stub gh: logs calls, keeps one fake issue in \$GH_STATE
+log="$GH_LOG"; state="$GH_STATE"
+echo "\$1 \$2" >> "\$log"
+case "\$1 \$2" in
+  "issue list")
+    # emit the marker line only while a fake issue is open
+    if grep -q OPEN "\$state" 2>/dev/null; then echo 4242; fi ;;
+  "issue create")
+    cat > /dev/null           # consume --body-file -
+    echo OPEN > "\$state"
+    echo "https://example.invalid/issues/4242" ;;
+  "issue edit")   cat > /dev/null ;;
+  "issue close")  echo CLOSED > "\$state" ;;
+  "issue comment") : ;;
+esac
+exit 0
+STUB
+  chmod +x "$1/gh"
+}
+# count how many times a subcommand appears in the stub's call log
+gh_calls() { grep -c "^$1\$" "$GH_LOG" 2>/dev/null | tr -d ' '; }
+
+# AC3: divergence on an untagged push -> exit non-zero AND one durable artifact
+rec_setup guard-diverged
+rec_advance main
+rec_fork staging "$(rec_sha staging)"
+GUARD_DIR="$TMP/rec179-guard"; guard_stub "$GUARD_DIR"
+guard_run() {
+  FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_GH="$GUARD_DIR/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1
+}
+rc=0; OUT="$(guard_run)" || rc=$?
+assert_eq       "AC3: divergence -> guard exits non-zero (the check goes red)" "1" "$rc"
+assert_contains "AC3: guard reports it filed a durable artifact" "$OUT" "filing durable artifact"
+assert_eq       "AC3: exactly one issue was filed" "1" "$(gh_calls 'issue create')"
+assert_contains "AC3: guard surfaces the reconcile verdict itself" "$OUT" "halted-diverged staging"
+
+# AC4: a SECOND push while still diverged -> NO second artifact.
+# ci.yml fires on every push to main; ten pushes under one divergence must
+# produce one issue, not ten, or the signal becomes the noise it replaced.
+rc=0; OUT2="$(guard_run)" || rc=$?
+assert_eq       "AC4: still diverged -> guard still exits non-zero" "1" "$rc"
+assert_eq       "AC4: NO second issue is filed" "1" "$(gh_calls 'issue create')"
+assert_eq       "AC4: the existing artifact is edited in place instead" "1" "$(gh_calls 'issue edit')"
+assert_contains "AC4: guard says so out loud" "$OUT2" "no duplicate filed"
+
+# ...and the artifact closes itself once the divergence is resolved, so the
+# next divergence gets a fresh one rather than reopening a stale thread.
+rec_setup guard-clean
+GUARD_CLEAN="$TMP/rec179-guard-clean"; guard_stub "$GUARD_CLEAN"
+printf 'OPEN\n' > "$GUARD_CLEAN/issues.json"    # pretend an artifact is already open
+guard_run_clean() {
+  FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_GH="$GUARD_CLEAN/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1
+}
+rc=0; OUT3="$(guard_run_clean)" || rc=$?
+GH_LOG="$GUARD_CLEAN/calls.log"
+assert_eq       "AC3: clean verdict -> guard exits 0" "0" "$rc"
+assert_contains "AC3: clean verdict closes the open artifact" "$OUT3" "closing artifact"
+assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue close')"
+assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"

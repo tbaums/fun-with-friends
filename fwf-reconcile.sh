@@ -19,10 +19,18 @@
 # five states -- see lib.sh's fwf_reconcile_classify header comment for the
 # full BEHIND/AHEAD/EQUAL/DIVERGED/SUSPECT contract.
 #
-# Usage: fwf reconcile [--branch NAME ...] [--against BRANCH]
+# Usage: fwf reconcile [--check] [--branch NAME ...] [--against BRANCH]
 #   --branch NAME    reconcile this branch (repeatable). Default: both
 #                    $STAGING_BRANCH and $INTEGRATION_BRANCH.
 #   --against BRANCH classify against this branch. Default: $DEFAULT_BRANCH.
+#   --check          CLASSIFY ONLY -- report and set the exit code, but never
+#                    lock, fast-forward or push (issue #179). This is the
+#                    PRE-PUBLISH gate: run it BEFORE a release publishes, when
+#                    failing is free because no artifact exists yet. Plain
+#                    (non---check) reconcile stays the POST-publish call, where
+#                    it only ever acts on BEHIND and cannot fail dangerously.
+#                    --check exits non-zero ONLY on DIVERGED/SUSPECT; BEHIND is
+#                    staleness, not divergence, and must not block a release.
 #
 # Prints one report line per branch (see fwf_reconcile_branch's header for the
 # exact line shapes) and exits 0 iff EVERY branch is safe to build on
@@ -35,11 +43,12 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib.sh"
 
 main() {
-  local -a branches=() against="$DEFAULT_BRANCH"
+  local -a branches=() against="$DEFAULT_BRANCH" check=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --branch) branches+=("${2:?--branch needs a value}"); shift 2 ;;
       --against) against="${2:?--against needs a value}"; shift 2 ;;
+      --check) check=1; shift ;;
       *) echo "fwf-reconcile.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
   done
@@ -47,7 +56,11 @@ main() {
 
   local rc=0 line
   for b in "${branches[@]}"; do
-    line="$(fwf_reconcile_branch "$b" "$against")" || rc=1
+    if [ "$check" -eq 1 ]; then
+      line="$(fwf_reconcile_check_branch "$b" "$against")" || rc=1
+    else
+      line="$(fwf_reconcile_branch "$b" "$against")" || rc=1
+    fi
     printf '%s\n' "$line"
   done
   return "$rc"

@@ -187,7 +187,7 @@ UTILITIES
                          if unreadable. The checkable answer to "was this
                          approved?" — never infer it from label state or pane
                          text. Read-only.
-  reconcile [--branch NAME ...] [--against BRANCH]
+  reconcile [--check] [--branch NAME ...] [--against BRANCH]
                          Classify staging/integration against main (BEHIND ->
                          fast-forward reconcile / AHEAD -> normal no-op /
                          DIVERGED -> loud human-only halt / SUSPECT -> fail
@@ -214,6 +214,15 @@ UTILITIES
   templates              List available factory design templates.
   version                Print the fwf version (aliases: -v, --version).
   help                   Show this help.
+  reconcile-guard [--against BRANCH] [--branch NAME ...]
+                         Run `reconcile` and give its verdict a CONSEQUENCE on
+                         the untagged direct-to-main path (issue #179): on a
+                         non-zero verdict, file ONE durable, self-closing
+                         tracking issue and exit non-zero; on a clean verdict,
+                         close that issue if it is open. Idempotent — a
+                         divergence persisting across N pushes produces one
+                         artifact, not N. Called from ci.yml's push-to-main job,
+                         where a `::warning::` in a green run would be invisible.
 
 ENVIRONMENT
   FWF_PROFILE            Profile to use (same as --profile).
@@ -688,6 +697,7 @@ case "$cmd" in
   authz)     engine fwf-authz.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
+  reconcile-guard) engine fwf-reconcile-guard.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

@@ -119,5 +119,16 @@ anything. Cut the release manually — same gates, run locally:
    them (plus the checksums file) by hand, or accept that `fwf dash` falls back
    to a local `cargo build` for this release.
 4. Verify with step 7 above.
-5. Since the workflow's reconcile step didn't run, do it yourself:
+5. Reconcile. As of #179 this is **no longer only a manual instruction** — the
+   `reconcile` job in `.github/workflows/ci.yml` fires on *every* push to `main`,
+   tagged or not, so the fallback path is covered even if you skip this step. It
+   runs `fwf reconcile-guard`, which files one durable, self-closing tracking
+   issue and goes red if it finds a divergence.
+
+   Run it yourself anyway for the immediate answer:
    `FWF_REPO="$PWD" ./fwf reconcile` (see "Re-syncing staging/integration" above).
+
+   > **Why this note exists.** `fwf-reconcile.sh` records that #114 exists
+   > *because* the previous manual re-sync step got skipped (the 2026-07-14
+   > incident). Leaving this uncovered would have reproduced #114's own history
+   > inside the ticket meant to prevent it.
