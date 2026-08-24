@@ -126,6 +126,10 @@ if [ "$coord_only" = 1 ]; then
   # already up — a clean no-op, not an error (use --pm-only to recreate just
   # the PM pane within an existing coord).
   if tmux has-session -t "$COORD_SESSION" 2>/dev/null; then
+    # issue #85/#105 (via #225 adversarial review): an up-path was still
+    # invoked for the pm plane and confirms it up, even on this no-op — clear
+    # any logged IDLE for it, matching --build-only/--pm-only's no-op path.
+    fwf_floor_event floor-up "" "" pm
     echo "fwf-up: '$COORD_SESSION' is already up — nothing to do (use 'fwf up --pm-only' to recreate just the PM pane)."
     exit 0
   fi
