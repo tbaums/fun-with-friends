@@ -324,13 +324,14 @@ fwf_write_pane_env() {
 # The claude launch command for a role, honoring the per-role model overrides.
 # $1 = role tag or family: impl2 / qa1 / conductor / pm / gv / captain.
 fwf_claude_cmd() { # $1=role
-  local m src=""; m="$(fwf_model_for "$1")"
+  local m src="" style=""; m="$(fwf_model_for "$1")"
   # Sourcing bypasses tmux's server-env-inheritance gotcha entirely (#143):
   # this is typed fresh into the pane's shell at launch time, so it reads
   # whatever fwf_write_pane_env most recently wrote to disk — regardless of
   # when the tmux server itself started.
   [ -n "${FWF_PANE_ENV:-}" ] && src=". $(printf '%q' "$FWF_PANE_ENV_FILE") 2>/dev/null; "
-  if [ -n "$m" ]; then printf '%s%s --model %s' "$src" "$CLAUDE_CMD" "$m"; else printf '%s%s' "$src" "$CLAUDE_CMD"; fi
+  [ -n "${FWF_OUTPUT_STYLE:-}" ] && style="$(printf ' --settings %q' "{\"outputStyle\":\"$FWF_OUTPUT_STYLE\"}")"
+  if [ -n "$m" ]; then printf '%s%s --model %s%s' "$src" "$CLAUDE_CMD" "$m" "$style"; else printf '%s%s%s' "$src" "$CLAUDE_CMD" "$style"; fi
 }
 
 # One-line build-provenance trailer stamped into every PR body + squash-merge
