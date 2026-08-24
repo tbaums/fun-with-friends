@@ -1,6 +1,49 @@
 # Proposal: an attributable operator un-gate sentinel (#152, #150 ask 3)
 
-Status: **investigation complete — partial-yes, staged recommendation.**
+Status: **investigation complete — SUPERSEDED by #191. Recommend closing #152.**
+
+## Reconciliation with #191 (read this first)
+
+While this investigation was in flight, **#191** ("authz: verify
+cryptographic operator signatures") was filed, GV-reviewed, and moved to
+`product-wip` — and it answers this ticket's exact question with a stronger,
+already-working design: real `ssh-keygen -Y sign`/`verify` signatures
+(private key never touches the box), replay-bound to both **issue and gate
+episode**, verified against a **root-owned `0644` trust anchor** the factory
+user can read but — this is the load-bearing detail — **cannot write**. #191
+has already been decomposed into #213 (signing helper), #214 (board-path
+design, discovery), and #215 (a related bug), and is sequenced to ship after
+**#200** (authz's `INDETERMINATE`-on-readable-threads false positive, since a
+wrongly-firing fail-closed check is exactly the pressure that produces forged
+authorization artifacts). #207 (enforce the verdict at the point of
+action — claim/build refuses on anything but `AUTHORIZED`) is the
+complementary ticket that makes the hardened verdict load-bearing, not just
+observable.
+
+**This changes my answer below.** Before finding #191 I concluded a fully
+cryptographic root wasn't achievable without an OS/container change (my
+"coupling 2": operator and roles share one machine and OS user). #191's
+root-owned-`0644`-anchor design is a narrower, cheaper way to break that same
+coupling — it doesn't need to isolate the whole floor from the operator, only
+make **one specific file** unwritable by the factory user, which standard
+Unix permissions already do without any new infrastructure. That is strictly
+better than this proposal's "Option A" (a second GitHub identity + an
+`author.login` check), which remains honor-system-shaped (its guarantee is
+capped by keeping a credential out of role-reachable paths, a procedural
+invariant, not an OS-enforced one) and would ship a genuinely weaker
+mechanism in parallel with one already scoped, reviewed, and further along.
+
+**Recommendation: close #152 as superseded by #191.** Do not build this
+proposal's "Option A" — it would be obsolete within the same work cycle #191
+ships in, per #191's own acceptance criteria (four distinct verdicts,
+episode binding, position-constrained sentinel, anchor-permission assertion)
+already exceeding what Option A specifies. The investigation below is kept
+for its research value (the coupling-1/coupling-2 framing, and the concrete
+"why a second GitHub identity alone isn't enough" analysis) and because it
+independently arrived at the same root-owned-file insight #191 already
+shipped as a working PoC — but it should not spawn a competing build ticket.
+
+The original investigation (pre-#191) follows.
 
 ## Problem recap
 
@@ -158,21 +201,18 @@ targets — `docs/dash.md`), and adds real friction (every approval needs a
 physical touch, not just a keypress). Flag as a future escalation; not
 justified as the first move.
 
-## Recommendation
+## Recommendation (superseded — see Reconciliation above)
 
-**Build Option A now**, scoped exactly as above (small, layers directly onto
-`fwf authz`'s existing call sites and verdict shape per the ticket's own
-ASSUMPTION — no role prompt changes needed, since roles already gate
-destructive actions on `fwf authz`'s verdict, which is #150 ask #4). State
-the residual risk plainly in the PR and in `docs/shared-account.md`: Option
-A's guarantee holds only as long as the operator token never enters a
-role-reachable file/env, which today is a **procedural** invariant (nothing
-on the box stops a human from misconfiguring it) rather than an OS-enforced
-one. **File Option B as a separate follow-up ticket** to close that gap
-durably. Do not build Option C unless A+B are shipped and still judged
-insufficient.
+Original (pre-#191) recommendation, kept for the record: build Option A now,
+file Option B as a follow-up, punt Option C. **This is superseded**: #191
+already delivers a design at least as strong as Option A + Option B combined
+(cryptographic signatures, replay-bound, root-owned unwritable anchor) and is
+further along (GV-reviewed, `product-wip`, working PoC, decomposed into
+#213/#214/#215). Do not file the build-ticket spec below — it is kept only to
+show what this investigation would have produced absent #191, for comparison
+against #191's actual acceptance criteria.
 
-### Ready-to-file build-ticket spec (for the follow-up build ticket this proposal spawns)
+### Ready-to-file build-ticket spec (NOT to be filed — superseded by #191, kept for comparison)
 
 **Title:** Harden `fwf authz` with an author-attributed operator sentinel (#152 Option A)
 
