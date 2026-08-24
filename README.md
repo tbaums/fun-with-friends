@@ -381,7 +381,11 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
 `FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors — plus the
 sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
 `FWF_TEMPLATE`) from the next section. Role prompts are the source of truth and
-live in `templates/<name>/` (one directory per factory design).
+live in `templates/<name>/` (one directory per factory design). For a
+deployment with an external operator/concierge above the factory,
+`FWF_OPERATOR_DRIVEN=1` (+ `FWF_OPERATOR_INBOX_ISSUE`) rewrites the captain to
+cede the human-co-pilot role and never stall in a caretaker-hold — see
+[docs/operator-driven-mode.md](docs/operator-driven-mode.md).
 
 ## Commands
 

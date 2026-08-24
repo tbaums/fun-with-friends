@@ -556,6 +556,48 @@ assert_contains "captain: sole-authorization-oracle rule"       "$CAPR" "$GR_SOL
 assert_contains "captain: non-AUTHORIZED is a HOLD regardless of belief" "$CAPR" "$GR_REGARDLESS_OF_BELIEF"
 assert_not_contains "captain must NOT be told it has NO channel" "$CAPR" "$GR_NO_CHANNEL"
 
+section "operator-driven mode (issue #166): captain-only opt-in overlay"
+# Default (FWF_OPERATOR_DRIVEN unset): co-pilot framing untouched, no overlay text.
+assert_not_contains "default: no operator-driven block"  "$CAPR" "OPERATOR-DRIVEN MODE (ACTIVE"
+assert_contains     "default: co-pilot self-conception intact" "$CAPR" "the human's technical co-pilot AND the conductor"
+# RELEASE-PAUSE CHECK is unconditional (mirrors STOP/BUDGET always being present) —
+# present even with the overlay off, resolving to the real RELEASE_HOLD path.
+assert_contains "default: RELEASE-PAUSE CHECK step present" "$CAPR" "RELEASE-PAUSE CHECK"
+RHF="$(prov_env 'echo "$RELEASE_HOLD_FILE"')"
+case "$RHF" in */RELEASE_HOLD) ok "RELEASE_HOLD_FILE wired to \$FWF_RUN/RELEASE_HOLD";; *) bad "RELEASE_HOLD_FILE wired to \$FWF_RUN/RELEASE_HOLD" "got [$RHF]";; esac
+assert_contains "default: RELEASE-PAUSE CHECK resolves the real path" "$CAPR" "$RHF"
+
+# Enabled: overlay replaces the self-conception, states the anti-stall contract
+# and the release-pause handshake, and names the pinned operator-inbox issue.
+od_env() { FWF_PROFILE=example FWF_OPERATOR_DRIVEN=1 FWF_OPERATOR_INBOX_ISSUE=42 bash -c "source '$ROOT/lib.sh'; $1"; }
+ODCAP="$(od_env "fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+assert_contains "operator-driven: overlay header present"        "$ODCAP" "OPERATOR-DRIVEN MODE (ACTIVE"
+assert_contains "operator-driven: cedes the co-pilot self-conception" "$ODCAP" "cede that self-conception entirely"
+assert_contains "operator-driven: never self-authorizes"         "$ODCAP" "NEVER self-authorize"
+assert_contains "operator-driven: stops at promoting integration" "$ODCAP" "then STOP"
+# The tested anti-stall assertion (the point of the ticket): the overlay
+# explicitly forbids parking on a lane/human-needing question and mandates
+# writing it to the tracker + continuing, in the same tick.
+assert_contains "operator-driven: forbids the caretaker-hold"    "$ODCAP" "do NOT enter a caretaker-hold and do NOT park on it"
+assert_contains "operator-driven: write-and-continue is mandatory" "$ODCAP" "is mandatory, not optional"
+assert_contains "operator-driven: ticket-scoped -> the work issue" "$ODCAP" "RELEVANT WORK ISSUE for a ticket-scoped question"
+assert_contains "operator-driven: floor-wide -> the pinned inbox issue" "$ODCAP" "standing operator-inbox issue #42"
+assert_contains "operator-driven: release-pause handshake referenced" "$ODCAP" "RELEASE-PAUSE HANDSHAKE"
+assert_contains "operator-driven: RELEASE-PAUSE CHECK step still present" "$ODCAP" "RELEASE-PAUSE CHECK"
+
+# Fails closed: FWF_OPERATOR_DRIVEN=1 with no pinned inbox issue must not
+# silently render an unpinned (unenforceable) surface contract. `exit 1` inside
+# fwf_render terminates the `bash -c` subshell itself, so its own rc is checked
+# right after the call — NOT `echo $?` inside the same subshell string, which
+# would never run.
+FWF_PROFILE=example FWF_OPERATOR_DRIVEN=1 bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''" >/dev/null 2>&1
+NOINBOX_RC=$?
+assert_eq "operator-driven with no inbox issue fails closed (nonzero rc)" "1" "$NOINBOX_RC"
+
+# Non-captain roles are unaffected by the flag — the overlay is captain-only.
+ODIMPL="$(od_env "fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
+assert_not_contains "operator-driven: implementer unaffected" "$ODIMPL" "OPERATOR-DRIVEN MODE (ACTIVE"
+
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
 hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }
