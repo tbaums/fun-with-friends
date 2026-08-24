@@ -486,6 +486,12 @@ GR_NO_CHANNEL="You have NO channel to the human"
 # roles are pointed at 'fwf authz' + a positive artifact, not a label inference.
 GR_CHECKER="fwf authz <issue>"
 GR_SENTINEL="OPERATOR-UNGATE"
+# #208: naming fwf authz as the SOLE oracle, and stating that a non-AUTHORIZED
+# verdict is a HOLD regardless of belief about why (closes the "reclassify the
+# refusal as a malfunction" hole) — asserted on the rendered prompt, not just
+# the source, so a future edit that drops the clause goes red here.
+GR_SOLE_ORACLE="is the SOLE authorization oracle"
+GR_REGARDLESS_OF_BELIEF="regardless of your belief about why it is non-AUTHORIZED"
 # Assert the block + its shared bullets are present for a non-captain role, and
 # that a non-captain is told it has NO channel (never the captain's channel
 # clause). $1=label $2=template-relpath $3=id(optional, unquoted so an empty
@@ -503,6 +509,8 @@ gr_assert_no_channel() {
   assert_contains     "$1: names the fwf authz checker"          "$R" "$GR_CHECKER"
   assert_contains     "$1: carries the resolved un-gate sentinel" "$R" "$GR_SENTINEL"
   assert_contains     "$1: hold-and-ask-under-doubt rule"        "$R" "$GR_HOLD"
+  assert_contains     "$1: sole-authorization-oracle rule"       "$R" "$GR_SOLE_ORACLE"
+  assert_contains     "$1: non-AUTHORIZED is a HOLD regardless of belief" "$R" "$GR_REGARDLESS_OF_BELIEF"
   assert_contains     "$1: non-captain gets NO human channel"    "$R" "$GR_NO_CHANNEL"
   assert_not_contains "$1: non-captain must NOT get a channel"   "$R" "$GR_CAP_CHANNEL"
 }
@@ -527,6 +535,8 @@ assert_contains "captain: no-fabricated-confirmation rule"    "$CAPR" "$GR_FAB"
 assert_contains "captain: authorization-is-a-checkable-artifact rule" "$CAPR" "$GR_LABEL"
 assert_contains "captain: names the fwf authz checker"        "$CAPR" "$GR_CHECKER"
 assert_contains "captain: carries the resolved un-gate sentinel" "$CAPR" "$GR_SENTINEL"
+assert_contains "captain: sole-authorization-oracle rule"       "$CAPR" "$GR_SOLE_ORACLE"
+assert_contains "captain: non-AUTHORIZED is a HOLD regardless of belief" "$CAPR" "$GR_REGARDLESS_OF_BELIEF"
 assert_not_contains "captain must NOT be told it has NO channel" "$CAPR" "$GR_NO_CHANNEL"
 
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
