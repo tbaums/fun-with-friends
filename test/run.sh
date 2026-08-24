@@ -3719,6 +3719,88 @@ assert_eq "sccache RUSTC_WRAPPER preserved"        "sccache" "$(ci_f 4 "$R")"
 assert_eq "  ...while shared target dir is dropped" "UNSET"  "$(ci_f 1 "$R")"
 
 # --------------------------------------------------------------------------
+section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"
+
+gts_setup() { # $1=label -> a throwaway local repo, 'main' at one commit -> $GTS_DIR
+  GTS_DIR="$TMP/gts-$1"; mkdir -p "$GTS_DIR"
+  ( cd "$GTS_DIR" && git init -q && git symbolic-ref HEAD refs/heads/main \
+    && git config user.email t@t.co && git config user.name t \
+    && echo base > README.md && git add -A && git commit -qm base )
+}
+gts_run() { ( cd "$GTS_DIR" && FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1" ); }
+gts_touch() { echo "${RANDOM}${RANDOM}" >> "$1"; } # $1=path, creates parent dirs first if needed
+
+# --- SKIP: every changed file matches a --safe glob -----------------------
+gts_setup skip
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p lib && gts_touch lib/foo.sh && git add -A && git commit -qm "bash-only change" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "bash-only change on the safe list -> SKIP" "$DEC" "SKIP"
+
+# --- RUN: a changed file that touches the Rust dir (not on the safe list) -
+gts_setup run-dash
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash/src && gts_touch dash/src/main.rs && git add -A && git commit -qm "rust change" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "dash/ touch, not on safe list -> RUN"         "$DEC" "RUN"
+assert_contains "RUN names the offending path"                 "$DEC" "dash/src/main.rs"
+assert_contains "RUN reason is fail-open, not fail-safe"       "$DEC" "fail-open"
+
+# --- RUN: unknown path (fail-open on the unrecognized case) ---------------
+gts_setup run-unknown
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch rust-toolchain.toml && git add -A && git commit -qm "toolchain pin bump" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "unrecognized path -> RUN (fail-open)" "$DEC" "RUN"
+
+# --- RUN: whole-branch diff, NOT last-commit-only (the primary false-GREEN
+# guard) — an EARLIER commit touches dash/, HEAD only touches a safe path.
+gts_setup whole-branch
+( cd "$GTS_DIR" && git checkout -qb feature \
+    && mkdir -p dash/src && gts_touch dash/src/lib.rs && git add -A && git commit -qm "touches dash" \
+    && mkdir -p lib && gts_touch lib/foo.sh && git add -A && git commit -qm "then only bash" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "earlier dash/ commit still forces RUN even though HEAD doesn't touch it" "$DEC" "RUN"
+
+# --- SKIP: no changes at all vs the target ----------------------------------
+gts_setup no-changes
+( cd "$GTS_DIR" && git checkout -qb feature )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh'")"
+assert_contains "identical branch -> SKIP" "$DEC" "SKIP"
+
+# --- RUN: unresolvable diff base fails SAFE, not silently ------------------
+gts_setup fail-safe
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide does-not-exist 'docs/*' '*.md'")"
+assert_contains "unresolvable base -> RUN"           "$DEC" "RUN"
+assert_contains "unresolvable base reason is fail-safe" "$DEC" "fail-safe"
+
+# --- CLI wrapper: loud WOULD SKIP / WOULD RUN lines + shadow log -----------
+gts_setup cli-skip
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
+GTS_LOG="$TMP/gts-cli-skip-run/shadow.log"
+CLIOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-skip-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --log "$GTS_LOG")"
+assert_contains "CLI: loud WOULD SKIP line"          "$CLIOUT" "Rust suite WOULD SKIP"
+assert_contains "CLI: shadow log records SKIP"       "$(cat "$GTS_LOG")" "decision=SKIP"
+assert_contains "CLI: shadow log records the target" "$(cat "$GTS_LOG")" "against=main"
+
+gts_setup cli-run
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash && gts_touch dash/x.rs && git add -A && git commit -qm "rust" )
+GTS_LOG2="$TMP/gts-cli-run-run/shadow.log"
+CLIOUT2="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --log "$GTS_LOG2" --full-suite-secs 42)"
+assert_contains "CLI: loud WOULD RUN line"                "$CLIOUT2" "Rust suite WOULD RUN"
+assert_contains "CLI: shadow log records RUN"             "$(cat "$GTS_LOG2")" "decision=RUN"
+assert_contains "CLI: shadow log records the measured wall-clock" "$(cat "$GTS_LOG2")" "full_suite_secs=42"
+
+# --- CLI wrapper: ALWAYS exits 0 -- it observes, never gates ---------------
+rc=0; (cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run2" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' >/dev/null 2>&1) || rc=$?
+assert_eq "CLI: exits 0 even on a RUN verdict (shadow never gates)" "0" "$rc"
+
+# --- Kill switch: FWF_GATE_FULL=1 forces RUN regardless of an otherwise-SKIP-eligible diff ---
+gts_setup killswitch
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only, would normally SKIP" )
+KSOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_GATE_FULL=1 FWF_RUN_DIR="$TMP/gts-ks-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
+assert_contains "FWF_GATE_FULL=1 forces WOULD RUN even on a docs-only diff" "$KSOUT" "Rust suite WOULD RUN"
+assert_contains "FWF_GATE_FULL=1 names itself as the reason"                "$KSOUT" "FWF_GATE_FULL=1"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the

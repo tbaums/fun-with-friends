@@ -424,6 +424,50 @@ fwf_cargo_isolate() {
   return 0
 }
 
+# Gate-throughput (issue #138, piece B — SHADOW MODE): classify whether the
+# Rust suite COULD be skipped for the current branch, without ever acting on
+# the answer. Never used to actually skip anything while B ships in shadow —
+# every caller runs the full Rust suite regardless of this verdict; the point
+# is to validate the classifier against real branches and accumulate the
+# would-skip-rate data the A->B measurement decision needs, with zero
+# false-GREEN surface (nothing the gate decides ever changes).
+#
+# $1 = branch/ref to diff the WHOLE current branch against (merge-base..HEAD,
+#      never last-commit-only — an early commit touching dash/ must still
+#      trigger RUN even if HEAD itself doesn't touch it: the primary
+#      false-GREEN guard named in the ticket).
+# $2.. = glob patterns for paths KNOWN to be safe to skip on (e.g. 'docs/*'
+#      '*.md'). Fail-OPEN: any changed file matching NONE of the patterns
+#      (an unknown path, a generator, dash/**, Cargo.lock, ...) -> RUN. This
+#      is a denylist of what's exempt, not an allowlist of what's dangerous —
+#      an unrecognized path is guilty until proven safe.
+# Fail-SAFE: an unresolvable diff base (detached/ambiguous) -> RUN.
+#
+# Prints exactly one line to stdout: "SKIP <base-sha>" or "RUN <reason>".
+fwf_gate_rust_scope_decide() {
+  local against="$1"; shift
+  local -a safe=("$@")
+  local base
+  base="$(git merge-base HEAD "$against" 2>/dev/null)" \
+    || { printf 'RUN fail-safe: could not resolve a merge-base against %s\n' "$against"; return 0; }
+  local changed
+  changed="$(git diff --name-only "$base"...HEAD 2>/dev/null)"
+  [ -n "$changed" ] || { printf 'SKIP %s\n' "$base"; return 0; }
+  local f matched pat
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    matched=0
+    for pat in ${safe[@]+"${safe[@]}"}; do
+      case "$f" in $pat) matched=1; break;; esac
+    done
+    if [ "$matched" -eq 0 ]; then
+      printf 'RUN fail-open: %s is not on the safe-path list (base %s)\n' "$f" "$base"
+      return 0
+    fi
+  done <<<"$changed"
+  printf 'SKIP %s\n' "$base"
+}
+
 # Shared scratch root for source-blind (worktree-less) roles: per-profile, OUTSIDE
 # any repo, so personas have a place for browser-driver plumbing and screenshot
 # evidence without ever touching the target's source tree. __UT_ROOT__ resolves here.
