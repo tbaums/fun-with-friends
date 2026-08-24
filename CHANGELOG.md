@@ -11,6 +11,17 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-24
+
+### Added
+- **`fwf up` coord-only from a cold/fully-down state** (#155, code 36a110a, docs 36a110a) — bring up just PM/GV/Captain (no floor) even when nothing is currently running, so the coordination plane can be (re)started independently.
+
+### Fixed
+- **Flaky `test/run.sh` "a full fwf up appends floor-up" test** (#185, code 1f2e664, docs none — internal).
+
+### Internal
+- **Regression fixtures capturing the false-AUTHORIZED sentinel behavior** (#218, code cdc2434, docs 305dc2c) — lock in the #191 unanchored-grep authz false-positive as a fixture-backed test before the live threads change, and correct a wrong claim about sentinel position (measure it, don't assume).
+
 ## [0.29.0] - 2026-08-24
 
 ### Added
