@@ -1005,6 +1005,28 @@ EOS
   if tmux has-session -t "${F155BSESS}-build" 2>/dev/null; then bad "--coord-only no-op: no build session created"; else ok "--coord-only no-op: no build session created"; fi
   tmux kill-session -t "${F155BSESS}-coord" 2>/dev/null
 
+  # (qa2 adversarial, issue #155): every OTHER up-path confirms its plane up
+  # and clears any logged IDLE even on a no-op (see fwf-up.sh's own comment
+  # at _fwf_log_plane_up_events — "even when nothing new gets created below,
+  # since an up-path was still invoked for that plane and confirms it up").
+  # --coord-only's already-up branch exits at the top, before that call is
+  # ever reached — so unlike --build-only/--pm-only's already-up no-op, it
+  # should NOT silently leave a stale pm-plane IDLE marker behind.
+  F155DWT="$TMP/wt155d"; mkdir -p "$F155DWT/ex-captain"
+  F155DRUN="$TMP/run155d"; mkdir -p "$F155DRUN/state/example"
+  F155DLOG="$F155DRUN/state/example/floor-events.log"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\tpm\n' > "$F155DLOG"
+  F155DSESS="fwf-selftest-155d-$$"
+  tmux new-session -d -s "${F155DSESS}-coord" -c "$F155DWT/ex-captain"
+  tmux set -p -t "${F155DSESS}-coord" @l "CAPTAIN"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F155DRUN" FWF_SESSION="$F155DSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F155DWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" --coord-only >/dev/null 2>&1
+  F155DIDLE="$(env FWF_PROFILE=example FWF_RUN_DIR="$F155DRUN" bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+  assert_eq "--coord-only no-op on an already-up coord still clears a stale pm-plane IDLE (matches --build-only/--pm-only's no-op)" "false" "$F155DIDLE"
+  tmux kill-session -t "${F155DSESS}-coord" 2>/dev/null
+
   # (c) SYMMETRIC RECOVERY (acceptance criterion): build floor already UP,
   # coord DOWN -> --coord-only brings up coord alongside it WITHOUT disrupting
   # the running floor (the mirror of --build-only-alongside-coord).
