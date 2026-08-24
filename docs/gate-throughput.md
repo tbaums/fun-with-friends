@@ -27,13 +27,17 @@ at all, and B gets validated against real branches at the same time.
    would-skip/would-run for the current diff and logs it; the full Rust
    suite runs regardless of the verdict.
 2. **A** (landed, narrower than hoped — see "Piece A: what was measured"
-   below) **+ C** (build concurrency bound — still open).
+   below) **+ C** (landed — a floor-wide cargo build concurrency semaphore,
+   `fwf gate --cargo-build`, auto-detected on any GATE_CMD/E2E_CMD containing
+   "cargo").
 3. **Measure** — warm-cache always-on gate time, plus B's shadow log
-   would-skip rate, both from the live floor.
+   would-skip rate. Done for the always-on-gate-time half — see "The A→B
+   measurement" below; the shadow-log half has no data yet (B isn't wired
+   into a live GATE_CMD anywhere yet, so nothing has logged a real verdict).
 4. **Flip B to enforcing** — only if the number justifies it, as one
    documented default change, with `FWF_GATE_FULL=1` as the kill switch from
-   that point on. If the warm cache alone gets gate time under the bound, B
-   is dropped and the classifier deleted instead.
+   that point on. **Decision as of the measurement below: KEEP B IN SHADOW,
+   do not flip yet** — see the decision writeup for why.
 
 ## Piece A: what was measured (2026-08-24, sccache 0.17.0 / cargo 1.98.0)
 
@@ -63,8 +67,11 @@ invocation `cwd`, and `--remap-path-prefix` as the cause — only forcing
 `CARGO_TARGET_DIR` identical restored hits, and doing that for real
 worktrees reintroduces the exact cross-worktree collision #151 fixed (cargo
 file-locks a shared target dir and serializes; a genuinely different commit
-sharing it risks stale-artifact leakage) unless builds are also serialized —
-which is piece C, not yet built.
+sharing it risks stale-artifact leakage) unless builds are also serialized.
+Piece C (now landed — a floor-wide `fwf gate --cargo-build` concurrency
+semaphore) provides that serialization primitive, but the fixed-target-dir
+scheme that would actually USE it to unlock cross-worktree hits is still a
+separate, unbuilt increment — see "Follow-up path" below.
 
 **What landed instead:** `fwf_cargo_sccache_configure` (lib.sh) auto-points
 `RUSTC_WRAPPER=sccache` and a profile-scoped `SCCACHE_DIR` when sccache is
@@ -143,16 +150,71 @@ whole-branch-diff false-GREEN guard, fail-safe on an unresolvable base, the
 CLI wrapper's logging + always-exits-0 contract, and the `FWF_GATE_FULL`
 kill switch).
 
+## The A→B measurement (2026-08-24, this repo's own `dash/` crate)
+
+The ticket requires this decision be justified by numbers, written down with
+a date — "it felt faster" doesn't count. Measured `cargo build --locked &&
+cargo test --locked` (the two steps this sandbox could actually run —
+`cargo fmt`/`cargo clippy` are unavailable here: their rustup components
+fail to install in this environment, see caveat below) in a real worktree:
+
+| Case | Wall-clock |
+|---|---|
+| **Cold** — fresh worktree, empty `target/`, no sccache | 8.4s |
+| **Steady-state** — warm `target/`, one small change to the local crate | **0.7s** |
+
+**The steady-state number is the one that matters for the keep-or-drop-B
+decision**, because B's whole premise is that most commits are small and
+incremental — and cargo's own built-in incremental compilation already
+handles that case, with zero help from sccache or diff-scoping: a real
+worktree that never gets `cargo clean`d pays the 8.4s cold cost exactly
+once (at provision time), then 0.7s per commit after that, regardless of
+whether the commit touched Rust or not. Piece A's cache (and by extension B,
+which exists to avoid the Rust suite entirely) is solving a cost that, for
+this crate's current size on this hardware, cargo already solves for free
+in the case B targets.
+
+**Decision: KEEP B IN SHADOW. Do not flip to enforcing yet.** Bound this
+sets, to revisit the decision against: *if a steady-state (warm, unwiped
+`target/`) `cargo build && cargo test` on the real GATE_CMD's crate ever
+regularly exceeds 60s, that's the trigger to reconsider enforcing B* — at
+0.7s today, this repo's `dash/` crate is roughly two orders of magnitude
+under that bound, so scoping the Rust suite out entirely buys nothing
+`GATE_CMD` doesn't already get from cargo's own cache. B stays in shadow
+(harmless, self-validating) rather than being dropped outright, because (a)
+a LARGER Rust codebase or a target-wiping workflow could cross the bound
+without this doc being re-measured, and (b) the classifier needs live
+shadow-log data before anyone could respect it anyway.
+
+**Caveats on this measurement, stated plainly rather than hidden:**
+- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` — the
+  other two steps in the ticket's own example `GATE_CMD` — could not be run
+  in this sandbox (`rustup component add rustfmt clippy` fails to download
+  here even though the binaries exist on `PATH`; the proxy layer still
+  refuses them). If a real deployment's fmt/clippy pass is
+  disproportionately slower than build+test, the 60s bound above may need
+  revisiting once someone can measure it end-to-end. Said explicitly rather
+  than assumed away.
+- This is one small crate (77 total dependencies) on one box. A larger
+  Rust codebase, or heavier lint/test suites, would shift these numbers —
+  the bound above is deliberately a re-check trigger, not a permanent verdict.
+- **No live shadow-log data exists yet.** `fwf gate-rust-scope` isn't wired
+  into any real profile's `GATE_CMD` in this repo (the profile that runs
+  the literal `cd dash && cargo fmt --check && ...` command lives outside
+  this codebase). The would-skip-rate half of the A→B decision has zero
+  data until that wiring happens and gates actually run on the live floor —
+  this write-up covers the always-on-gate-time half only.
+
 ## Not yet built (future increments of this ticket)
 
 - **A, the cross-worktree half** — a fixed-target-dir scheme so sccache can
-  actually hit across worktrees, gated on piece C's concurrency bound (see
-  "Follow-up path" above). What landed is the same-worktree win only.
-- **C** — a floor-wide cap on concurrent cargo builds.
-- Flipping B from shadow to enforcing (step 4 above) — gated on the
-  measurement, not on this increment.
-- The A→B measurement gate itself (warm-cache always-on gate time vs. the
-  bound) — needs C (or the fixed-target-dir follow-up) in place first to be a
-  fair measurement; today's cache only speeds up a wiped-and-rebuilt
-  same-worktree gate, not the steady-state per-worktree case the bound is
-  measuring.
+  actually hit across worktrees, gated on piece C's concurrency bound (now
+  landed — see "Follow-up path" above). What landed is the same-worktree win
+  only, which the measurement above shows is already sufficient for this
+  crate's current steady-state cost.
+- Flipping B from shadow to enforcing — explicitly NOT justified by the
+  measurement above; revisit only if the 60s bound is crossed or live
+  shadow-log data says otherwise.
+- Wiring `fwf gate-rust-scope` into a real GATE_CMD so the shadow log
+  actually accumulates would-skip-rate data — outside this codebase's scope
+  (it lives in the consuming repo's own profile).
