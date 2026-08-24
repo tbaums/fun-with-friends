@@ -2812,6 +2812,130 @@ assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
 case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
 
 # --------------------------------------------------------------------------
+section "cargo build concurrency SEMAPHORE (issue #138 piece C): N slots, not a mutex"
+CBRUN="$TMP/cargobuild138"
+cat > "$TMP/cargo-build-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  symmetry)
+    s="$(fwf_cargo_build_slot_acquire testrole)" && echo "ACQUIRED=$s"
+    [ -f "$CARGO_BUILD_LOCK/slot-$s/owner" ] && echo STAMPED
+    grep -q '^role=testrole$' "$CARGO_BUILD_LOCK/slot-$s/owner" && echo ROLEOK
+    fwf_cargo_build_slot_release "$s"
+    [ -d "$CARGO_BUILD_LOCK/slot-$s" ] && echo STILLTHERE || echo RELEASED
+    ;;
+  two-slots-then-block)
+    s1="$(fwf_cargo_build_slot_acquire holder1)" && echo "S1=$s1"
+    s2="$(fwf_cargo_build_slot_acquire holder2)" && echo "S2=$s2"
+    rc=0; fwf_cargo_build_slot_acquire holder3 2>&1 || rc=$?
+    echo "RC3=$rc"
+    fwf_cargo_build_slot_release "$s1"
+    s4="$(fwf_cargo_build_slot_acquire holder4)" && echo "S4=$s4"
+    ;;
+  dead)
+    mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+    printf 'role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\n' \
+      "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+    rc=0; s="$(fwf_cargo_build_slot_acquire impl9 2>&1)" || rc=$?
+    echo "OUT=$s"
+    echo "RC=$rc"
+    grep -q '^role=impl9$' "$CARGO_BUILD_LOCK/slot-1/owner" 2>/dev/null && echo NEWOWNER
+    ;;
+  live)
+    mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+    printf 'role=selfheld\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+    rc=0; fwf_cargo_build_slot_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+esac
+EOSCRIPT
+
+CB_SYM="$(FWF_RUN_DIR="$CBRUN/sym" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" symmetry)"
+assert_contains "acquire succeeds and returns a slot number" "$CB_SYM" "ACQUIRED=1"
+assert_contains "acquire writes a holder-identity stamp"     "$CB_SYM" "STAMPED"
+assert_contains "stamp carries the caller's role label"      "$CB_SYM" "ROLEOK"
+assert_contains "release removes that slot's dir"            "$CB_SYM" "RELEASED"
+case "$CB_SYM" in *STILLTHERE*) bad "release must remove the slot dir";; esac
+
+CB_TWO="$(FWF_RUN_DIR="$CBRUN/two" FWF_CARGO_BUILD_CONCURRENCY=2 FWF_CARGO_BUILD_LOCK_TIMEOUT=1 FWF_CARGO_BUILD_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" two-slots-then-block)"
+assert_contains "SEMAPHORE: 1st concurrent holder gets a slot" "$CB_TWO" "S1=1"
+assert_contains "SEMAPHORE: 2nd concurrent holder gets a DIFFERENT slot" "$CB_TWO" "S2=2"
+assert_contains "SEMAPHORE: (N+1)th holder times out, not a mutex-of-1" "$CB_TWO" "RC3=1"
+assert_contains "SEMAPHORE: releasing frees a slot for the next waiter" "$CB_TWO" "S4=1"
+
+CB_DEAD="$(FWF_RUN_DIR="$CBRUN/dead" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" dead)"
+assert_contains "dead-PID slot holder is named and broken" "$CB_DEAD" "breaking it"
+assert_contains "dead-PID slot is re-acquired, not deadlocked" "$CB_DEAD" "RC=0"
+assert_contains "the new stamp overwrites the dead one" "$CB_DEAD" "NEWOWNER"
+
+CB_LIVE="$(FWF_RUN_DIR="$CBRUN/live" FWF_CARGO_BUILD_CONCURRENCY=1 FWF_CARGO_BUILD_LOCK_STALE_SECS=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=2 FWF_CARGO_BUILD_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" live)"
+assert_contains "a blocked wait names the busy state" "$CB_LIVE" "waiting for a cargo build slot"
+assert_contains "acquire times out rather than hanging" "$CB_LIVE" "timed out"
+assert_contains "acquire returns non-zero on timeout"   "$CB_LIVE" "RC=1"
+case "$CB_LIVE" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live slot holder not broken, even past the age backstop";; esac
+
+# fwf_render auto-detection: a profile's GATE_CMD/E2E_CMD containing "cargo"
+# gets --cargo-build with no template changes; one that doesn't never pays for it.
+cbr_render() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; GATE_CMD='$1'; E2E_CMD='$2'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1"; }
+CBR_CARGO="$(cbr_render 'cd dash && cargo test' 'bash test/run.sh')"
+assert_contains     "GATE_CMD with cargo -> --cargo-build auto-appended" "$CBR_CARGO" "fwf gate impl1 --cargo-build -- bash"
+assert_not_contains "E2E_CMD without cargo -> no --cargo-build"          "$CBR_CARGO" "fwf gate impl1 --e2e --cargo-build --"
+assert_contains     "E2E_CMD without cargo still gets --e2e alone"       "$CBR_CARGO" "fwf gate impl1 --e2e -- bash"
+
+CBR_NOCARGO="$(cbr_render 'bash test/run.sh' 'bash test/run.sh')"
+assert_not_contains "neither GATE_CMD nor E2E_CMD has cargo -> flag never appears" "$CBR_NOCARGO" "--cargo-build"
+
+CBR_E2ECARGO="$(cbr_render 'bash test/run.sh' 'cd dash && cargo test')"
+assert_contains "E2E_CMD with cargo -> --cargo-build auto-appended on __E2E__ too" "$CBR_E2ECARGO" "fwf gate impl1 --e2e --cargo-build --"
+
+# End-to-end through fwf-gate.sh itself: N=2 concurrent --cargo-build
+# invocations must never let a 3rd (or more) hold at the SAME instant. Each
+# holder registers itself in a shared counter dir for the duration of its
+# hold and records the concurrency level it observed; the peak observed
+# across all three must never exceed 2, and must actually REACH 2 at some
+# point (proving this is a semaphore, not an accidental mutex-of-1).
+CBGRUN="$TMP/cargobuild-e2e"
+mkdir -p "$CBGRUN"
+CB_COUNTER="$CBGRUN/holders"; CB_PEAKS="$CBGRUN/peaks.log"
+mkdir -p "$CB_COUNTER"; : > "$CB_PEAKS"
+cat > "$TMP/cargo-build-harness.sh" <<'EOSCRIPT'
+set -uo pipefail
+counter_dir="$1"; peaks_file="$2"; hold="$3"
+me="$counter_dir/$$-$RANDOM"
+: > "$me"
+n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+echo "$n" >> "$peaks_file"
+sleep "$hold"
+rm -f "$me"
+echo DONE
+EOSCRIPT
+run_cargo_gated() { # $1=role $2=holdsecs
+  FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=2 \
+    FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=15 \
+    "$ROOT/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2"
+}
+run_cargo_gated cbe2e-a 2 > "$CBGRUN/a.out" 2>&1 & CBA_PID=$!
+run_cargo_gated cbe2e-b 2 > "$CBGRUN/b.out" 2>&1 & CBB_PID=$!
+sleep 0.3
+run_cargo_gated cbe2e-c 1 > "$CBGRUN/c.out" 2>&1 & CBC_PID=$!
+wait "$CBA_PID"; CBA_RC=$?
+wait "$CBB_PID"; CBB_RC=$?
+wait "$CBC_PID"; CBC_RC=$?
+assert_eq "e2e: holder a completes" "0" "$CBA_RC"
+assert_eq "e2e: holder b completes" "0" "$CBB_RC"
+assert_eq "e2e: holder c completes (waited for a slot, not lost)" "0" "$CBC_RC"
+CB_PEAK_MAX="$(sort -n "$CB_PEAKS" | tail -1)"
+[ "$CB_PEAK_MAX" -le 2 ] && ok "e2e: peak concurrent holders never exceeds FWF_CARGO_BUILD_CONCURRENCY=2 (saw $CB_PEAK_MAX)" \
+  || bad "e2e: peak concurrent holders never exceeds FWF_CARGO_BUILD_CONCURRENCY=2" "saw $CB_PEAK_MAX"
+CB_PEAK_REACHED_2="$(grep -c '^2$' "$CB_PEAKS" || true)"
+[ "$CB_PEAK_REACHED_2" -ge 1 ] && ok "e2e: concurrency actually reaches 2 (a semaphore, not an accidental mutex-of-1)" \
+  || bad "e2e: concurrency actually reaches 2 (a semaphore, not an accidental mutex-of-1)" "peaks log: $(cat "$CB_PEAKS")"
+
+# --------------------------------------------------------------------------
 # per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
 # the gate while its OWN prior run is still in flight must NOT stack a second
 # — it skips this tick instead. Non-blocking (unlike the e2e lock above): a

@@ -115,6 +115,12 @@ FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
 # $FWF_WORKSPACE_BASE/<name>/repo and puts that profile's worktrees alongside.
 FWF_WORKSPACE_BASE="${FWF_WORKSPACE_BASE:-$FWF_RUN/workspaces}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
+# Floor-wide cargo build concurrency bound (issue #138 piece C): a SEMAPHORE
+# (not a mutex like E2E_LOCK above) — up to this many roles may hold a build
+# slot at once via fwf_cargo_build_slot_acquire; the (N+1)th waits. N~1-2
+# keeps concurrent full cargo builds from CPU/IO-thrashing each other.
+FWF_CARGO_BUILD_CONCURRENCY="${FWF_CARGO_BUILD_CONCURRENCY:-2}"
+CARGO_BUILD_LOCK="$FWF_RUN/cargo-build.lock"
 STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it commit WIP, cancel their loop, and idle
 
 # Hard token-budget enforcement (issue #96, Ticket B of #70's discovery — see
