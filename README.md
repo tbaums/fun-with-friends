@@ -399,7 +399,9 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
 `FWF_DISCOVERY_LABEL` (default `discovery`),
 `FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors — plus the
 sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
-`FWF_TEMPLATE`) from the next section. Role prompts are the source of truth and
+`FWF_TEMPLATE`) from the next section. Every seat launches with Claude Code's
+`Concise` output style by default (`FWF_OUTPUT_STYLE`, passed via `--settings`;
+set to `""` to opt a floor back out). Role prompts are the source of truth and
 live in `templates/<name>/` (one directory per factory design).
 
 ## Commands

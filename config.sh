@@ -67,6 +67,13 @@ FWF_CLAUDE_BIN="${CLAUDE_CMD%% *}"
 # set FWF_CLAUDE_ENV="" to disable.
 FWF_CLAUDE_ENV="${FWF_CLAUDE_ENV:-CLAUDE_CODE_FORCE_SYNC_OUTPUT=1}"
 [ -n "$FWF_CLAUDE_ENV" ] && CLAUDE_CMD="env $FWF_CLAUDE_ENV $CLAUDE_CMD"
+# Output style for every seat (issue #187): panes talk to each other through
+# the issue tracker + git, not their own narration, so Claude Code's default
+# prose is pure token cost here. Concise is the floor-wide default; fwf_claude_cmd
+# passes it via --settings. Set FWF_OUTPUT_STYLE="" (explicitly empty, not just
+# unset) to opt back out — a plain ${VAR:-} default would treat "" the same as
+# unset and silently re-apply Concise, so this uses ${VAR-} instead.
+FWF_OUTPUT_STYLE="${FWF_OUTPUT_STYLE-Concise}"
 
 # PM drafts wear this label; implementers skip any issue carrying it until you remove it.
 WIP_LABEL="${FWF_WIP_LABEL:-product-wip}"

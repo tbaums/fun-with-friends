@@ -1521,6 +1521,17 @@ assert_contains "floor default reaches qa"  "$(printf '%s' "$CMDS" | sed -n 2p)"
 assert_contains "floor default reaches pm"  "$(printf '%s' "$CMDS" | sed -n 3p)" "--model haiku"
 NOMODEL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
 case "$NOMODEL" in *--model*) bad "no override -> no --model flag";; *) ok "no override -> no --model flag";; esac
+# output style defaults to Concise for every seat (issue #187), is overridable,
+# and composes with --model; empty means no --settings flag at all
+STYLECMD="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+assert_contains "default output style is Concise" "$STYLECMD" '--settings \{\"outputStyle\":\"Concise\"\}'
+STYLEOVERRIDE="$(FWF_OUTPUT_STYLE=Explanatory FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+assert_contains "FWF_OUTPUT_STYLE override honored" "$STYLEOVERRIDE" '--settings \{\"outputStyle\":\"Explanatory\"\}'
+STYLEOFF="$(FWF_OUTPUT_STYLE= FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+case "$STYLEOFF" in *--settings*) bad "FWF_OUTPUT_STYLE=\"\" disables --settings";; *) ok "FWF_OUTPUT_STYLE=\"\" disables --settings";; esac
+STYLEWITHMODEL="$(FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+assert_contains "output style composes with --model (model)" "$STYLEWITHMODEL" "--model sonnet"
+assert_contains "output style composes with --model (settings)" "$STYLEWITHMODEL" '--settings \{\"outputStyle\":\"Concise\"\}'
 # pair colors cycle for any pair count
 C4="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 4")"
 C7="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 7")"
