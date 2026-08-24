@@ -23,6 +23,17 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test.XXXXXX")"
 export TMUX_TMPDIR="$TMP/tmux"; mkdir -p "$TMUX_TMPDIR"
 unset TMUX
 
+# HERMETICITY (issue #175): this suite builds its own throwaway fixtures and
+# pins their env explicitly at each call site. An ambient FWF_REPO/FWF_PROFILE/
+# FWF_PAIRS from the caller silently OVERRIDES those fixtures — measured at 41
+# otherwise-passing tests going RED. It bit hardest as a factory GATE_CMD,
+# where those vars are always set (and set CORRECTLY — a valid value overrides
+# a fixture exactly as destructively as a wrong one), making the gate false-RED
+# on every cycle. fwf-gate.sh no longer leaks its own resolution, but the suite
+# must not depend on the caller's environment either: a green run has to mean
+# the code is good, not that the operator's shell happened to be clean.
+unset FWF_REPO FWF_PROFILE FWF_PAIRS
+
 trap 'tmux kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
@@ -3475,6 +3486,46 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   printf '  skip shellcheck (not installed)\n'
 fi
+
+# --------------------------------------------------------------------------
+section "fwf gate does not leak its own profile resolution (issue #175)"
+# fwf-gate.sh resolves a profile for its lock paths. That resolution must NOT
+# reach the wrapped command: test/run.sh (the real GATE_CMD here) builds its own
+# fixtures, and an inherited FWF_REPO/FWF_PROFILE overrides them — 41 tests went
+# RED on every gate cycle. Assert the wrapped command sees the CALLER's env.
+F175RUN="$TMP/run175"; mkdir -p "$F175RUN/state/example"
+F175REPORT="$TMP/f175-env.txt"
+cat > "$TMP/f175-probe.sh" <<'F175EOF'
+#!/usr/bin/env bash
+# Report what the wrapped command actually inherited. "<unset>" is the pass
+# state for a caller that had nothing set — an empty value is NOT the same.
+printf 'PROFILE=%s
+' "${FWF_PROFILE-<unset>}"
+printf 'PAIRS=%s
+'   "${FWF_PAIRS-<unset>}"
+printf 'REPO=%s
+'    "${FWF_REPO-<unset>}"
+F175EOF
+chmod +x "$TMP/f175-probe.sh"
+
+# (a) caller with a CLEAN env -> wrapped command must see nothing set.
+env -u FWF_REPO -u FWF_PROFILE -u FWF_PAIRS FWF_RUN_DIR="$F175RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f175a -- "$TMP/f175-probe.sh" > "$F175REPORT" 2>/dev/null
+assert_contains "clean caller: no FWF_PROFILE leaks to wrapped cmd" "$(cat "$F175REPORT")" "PROFILE=<unset>"
+assert_contains "clean caller: no FWF_PAIRS leaks to wrapped cmd"   "$(cat "$F175REPORT")" "PAIRS=<unset>"
+assert_contains "clean caller: no FWF_REPO leaks to wrapped cmd"    "$(cat "$F175REPORT")" "REPO=<unset>"
+
+# (b) caller that DID set them -> its own values survive verbatim. The restore
+#     must not BLANK a var the caller legitimately owned, which is the opposite
+#     failure from the leak. Values must be resolvable: the gate has to load a
+#     real profile to build its lock paths, so an unresolvable FWF_PROFILE makes
+#     it exit before ever reaching the wrapped command (correct behaviour, but
+#     it tests nothing). `example` is the tracked profile every checkout has.
+env FWF_PROFILE=example FWF_PAIRS=7 FWF_REPO="$ROOT" FWF_RUN_DIR="$F175RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f175b -- "$TMP/f175-probe.sh" > "$F175REPORT" 2>/dev/null
+assert_contains "caller's own FWF_PROFILE is preserved" "$(cat "$F175REPORT")" "PROFILE=example"
+assert_contains "caller's own FWF_PAIRS is preserved"   "$(cat "$F175REPORT")" "PAIRS=7"
+assert_contains "caller's own FWF_REPO is preserved"    "$(cat "$F175REPORT")" "REPO=$ROOT"
 
 # --------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

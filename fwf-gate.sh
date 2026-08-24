@@ -36,6 +36,37 @@
 # check for this exit code first.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- issue #175: do not leak OUR profile resolution into the wrapped command --
+# Sourcing lib.sh below resolves a profile — we need it, for the lock paths —
+# and in doing so SETS FWF_PROFILE/FWF_PAIRS/FWF_REPO in this shell. Those
+# values are OURS, not the caller's. Running the wrapped command with them
+# still set hands it an ambient profile it never asked for.
+#
+# That is not cosmetic: test/run.sh builds its own throwaway fixtures, and an
+# inherited FWF_REPO/FWF_PROFILE overrides them — measured at 41 otherwise-
+# passing tests going RED. Because the gate always runs inside a pane where
+# those ARE set, the gate was false-RED on EVERY cycle, so no implementer
+# could ever reach green. Correct values leak just as harmfully as wrong ones;
+# this is about provenance, not validity.
+#
+# Snapshot the caller's real environment HERE, before the source, and restore
+# it verbatim before handing control to the wrapped command.
+_fwf_gate_had_profile=0; _fwf_gate_had_pairs=0; _fwf_gate_had_repo=0
+_fwf_gate_old_profile=""; _fwf_gate_old_pairs=""; _fwf_gate_old_repo=""
+if [ -n "${FWF_PROFILE+x}" ]; then _fwf_gate_had_profile=1; _fwf_gate_old_profile="$FWF_PROFILE"; fi
+if [ -n "${FWF_PAIRS+x}" ];   then _fwf_gate_had_pairs=1;   _fwf_gate_old_pairs="$FWF_PAIRS"; fi
+if [ -n "${FWF_REPO+x}" ];    then _fwf_gate_had_repo=1;    _fwf_gate_old_repo="$FWF_REPO"; fi
+
+# Restore the caller's environment exactly: a var the caller had stays with its
+# ORIGINAL value; a var the caller did not have is unset, not blanked (an empty
+# FWF_PROFILE is not the same as an absent one to a ${VAR:-default} reader).
+_fwf_gate_env_restore() {
+  if [ "$_fwf_gate_had_profile" = 1 ]; then export FWF_PROFILE="$_fwf_gate_old_profile"; else unset FWF_PROFILE; fi
+  if [ "$_fwf_gate_had_pairs" = 1 ];   then export FWF_PAIRS="$_fwf_gate_old_pairs";     else unset FWF_PAIRS; fi
+  if [ "$_fwf_gate_had_repo" = 1 ];    then export FWF_REPO="$_fwf_gate_old_repo";       else unset FWF_REPO; fi
+}
+
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
 
@@ -74,6 +105,10 @@ fi
 # cwd here is the pane's worktree. No-op for non-Rust gates. Fail CLOSED: if
 # isolation can't be established, do NOT run the command — a red gate is safe.
 fwf_cargo_isolate || { echo "fwf gate: could not isolate cargo target — refusing to run gate" >&2; exit 1; }
+
+# Hand the wrapped command the CALLER's environment, not ours (issue #175).
+# Deliberately after fwf_cargo_isolate, which still needs our resolution.
+_fwf_gate_env_restore
 
 rc=0
 "$@" || rc=$?
