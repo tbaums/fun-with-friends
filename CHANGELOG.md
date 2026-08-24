@@ -11,6 +11,15 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-08-24
+
+### Changed
+- **Default every seat to Claude Code's Concise output style** (#187, code d0719a4, docs d0719a4) — factory seats now run with Claude Code's Concise output style by default, trimming per-turn chatter.
+
+### Fixed
+- **`test/run.sh` pass/fail gate is no longer shadowable by a later append** (#242, code 022e14e, docs none — internal) — makes the suite's exit verdict unspoofable.
+- **Quote the empty `FWF_OUTPUT_STYLE` so shellcheck (SC1007) stops red-failing staging** (#241, code 24f0181, docs none — internal).
+
 ## [0.30.0] - 2026-08-24
 
 ### Added
