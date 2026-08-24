@@ -26,14 +26,22 @@
 # edit it in place, and close it when reconcile next comes back clean.
 #
 # Usage: fwf reconcile-guard [--against BRANCH] [--branch NAME ...]
-#   Arguments are passed straight through to `fwf reconcile`.
-#   Exit 0 = reconcile clean (and any open artifact was closed), OR every
-#            non-safe branch was cas-lost only (issue #238) -- a lost
-#            compare-and-swap against a CONCURRENT, benign writer, not a
-#            divergence. Self-healing: re-classified next tick, no artifact
-#            filed or closed either way, this run just couldn't confirm.
-#   Exit 1 = a REAL divergence (halted-diverged/suspect) persists; an open
-#            artifact exists and names it.
+#   Arguments are passed straight through to `fwf reconcile`. Branches on
+#   `fwf reconcile`'s EXIT CODE (issue #238 AC6), never on the text of its
+#   report -- substring-matching human-readable prose to make a safety
+#   decision breaks silently the moment someone rewords the message (the
+#   same class of defect as #218's sentinel and #236's marker).
+#   Exit 0 = reconcile confirmed CLEAN (rc 0: reconciled/normal-ahead/clean
+#            no-op on every branch) -- any open artifact is closed.
+#   Exit 1 = ESCALATE (rc 1: halted-diverged/suspect on any branch, including
+#            one reached via the AC7 consecutive-indeterminate counter) -- an
+#            open artifact exists and names it.
+#   Exit 2 = INDETERMINATE (rc 2: lock-busy/cas-lost on some branch, nothing
+#            escalated) -- a lost race against a CONCURRENT, benign writer
+#            (another reconcile tick, a release), not a divergence. Neither
+#            files nor closes an artifact (issue #238 AC1/AC3/AC5): this run
+#            simply could not confirm either way, so it must touch nothing.
+#            Self-healing -- re-classified next tick.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -101,53 +109,51 @@ BODY
 }
 
 main() {
-  local out existing
-  out="$("$RECONCILE_SCRIPT" "$@" 2>&1)" || true
+  local out grc existing
+  grc=0
+  out="$("$RECONCILE_SCRIPT" "$@" 2>&1)" || grc=$?
   printf '%s\n' "$out"
-
-  # fwf_reconcile_branch (lib.sh) returns rc 1 alike for halted-diverged,
-  # suspect, AND cas-lost -- but those are NOT alike. halted-diverged/suspect
-  # genuinely need a human. cas-lost is a lost compare-and-swap against a
-  # CONCURRENT, benign writer (another reconcile tick, a release) -- lib.sh's
-  # own comment on it: "re-classify next tick, don't assume-safe in the
-  # meantime." That is a self-healing race, not a divergence, so the combined
-  # rc must never be trusted here -- classify per LINE instead (issue #238).
-  local escalate=0 caslost_only=0
-  printf '%s\n' "$out" | grep -qE '^(halted-diverged|suspect) ' && escalate=1
-  printf '%s\n' "$out" | grep -qE '^cas-lost ' && caslost_only=1
-  [ "$escalate" -eq 1 ] && caslost_only=0
 
   existing="$(guard_find)"
 
-  if [ "$caslost_only" -eq 1 ]; then
-    # AC1: do not file. AC3: do not close either -- a cas-lost run is NOT
-    # evidence a real divergence resolved, so an existing artifact is left
-    # exactly as it was for the next tick's genuine verdict to act on.
-    echo "reconcile-guard: cas-lost only (self-healing race, ref moved under a concurrent writer) — not filing, not closing, re-checking next tick"
-    return 0
-  fi
-
-  if [ "$escalate" -eq 0 ]; then
-    if [ -n "$existing" ]; then
-      echo "reconcile-guard: clean — closing artifact #$existing"
-      "$GH" issue comment "$existing" --body "Resolved: \`fwf reconcile\` returned clean on a later push to \`${DEFAULT_BRANCH}\`. Closing automatically." >/dev/null 2>&1 || true
-      "$GH" issue close "$existing" >/dev/null 2>&1 || true
-    else
-      echo "reconcile-guard: clean — no artifact to close"
-    fi
-    return 0
-  fi
-
-  if [ -n "$existing" ]; then
-    # AC4: the divergence persisted across another push. Update in place.
-    # Never file a second artifact.
-    echo "reconcile-guard: divergence persists — updating existing artifact #$existing (no duplicate filed)"
-    guard_body "$out" | "$GH" issue edit "$existing" --body-file - >/dev/null 2>&1 || true
-  else
-    echo "reconcile-guard: divergence detected — filing durable artifact"
-    guard_body "$out" | "$GH" issue create --title "$GUARD_TITLE" --body-file - 2>&1 | tail -1
-  fi
-  return 1
+  case "$grc" in
+    0)
+      # SAFE: confirmed clean on every branch. Only THIS verdict may close.
+      if [ -n "$existing" ]; then
+        echo "reconcile-guard: clean — closing artifact #$existing"
+        "$GH" issue comment "$existing" --body "Resolved: \`fwf reconcile\` returned clean on a later push to \`${DEFAULT_BRANCH}\`. Closing automatically." >/dev/null 2>&1 || true
+        "$GH" issue close "$existing" >/dev/null 2>&1 || true
+      else
+        echo "reconcile-guard: clean — no artifact to close"
+      fi
+      return 0
+      ;;
+    2)
+      # INDETERMINATE (issue #238 AC1/AC3/AC5): lock-busy/cas-lost, nothing
+      # escalated. Touch NOTHING either direction -- this run could not
+      # confirm safe or unsafe, so it is not evidence for either a close or
+      # a file. lib.sh's own AC7 counter escalates this to rc 1 (a "suspect"
+      # verdict) if it recurs 3 times running with no intervening clean, so
+      # a race that is not actually transient still gets a durable
+      # consequence eventually -- just not from a single indeterminate tick.
+      echo "reconcile-guard: indeterminate (lock-busy/cas-lost — a lost race against a concurrent, benign writer) — not filing, not closing, re-checking next tick"
+      return 2
+      ;;
+    *)
+      # ESCALATE (rc 1, or any other unexpected nonzero -- fail toward
+      # escalation, never toward silently doing nothing).
+      if [ -n "$existing" ]; then
+        # AC4 (#179): the divergence persisted across another push. Update
+        # in place. Never file a second artifact.
+        echo "reconcile-guard: divergence persists — updating existing artifact #$existing (no duplicate filed)"
+        guard_body "$out" | "$GH" issue edit "$existing" --body-file - >/dev/null 2>&1 || true
+      else
+        echo "reconcile-guard: divergence detected — filing durable artifact"
+        guard_body "$out" | "$GH" issue create --title "$GUARD_TITLE" --body-file - 2>&1 | tail -1
+      fi
+      return 1
+      ;;
+  esac
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi
