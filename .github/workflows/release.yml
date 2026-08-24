@@ -9,12 +9,68 @@ permissions:
 
 jobs:
   # --------------------------------------------------------------------------
+  # Issue #179 Hole 2: PRE-PUBLISH divergence gate.
+  #
+  # The post-publish reconcile below swallows its own failure into a
+  # `::warning::` for a real reason -- the release already published, and
+  # failing it retroactively helps nobody. But that constraint only binds
+  # AFTER the publish. So the CHECK moves in front of it, where nothing has
+  # shipped yet and failing is free.
+  #
+  # `--check` classifies and NEVER mutates: it takes no lock, fast-forwards
+  # nothing, pushes nothing. It fails ONLY on DIVERGED/SUSPECT -- a BEHIND
+  # branch is merely stale, the post-publish reconcile fast-forwards it, and
+  # blocking a release for that would be wrong.
+  #
+  # Every publishing job hangs off this one, so a genuine divergence stops the
+  # release before a single artifact exists.
+  preflight:
+    name: pre-publish divergence check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0    # the classifier needs real ancestry, not a shallow tip
+      - name: Refuse to publish onto a diverged base (issue #179)
+        env:
+          FWF_REPO: ${{ github.workspace }}
+        run: |
+          set -o pipefail
+          if ! out="$(./fwf reconcile --check 2>&1)"; then
+            printf '%s\n' "$out"
+            {
+              echo "## Release blocked: diverged base"
+              echo
+              echo '```'
+              printf '%s\n' "$out"
+              echo '```'
+              echo
+              echo "Nothing was published — this ran before any artifact was built."
+              echo
+              echo "A \`check-diverged\` branch is **not** stale. It has commits \`main\` does not,"
+              echo "and \`main\` has commits it does not. \`fwf reconcile\` will never auto-merge,"
+              echo "rebase or force-push out of that state, by design."
+              echo
+              echo "**This needs a human decision, not a rerun.** Re-read the classification with:"
+              echo
+              echo '```sh'
+              echo "fwf reconcile --branch <branch> --against main"
+              echo '```'
+              echo
+              echo "Reconcile the branch by hand, then re-tag."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+
+  # --------------------------------------------------------------------------
   # Cross-compile the dash binary for the supported os/arch matrix and upload
   # each as a release asset (issue #63), so `fwf dash` can download a prebuilt
   # binary instead of running `cargo build` on first use. Each target builds on
   # its native runner (no cross-linker), keeping the pure-Rust crate trivial.
   dash-binaries:
     name: dash binary (${{ matrix.slug }})
+    needs: preflight     # issue #179: no artifact is built onto a diverged base
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -69,7 +125,7 @@ jobs:
   # --------------------------------------------------------------------------
   release:
     name: package + publish
-    needs: dash-binaries
+    needs: [preflight, dash-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -137,13 +193,22 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes
 
-      - name: Reconcile staging/integration to main (issue #114)
+      - name: Reconcile staging/integration to main (issues #114, #179)
         env:
           FWF_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Auto-fast-forwards staging/integration when they're stale (a
-          # strict ancestor of main); no-ops a branch that legitimately leads
-          # main (normal mid-cycle promotion); halts loudly (never
-          # merges/rebases/force-pushes) on a genuine divergence, which needs
-          # a human — don't fail the release for that, it already published.
-          ./fwf reconcile || echo "::warning::staging/integration reconcile needs a human look (see log above) — the release itself still succeeded"
+          # POST-publish, so this must not fail the release retroactively --
+          # the artifacts are already out. It fast-forwards staging/integration
+          # when they're merely stale, and no-ops a branch that legitimately
+          # leads main.
+          #
+          # Issue #179: what it must NOT do is drop the leftover case on the
+          # floor. The pre-publish `preflight` job already refused to publish
+          # onto a genuinely diverged base, so reaching this line in a diverged
+          # state means something moved DURING the release -- rare, and exactly
+          # the case a `::warning::` inside a green run would bury. Route it to
+          # the same durable, self-closing artifact ci.yml uses, then keep the
+          # release green.
+          ./fwf reconcile-guard \
+            || echo "::warning::post-publish reconcile needs a human — a tracking issue has been filed; the release itself succeeded"

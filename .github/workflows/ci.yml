@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  issues: write     # the reconcile guard files/closes its own tracking artifact
 
 jobs:
   lint:
@@ -57,3 +58,32 @@ jobs:
         run: cargo build --release --locked
       - name: Test
         run: cargo test --locked
+
+  # --------------------------------------------------------------------------
+  # Issue #179 Hole 1: the reconcile step lived ONLY in release.yml, which is
+  # `on: push: tags`. An untagged direct-to-main push -- exactly what a hotfix
+  # is -- never ran it, so the guard was structurally unreachable on the one
+  # path that most needed it. ci.yml already fires on every push to main, so
+  # this needs no new trigger.
+  #
+  # Hole 3: the verdict gets a DURABLE consequence here, not a log line.
+  # `reconcile-guard` files one self-closing tracking issue and exits non-zero,
+  # so this check goes red and stays red while the divergence stands. Do NOT
+  # "simplify" this back to `./fwf reconcile || echo "::warning::..."` -- that
+  # reproduces Hole 2 on the newly-added path and would still pass a test that
+  # only asserts reconcile RAN.
+  reconcile:
+    name: reconcile staging/integration to main
+    # Push-to-main only. Pull requests and workflow_dispatch must not mutate
+    # shared branches or file artifacts.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0    # the classifier needs real ancestry, not a shallow tip
+      - name: Reconcile + file a durable artifact on divergence (issue #179)
+        env:
+          FWF_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./fwf reconcile-guard

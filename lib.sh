@@ -1414,6 +1414,44 @@ fwf_reconcile_branch() {
   esac
 }
 
+# CHECK-ONLY sibling of fwf_reconcile_branch (issue #179 Hole 2). Classifies
+# $1=branch against $2=main and REPORTS, but never takes the lock, never
+# fast-forwards, never pushes -- so it is safe to call as a PRE-PUBLISH gate,
+# where mutating a ref before the artifact exists would be its own hazard.
+#
+# The consequence split is the whole point (#179's required design): the same
+# classifier is called at two points with DIFFERENT consequences.
+#   BEHIND  -> rc 0. Staleness is NOT divergence. The post-publish reconcile
+#              fast-forwards it; blocking a release for it would be wrong.
+#   EQUAL / AHEAD -> rc 0. Normal states.
+#   DIVERGED / SUSPECT -> rc 1. Genuinely needs a human; nothing has published
+#              yet, so failing here is free.
+# rc 1 lines carry the branch, both SHAs, what it was classified against, and
+# the resolving command -- a refusal that strands the operator with no next
+# step is what produces the out-of-band workaround this ticket exists to stop.
+fwf_reconcile_check_branch() {
+  local branch="$1" mainbranch="$2" classification state b_sha m_sha
+  classification="$(fwf_reconcile_classify "$branch" "$mainbranch")"
+  state="${classification%% *}"
+  case "$state" in
+    EQUAL)
+      printf 'check-ok %s (already == %s)\n' "$branch" "$mainbranch"; return 0 ;;
+    AHEAD)
+      printf 'check-ok %s (leads %s, normal mid-promotion)\n' "$branch" "$mainbranch"; return 0 ;;
+    BEHIND)
+      read -r _ b_sha m_sha <<<"$classification"
+      printf 'check-ok %s (behind %s at %s; the post-publish reconcile fast-forwards it, not a divergence)\n' \
+        "$branch" "$mainbranch" "$m_sha"; return 0 ;;
+    DIVERGED)
+      read -r _ b_sha m_sha <<<"$classification"
+      printf 'check-diverged %s %s %s (diverged from %s -- resolve with: fwf reconcile --branch %s --against %s ; a genuine DIVERGED needs a human decision, NOT a rerun)\n' \
+        "$branch" "$b_sha" "$m_sha" "$mainbranch" "$branch" "$mainbranch"; return 1 ;;
+    SUSPECT)
+      printf 'check-suspect %s %s (could not classify against %s -- resolve with: fwf reconcile --branch %s --against %s ; needs a human decision, NOT a rerun)\n' \
+        "$branch" "${classification#SUSPECT }" "$mainbranch" "$branch" "$mainbranch"; return 1 ;;
+  esac
+}
+
 # The CAS primitive itself, factored out so it's independently testable
 # (issue #114 AC8): pushes $3=new-sha to $1=branch ONLY if the remote ref
 # still matches $2=observed-old-sha. A racing writer that already moved the
