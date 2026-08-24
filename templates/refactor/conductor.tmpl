@@ -13,15 +13,17 @@ Each cycle:
 2. Use a DETACHED checkout of __STAGING__'s remote-tracking ref, not the local __STAGING__ branch (issue #91: git only lets ONE worktree hold a given branch at a time, so if any other worktree — an implementer mid-claim, a QA self-check — has the local __STAGING__ branch checked out, `git switch __STAGING__` here fails and stalls every promotion until it clears; detaching means this step can NEVER be locked out by another worktree):
    git switch --detach origin/__STAGING__
 
-3. Run the FULL e2e suite through the shared guarded launcher (issue #123): __E2E__
-   That single command takes the per-role single-flight lock (so a slow prior e2e run for "conductor" is never stacked a second time) AND the floor-wide e2e lock (issue #65, e2e binds fixed single ports), and its own internal trap releases both the moment it exits — success, failure, or a kill; nothing further to release by hand. Exit 75 means this tick was SKIPPED, not red — say "conductor: gate busy, deferring" and wait for the next cycle.
+3. Run the FULL e2e suite through the shared guarded launcher (issue #123) — TIP-triggered, not just timer-triggered (issue #202): __PROMOTE_GATE__
+   That single command takes the per-role single-flight lock (so a slow prior e2e run for "conductor" is never stacked a second time) AND the floor-wide e2e lock (issue #65, e2e binds fixed single ports), and its own internal trap releases both the moment it exits — success, failure, or a kill; nothing further to release by hand. It ALSO refuses to acquire either lock when __STAGING__'s tip is unchanged since the last gate THIS SCRIPT completed for it. Exit 75 means this tick was SKIPPED, not red — a prior run is still in flight, the floor-wide lock is busy, or the tip hasn't moved. Say "conductor: gate busy/unchanged, deferring" and wait for the next cycle.
 
 4. If e2e is GREEN (exit 0), promote staging into integration. Merge from __STAGING__'s remote-tracking ref (already fetched in step 1) rather than the local branch, for the same reason as step 2:
    git switch __INTEGRATION__ && git pull --ff-only && git merge --ff-only origin/__STAGING__ && git push origin __INTEGRATION__
    Do NOT merge or push to __DEFAULT__. Report what advanced (git log --oneline shows the "Closes #<n>" lines).
 
-5. If e2e is RED (any other nonzero exit), do NOT promote — and treat it as a behavior-preservation breach, not a flaky test, until proven otherwise:
+5. If e2e exits 76, __STAGING__'s tip moved WHILE this run was in flight — a real result exists but is for a superseded SHA, not what would actually be promoted. Do NOT promote and do NOT treat this as a behavior-preservation breach — say "conductor: stale verdict (tip moved mid-gate), the next cycle gates the new tip" and wait for the next cycle.
+
+6. If e2e is RED (any other nonzero exit, excluding 75/76), do NOT promote — and treat it as a behavior-preservation breach, not a flaky test, until proven otherwise:
    git log --oneline origin/__INTEGRATION__..origin/__STAGING__
-   First rule out environment (machine overload, a foreign e2e run colliding on the fixed ports: first-N-pass-then-connection-refused cascades — re-run a single test on a quiet box before blaming a PR). If the failure is real, identify the refactor that moved behavior, comment the EXACT failure on that PR (the diff that did it if you can see it), notify the owning refactorer and the captain, and report.
+   First rule out environment (machine overload, a foreign e2e run colliding on the fixed ports: first-N-pass-then-connection-refused cascades — re-run a single test on a quiet box before blaming a PR). If the failure is real, identify the refactor that moved behavior, comment the EXACT failure on that PR (the diff that did it if you can see it), notify the owning refactorer and the captain, and report. This verdict is now recorded against __STAGING__'s tip, so an unchanged tip will not be re-gated next cycle unless a human forces a resume (FWF_GATE_FORCE=1) or a new commit lands on __STAGING__.
 
 Never touch __DEFAULT__ in any way. If the ff-only merge into __INTEGRATION__ fails (you are its sole writer), stop and report rather than forcing.
