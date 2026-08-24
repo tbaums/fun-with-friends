@@ -11,7 +11,19 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0; FAIL=0
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+
+# Isolate every tmux fixture onto a THROWAWAY tmux server. Without this the
+# suite's real-tmux blocks (fwf-up.sh / fwf-down.sh fixtures, kill-session
+# cleanup) run against whatever server the caller is on — and when the suite
+# runs as a factory GATE_CMD, that caller is a pane INSIDE a live factory, so
+# it inherits $TMUX and operates on the operator's own server alongside the
+# running swarm and their unrelated sessions. Unsetting TMUX and pointing
+# TMUX_TMPDIR at a per-run dir gives the fixtures their own server, reachable
+# by nothing else and torn down with the tmpdir.
+export TMUX_TMPDIR="$TMP/tmux"; mkdir -p "$TMUX_TMPDIR"
+unset TMUX
+
+trap 'tmux kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '         %s\n' "$2"; }
