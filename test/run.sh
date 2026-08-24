@@ -3915,6 +3915,76 @@ assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue c
 assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"
 
 # --------------------------------------------------------------------------
+section "reconcile-guard: cas-lost is a self-healing race, not a divergence (#238)"
+# fwf_reconcile_branch (lib.sh) returns the SAME rc 1 for halted-diverged,
+# suspect, AND cas-lost, but only the first two genuinely need a human --
+# cas-lost is a lost compare-and-swap against a CONCURRENT, benign writer
+# (lib.sh:1461's own comment: "re-classify next tick, don't assume-safe in
+# the meantime"). The guard used to trust the combined rc and escalated on
+# ALL THREE alike, filing a durable artifact for a condition that had
+# already resolved itself by the time anyone read it (#235, the worked
+# example: two concurrent `fwf reconcile` runs, one lost the race, filed
+# "needs a human decision, NOT a rerun" about a state whose own remedy IS a
+# rerun). Drives the REAL, unmodified fwf-reconcile-guard.sh (no logic is
+# duplicated/re-implemented here) with FWF_RECONCILE_SCRIPT pointed at a
+# stub -- the same substitution pattern FWF_GH already uses -- so the exact
+# line shapes real branches produce can be asserted deterministically
+# instead of chasing a live race.
+guard_reconcile_stub() { # $1=dir $2=stub stdout (fwf-reconcile.sh's report lines) $3=stub exit code -> echoes the stub's path
+  mkdir -p "$1"
+  cat > "$1/fwf-reconcile.sh" <<STUBEOF
+#!/usr/bin/env bash
+cat <<'OUTEOF'
+$2
+OUTEOF
+exit $3
+STUBEOF
+  chmod +x "$1/fwf-reconcile.sh"
+  printf '%s/fwf-reconcile.sh' "$1"
+}
+rec_setup guard-caslost   # any valid repo; the stub never actually classifies it
+
+# AC1: cas-lost ALONE -> do not file, exit non-escalating (0), and say so.
+CL_DIR="$TMP/rec238-caslost"
+CL_STUB="$(guard_reconcile_stub "$CL_DIR" "cas-lost staging (ref moved under us, re-check next tick)" 1)"
+CL_GH="$TMP/rec238-caslost-gh"; guard_stub "$CL_GH"
+rc=0; CL_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$CL_STUB" FWF_GH="$CL_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1)" || rc=$?
+GH_LOG="$CL_GH/calls.log"
+assert_eq       "AC1: cas-lost alone -> guard exits non-escalating (0), not red" "0" "$rc"
+assert_contains "AC1: guard reports it, does not file" "$CL_OUT" "cas-lost only"
+assert_eq       "AC1: no artifact filed for a self-healing race" "0" "$(gh_calls 'issue create')"
+
+# AC3: cas-lost must not close an EXISTING artifact either -- it is not
+# evidence a real divergence resolved, only that this run couldn't confirm
+# either way.
+CL2_DIR="$TMP/rec238-caslost-existing"
+CL2_STUB="$(guard_reconcile_stub "$CL2_DIR" "cas-lost integration (ref moved under us, re-check next tick)" 1)"
+CL2_GH="$TMP/rec238-caslost-existing-gh"; guard_stub "$CL2_GH"
+printf 'OPEN\n' > "$CL2_GH/issues.json"   # a real divergence artifact is already open
+rc=0; CL2_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$CL2_STUB" FWF_GH="$CL2_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch integration 2>&1)" || rc=$?
+GH_LOG="$CL2_GH/calls.log"
+assert_eq       "AC3: cas-lost with an existing artifact still exits 0" "0" "$rc"
+assert_eq       "AC3: cas-lost does NOT close the existing artifact" "0" "$(gh_calls 'issue close')"
+assert_eq       "AC3: cas-lost does NOT edit the existing artifact either" "0" "$(gh_calls 'issue edit')"
+assert_eq       "AC3: cas-lost still files nothing" "0" "$(gh_calls 'issue create')"
+assert_contains "AC3: guard names it a self-healing race, not evidence of resolution" "$CL2_OUT" "self-healing race"
+
+# AC2: halted-diverged/suspect are UNCHANGED -- still escalate even when a
+# cas-lost line rides along in the same run (a different branch's report).
+MIX_DIR="$TMP/rec238-mixed"
+MIX_STUB="$(guard_reconcile_stub "$MIX_DIR" "halted-diverged staging abc1234 def5678
+cas-lost integration (ref moved under us, re-check next tick)" 1)"
+MIX_GH="$TMP/rec238-mixed-gh"; guard_stub "$MIX_GH"
+rc=0; MIX_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+  FWF_RECONCILE_SCRIPT="$MIX_STUB" FWF_GH="$MIX_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+GH_LOG="$MIX_GH/calls.log"
+assert_eq       "AC2: a genuine divergence still escalates alongside a cas-lost line" "1" "$rc"
+assert_eq       "AC2: an artifact is still filed for the real divergence" "1" "$(gh_calls 'issue create')"
+assert_contains "AC2: guard surfaces the real divergence verdict" "$MIX_OUT" "halted-diverged staging"
+
+# --------------------------------------------------------------------------
 section "fwf gate --tip-cmd: tip-triggered gating, not timer-triggered (#202)"
 # A prompt-level TIP-CHANGED guard died silently because nothing ever wrote
 # its marker (a role's memory is not a mechanism). This state is persisted BY

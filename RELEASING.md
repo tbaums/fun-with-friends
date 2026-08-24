@@ -123,7 +123,12 @@ anything. Cut the release manually — same gates, run locally:
    `reconcile` job in `.github/workflows/ci.yml` fires on *every* push to `main`,
    tagged or not, so the fallback path is covered even if you skip this step. It
    runs `fwf reconcile-guard`, which files one durable, self-closing tracking
-   issue and goes red if it finds a divergence.
+   issue and goes red if it finds a **real** divergence. As of #238, a
+   `cas-lost` verdict (this reconcile's compare-and-swap lost to a concurrent,
+   benign writer — another reconcile tick, a second release step) is treated
+   as the self-healing race it is: no artifact filed, the check stays green,
+   and the next push re-classifies. Only `halted-diverged`/`suspect` ever
+   escalate.
 
    Run it yourself anyway for the immediate answer:
    `FWF_REPO="$PWD" ./fwf reconcile` (see "Re-syncing staging/integration" above).

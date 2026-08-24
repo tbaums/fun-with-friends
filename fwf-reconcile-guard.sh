@@ -27,8 +27,13 @@
 #
 # Usage: fwf reconcile-guard [--against BRANCH] [--branch NAME ...]
 #   Arguments are passed straight through to `fwf reconcile`.
-#   Exit 0 = reconcile clean (and any open artifact was closed).
-#   Exit 1 = divergence persists; an open artifact exists and names it.
+#   Exit 0 = reconcile clean (and any open artifact was closed), OR every
+#            non-safe branch was cas-lost only (issue #238) -- a lost
+#            compare-and-swap against a CONCURRENT, benign writer, not a
+#            divergence. Self-healing: re-classified next tick, no artifact
+#            filed or closed either way, this run just couldn't confirm.
+#   Exit 1 = a REAL divergence (halted-diverged/suspect) persists; an open
+#            artifact exists and names it.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -43,6 +48,10 @@ GUARD_MARKER_KEY="fwf-reconcile-guard:v1"
 GUARD_MARKER="<!-- $GUARD_MARKER_KEY -- do not remove, this key is how the guard finds this issue -->"
 GUARD_TITLE="[reconcile] staging/integration diverged from ${DEFAULT_BRANCH}"
 GH="${FWF_GH:-gh}"
+# Overridable the same way GH is above, so a test can substitute a stub that
+# emits deterministic report lines instead of racing a REAL concurrent CAS
+# push to reproduce cas-lost (issue #238).
+RECONCILE_SCRIPT="${FWF_RECONCILE_SCRIPT:-$DIR/fwf-reconcile.sh}"
 
 # Echo the number of the single open guard artifact, or nothing.
 # Uses gh's built-in --jq rather than a python/jq dependency, so the guard
@@ -92,13 +101,33 @@ BODY
 }
 
 main() {
-  local out rc=0 existing
-  out="$("$DIR/fwf-reconcile.sh" "$@" 2>&1)" || rc=$?
+  local out existing
+  out="$("$RECONCILE_SCRIPT" "$@" 2>&1)" || true
   printf '%s\n' "$out"
+
+  # fwf_reconcile_branch (lib.sh) returns rc 1 alike for halted-diverged,
+  # suspect, AND cas-lost -- but those are NOT alike. halted-diverged/suspect
+  # genuinely need a human. cas-lost is a lost compare-and-swap against a
+  # CONCURRENT, benign writer (another reconcile tick, a release) -- lib.sh's
+  # own comment on it: "re-classify next tick, don't assume-safe in the
+  # meantime." That is a self-healing race, not a divergence, so the combined
+  # rc must never be trusted here -- classify per LINE instead (issue #238).
+  local escalate=0 caslost_only=0
+  printf '%s\n' "$out" | grep -qE '^(halted-diverged|suspect) ' && escalate=1
+  printf '%s\n' "$out" | grep -qE '^cas-lost ' && caslost_only=1
+  [ "$escalate" -eq 1 ] && caslost_only=0
 
   existing="$(guard_find)"
 
-  if [ "$rc" -eq 0 ]; then
+  if [ "$caslost_only" -eq 1 ]; then
+    # AC1: do not file. AC3: do not close either -- a cas-lost run is NOT
+    # evidence a real divergence resolved, so an existing artifact is left
+    # exactly as it was for the next tick's genuine verdict to act on.
+    echo "reconcile-guard: cas-lost only (self-healing race, ref moved under a concurrent writer) — not filing, not closing, re-checking next tick"
+    return 0
+  fi
+
+  if [ "$escalate" -eq 0 ]; then
     if [ -n "$existing" ]; then
       echo "reconcile-guard: clean — closing artifact #$existing"
       "$GH" issue comment "$existing" --body "Resolved: \`fwf reconcile\` returned clean on a later push to \`${DEFAULT_BRANCH}\`. Closing automatically." >/dev/null 2>&1 || true
