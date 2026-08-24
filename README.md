@@ -265,6 +265,21 @@ not a per-role copy:
   no matter how long it runs, only a confirmed-dead one is broken immediately
   (`fwf_e2e_lock_acquire` / `fwf_e2e_lock_release` in `lib.sh`).
 
+- **The caller's environment, not the gate's** (issue #175) — `fwf gate`
+  resolves a profile of its own to build those lock paths, and doing so sets
+  `FWF_PROFILE`/`FWF_PAIRS`/`FWF_REPO` in its shell. Those values are the
+  GATE's, not the wrapped command's, so the gate snapshots the caller's real
+  environment BEFORE resolving and restores it verbatim before handing over: a
+  var the caller had keeps its ORIGINAL value, one the caller lacked is left
+  unset rather than blanked. Without this the wrapped command inherits an
+  ambient profile it never asked for and which silently overrides any fixture
+  env it pins for itself — `test/run.sh` measured 41 otherwise-passing tests
+  going RED, so the gate was false-RED on every cycle and no implementer could
+  reach green. A CORRECT inherited value overrides a fixture exactly as
+  destructively as a wrong one: this is about provenance, not validity, which
+  is why a `GATE_CMD` does not need an `env -u FWF_*` guard of its own
+  (`_fwf_gate_env_restore` in `fwf-gate.sh`).
+
 Both locks are released by `fwf gate`'s own `EXIT` trap the moment it exits —
 success, failure, or a kill — so no role has to manage them by hand; see
 `fwf gate` in `fwf help` and `fwf-gate.sh`.
