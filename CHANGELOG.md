@@ -11,6 +11,21 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-24
+
+### Added
+- **Durable post-release reconcile enforcement** (#179, code f03d78f, docs f03d78f) — both release paths (the release workflow and direct-to-`main` hotfixes) now *act on* the `fwf reconcile` verdict instead of merely printing it, backed by a new `fwf-reconcile-guard.sh` wired into `ci.yml`/`release.yml`. Closes the staging/integration→`main` divergence that repeatedly jammed the conductor's ff-only promotion and blocked every release (the recurrence of #114).
+- **Attributable operator un-gate sentinel** (#152, code 5bc1ca6, docs 5bc1ca6) — a positive, mechanically checkable authorization signal so a role can verify a *human* operator un-gate via `fwf authz` rather than inferring it from prose.
+
+### Changed
+- **PR credit lists every seat's model**, not just impl/qa (#134, code 57a98fd, docs 57a98fd).
+- **Role prompts name `fwf authz` the sole authorization oracle** (#208, code 330db79, docs none — internal) — removes ambiguity about what counts as authorization.
+
+### Fixed
+- **`fwf authz` reads gh comments via JSON**, not the buggy `--comments` renderer (#200, code dd36009, docs none — internal).
+- **tick/heartbeat `resolve_profile()` prefers the worktree's provisioned profile** over ambient env (#182, code 8e63c52, docs 8e63c52).
+- **Drop unused `role` in `fwf_credit_block`** (SC2034), unbreaking staging (#134, code e86bf6a, docs none — internal).
+
 ## [0.28.1] - 2026-08-23
 
 ### Fixed
