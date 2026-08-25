@@ -281,15 +281,29 @@ cmd_edit() {
       --title) with_lock _rewrite_header_locked "$n" "$2" "__KEEP__"; shift 2;;
       --body)  with_lock _set_body_locked "$n" "$2"; shift 2;;
       --add-label)
-        if ! has_label "$n" "$2"; then
-          labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"
+        # issue #211: read the CURRENT label list ONCE, with its status
+        # checked -- the old shape called labels_of twice (once inside
+        # has_label, unchecked; once more here, also unchecked) and either
+        # call failing would rewrite the file with a silently wrong label
+        # set, the exact defect _rewrite_header_locked's own __KEEP__ path
+        # was fixed against, just reachable through this sibling path too.
+        if ! labels="$(labels_of "$n")"; then
+          die "refusing to add a label to issue $n -- could not read its current labels"
+        fi
+        if ! printf '%s\n' "$labels" | grep -qx -- "$2"; then
+          labels="$(printf '%s\n' "$labels" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"
           with_lock _rewrite_header_locked "$n" "" "${labels:+$labels, }$2"
         fi
         shift 2;;
       --remove-label)
-        # `|| true`: removing the LAST label leaves grep with no matches (exit
-        # 1), which pipefail would otherwise turn into a silent set -e death.
-        labels="$(labels_of "$n" | grep -vx -- "$2" | paste -sd, - 2>/dev/null | sed 's/,/, /g' || true)"
+        if ! labels="$(labels_of "$n")"; then
+          die "refusing to remove a label from issue $n -- could not read its current labels"
+        fi
+        # `|| true`: removing the LAST label leaves grep with no matches
+        # (exit 1) -- a real, legitimate outcome, safe to swallow HERE only
+        # because labels_of's own read was already confirmed trustworthy
+        # above; pipefail would otherwise turn it into a silent set -e death.
+        labels="$(printf '%s\n' "$labels" | grep -vx -- "$2" | paste -sd, - 2>/dev/null | sed 's/,/, /g' || true)"
         with_lock _rewrite_header_locked "$n" "" "$labels"
         shift 2;;
       *) die "edit: unknown flag '$1'";;

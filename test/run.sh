@@ -2244,6 +2244,38 @@ assert_contains "a normal edit still works and still preserves labels" \
   "$(cat "$ISSF211")" "labels: product-wip, bug"
 assert_contains "  ...and the real title actually lands" "$(cat "$ISSF211")" "# LI-4: A real edit"
 
+# issue #211: --add-label and --remove-label are a SIBLING path into the
+# same rewrite -- they compute the label list themselves rather than going
+# through _rewrite_header_locked's __KEEP__ guard, so they need their OWN
+# status check or the exact same defect is reachable through a different
+# door. Same real chmod-000 fixture as above.
+chmod 000 "$ISSF211"
+ALOUT="$(ISS edit 4 --add-label zzz 2>&1)"; ALRC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --add-label ALSO refuses, exit non-zero" "1" "$ALRC"
+assert_contains "  ...refusal names the cause" "$ALOUT" "could not read its current labels"
+assert_not_contains "  ...the new label never lands" "$(cat "$ISSF211")" "zzz"
+assert_contains "  ...existing labels survive untouched" "$(cat "$ISSF211")" "product-wip, bug"
+
+chmod 000 "$ISSF211"
+RLOUT="$(ISS edit 4 --remove-label bug 2>&1)"; RLRC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --remove-label ALSO refuses, exit non-zero" "1" "$RLRC"
+assert_contains "  ...refusal names the cause" "$RLOUT" "could not read its current labels"
+assert_contains "  ...the label being removed is STILL there (refusal, not a silent no-op)" \
+  "$(cat "$ISSF211")" "product-wip, bug"
+
+# Normal (readable) add/remove still work exactly as before this fix,
+# including the "remove the LAST label" edge case that motivated the
+# original `|| true` (now scoped to only the grep-found-nothing step, not
+# the labels_of read itself).
+ISS edit 4 --add-label approved >/dev/null
+assert_contains "normal --add-label still works" "$(cat "$ISSF211")" "approved"
+ISS create --title "Solo-labeled" --label onlylabel >/dev/null
+ISS edit 5 --remove-label onlylabel >/dev/null 2>&1 && ok "removing the LAST label still survives (pipefail regression, re-verified post-#211)" \
+  || bad "removing the LAST label still survives"
+assert_not_contains "the label file has no labels line left" "$(cat "$(find "$ISSRUN/issues/example/open" -name '5-*.md')")" "labels:"
+
 section "local issues backend — render integration"
 LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "gh issue rewritten to fwf issues" "$LIMPL" "fwf --profile example issues list"
