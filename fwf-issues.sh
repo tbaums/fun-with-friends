@@ -66,7 +66,30 @@ require_issue() {
 state_of()  { case "$(issue_file "$1")" in */open/*) echo open;; *) echo closed;; esac; }
 title_of()  { head -1 "$(issue_file "$1")" | sed "s/^# LI-$1: //"; }
 created_of(){ sed -n 's/^created: //p' "$(issue_file "$1")" | head -1; }
-labels_of() { sed -n 's/^labels: //p' "$(issue_file "$1")" | head -1 | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' || true; }
+# issue #211: a genuinely label-less issue and a FAILED read of the issue
+# file both used to produce identical empty output here, so a caller could
+# not tell "this issue has no labels" from "I could not read this issue" --
+# the read-modify-write callers below (_rewrite_header_locked's __KEEP__
+# path) would then silently REWRITE the file with every label dropped,
+# including product-wip, on nothing more than a transient read glitch. Now
+# echoes labels unchanged (an existing bare `labels_of N` caller sees no
+# difference), but returns non-zero when the file itself could not be
+# located/read -- distinct from a real empty label list, which returns 0.
+labels_of() {
+  local f raw out
+  if ! f="$(issue_file "$1")"; then
+    fwf_log_unknown_read labels_of "issue=$1 file not found" || true
+    return 1
+  fi
+  if ! raw="$(sed -n 's/^labels: //p' "$f" 2>/dev/null | head -1)"; then
+    fwf_log_unknown_read labels_of "issue=$1 file unreadable" || true
+    return 1
+  fi
+  [ -n "$raw" ] || return 0
+  out="$(printf '%s\n' "$raw" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$')" || true
+  [ -n "$out" ] && printf '%s\n' "$out"
+  return 0
+}
 has_label() { labels_of "$1" | grep -qx -- "$2"; }
 slugify()   { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g' | cut -c1-40; }
 # Body = everything after the header block, before the first comment marker.
@@ -85,9 +108,31 @@ comments_tsv() {
        inc { print }' "$(issue_file "$1")"
 }
 
+# issue #211 (found by qa1's review of this same PR -- an unaudited instance
+# of the exact pattern already fixed elsewhere in this file): a sequence
+# file that EXISTS but is transiently unreadable used to collapse into "no
+# sequence yet", so the counter got fabricated back to 1 and WRITTEN BACK --
+# durably colliding with/shadowing whatever issue already has number 1.
+# Same shape as fwf_tick_bump: absent file is a real, confident 0 (never
+# created before); a present-but-unreadable file refuses to write at all.
 next_num() {
   local n
-  n="$(cat "$STORE/seq" 2>/dev/null || echo 0)"; n=$((n+1)); printf '%s\n' "$n" > "$STORE/seq"
+  if [ -f "$STORE/seq" ]; then
+    if ! n="$(cat "$STORE/seq" 2>/dev/null)"; then
+      fwf_log_unknown_read next_num "seq file unreadable, refusing to fabricate a sequence number" || true
+      return 1
+    fi
+    case "$n" in
+      ''|*[!0-9]*)
+        fwf_log_unknown_read next_num "seq file malformed content, refusing to fabricate a sequence number" || true
+        return 1
+        ;;
+    esac
+  else
+    n=0
+  fi
+  n=$((n+1))
+  printf '%s\n' "$n" > "$STORE/seq"
   printf '%s\n' "$n"
 }
 
@@ -142,7 +187,13 @@ maybe_jq() { # $1=jq-expr-or-empty; stdin=json
 # --- subcommands ---------------------------------------------------------------
 _create_locked() { # title body labels(comma-joined)
   local n
-  n="$(next_num)"
+  # `return`, never `die`/`exit`, here -- this runs INSIDE with_lock's own
+  # "$@" || rc=$? wrapper; exiting directly would skip its rmdir and leak
+  # the store lock, blocking every future create.
+  if ! n="$(next_num)"; then
+    echo "fwf issues: refusing to create issue -- could not read the sequence counter" >&2
+    return 1
+  fi
   mkdir -p "$STORE/open"
   {
     printf '# LI-%s: %s\n' "$n" "$1"
@@ -163,7 +214,7 @@ cmd_create() {
     esac
   done
   [ -n "$title" ] || die "create: --title is required"
-  with_lock _create_locked "$title" "$body" "$labels"
+  with_lock _create_locked "$title" "$body" "$labels" || exit 1
 }
 
 _comment_locked() { # num body
@@ -179,29 +230,72 @@ cmd_comment() {
 }
 
 # Header rewrites preserve everything below the header block.
+# issue #211: both rewrite functions rebuild the ENTIRE issue file from a
+# handful of reads (title/labels/created/body) -- a failed read that
+# silently fell back to empty (the old shape) would REWRITE the file with
+# that field dropped. `labels` is the highest-consequence instance named by
+# the ticket: a collapsed labels_of drops product-wip on rewrite, which is a
+# collapsed read un-gating a ticket. So every read that feeds a rewrite here
+# is EXPLICITLY status-checked (`if ! x="$(...)"`, never a bare assignment --
+# a bare `x="$(cmd)"` does NOT reliably trigger `set -e` on `cmd`'s failure
+# in bash, a separate, well-known gotcha from the `local x="$(cmd)"` masking
+# trap) and a failure REFUSES the rewrite entirely rather than writing a
+# partially-fabricated file.
 _rewrite_header_locked() { # num newtitle-or-empty newlabels-or-KEEP
-  local n="$1" f title labels tmp
-  f="$(issue_file "$n")"
-  title="${2:-$(title_of "$n")}"
-  if [ "$3" = "__KEEP__" ]; then labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"; else labels="$3"; fi
+  local n="$1" f title labels created tmp
+  if ! f="$(issue_file "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's header -- could not locate its file" >&2
+    return 1
+  fi
+  if ! title="${2:-$(title_of "$n")}"; then
+    echo "fwf issues: refusing to rewrite issue $n's header -- could not read its current title" >&2
+    return 1
+  fi
+  if [ "$3" = "__KEEP__" ]; then
+    if ! labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"; then
+      echo "fwf issues: refusing to rewrite issue $n's header -- could not read its current labels, refusing to silently drop them" >&2
+      return 1
+    fi
+  else
+    labels="$3"
+  fi
+  if ! created="$(created_of "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's header -- could not read its created timestamp" >&2
+    return 1
+  fi
   tmp="$f.tmp.$$"
   {
     printf '# LI-%s: %s\n' "$n" "$title"
     [ -n "$labels" ] && printf 'labels: %s\n' "$labels"
-    printf 'created: %s\n\n' "$(created_of "$n")"
+    printf 'created: %s\n\n' "$created"
     body_of "$n"
     awk '/^## comment /{found=1} found{print}' "$f" | sed '1s/^/\n/'
   } > "$tmp"
   mv "$tmp" "$f"
 }
 _set_body_locked() { # num body
-  local n="$1" f tmp
-  f="$(issue_file "$n")"
+  local n="$1" f title labels created tmp
+  if ! f="$(issue_file "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not locate its file" >&2
+    return 1
+  fi
+  if ! title="$(title_of "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not read its current title" >&2
+    return 1
+  fi
+  if ! labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not read its current labels, refusing to silently drop them" >&2
+    return 1
+  fi
+  if ! created="$(created_of "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not read its created timestamp" >&2
+    return 1
+  fi
   tmp="$f.tmp.$$"
   {
-    printf '# LI-%s: %s\n' "$n" "$(title_of "$n")"
-    labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g' | sed -n 's/^\(..*\)$/labels: \1/p'
-    printf 'created: %s\n\n' "$(created_of "$n")"
+    printf '# LI-%s: %s\n' "$n" "$title"
+    [ -n "$labels" ] && printf 'labels: %s\n' "$labels"
+    printf 'created: %s\n\n' "$created"
     printf '%s\n' "$2"
     awk '/^## comment /{found=1} found{print}' "$f" | sed '1s/^/\n/'
   } > "$tmp"
@@ -215,15 +309,29 @@ cmd_edit() {
       --title) with_lock _rewrite_header_locked "$n" "$2" "__KEEP__"; shift 2;;
       --body)  with_lock _set_body_locked "$n" "$2"; shift 2;;
       --add-label)
-        if ! has_label "$n" "$2"; then
-          labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"
+        # issue #211: read the CURRENT label list ONCE, with its status
+        # checked -- the old shape called labels_of twice (once inside
+        # has_label, unchecked; once more here, also unchecked) and either
+        # call failing would rewrite the file with a silently wrong label
+        # set, the exact defect _rewrite_header_locked's own __KEEP__ path
+        # was fixed against, just reachable through this sibling path too.
+        if ! labels="$(labels_of "$n")"; then
+          die "refusing to add a label to issue $n -- could not read its current labels"
+        fi
+        if ! printf '%s\n' "$labels" | grep -qx -- "$2"; then
+          labels="$(printf '%s\n' "$labels" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"
           with_lock _rewrite_header_locked "$n" "" "${labels:+$labels, }$2"
         fi
         shift 2;;
       --remove-label)
-        # `|| true`: removing the LAST label leaves grep with no matches (exit
-        # 1), which pipefail would otherwise turn into a silent set -e death.
-        labels="$(labels_of "$n" | grep -vx -- "$2" | paste -sd, - 2>/dev/null | sed 's/,/, /g' || true)"
+        if ! labels="$(labels_of "$n")"; then
+          die "refusing to remove a label from issue $n -- could not read its current labels"
+        fi
+        # `|| true`: removing the LAST label leaves grep with no matches
+        # (exit 1) -- a real, legitimate outcome, safe to swallow HERE only
+        # because labels_of's own read was already confirmed trustworthy
+        # above; pipefail would otherwise turn it into a silent set -e death.
+        labels="$(printf '%s\n' "$labels" | grep -vx -- "$2" | paste -sd, - 2>/dev/null | sed 's/,/, /g' || true)"
         with_lock _rewrite_header_locked "$n" "" "$labels"
         shift 2;;
       *) die "edit: unknown flag '$1'";;

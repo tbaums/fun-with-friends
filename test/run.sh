@@ -604,6 +604,83 @@ assert_eq "a bump also refreshes the heartbeat (boot-gate/respawn stay wired)" "
 # malformed counter file must degrade to 0, never crash arithmetic.
 assert_eq "malformed counter file -> reads 0"          "0" \
   "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_read impl9')"
+
+section "fwf_tick_read / fwf_tick_bump: a read that cannot complete must not collapse into a confident value (#211)"
+# Exit status is the encoding (issue #211 decision): echo unchanged, signal
+# failure via a non-zero return, and a caller that cares MUST declare-then-
+# assign on separate lines or the status gets masked by `local` itself.
+assert_eq "absent tick file: exit 0 -- 'never ticked' is a real answer, not a failure" \
+  "0" "$(tk 'fwf_tick_read impl94 >/dev/null; echo $?')"
+assert_eq "malformed tick file: exit 1 -- the value is NOT to be trusted" \
+  "1" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_read impl9 >/dev/null; echo $?')"
+assert_eq "unreadable tick file (chmod 000): exit 1, still echoes the 0 fallback" \
+  "1" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; chmod 000 "$(fwf_tick_path impl9)"; r=$(fwf_tick_read impl9); rc=$?; chmod 644 "$(fwf_tick_path impl9)"; echo $rc')"
+# THE MASKING TRAP, pinned by a test rather than left to a paragraph: the
+# combined `local n="$(cmd)"` form loses the inner command's status because
+# `local` is itself the command `$?` reports on (verified empirically in this
+# bash: 5.3.9 masks it too, not just older shells).
+assert_eq "combined 'local n=\$(cmd)' MASKS the status -- always reads 0 regardless" \
+  "0" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)";
+    _masked() { local n="$(fwf_tick_read impl9)"; return $?; }
+    _masked; echo $?')"
+assert_eq "declare-then-assign on separate lines correctly PROPAGATES the status" \
+  "1" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)";
+    _unmasked() { local n; n="$(fwf_tick_read impl9)"; return $?; }
+    _unmasked; echo $?')"
+
+# fwf_tick_bump: a stale/failed read must REFUSE TO WRITE, never overwrite a
+# deep counter with 1 -- the live corruption bug this ticket exists to close.
+assert_eq "healthy bump still returns the new count normally" "6" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
+assert_eq "bump on a malformed counter echoes UNKNOWN, not a fabricated '1'" "UNKNOWN" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
+assert_eq "bump on a malformed counter exits non-zero" "1" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null; echo $?')"
+assert_eq "a role at tick 5000 with a momentarily-unreadable file is NOT reset to 1 -- the file is left untouched" \
+  "garbage" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null; cat "$(fwf_tick_path impl9)"')"
+assert_eq "the heartbeat is STILL touched on a refused bump -- a cycle DID start, that half is independently true" \
+  "yes" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null; [ -f "$(fwf_heartbeat_path impl9)" ] && echo yes || echo no')"
+assert_eq "recovery: a later healthy bump after a refusal resumes from the REAL prior count, not from the refusal" "6" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; chmod 000 "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null 2>&1; chmod 644 "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
+
+section "fwf_log_unknown_read: the bounded diagnostic log for collapsing reads (#211 AC f/f0)"
+UL="$TMP/unknown-log"
+ul() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run" bash -c "source '$ROOT/lib.sh'; $1"; }
+ULOG="$UL/run/state/example/unknown-reads.log"
+assert_eq "a healthy fwf_tick_read writes NOTHING to the log (success path costs nothing)" "no" \
+  "$(ul 'fwf_tick_read healthyrole >/dev/null; [ -f "$(fwf_unknown_log_path)" ] && echo yes || echo no')"
+ul 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"; fwf_tick_read badrole >/dev/null'
+assert_contains "a failed read appends the reader name"        "$(cat "$ULOG")" "fwf_tick_read"
+assert_contains "  ...and the role it failed for"              "$(cat "$ULOG")" "role=badrole"
+assert_contains "  ...and a real UTC timestamp (this year)"    "$(cat "$ULOG")" "$(date -u +%Y)-"
+LINES1="$(wc -l < "$ULOG")"
+[ "$LINES1" -ge 1 ] && ok "log grew by at least one line" || bad "log grew by at least one line" "got $LINES1"
+
+# Bounded: repeated failures never grow the log past FWF_UNKNOWN_LOG_MAX_LINES.
+ul2() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run2" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/lib.sh'; $1"; }
+ul2 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"
+  for i in 1 2 3 4 5 6 7 8 9 10; do fwf_tick_read badrole >/dev/null; done'
+BOUNDED_LOG="$UL/run2/state/example/unknown-reads.log"
+BOUNDED_LINES="$(wc -l < "$BOUNDED_LOG")"
+assert_eq "log is bounded at FWF_UNKNOWN_LOG_MAX_LINES even after 10 failures" "5" "$BOUNDED_LINES"
+
+# issue #211 AC (f0), the load-bearing assertion: the LOG ITSELF is a write
+# that can fail, and that failure must NEVER touch the reader's own answer
+# -- only be reported separately, by the logger's own return status, which
+# no reader may check. Real fixture: the state dir made unwritable (not the
+# tick file itself, which stays readable) so ONLY the log append fails.
+UL3="$UL/run3"; mkdir -p "$UL3/state/example/tick"
+printf garbage > "$UL3/state/example/tick/badrole3"
+chmod 555 "$UL3/state/example"
+UL3OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/lib.sh'; fwf_tick_read badrole3; echo RC=\$?" 2>&1)"
+UL3LOGGERRC=0
+FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/lib.sh'; fwf_log_unknown_read x y" >/dev/null 2>&1 || UL3LOGGERRC=$?
+chmod 755 "$UL3/state/example"
+assert_contains "reader behaves IDENTICALLY with an unwritable log path (still echoes the 0 fallback)" "$UL3OUT" "0"
+assert_contains "  ...and still reports its own failure status normally (RC=1)" "$UL3OUT" "RC=1"
+assert_not_contains "  ...and the reader's stdout is never corrupted by the shell's own redirection error" "$UL3OUT" "Permission denied"
+assert_eq "the logger's OWN failure IS reported, separately, to a caller that asks" "1" "$UL3LOGGERRC"
+
 # the `fwf tick` subcommand is the agent-facing entrypoint and echoes the count.
 assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
   "$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run2" "$ROOT/fwf" tick impl9)"
@@ -707,9 +784,21 @@ PL_SNAP="$PL_RUN/state/example/tick-watch/plrole1"
 assert_eq "an existing baseline too fresh to diff -> STILL UNKNOWN (untouched, not reset)" "UNKNOWN" "$(pl plrole1)"
 
 # Age the baseline past the threshold with zero tick/token movement -> WEDGED.
+# issue #211: WEDGED requires a TRUSTED token read too (tick alone can't
+# distinguish WEDGED from "long single cycle, tokens still flowing"), so
+# this fixture seeds a plausible usage cache -- last_success_epoch set, so
+# _fwf_usage_role reports "stale" (trusted) rather than "unknown" -- exactly
+# what a previously-active-but-now-stuck REAL role looks like (its Claude
+# project dir/cache doesn't vanish just because it stopped ticking). Totals
+# are flat (0) to match "no movement." A role with NO usage cache at all
+# ("unknown" state) is the different, correctly-UNKNOWN case covered
+# separately below.
+mkdir -p "$PL_RUN/state/example/usage-cache"
+printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+  "$(( $(date -u +%s) - 3600 ))" > "$PL_RUN/state/example/usage-cache/plrole1.json"
 read -r PL_T PL_TOK PL_EP < "$PL_SNAP"
 printf '%s %s %s\n' "$PL_T" "$PL_TOK" "$(( PL_EP - 700 ))" > "$PL_SNAP"
-assert_eq "old-enough baseline, no movement -> WEDGED" "WEDGED" "$(pl plrole1)"
+assert_eq "old-enough baseline, no movement, TRUSTED (stale) token read -> WEDGED" "WEDGED" "$(pl plrole1)"
 # Consuming the window refreshes the baseline (matches fwf-supervise.sh's own
 # sliding-window model) -- an IMMEDIATE re-query is fresh again, not WEDGED again.
 assert_eq "the window is consumed -- an immediate re-query is fresh again -> UNKNOWN" "UNKNOWN" "$(pl plrole1)"
@@ -724,16 +813,95 @@ printf '%s %s %s\n' "$PL_T2" "$PL_TOK2" "$(( PL_EP2 - 700 ))" > "$PL_RUN/state/e
 echo 6 > "$PL_RUN/state/example/tick/plrole2"   # ticked since the baseline
 assert_eq "tick advanced since an old-enough baseline -> HEALTHY" "HEALTHY" "$(pl plrole2)"
 
+# issue #211: an untrustworthy current read must never collapse into a
+# confident verdict (WEDGED is the dangerous direction -- it can trigger a
+# respawn), and its fallback value must never be stamped as the next
+# baseline -- that would corrupt every future delta comparison durably.
+mkdir -p "$PL_RUN/state/example/tick"
+echo 5 > "$PL_RUN/state/example/tick/plrole3"
+pl plrole3 >/dev/null   # stamp a baseline at tick=5
+read -r PL_T3 PL_TOK3 PL_EP3 < "$PL_RUN/state/example/tick-watch/plrole3"
+printf '%s %s %s\n' "$PL_T3" "$PL_TOK3" "$(( PL_EP3 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole3"
+printf garbage > "$PL_RUN/state/example/tick/plrole3"   # the live read now fails
+assert_eq "an untrustworthy current read -> UNKNOWN, never a false WEDGED" "UNKNOWN" "$(pl plrole3)"
+assert_eq "the untrustworthy value is NEVER stamped as the next baseline (snapshot untouched)" \
+  "$PL_T3 $PL_TOK3 $(( PL_EP3 - 700 ))" "$(cat "$PL_RUN/state/example/tick-watch/plrole3")"
+
+if command -v jq >/dev/null 2>&1; then
+  # issue #211: _fwf_usage_role is ALREADY an honest three-state reader (its
+  # own state:"unknown" for a role with no resolvable usage data) -- the
+  # collapse was the CALLER (this script) reading .tokens directly and
+  # ignoring .state. A synthetic test role has no real Claude project dir,
+  # so _fwf_usage_role genuinely reports "unknown" for it -- no mocking
+  # needed, this is the real code path.
+  mkdir -p "$PL_RUN/state/example/tick"
+  echo 5 > "$PL_RUN/state/example/tick/plrole4"
+  pl plrole4 >/dev/null   # stamp a baseline
+  read -r PL_T4 PL_TOK4 PL_EP4 < "$PL_RUN/state/example/tick-watch/plrole4"
+  printf '%s %s %s\n' "$PL_T4" "$PL_TOK4" "$(( PL_EP4 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole4"
+  # tick file left UNCHANGED (still 5) -> d_tick == 0, so tokens are the
+  # ONLY signal left to distinguish WORKING from WEDGED -- and they're
+  # unreliable (unknown), so this must bail UNKNOWN, never fabricate WEDGED.
+  assert_eq "tick static + untrustworthy token read -> UNKNOWN, never a fabricated WEDGED" \
+    "UNKNOWN" "$(pl plrole4)"
+  assert_eq "  ...and the baseline is NEVER stamped from an untrustworthy token read" \
+    "$PL_T4 $PL_TOK4 $(( PL_EP4 - 700 ))" "$(cat "$PL_RUN/state/example/tick-watch/plrole4")"
+
+  # The OTHER direction: tick DID advance -- fwf_wedge_verdict never
+  # consults tokens once d_tick>0, so an untrustworthy token read must NOT
+  # degrade a verdict it cannot actually affect (regression guard: an
+  # earlier draft of this fix broke exactly this case).
+  mkdir -p "$PL_RUN/state/example/tick"
+  echo 5 > "$PL_RUN/state/example/tick/plrole5"
+  pl plrole5 >/dev/null
+  read -r PL_T5 PL_TOK5 PL_EP5 < "$PL_RUN/state/example/tick-watch/plrole5"
+  printf '%s %s %s\n' "$PL_T5" "$PL_TOK5" "$(( PL_EP5 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole5"
+  echo 6 > "$PL_RUN/state/example/tick/plrole5"   # ticked since the baseline
+  assert_eq "tick advanced + untrustworthy token read -> still HEALTHY, tokens irrelevant" \
+    "HEALTHY" "$(pl plrole5)"
+else
+  printf '  skip jq-dependent #211 token-collapse tests (jq not installed)\n'
+fi
+
 section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-liveness.sh)"
 # The loop's own output format is not asserted anywhere pre-#147 (grep
 # confirms it), so this covers the refactored shape directly: one line per
 # role, UNKNOWN gets its own explanatory line, and roles are independent.
 SV_RUN="$TMP/supervise"; mkdir -p "$SV_RUN/state/example/tick-watch"
 printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-watch/svwedged"
+# issue #211: WEDGED needs a TRUSTED token read too -- see the matching
+# fixture note on plrole1 above. Without this, svwedged's usage state reads
+# "unknown" (no real Claude project dir for a synthetic test role) and the
+# correct verdict is now UNKNOWN, not a fabricated WEDGED.
+mkdir -p "$SV_RUN/state/example/usage-cache"
+printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+  "$(( $(date -u +%s) - 3600 ))" > "$SV_RUN/state/example/usage-cache/svwedged.json"
 SVOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
 assert_contains "supervise reports a confirmed-old-baseline role's real verdict" "$SVOUT" "svwedged   WEDGED"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
+
+# issue #211 AC (h) -- the AC that protects the floor: under a simulated
+# tick READ failure, supervise must classify UNKNOWN and NOT reap, even
+# with auto-respawn explicitly ENABLED (FWF_SUPERVISE_AUTORESPAWN=1) --
+# proving this isn't just "the flag happened to be off" (the pre-existing
+# test above), but that an untrustworthy read genuinely never reaches the
+# WEDGED branch that can trigger a respawn at all. AC (g) (above, the
+# fwf_tick_bump byte-level test) proves the counter itself; this proves the
+# CONSEQUENCE -- a fix that passes (g) and fails (h) turns data corruption
+# into destroyed in-flight work, which is the worse failure.
+mkdir -p "$SV_RUN/state/example/tick"
+echo 5 > "$SV_RUN/state/example/tick/svunknown"
+FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
+read -r SVU_T SVU_TOK SVU_EP < "$SV_RUN/state/example/tick-watch/svunknown"
+printf '%s %s %s\n' "$SVU_T" "$SVU_TOK" "$(( SVU_EP - 700 ))" > "$SV_RUN/state/example/tick-watch/svunknown"
+printf garbage > "$SV_RUN/state/example/tick/svunknown"   # simulate a tick READ failure
+SVUOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
+assert_contains "AC(h): a simulated tick-read failure classifies UNKNOWN, not WEDGED" "$SVUOUT" "svunknown  UNKNOWN"
+assert_not_contains "AC(h): supervise does NOT reap -- no respawn attempted even WITH autorespawn=1" "$SVUOUT" "respawning"
+assert_not_contains "AC(h): fwf-respawn.sh is never invoked at all for this role" "$SVUOUT" "respawn FAILED"
+assert_eq "AC(h): the tick counter itself is unmodified by this whole pass (still 'garbage')" "garbage" \
+  "$(cat "$SV_RUN/state/example/tick/svunknown")"
 
 section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
 # Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
@@ -1642,8 +1810,16 @@ EOS
   # but nothing is labeled IMPL7) is CONFIRMED ABSENT -- proceeds, no matter
   # how fresh the claim.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
-  mkdir -p "$F88TRUN/state/example/tick-watch"
+  mkdir -p "$F88TRUN/state/example/tick-watch" "$F88TRUN/state/example/usage-cache"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl7"
+  # issue #211: this test's whole point is exercising the WEDGED verdict, but
+  # WEDGED now also requires a TRUSTED (not "unknown") token read -- see the
+  # matching fixture note on plrole1/svwedged above. Without this, impl7's
+  # verdict correctly reads UNKNOWN, and fwf_claim_liveness_blocks (lib.sh)
+  # fails safe on UNKNOWN (always blocks), never reaching the WEDGED-plus-
+  # pane-absent branch this test is actually about.
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl7.json"
   env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter" \
     || bad "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter"
@@ -1656,6 +1832,12 @@ EOS
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   tmux set -p -t "${F88SESS}-build" @l "IMPL5 · dev impl · impl5/*"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl5"
+  # issue #211: this test is specifically about the WEDGED verdict (as
+  # opposed to UNKNOWN, which happens to block for the same reason here but
+  # is not what this test claims to exercise) -- see the impl7 fixture note
+  # above for why a trusted usage cache is required to actually reach it.
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl5.json"
   F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)" \
     || ok "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)"
@@ -2054,6 +2236,114 @@ ISS view 99 >/dev/null 2>&1 && bad "missing issue rejected" || ok "missing issue
 ISS create --title "Gated thing" --label product-wip >/dev/null
 ISS edit 3 --remove-label product-wip >/dev/null 2>&1 && ok "remove last label survives" || bad "remove last label survives"
 assert_contains "un-gated issue enters survey" "$(ISS list --search "is:open -label:product-wip")" "LI-3"
+
+# issue #211 AC (d): labels_of itself must produce DIFFERENT outcomes for
+# "genuinely no labels" (a real, confident empty answer) vs "file unreadable"
+# (untrustworthy) -- the #200 shape this ticket's discrimination test
+# targets. `source ... help` runs the harmless default subcommand so the
+# functions are defined without dispatching a real command first.
+LOF() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example bash -c "source '$ROOT/fwf-issues.sh' help >/dev/null 2>&1; $1"; }
+NOLABEL_OUT="$(ISS create --title "No labels at all")"
+NOLABEL_N="$(printf '%s' "$NOLABEL_OUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+LOF_EMPTY_N="$(LOF "labels_of $NOLABEL_N >/dev/null; echo \$?")"
+assert_eq "labels_of: a genuinely label-less issue -> exit 0 (real, confident empty)" "0" "$LOF_EMPTY_N"
+LOF_MISSING_RC="$(LOF 'if labels_of 99999 >/dev/null 2>&1; then echo 0; else echo $?; fi')"
+assert_eq "labels_of: a nonexistent issue number -> exit 1 (untrustworthy, DIFFERENT from empty)" "1" "$LOF_MISSING_RC"
+
+# issue #211: a collapsed labels_of read must never silently drop labels on
+# rewrite -- "the highest-consequence instance of this class in the tree"
+# per the ticket, because a dropped product-wip un-gates a ticket. Real
+# fixture: chmod the issue file unreadable mid-edit (not a mock).
+# Issue number captured dynamically, not hardcoded -- this section runs
+# after other tests in this file that also call ISS create, so the "next"
+# number shifts as more are added upstream; hardcoding it here is exactly
+# the kind of fragile-fixture bug this session has hit before.
+G211OUT="$(ISS create --title "Gated for #211" --body "body text" --label product-wip --label bug)"
+N211="$(printf '%s' "$G211OUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+ISSF211="$(find "$ISSRUN/issues/example/open" -name "$N211-*.md")"
+chmod 000 "$ISSF211"
+IE211OUT="$(ISS edit "$N211" --title "Should be refused" 2>&1)"; IE211RC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --title edit REFUSES, exit non-zero" "1" "$IE211RC"
+assert_contains "refusal names the cause" "$IE211OUT" "could not read its current labels"
+assert_contains "the file is left COMPLETELY untouched (old title, both labels intact)" \
+  "$(cat "$ISSF211")" "# LI-$N211: Gated for #211"
+assert_contains "  ...product-wip specifically survives the refused edit" "$(cat "$ISSF211")" "product-wip"
+assert_not_contains "the refused title never lands" "$(cat "$ISSF211")" "Should be refused"
+# --body goes through the SAME guard (_set_body_locked), same fixture shape.
+chmod 000 "$ISSF211"
+IB211OUT="$(ISS edit "$N211" --body "new body" 2>&1)"; IB211RC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --body edit ALSO refuses, exit non-zero" "1" "$IB211RC"
+assert_contains "  ...body edit refusal also names the cause" "$IB211OUT" "could not read"
+assert_contains "  ...original body survives the refused edit" "$(cat "$ISSF211")" "body text"
+# Normal (readable) edit is completely unaffected by the guard -- labels
+# survive a title-only edit exactly as before this fix.
+ISS edit "$N211" --title "A real edit" >/dev/null
+assert_contains "a normal edit still works and still preserves labels" \
+  "$(cat "$ISSF211")" "labels: product-wip, bug"
+assert_contains "  ...and the real title actually lands" "$(cat "$ISSF211")" "# LI-$N211: A real edit"
+
+# issue #211: --add-label and --remove-label are a SIBLING path into the
+# same rewrite -- they compute the label list themselves rather than going
+# through _rewrite_header_locked's __KEEP__ guard, so they need their OWN
+# status check or the exact same defect is reachable through a different
+# door. Same real chmod-000 fixture as above.
+chmod 000 "$ISSF211"
+ALOUT="$(ISS edit "$N211" --add-label zzz 2>&1)"; ALRC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --add-label ALSO refuses, exit non-zero" "1" "$ALRC"
+assert_contains "  ...refusal names the cause" "$ALOUT" "could not read its current labels"
+assert_not_contains "  ...the new label never lands" "$(cat "$ISSF211")" "zzz"
+assert_contains "  ...existing labels survive untouched" "$(cat "$ISSF211")" "product-wip, bug"
+
+chmod 000 "$ISSF211"
+RLOUT="$(ISS edit "$N211" --remove-label bug 2>&1)"; RLRC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --remove-label ALSO refuses, exit non-zero" "1" "$RLRC"
+assert_contains "  ...refusal names the cause" "$RLOUT" "could not read its current labels"
+assert_contains "  ...the label being removed is STILL there (refusal, not a silent no-op)" \
+  "$(cat "$ISSF211")" "product-wip, bug"
+
+# Normal (readable) add/remove still work exactly as before this fix,
+# including the "remove the LAST label" edge case that motivated the
+# original `|| true` (now scoped to only the grep-found-nothing step, not
+# the labels_of read itself).
+ISS edit "$N211" --add-label approved >/dev/null
+assert_contains "normal --add-label still works" "$(cat "$ISSF211")" "approved"
+SOLOOUT="$(ISS create --title "Solo-labeled" --label onlylabel)"
+NSOLO="$(printf '%s' "$SOLOOUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+ISS edit "$NSOLO" --remove-label onlylabel >/dev/null 2>&1 && ok "removing the LAST label still survives (pipefail regression, re-verified post-#211)" \
+  || bad "removing the LAST label still survives"
+assert_not_contains "the label file has no labels line left" \
+  "$(cat "$(find "$ISSRUN/issues/example/open" -name "$NSOLO-*.md")")" "labels:"
+
+# issue #211 (qa1's review finding on this same PR): next_num()'s sequence
+# counter had the identical collapsing-read defect already fixed elsewhere
+# in this file -- an unreadable (not just absent) seq file used to
+# fabricate a fresh "1", durably colliding with whatever issue already has
+# that number. Fresh, isolated fixture -- this must not share $ISSRUN's
+# cumulative issue numbering with the tests above.
+NNRUN="$TMP/issrun-nextnum"
+NNISS() { FWF_RUN_DIR="$NNRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+NNISS create --title "First" >/dev/null
+NNISS create --title "Second" >/dev/null
+NNSEQ="$NNRUN/issues/example/seq"
+assert_eq "next_num: normal sequence advances to 2 after two creates" "2" "$(cat "$NNSEQ")"
+chmod 000 "$NNSEQ"
+NNOUT="$(NNISS create --title "Should refuse" 2>&1)"; NNRC=$?
+chmod 644 "$NNSEQ"
+assert_eq "next_num: unreadable seq file REFUSES the create, exit non-zero" "1" "$NNRC"
+assert_contains "  ...refusal names the cause" "$NNOUT" "could not read the sequence counter"
+assert_eq "  ...the seq file is left COMPLETELY untouched (still 2, not fabricated back to 1)" \
+  "2" "$(cat "$NNSEQ")"
+assert_not_contains "  ...no colliding LI-1/LI-2 duplicate was created" \
+  "$(ls "$NNRUN/issues/example/open")" "should-refuse"
+[ -d "$NNRUN/issues/example/.lock" ] && bad "the store lock is NOT leaked by the refused create" \
+  || ok "the store lock is NOT leaked by the refused create"
+NNISS create --title "Third" >/dev/null
+assert_eq "next_num: a normal create afterward still works (lock genuinely released, not stuck)" \
+  "3" "$(cat "$NNSEQ")"
 
 section "local issues backend — render integration"
 LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
@@ -3751,6 +4041,49 @@ case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *)
 STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
 assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
 
+section "fwf usage — collapsing-read diagnostics (#211 AC f): live probe + recent unknowns"
+URUN="$TMP/usage-unknown-reads"
+CLEAN="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "clean run: section header always present" "$CLEAN" "collapsing-read diagnostics"
+assert_contains "clean run: live probe reports all-trustworthy" "$CLEAN" "all roles' tick reads are trustworthy right now"
+assert_contains "clean run: recent unknowns reports none" "$CLEAN" "recent unknowns: none logged"
+
+# Seed a genuinely untrustworthy tick file for impl1 -- both halves (live
+# probe AND recent-unknowns) must surface it, since fwf_tick_read's own
+# failure path both returns non-zero (the live probe) AND appends to the
+# log (recent unknowns) in the same call.
+mkdir -p "$URUN/run/state/.__usage/tick"
+printf garbage > "$URUN/run/state/.__usage/tick/impl1"
+FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" bash -c "source '$ROOT/lib.sh'; fwf_tick_read impl1 >/dev/null"
+DIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "live probe names the untrustworthy role" "$DIRTY" "tick read is UNTRUSTED right now for: impl1"
+assert_contains "recent-unknowns section shows the logged entry" "$DIRTY" "fwf_tick_read"
+assert_contains "  ...naming the reason"                          "$DIRTY" "role=impl1 malformed content"
+assert_contains "tells the operator how to clear it"               "$DIRTY" "fwf usage --clear-unknown-log"
+
+FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" "$ROOT/fwf" usage --clear-unknown-log >/dev/null
+[ -f "$URUN/run/state/.__usage/unknown-reads.log" ] && bad "--clear-unknown-log actually removes the log file" || ok "--clear-unknown-log actually removes the log file"
+
+# Repair impl1 BEFORE re-checking "none logged": `fwf usage`'s own live
+# probe calls the same fwf_tick_read that logs on failure, so a STILL-BROKEN
+# role would immediately re-populate the log the instant this next `fwf
+# usage` call runs -- that is correct, truthful behavior (a real read
+# genuinely failed again), not a bug, but it means this specific assertion
+# needs a clean role to observe a clean log.
+echo 5 > "$URUN/run/state/.__usage/tick/impl1"
+AFTERCLEAR="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "after clearing AND repairing, recent unknowns reports none again" "$AFTERCLEAR" "recent unknowns: none logged"
+assert_contains "  ...and the live probe agrees (impl1 is healthy again)" "$AFTERCLEAR" "all roles' tick reads are trustworthy right now"
+
+# The live probe re-derives from CURRENT state every call, independent of
+# the log -- clearing the log must NOT hide a role that is STILL
+# untrustworthy. Break a DIFFERENT role (impl2) for this check so it
+# doesn't fight the "clean after repair" assertion just above.
+mkdir -p "$URUN/run/state/.__usage/tick"
+printf garbage > "$URUN/run/state/.__usage/tick/impl2"
+STILLDIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
+assert_contains "clearing the log does NOT silence the live probe for a still-broken role" "$STILLDIRTY" "tick read is UNTRUSTED right now for: impl2"
+
 section "fwf usage (#96/#108): budget-enforcement ARMED/NOT ARMED surface (GV-signoff residual-risk fix) + this-run-vs-cumulative"
 NOBUDGET="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
 assert_contains "no budget configured -> NOT ARMED" "$NOBUDGET" "budget enforcement: NOT ARMED"
@@ -4361,9 +4694,16 @@ wtr_setup_role() { # $1=label  $2=role -> $WTR_BASE-<label>/{origin.git, testwt-
 wtsv_run() { # $1=fixture label  $2=role -> supervise output, with an
              # old-enough tick-watch baseline so the wedge check itself
              # doesn't short-circuit on UNKNOWN before reaching this watchdog.
+             # issue #211: also needs a TRUSTED (stale, not "unknown") usage
+             # cache -- otherwise the verdict itself is (correctly) UNKNOWN,
+             # and fwf-supervise.sh's own UNKNOWN case `continue`s past the
+             # worktree watchdog entirely, same root cause as the WEDGED
+             # fixtures above.
   local svrun="$TMP/wtrsv-$1-$2"
-  mkdir -p "$svrun/state/example/tick-watch"
+  mkdir -p "$svrun/state/example/tick-watch" "$svrun/state/example/usage-cache"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$svrun/state/example/tick-watch/$2"
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$svrun/state/example/usage-cache/$2.json"
   FWF_PROFILE=example FWF_RUN_DIR="$svrun" FWF_WEDGE_MIN_SECS=600 \
     FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" \
     "$ROOT/fwf-supervise.sh" "$2" 2>&1
@@ -4654,6 +4994,29 @@ S3="$(rec_run 'fwf_reconcile_indeterminate_streak staging 0')"
 assert_eq "fwf_reconcile_indeterminate_streak: a clean(0) call resets it to 0" "0" "$S3"
 S4="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
 assert_eq "fwf_reconcile_indeterminate_streak: the next increment starts from the reset value, not the old streak" "1" "$S4"
+
+# issue #211: a streak file that EXISTS but is malformed/unreadable is a
+# DIFFERENT answer from "never recorded" -- collapsing the two used to
+# silently reset a real flap/indeterminate streak on a transient glitch,
+# delaying the ANOMALY this counter exists to surface (fwf_reconcile_
+# record_history) or under-counting a secondary escalation signal
+# (fwf_reconcile_indeterminate_streak, whose echoed value is load-bearing
+# for its own caller so it logs rather than refusing to answer).
+rec_setup reconcile-history-collapse
+mkdir -p "$REC_RUN/state/example/reconcile-history"
+printf garbage > "$REC_RUN/state/example/reconcile-history/staging"
+RHOUT="$(rec_run 'fwf_reconcile_record_history staging RECONCILED')"
+assert_eq "malformed history file: record_history REFUSES to write (no fabricated streak)" "garbage" \
+  "$(cat "$REC_RUN/state/example/reconcile-history/staging")"
+assert_eq "  ...and prints nothing (never a fabricated ANOMALY line either)" "" "$RHOUT"
+
+rec_setup indeterminate-streak-collapse
+mkdir -p "$REC_RUN/state/example/reconcile-indeterminate"
+printf garbage > "$REC_RUN/state/example/reconcile-indeterminate/staging"
+ISOUT="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
+assert_eq "malformed indeterminate-streak file: still echoes a number (caller's arithmetic is load-bearing)" "1" "$ISOUT"
+assert_contains "  ...but the collapse is logged for observability (#211 AC f)" \
+  "$(cat "$REC_RUN/state/example/unknown-reads.log" 2>/dev/null)" "fwf_reconcile_indeterminate_streak"
 
 # --- captain-tick guard is wired at the template level (#114 AC4/AC5) ------
 # Every REAL captain template that owns a RELEASE ENGINEERING job (promotes

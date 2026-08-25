@@ -192,13 +192,22 @@ UTILITIES
                          records what you did in an optional comment).
   flag-captain sweep     List every open needs-captain flag: # · [role] ·
                          reason · age — see docs/needs-captain.md.
-  usage [--clear-hold]   Per-role token usage + an estimated $ equivalent,
+  usage [--clear-hold|--clear-unknown-log]
+                         Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
                          transcripts, plus budget-enforcement status
                          (ARMED/NOT ARMED + current hold, issue #96; see
                          dash's Usage tab too). --clear-hold lifts a
                          BUDGET_HOLD by hand (the writer re-writes it next
-                         tick if still over budget).
+                         tick if still over budget). Also reports
+                         collapsing-read diagnostics (issue #211): a LIVE
+                         PROBE of every role's tick read right now, plus
+                         RECENT UNKNOWNS from a bounded log every converted
+                         reader appends to on failure (lib.sh's
+                         fwf_log_unknown_read) -- a transient failure is
+                         often over by the time anyone checks, so the live
+                         probe alone isn't enough. --clear-unknown-log
+                         clears that log.
   gate <role> [--e2e] -- <cmd...>
                          The shared guarded gate/e2e launcher (issue #123):
                          every role prompt's __GATE__/__E2E__ placeholder

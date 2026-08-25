@@ -1905,10 +1905,28 @@ fwf_reconcile_lock_release() { # $1=branch
 # resets the streak.
 fwf_reconcile_record_history() {
   local branch="$1" state="$2"
-  local f="$FWF_RECONCILE_HISTORY_DIR/$branch" streak=0
+  local f="$FWF_RECONCILE_HISTORY_DIR/$branch" streak=0 trusted=1
   mkdir -p "$FWF_RECONCILE_HISTORY_DIR" 2>/dev/null || true
-  [ -f "$f" ] && streak="$(cat "$f" 2>/dev/null || echo 0)"
-  case "$streak" in ''|*[!0-9]*) streak=0;; esac
+  # issue #211: a file that EXISTS but can't be read/parsed is a different
+  # answer from "never recorded before" (streak=0, genuinely confident) --
+  # collapsing the two used to silently reset a real flap streak on a
+  # transient glitch, delaying the exact ANOMALY this counter exists to
+  # surface. An untrustworthy read now REFUSES to overwrite the real streak
+  # (skips this tick's update entirely, same recover-next-time shape as
+  # fwf_tick_bump) rather than fabricating a fresh 0/1.
+  if [ -f "$f" ]; then
+    if ! streak="$(cat "$f" 2>/dev/null)"; then
+      fwf_log_unknown_read fwf_reconcile_record_history "branch=$branch unreadable" || true
+      trusted=0
+    fi
+    case "$streak" in
+      ''|*[!0-9]*)
+        fwf_log_unknown_read fwf_reconcile_record_history "branch=$branch malformed content" || true
+        trusted=0
+        ;;
+    esac
+  fi
+  [ "$trusted" -eq 1 ] || return 0
   if [ "$state" = RECONCILED ]; then
     streak=$((streak + 1))
     printf '%s\n' "$streak" > "$f"
@@ -1932,8 +1950,26 @@ fwf_reconcile_indeterminate_streak() {
   local branch="$1" indeterminate="$2" f streak=0
   f="$FWF_RECONCILE_INDETERMINATE_DIR/$branch"
   mkdir -p "$FWF_RECONCILE_INDETERMINATE_DIR" 2>/dev/null || true
-  [ -f "$f" ] && streak="$(cat "$f" 2>/dev/null || echo 0)"
-  case "$streak" in ''|*[!0-9]*) streak=0;; esac
+  # issue #211: this function's echoed streak is load-bearing for its
+  # caller's OWN escalation decision (issue #238 AC7), so — unlike
+  # fwf_reconcile_record_history above — it cannot simply refuse to answer
+  # on an unreadable file without breaking that caller's arithmetic. Logged
+  # for observability instead: a fabricated reset here under-counts a
+  # secondary escalation-frequency signal, not the primary safety mechanism
+  # (an indeterminate result already escalates on its own merit regardless
+  # of this counter, per the header comment above) — a real gap, smaller
+  # blast radius than fwf_tick_bump's, and out of scope to redesign here.
+  if [ -f "$f" ]; then
+    if ! streak="$(cat "$f" 2>/dev/null)"; then
+      fwf_log_unknown_read fwf_reconcile_indeterminate_streak "branch=$branch unreadable, streak reset to 0/1 rather than the real count" || true
+    fi
+    case "$streak" in
+      ''|*[!0-9]*)
+        fwf_log_unknown_read fwf_reconcile_indeterminate_streak "branch=$branch malformed content, streak reset to 0/1 rather than the real count" || true
+        streak=0
+        ;;
+    esac
+  fi
   if [ "$indeterminate" -eq 1 ]; then streak=$((streak + 1)); else streak=0; fi
   printf '%s\n' "$streak" > "$f"
   printf '%s' "$streak"
@@ -2173,25 +2209,104 @@ fwf_heartbeat_path() { echo "$FWF_STATE_DIR/heartbeat/$1"; } # $1=role tag
 # check (boot gate, respawn verify) keeps working unchanged.
 fwf_tick_path() { echo "$FWF_STATE_DIR/tick/$1"; } # $1=role tag
 
-# Current tick count for role $1 (0 if it has never ticked / file absent or
-# malformed — never errors, so callers can use it in arithmetic directly).
+# --- unknown-read log (issue #211 AC f/f0) -----------------------------------
+# A bounded, append-only diagnostic: every time a converted reader (e.g.
+# fwf_tick_read below, or fwf-issues.sh's labels_of) cannot complete its
+# read, it appends ONE line here -- so a transient failure is still visible
+# after the fact, not just in the moment it happened ("the point-in-time
+# probe alone will almost always come back clean on exactly the incident
+# this ticket exists to prevent"). `fwf usage` reports and can clear it.
+#
+# THE LOG ITSELF IS A WRITE THAT CAN FAIL (full disk, bad $FWF_RUN, an
+# unwritable path) -- and its failure must NEVER touch the calling reader's
+# own answer, or the diagnostic for collapsing reads becomes another
+# collapsing read. So every step here is best-effort and swallowed; the ONLY
+# thing a caller can observe is THIS function's own return status, which no
+# reader anywhere is allowed to check (fire-and-forget by design -- a test
+# calls this directly to assert the failure is reported, but no reader may
+# let it change its own contract).
+FWF_UNKNOWN_LOG_MAX_LINES="${FWF_UNKNOWN_LOG_MAX_LINES:-500}"
+fwf_unknown_log_path() { echo "$FWF_STATE_DIR/unknown-reads.log"; }
+fwf_log_unknown_read() { # $1=reader-name $2=reason (one line; no tabs/newlines)
+  local log ts n
+  log="$(fwf_unknown_log_path)"
+  mkdir -p "$(dirname "$log")" 2>/dev/null || return 1
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || ts="unknown-time"
+  # 2>/dev/null wraps the WHOLE group, not just the printf -- a redirection
+  # failure (can't open "$log" for append, e.g. an unwritable directory) is
+  # reported by the SHELL itself while setting up ">> $log", before a
+  # trailing "2>/dev/null" on the same simple command would ever apply to
+  # it. Only wrapping the group suppresses that message too.
+  { printf '%s\t%s\t%s\n' "$ts" "$1" "$2" >> "$log"; } 2>/dev/null || return 1
+  # Bound the log (keep only the last N lines) -- best-effort; a failure to
+  # trim is not itself a logging failure, the append above already landed.
+  n="$(wc -l < "$log" 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0;; esac
+  if [ "$n" -gt "$FWF_UNKNOWN_LOG_MAX_LINES" ]; then
+    tail -n "$FWF_UNKNOWN_LOG_MAX_LINES" "$log" > "$log.tmp.$$" 2>/dev/null \
+      && mv -f "$log.tmp.$$" "$log" 2>/dev/null
+  fi
+  return 0
+}
+
+# Current tick count for role $1. Echoes the count exactly as before (a bare
+# `$(fwf_tick_read role)` caller is unchanged — issue #211's AC (e)), but now
+# ALSO signals via exit status whether the echoed value can be trusted:
+#   - file absent (role has never ticked) -> echoes 0, returns 0. This is a
+#     real, confident answer ("no ticks yet"), never a failure — issue #211's
+#     "succeeded-and-empty is not a failure" distinction (the #200 shape).
+#   - file present but unreadable, or present with malformed content -> still
+#     echoes 0 (unchanged fallback for a caller that doesn't check status),
+#     but returns 1. A caller that cares MUST use the two-line
+#     `local n; n="$(fwf_tick_read role)" || handle_unknown` form — a combined
+#     `local n="$(fwf_tick_read role)"` MASKS the status because `local`
+#     itself is the command whose exit code `$?` would see (issue #211).
 fwf_tick_read() { # $1=role
-  local n; n="$(cat "$(fwf_tick_path "$1")" 2>/dev/null || true)"
-  case "$n" in ''|*[!0-9]*) echo 0;; *) echo "$n";; esac
+  local tf n
+  tf="$(fwf_tick_path "$1")"
+  [ -e "$tf" ] || { echo 0; return 0; }
+  if ! n="$(cat "$tf" 2>/dev/null)"; then
+    fwf_log_unknown_read fwf_tick_read "role=$1 unreadable" || true
+    echo 0; return 1
+  fi
+  case "$n" in
+    ''|*[!0-9]*) fwf_log_unknown_read fwf_tick_read "role=$1 malformed content" || true; echo 0; return 1;;
+    *) echo "$n"; return 0;;
+  esac
 }
 
 # Atomically bump role $1's tick counter and refresh its heartbeat — the single
 # cycle-start action a looping role runs at step-0. Read-inc-write is safe
 # because each role is the SOLE writer of its own counter (one pane, one serial
 # loop); the write goes through a temp+mv so a reader never catches a half-
-# written value. Echoes the new count.
+# written value. Echoes the new count and returns 0 on a normal bump.
+#
+# issue #211: if the CURRENT count cannot be trusted (fwf_tick_read's exit
+# status, read via the two-line form so it is never masked), this REFUSES TO
+# WRITE rather than overwrite a possibly-5000-deep counter with 1 — a stale
+# read must not durably reset a live counter. Echoes UNKNOWN and returns 1;
+# the heartbeat file is still touched (a cycle DID start — that half of the
+# signal is independently true) but the tick counter is left untouched so a
+# later, healthy read recovers the real count. fwf-pane-liveness.sh reads
+# this same UNKNOWN-producing path and must never let it collapse into a
+# false WEDGED (a flat tick reads identically to "no movement").
 fwf_tick_bump() { # $1=role
   local role="$1" tf hb cur next
   tf="$(fwf_tick_path "$role")"; hb="$(fwf_heartbeat_path "$role")"
   mkdir -p "$(dirname "$tf")" "$(dirname "$hb")" 2>/dev/null || true
-  cur="$(fwf_tick_read "$role")"; next=$((cur + 1))
-  printf '%s\n' "$next" > "$tf.tmp.$$" && mv -f "$tf.tmp.$$" "$tf"
+  # `if cur=$(...); then` (not `cur=$(...); rc=$?`) deliberately -- this
+  # function runs under callers' `set -e` (the `fwf` dispatcher itself is
+  # `set -euo pipefail`), and a bare failing assignment statement would abort
+  # the whole call before `rc=$?` ever ran. A command's exit status inside an
+  # `if` condition is exempt from `set -e` by design; this is that exemption
+  # used on purpose, not an oversight (issue #211's own `set -e` warning).
   touch "$hb" 2>/dev/null || true
+  if ! cur="$(fwf_tick_read "$role")"; then
+    echo UNKNOWN
+    return 1
+  fi
+  next=$((cur + 1))
+  printf '%s\n' "$next" > "$tf.tmp.$$" && mv -f "$tf.tmp.$$" "$tf"
   echo "$next"
 }
 
