@@ -121,6 +121,25 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          See 'fwf usage' for this-run vs cumulative spend +
                          ARMED/NOT ARMED status, and 'fwf usage --clear-hold'
                          to lift a hold.
+  --session-pct PARK[/RESUME] | --weekly-pct PARK[/RESUME]
+                         (issue #149) Park the floor (BUDGET_HOLD) when the
+                         Claude subscription's OWN usage meters — the rolling
+                         5h session window / the weekly allowance — cross
+                         PARK%, distinct from --budget-usd/--token-budget
+                         (which are blind to subscription limits). fwf does
+                         NOT read these meters itself: an operator-run helper
+                         writes a small structured signal (never OCR — see
+                         docs/subscription-budget.md) that the same WRITER
+                         polls. Unset = not armed (default). RESUME defaults
+                         to PARK minus a hysteresis gap
+                         (FWF_SUBSCRIPTION_RESUME_GAP, default 15 points) when
+                         omitted; resume only happens on a FRESH sub-RESUME
+                         reading, never on elapsed time alone. A missing,
+                         stale (older than FWF_SUBSCRIPTION_STALE_SECS,
+                         default 900s), or malformed signal fails CLOSED
+                         (parks) exactly like an unreadable token/$ read
+                         above — this brake is opt-in per-flag but never
+                         opt-in on blindness once armed.
   issues <cmd> [...]     The LOCAL issue tracker (--issues local): a gh-shaped
                          CLI (create/list/view/edit/comment/close/reopen/export) over
                          a markdown store outside any repo. 'fwf issues help'.
@@ -273,6 +292,26 @@ EOF
 }
 
 die() { echo "fwf: $*" >&2; exit 1; }
+
+# Issue #149: parse --session-pct/--weekly-pct's PARK[/RESUME] syntax into
+# FWF_<KIND>_PCT_PARK/_RESUME. RESUME, when omitted, defaults to PARK minus
+# the configured hysteresis gap (never equal to PARK — see config.sh) so a
+# reading sitting exactly on the line can't flap park/resume every poll.
+_fwf_parse_pct_flag() { # $1 = session|weekly  $2 = "PARK" or "PARK/RESUME"
+  local kind="$1" val="$2" park resume
+  case "$val" in
+    */*) park="${val%%/*}"; resume="${val#*/}" ;;
+    *)   park="$val"; resume="" ;;
+  esac
+  [ -n "$park" ] || die "--${kind}-pct needs a PARK value (got '$val')"
+  if [ -z "$resume" ]; then
+    resume="$(awk -v p="$park" -v g="$FWF_SUBSCRIPTION_RESUME_GAP" 'BEGIN{r=p-g; if (r<0) r=0; print r}')"
+  fi
+  case "$kind" in
+    session) export FWF_SESSION_PCT_PARK="$park" FWF_SESSION_PCT_RESUME="$resume" ;;
+    weekly)  export FWF_WEEKLY_PCT_PARK="$park" FWF_WEEKLY_PCT_RESUME="$resume" ;;
+  esac
+}
 
 # A linked git worktree has .git as a FILE ("gitdir: <repo>/.git/worktrees/<n>"),
 # never a directory — unlike a plain clone (dir) or a tarball extract (absent).
@@ -449,6 +488,10 @@ parse_runtime_flags() {
       --token-budget=*) export FWF_TOKEN_BUDGET="${1#*=}"; shift;;
       --budget-usd)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_BUDGET_USD="$2"; shift 2;;
       --budget-usd=*) export FWF_BUDGET_USD="${1#*=}"; shift;;
+      --session-pct)   [ $# -ge 2 ] || die "$1 needs a value"; _fwf_parse_pct_flag session "$2"; shift 2;;
+      --session-pct=*) _fwf_parse_pct_flag session "${1#*=}"; shift;;
+      --weekly-pct)   [ $# -ge 2 ] || die "$1 needs a value"; _fwf_parse_pct_flag weekly "$2"; shift 2;;
+      --weekly-pct=*) _fwf_parse_pct_flag weekly "${1#*=}"; shift;;
       --impl-model|--qa-model|--pm-model|--gv-model|--captain-model|--conductor-model)
         [ $# -ge 2 ] || die "$1 needs a value"
         roleflag="${1#--}"; roleflag="$(printf '%s' "${roleflag%-model}" | tr '[:lower:]' '[:upper:]')"

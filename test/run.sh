@@ -3984,6 +3984,218 @@ env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/c
 [ -f "$(baseline_file "$BT/run13")" ] && bad "fwf_budget_baseline_clear must remove the baseline" \
   || ok "fwf_budget_baseline_clear (full-teardown path) resets the baseline for the next full 'fwf up'"
 
+# --------------------------------------------------------------------------
+section "fwf-budget-check.sh (#149): subscription-usage brake — not armed leaves everything alone"
+rm -rf "$BT/sub1"; baseline_ensure "$BT/sub1"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub1" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 "$BC"
+[ -z "$(cat "$BT/sub1/BUDGET_HOLD" 2>/dev/null || true)" ] \
+  && ok "no --session-pct/--weekly-pct configured -> no hold, feature is truly inert" \
+  || bad "unconfigured subscription brake stays inert" "$(cat "$BT/sub1/BUDGET_HOLD" 2>/dev/null)"
+
+sub_run() { # $1=RUN_DIR  $2=extra env (may be empty)
+  env FWF_PROFILE=.__budget FWF_RUN_DIR="$1" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+    FWF_SESSION_PCT_PARK=85 FWF_SESSION_PCT_RESUME=70 ${2:-} "$BC"
+}
+sub_hold() { cat "$1/BUDGET_HOLD" 2>/dev/null || true; }
+NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+section "fwf-budget-check.sh (#149 AC3): all four blind shapes fail closed, distinguishably"
+# (a) file never created.
+rm -rf "$BT/sub2"; baseline_ensure "$BT/sub2"
+sub_run "$BT/sub2"
+H="$(sub_hold "$BT/sub2")"
+assert_contains "missing sentinel -> UNKNOWN (fail-closed)" "$H" "UNKNOWN"
+assert_contains "  ...names the reason: missing"            "$H" "missing"
+
+# (b) file exists, zero bytes.
+rm -rf "$BT/sub3"; baseline_ensure "$BT/sub3"; mkdir -p "$BT/sub3"; : > "$BT/sub3/subscription-usage.json"
+sub_run "$BT/sub3"
+H="$(sub_hold "$BT/sub3")"
+assert_contains "empty sentinel -> UNKNOWN (fail-closed)" "$H" "UNKNOWN"
+assert_contains "  ...names the reason: empty"             "$H" "empty"
+
+# (c) file exists, non-empty, not valid JSON (mid-write truncation).
+rm -rf "$BT/sub4"; baseline_ensure "$BT/sub4"; mkdir -p "$BT/sub4"
+printf '{"session_pct": 4' > "$BT/sub4/subscription-usage.json"
+sub_run "$BT/sub4"
+H="$(sub_hold "$BT/sub4")"
+assert_contains "truncated/unparseable JSON -> UNKNOWN (fail-closed)" "$H" "UNKNOWN"
+assert_contains "  ...names the reason: unparseable"                  "$H" "unparseable"
+
+# (d) valid JSON, fresh, but missing the expected fields — NEVER a partial
+# parse that defaults the missing ones.
+rm -rf "$BT/sub5"; baseline_ensure "$BT/sub5"; mkdir -p "$BT/sub5"
+printf '{"session_pct": 40}' > "$BT/sub5/subscription-usage.json"
+sub_run "$BT/sub5"
+H="$(sub_hold "$BT/sub5")"
+assert_contains "malformed-schema (missing weekly_pct/as_of) -> UNKNOWN (fail-closed)" "$H" "UNKNOWN"
+assert_contains "  ...names the reason: malformed-schema"                              "$H" "malformed-schema"
+
+section "fwf-budget-check.sh (#149): a stale signal fails closed, distinct wording from a real HOLD"
+rm -rf "$BT/sub6"; baseline_ensure "$BT/sub6"; mkdir -p "$BT/sub6"
+printf '{"session_pct": 40, "weekly_pct": 10, "as_of": "2020-01-01T00:00:00Z"}' > "$BT/sub6/subscription-usage.json"
+sub_run "$BT/sub6"
+H="$(sub_hold "$BT/sub6")"
+assert_contains "ancient as_of -> UNKNOWN (fail-closed)" "$H" "UNKNOWN"
+assert_contains "  ...names it stale"                    "$H" "stale"
+case "$H" in *"HOLD —"*) bad "stale must not ALSO read as a real threshold HOLD" "$H";; *) ok "stale is textually distinct from a real threshold HOLD";; esac
+
+section "fwf-budget-check.sh (#149): fresh reading under park threshold -> OK, no hold"
+rm -rf "$BT/sub7"; baseline_ensure "$BT/sub7"; mkdir -p "$BT/sub7"
+printf '{"session_pct": 40, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub7/subscription-usage.json"
+sub_run "$BT/sub7"
+[ -z "$(sub_hold "$BT/sub7")" ] && ok "under park threshold -> no hold" || bad "under park threshold -> no hold" "$(sub_hold "$BT/sub7")"
+
+section "fwf-budget-check.sh (#149): fresh reading >= park threshold -> HOLD, names session/weekly + the threshold"
+rm -rf "$BT/sub8"; baseline_ensure "$BT/sub8"; mkdir -p "$BT/sub8"
+printf '{"session_pct": 90, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub8/subscription-usage.json"
+sub_run "$BT/sub8"
+H="$(sub_hold "$BT/sub8")"
+assert_contains "session >= park -> HOLD" "$H" "HOLD"
+assert_contains "  ...names session"      "$H" "session"
+assert_contains "  ...names the park threshold" "$H" "park threshold 85%"
+case "$H" in HOLD\ *) ok "first-line token is byte-identical 'HOLD ' (templates check this exact prefix)";; *) bad "first-line token" "$H";; esac
+
+rm -rf "$BT/sub9"; baseline_ensure "$BT/sub9"; mkdir -p "$BT/sub9"
+printf '{"session_pct": 10, "weekly_pct": 60, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub9/subscription-usage.json"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub9" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  FWF_WEEKLY_PCT_PARK=50 FWF_WEEKLY_PCT_RESUME=35 "$BC"
+H="$(sub_hold "$BT/sub9")"
+assert_contains "weekly >= park -> HOLD" "$H" "HOLD"
+assert_contains "  ...names weekly"      "$H" "weekly"
+
+section "fwf-budget-check.sh (#149): resume hysteresis — a reading between resume and park stays parked; timer alone never resumes"
+rm -rf "$BT/sub10"; baseline_ensure "$BT/sub10"; mkdir -p "$BT/sub10"
+printf '{"session_pct": 90, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub10/subscription-usage.json"
+sub_run "$BT/sub10"
+assert_contains "poll 1 (90%%, over park) -> HOLD" "$(sub_hold "$BT/sub10")" "HOLD"
+# poll 2: same 90% reading again, nothing elapsed but the poll itself -- a
+# timer/elapsed-time-alone resume must NOT happen.
+sub_run "$BT/sub10"
+assert_contains "poll 2, unchanged reading -> STILL HOLD (never resumes on elapsed time alone)" "$(sub_hold "$BT/sub10")" "HOLD"
+# poll 3: reading drops to 75% -- between resume(70) and park(85). Must stay parked.
+printf '{"session_pct": 75, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub10/subscription-usage.json"
+sub_run "$BT/sub10"
+assert_contains "poll 3 (75%%, between resume and park) -> STILL HOLD" "$(sub_hold "$BT/sub10")" "HOLD"
+# poll 4: reading drops to 65% -- below resume(70), and is the SECOND
+# consecutive sub-accepted reading (confirms the monotonic-sanity debounce).
+printf '{"session_pct": 65, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub10/subscription-usage.json"
+sub_run "$BT/sub10"
+[ -z "$(sub_hold "$BT/sub10")" ] && ok "poll 4 (65%%, below resume, confirmed) -> resumes" \
+  || bad "poll 4 (65%%, below resume, confirmed) -> resumes" "$(sub_hold "$BT/sub10")"
+
+section "fwf-budget-check.sh (#149): monotonic-within-window sanity — a ONE-OFF drop is masked, a CONFIRMED (2nd consecutive) drop is trusted"
+rm -rf "$BT/sub11state"; mkdir -p "$BT/sub11state"
+mono_apply() { # $1=kind $2=new -> effective value
+  env FWF_RUN_DIR="$BT/sub11state" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply '$1' '$2'"
+}
+E1="$(mono_apply session 90)"; assert_eq "first-ever reading is trusted as-is" "90" "$E1"
+E2="$(mono_apply session 11)"; assert_eq "single lower reading (90->11, the digit-drop shape) is MASKED — effective stays at the accepted value" "90" "$E2"
+E3="$(mono_apply session 95)"; assert_eq "a reading at/above the accepted value after a masked dip is trusted immediately, clearing the candidate" "95" "$E3"
+E4="$(mono_apply session 11)"; assert_eq "the cleared candidate means a NEW single lower reading is masked again (not pre-confirmed by the earlier dip)" "95" "$E4"
+
+# Separate fixture: the confirm path (drop, then a SECOND consecutive drop).
+rm -rf "$BT/sub11state2"; mkdir -p "$BT/sub11state2"
+F1="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply weekly 90")"
+F2="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply weekly 40")"
+F3="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply weekly 40")"
+assert_eq "poll 1: 90 accepted"                                        "90" "$F1"
+assert_eq "poll 2: 40 (first sub-accepted reading) MASKED -> stays 90"  "90" "$F2"
+assert_eq "poll 3: 40 again (2nd consecutive) CONFIRMED -> ratchets to 40" "40" "$F3"
+
+section "fwf-budget-check.sh (#149): composes with the token/\$ guard — neither guard can silently clear the other's hold"
+# Each case resets $BPROJ to EMPTY before baseline_ensure (baseline=0), then
+# writes fresh usage above the token budget -- delta-since-baseline is what's
+# enforced (#108), so a stale, already-baselined-in $BPROJ from an earlier
+# section would silently zero the delta and this composition never triggers.
+over_budget_usage() { # writes a fresh $BPROJ with usage clearing 1000 tokens
+  rm -rf "$BPROJ"; mkdir -p "$BPROJ"
+  printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":600,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":500}}}' > "$BPROJ/s1.jsonl"
+}
+
+rm -rf "$BT/sub12" "$BPROJ"; mkdir -p "$BPROJ"; baseline_ensure "$BT/sub12"   # baseline=0 (BPROJ empty)
+over_budget_usage
+printf '{"session_pct": 10, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub12/subscription-usage.json"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub12" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  FWF_TOKEN_BUDGET=1000 FWF_SESSION_PCT_PARK=85 FWF_SESSION_PCT_RESUME=70 "$BC"
+H="$(sub_hold "$BT/sub12")"
+assert_contains "token/\$ over + subscription fine -> still HOLD (token reason)" "$H" "HOLD"
+assert_contains "  ...names token spend"                                        "$H" "spent this run"
+
+rm -rf "$BT/sub13" "$BPROJ"; mkdir -p "$BPROJ"; baseline_ensure "$BT/sub13"   # baseline=0, no usage written after -> delta=0, well under 100M
+printf '{"session_pct": 95, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub13/subscription-usage.json"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  FWF_TOKEN_BUDGET=100000000 FWF_SESSION_PCT_PARK=85 FWF_SESSION_PCT_RESUME=70 "$BC"
+H="$(sub_hold "$BT/sub13")"
+assert_contains "subscription over + token/\$ fine -> still HOLD (subscription reason)" "$H" "HOLD"
+assert_contains "  ...names session"                                                    "$H" "session"
+
+rm -rf "$BT/sub14" "$BPROJ"; mkdir -p "$BPROJ"; baseline_ensure "$BT/sub14"   # baseline=0 (BPROJ empty)
+over_budget_usage
+printf '{"session_pct": 95, "weekly_pct": 10, "as_of": "%s"}' "$NOW_ISO" > "$BT/sub14/subscription-usage.json"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub14" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  FWF_TOKEN_BUDGET=1000 FWF_SESSION_PCT_PARK=85 FWF_SESSION_PCT_RESUME=70 "$BC"
+H="$(sub_hold "$BT/sub14")"
+assert_contains "both over -> HOLD" "$H" "HOLD"
+assert_contains "  ...combined message names both guards" "$H" "ALSO flagged"
+
+section "fwf-budget-check.sh (#149): fwf_budget_writer_start arms on subscription config alone (no token/\$ ceiling)"
+rm -rf "$BT/sub15"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub15" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  FWF_SESSION_PCT_PARK=85 FWF_SESSION_PCT_RESUME=70 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start && fwf_budget_writer_running" \
+  && ok "session-pct alone (no --budget-usd/--token-budget) arms the writer" \
+  || bad "session-pct alone arms the writer" "did not arm"
+env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub15" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+
+section "fwf CLI (#149): --session-pct/--weekly-pct PARK[/RESUME] parsing"
+PCTFN="$(awk '/^_fwf_parse_pct_flag\(\)/,/^}/' "$ROOT/fwf")"
+pct_test() { # $1=kind $2=input-value -> "$FWF_<KIND>_PCT_PARK $FWF_<KIND>_PCT_RESUME"
+  local varprefix="$3"
+  bash -c "
+    FWF_SUBSCRIPTION_RESUME_GAP=15
+    die() { echo \"die: \$*\" >&2; exit 1; }
+    $PCTFN
+    _fwf_parse_pct_flag '$1' '$2'
+    printf '%s %s' \"\$$varprefix""_PARK\" \"\$$varprefix""_RESUME\"
+  "
+}
+R="$(pct_test session '85/70' FWF_SESSION_PCT)"
+assert_eq "--session-pct 85/70 -> PARK=85 RESUME=70" "85 70" "$R"
+R="$(pct_test session '85' FWF_SESSION_PCT)"
+assert_eq "--session-pct 85 (no /RESUME) -> RESUME defaults to PARK - gap (85-15=70)" "85 70" "$R"
+R="$(pct_test weekly '50/35' FWF_WEEKLY_PCT)"
+assert_eq "--weekly-pct 50/35 -> PARK=50 RESUME=35" "50 35" "$R"
+PCTRC=0
+bash -c "
+  die() { echo \"die: \$*\" >&2; exit 1; }
+  $PCTFN
+  _fwf_parse_pct_flag session '/70'
+" >/dev/null 2>&1 || PCTRC=$?
+[ "$PCTRC" -ne 0 ] && ok "an empty PARK value ('/70') is rejected, not silently treated as 0" || bad "empty PARK rejected" "exit 0"
+
+section "fwf --help (#149): documents --session-pct/--weekly-pct and the never-OCR contract"
+HELPTXT="$("$ROOT/fwf" help)"
+assert_contains "--help documents --session-pct"                  "$HELPTXT" "session-pct"
+assert_contains "--help documents --weekly-pct"                   "$HELPTXT" "weekly-pct"
+assert_contains "--help names the staleness fail-closed guarantee" "$HELPTXT" "fails CLOSED"
+assert_contains "--help points at the subscription-budget doc"     "$HELPTXT" "subscription-budget.md"
+
+section "docs/subscription-budget.md (#149): exists and deprecates OCR as the supported source"
+SUBDOC="$(cat "$ROOT/docs/subscription-budget.md" 2>/dev/null || true)"
+assert_contains "doc exists and is non-empty"        "$SUBDOC" "session_pct"
+assert_contains "doc explicitly deprecates OCR"       "$SUBDOC" "Never OCR"
+assert_contains "doc names the sentinel file contract" "$SUBDOC" "subscription-usage.json"
+
+section "fwf-down.sh (#149): full teardown clears the subscription ratchet + parked-state"
+rm -rf "$BT/sub16"; mkdir -p "$BT/sub16"
+touch "$BT/sub16/subscription-parked"
+printf '{"session":{"accepted":90,"pending":null}}' > "$BT/sub16/subscription-monotonic.json"
+env FWF_RUN_DIR="$BT/sub16" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_state_clear"
+[ -f "$BT/sub16/subscription-parked" ] && bad "fwf_subscription_state_clear removes the parked marker" || ok "fwf_subscription_state_clear removes the parked marker"
+[ -f "$BT/sub16/subscription-monotonic.json" ] && bad "fwf_subscription_state_clear removes the ratchet state" || ok "fwf_subscription_state_clear removes the ratchet state"
+
 rm -f "$ROOT/profiles/.__budget.sh"
 
 section "BUDGET CHECK step-0 (issue #96): every REAL role-loop template carries it (composed/rendered, not a naive per-file grep)"

@@ -145,6 +145,36 @@ FWF_BUDGET_CHECK_INTERVAL="${FWF_BUDGET_CHECK_INTERVAL:-60}"
 # other role only ever reads it.
 BUDGET_HOLD_FILE="$FWF_RUN/BUDGET_HOLD"
 
+# Subscription-usage brake (issue #149): fwf's token/$ guards above are blind
+# to the Claude subscription's OWN usage meters (the rolling 5h session window
+# and the weekly allowance) — the thing that actually stops a Max-plan
+# operator. fwf does not (and cannot, from inside this environment) read those
+# meters itself; it consumes a STRUCTURED signal an operator-run helper writes
+# — deliberately never OCR, see docs/subscription-budget.md. Unset/empty
+# (both PARK vars absent) = not armed, the default — this feature does
+# nothing unless explicitly configured. CLI: fwf up --session-pct
+# PARK[/RESUME] / --weekly-pct PARK[/RESUME].
+SUBSCRIPTION_USAGE_FILE="$FWF_RUN/subscription-usage.json"
+FWF_SESSION_PCT_PARK="${FWF_SESSION_PCT_PARK:-}"
+FWF_SESSION_PCT_RESUME="${FWF_SESSION_PCT_RESUME:-}"
+FWF_WEEKLY_PCT_PARK="${FWF_WEEKLY_PCT_PARK:-}"
+FWF_WEEKLY_PCT_RESUME="${FWF_WEEKLY_PCT_RESUME:-}"
+# A signal older than this (vs. its own `as_of`) is stale -> fail-closed park,
+# never read as current. 15min default: long enough that the helper's own
+# poll interval doesn't self-trigger staleness, short enough that a genuinely
+# wedged helper is caught well within one 5h session window.
+FWF_SUBSCRIPTION_STALE_SECS="${FWF_SUBSCRIPTION_STALE_SECS:-900}"
+# Default hysteresis gap (percentage points) below PARK when RESUME is
+# omitted from --session-pct/--weekly-pct — resume never equals park (that's
+# a timer with extra steps; a reading sitting exactly at the line would flap).
+FWF_SUBSCRIPTION_RESUME_GAP="${FWF_SUBSCRIPTION_RESUME_GAP:-15}"
+# Ratchet state (issue #149 AC: "monotonic-within-window sanity") + whether
+# subscription enforcement specifically is the reason the floor is parked
+# right now (distinct from BUDGET_HOLD_FILE, which composes with the
+# token/$ guard) — both written only by fwf-budget-check.sh.
+SUBSCRIPTION_MONOTONIC_FILE="$FWF_RUN/subscription-monotonic.json"
+SUBSCRIPTION_PARKED_FILE="$FWF_RUN/subscription-parked"
+
 # Per-worktree dev data. Default to no-ops so a profile for a repo with no dev
 # data can omit them entirely; a profile may override these to seed an
 # isolated data dir per tree. data_dir echoes nothing by default (so a

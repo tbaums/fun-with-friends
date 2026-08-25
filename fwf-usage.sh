@@ -58,6 +58,18 @@ _fwf_usage_budget_line() { # $1=usage-data JSON (for the this-run-vs-cumulative 
     printf 'budget enforcement: NOT ARMED — FWF_TOKEN_BUDGET=%s is set, but the writer is not running for this profile (re-run '"'"'fwf up'"'"' to arm it)\n' "$FWF_TOKEN_BUDGET"
   fi
 
+  # Subscription brake (issue #149) — independent of the token/$ line above;
+  # both can be armed at once, sharing the same writer/sentinel.
+  if [ -z "${FWF_SESSION_PCT_PARK:-}" ] && [ -z "${FWF_WEEKLY_PCT_PARK:-}" ]; then
+    printf 'subscription brake: NOT ARMED (no --session-pct/--weekly-pct configured)\n'
+  elif fwf_budget_writer_running; then
+    printf 'subscription brake: ARMED (session park %s%%%s, weekly park %s%%%s)\n' \
+      "${FWF_SESSION_PCT_PARK:-none}" "${FWF_SESSION_PCT_PARK:+/resume ${FWF_SESSION_PCT_RESUME}%}" \
+      "${FWF_WEEKLY_PCT_PARK:-none}" "${FWF_WEEKLY_PCT_PARK:+/resume ${FWF_WEEKLY_PCT_RESUME}%}"
+  else
+    printf 'subscription brake: NOT ARMED — --session-pct/--weekly-pct is set, but the writer is not running for this profile (re-run '"'"'fwf up'"'"' to arm it)\n'
+  fi
+
   # this-run vs cumulative (issue #108): only shown once a baseline exists
   # (i.e. armed at least once by a full `fwf up`) — before that there's
   # nothing yet to diff against. Both figures always named as $/tokens so the
