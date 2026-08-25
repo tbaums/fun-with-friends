@@ -220,9 +220,15 @@ UTILITIES
                          clean worktree is fetched + re-detached onto current
                          __DEFAULT__ every call; a worktree on a branch or
                          with uncommitted changes is left completely
-                         untouched. Exits non-zero (STALE/FETCH_FAILED) if
-                         the worktree is still behind after the attempt —
-                         never silently reads as success. impl/qa are out of
+                         untouched. Three-tier exit code, so "non-zero =
+                         alarm" is structural, not a wording convention: 0
+                         only for a confirmed-current REFRESHED; 1 for a hard
+                         failure (STALE/FETCH_FAILED/NO_WORKTREE — a
+                         read-only role with no worktree has nothing to read
+                         from, the worst case, not a benign no-op); 2 for a
+                         deliberate safety skip that still leaves the
+                         worktree unrefreshed (SKIPPED_BRANCH/SKIPPED_DIRTY).
+                         Never silently reads as success. impl/qa are out of
                          scope (their own safety rule already protects
                          mid-ticket work, but callers should only invoke
                          this for read-only roles). `fwf supervise`

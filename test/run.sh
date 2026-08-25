@@ -3944,18 +3944,25 @@ NOWT_BASE="$TMP/wtr146-nowt"; mkdir -p "$NOWT_BASE"
 R="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; WT_PREFIX=testwt WT_BASE='$NOWT_BASE' DEFAULT_BRANCH=main fwf_worktree_refresh_role foorole")"
 assert_contains "no worktree present -> NO_WORKTREE, no crash" "$R" "NO_WORKTREE"
 
-# --- CLI wrapper (fwf-worktree-refresh.sh): exit codes are the "loud" contract ---
+# --- CLI wrapper (fwf-worktree-refresh.sh): three-tier exit code is the
+# "loud" contract (issue #146 QA/GV review) -- 0 = confirmed current,
+# EVERY other outcome is non-zero, so "non-zero means alarm" (every
+# template's own wording) can never misread a skip or a missing worktree as
+# success. 1 = hard failure (STALE/FETCH_FAILED/NO_WORKTREE); 2 = a
+# deliberate safety skip that still leaves the worktree unrefreshed
+# (SKIPPED_BRANCH/SKIPPED_DIRTY) -- distinct from 1 so a caller CAN tell
+# "broken" from "protected", but both are non-zero on purpose.
 wtr_cli() { FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" bash "$ROOT/fwf-worktree-refresh.sh" foorole; }
 
 wtr_setup g
 OUT="$(wtr_cli g)"; RC=$?
-assert_eq "CLI: REFRESHED exits 0"                     "0" "$RC"
+assert_eq "CLI: REFRESHED exits 0 -- the ONLY code meaning confirmed current" "0" "$RC"
 assert_contains "CLI: REFRESHED prints a confirming line" "$OUT" "refreshed"
 
 wtr_setup h
 git -C "$WTR_WT" checkout -qb feature-branch
 OUT="$(wtr_cli h 2>&1)"; RC=$?
-assert_eq "CLI: SKIPPED_BRANCH is not itself a hard failure (exit 0)" "0" "$RC"
+assert_eq "CLI: SKIPPED_BRANCH is non-zero (2) -- NOT refreshed, still possibly stale, never reads as success" "2" "$RC"
 assert_contains "CLI: SKIPPED_BRANCH names it as an anomaly for a read-only role" "$OUT" "anomaly"
 
 wtr_setup i
@@ -3963,6 +3970,23 @@ rm -rf "$WTR_ORIGIN"
 OUT="$(wtr_cli i 2>&1)"; RC=$?
 assert_eq "CLI: FETCH_FAILED is a hard failure — exit 1, never read as success" "1" "$RC"
 assert_contains "CLI: FETCH_FAILED names the role as STALE" "$OUT" "STALE"
+
+wtr_setup n
+echo dirty >> "$WTR_WT/f"
+OUT="$(wtr_cli n 2>&1)"; RC=$?
+assert_eq "CLI: SKIPPED_DIRTY is non-zero (2), same as SKIPPED_BRANCH -- also not refreshed" "2" "$RC"
+assert_contains "CLI: SKIPPED_DIRTY names it as an anomaly for a read-only role" "$OUT" "anomaly"
+
+# NO_WORKTREE via the CLI (QA-CHANGES-REQUESTED on #269): grouped with the
+# hard-failure tier, NOT read as a benign no-op -- a role whose entire job is
+# reading code has nothing to read from, the worst case for a read-only role,
+# unlike fwf-up.sh/fwf-supervise.sh's OWN direct calls to
+# fwf_worktree_refresh_role, which legitimately treat NO_WORKTREE as fine for
+# their own distinct purposes (see the case blocks there).
+NOWT_CLI_BASE="$TMP/wtr146-nowt-cli"; mkdir -p "$NOWT_CLI_BASE"
+OUT="$(FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$NOWT_CLI_BASE" bash "$ROOT/fwf-worktree-refresh.sh" foorole 2>&1)"; RC=$?
+assert_eq "CLI: NO_WORKTREE is a hard failure — exit 1, never a silent no-op" "1" "$RC"
+assert_contains "CLI: NO_WORKTREE names that the role has nothing to read from" "$OUT" "nothing to read"
 
 # --- fail-loud ROUTING (#146 AC3): fwf-supervise.sh independently re-checks
 # pm/gv/captain worktree freshness every pass, through the SAME routed #165/

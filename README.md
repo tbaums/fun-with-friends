@@ -276,9 +276,12 @@ instead of stalling silently (issue #99).
   silently skipped (issue #169's idle-backfill deliverable is the one
   expected exception to that anomaly rule, not yet built as of this writing —
   see the carve-out note above `fwf_worktree_refresh_role` in `lib.sh`).
-  Fail LOUD, not silent: the CLI wrapper (`fwf worktree-refresh`) exits
-  non-zero on a failed or incomplete refresh, and `fwf supervise`
-  independently re-runs the SAME refresh every pass and alarms
+  Fail LOUD, not silent: the CLI wrapper (`fwf worktree-refresh`) exits 0
+  ONLY for a confirmed-current refresh — a hard failure (fetch failed, no
+  worktree at all) and a deliberate safety skip (branch/dirty) get distinct
+  non-zero codes (1 and 2), so "non-zero means alarm" can never misread a
+  skip as success, a real gap an earlier revision of this PR had. `fwf
+  supervise` independently re-runs the SAME refresh every pass and alarms
   `WORKTREE_STALE` / `WORKTREE_ANOMALY` through the same routed channel as
   `LANE_STALE`/`WEDGED` above — never a bare stdout line self-reported by the
   role being watched. `impl`/`qa` worktrees are explicitly out of scope
