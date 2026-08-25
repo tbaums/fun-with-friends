@@ -11,6 +11,17 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.30.3] - 2026-08-25
+
+### Changed
+- **Gate throughput: scope the Rust suite to the diff, share a cargo cache, and bound build concurrency** (#138, code 0c66f19, docs 0c66f19) — faster gate cycles without the shared-target false-green hazard.
+
+### Fixed
+- **Captain no longer idles the build floor during the CLAIM→PR window** (#147, code 8f48926, docs 8f48926) — it was stranding live work while a claim was in flight.
+
+### Documentation
+- **RELEASING.md: correct the wrong dash-binary asset counts** (#201, code 6b45fdf, docs 6b45fdf) — the step-7 asset count read as noise; now accurate.
+
 ## [0.30.2] - 2026-08-25
 
 ### Changed
