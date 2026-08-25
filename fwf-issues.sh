@@ -66,7 +66,24 @@ require_issue() {
 state_of()  { case "$(issue_file "$1")" in */open/*) echo open;; *) echo closed;; esac; }
 title_of()  { head -1 "$(issue_file "$1")" | sed "s/^# LI-$1: //"; }
 created_of(){ sed -n 's/^created: //p' "$(issue_file "$1")" | head -1; }
-labels_of() { sed -n 's/^labels: //p' "$(issue_file "$1")" | head -1 | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' || true; }
+# issue #211: a genuinely label-less issue and a FAILED read of the issue
+# file both used to produce identical empty output here, so a caller could
+# not tell "this issue has no labels" from "I could not read this issue" --
+# the read-modify-write callers below (_rewrite_header_locked's __KEEP__
+# path) would then silently REWRITE the file with every label dropped,
+# including product-wip, on nothing more than a transient read glitch. Now
+# echoes labels unchanged (an existing bare `labels_of N` caller sees no
+# difference), but returns non-zero when the file itself could not be
+# located/read -- distinct from a real empty label list, which returns 0.
+labels_of() {
+  local f raw out
+  f="$(issue_file "$1")" || return 1
+  raw="$(sed -n 's/^labels: //p' "$f" 2>/dev/null | head -1)" || return 1
+  [ -n "$raw" ] || return 0
+  out="$(printf '%s\n' "$raw" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$')" || true
+  [ -n "$out" ] && printf '%s\n' "$out"
+  return 0
+}
 has_label() { labels_of "$1" | grep -qx -- "$2"; }
 slugify()   { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed -E 's/-+/-/g; s/^-|-$//g' | cut -c1-40; }
 # Body = everything after the header block, before the first comment marker.
@@ -179,29 +196,72 @@ cmd_comment() {
 }
 
 # Header rewrites preserve everything below the header block.
+# issue #211: both rewrite functions rebuild the ENTIRE issue file from a
+# handful of reads (title/labels/created/body) -- a failed read that
+# silently fell back to empty (the old shape) would REWRITE the file with
+# that field dropped. `labels` is the highest-consequence instance named by
+# the ticket: a collapsed labels_of drops product-wip on rewrite, which is a
+# collapsed read un-gating a ticket. So every read that feeds a rewrite here
+# is EXPLICITLY status-checked (`if ! x="$(...)"`, never a bare assignment --
+# a bare `x="$(cmd)"` does NOT reliably trigger `set -e` on `cmd`'s failure
+# in bash, a separate, well-known gotcha from the `local x="$(cmd)"` masking
+# trap) and a failure REFUSES the rewrite entirely rather than writing a
+# partially-fabricated file.
 _rewrite_header_locked() { # num newtitle-or-empty newlabels-or-KEEP
-  local n="$1" f title labels tmp
-  f="$(issue_file "$n")"
-  title="${2:-$(title_of "$n")}"
-  if [ "$3" = "__KEEP__" ]; then labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"; else labels="$3"; fi
+  local n="$1" f title labels created tmp
+  if ! f="$(issue_file "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's header -- could not locate its file" >&2
+    return 1
+  fi
+  if ! title="${2:-$(title_of "$n")}"; then
+    echo "fwf issues: refusing to rewrite issue $n's header -- could not read its current title" >&2
+    return 1
+  fi
+  if [ "$3" = "__KEEP__" ]; then
+    if ! labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"; then
+      echo "fwf issues: refusing to rewrite issue $n's header -- could not read its current labels, refusing to silently drop them" >&2
+      return 1
+    fi
+  else
+    labels="$3"
+  fi
+  if ! created="$(created_of "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's header -- could not read its created timestamp" >&2
+    return 1
+  fi
   tmp="$f.tmp.$$"
   {
     printf '# LI-%s: %s\n' "$n" "$title"
     [ -n "$labels" ] && printf 'labels: %s\n' "$labels"
-    printf 'created: %s\n\n' "$(created_of "$n")"
+    printf 'created: %s\n\n' "$created"
     body_of "$n"
     awk '/^## comment /{found=1} found{print}' "$f" | sed '1s/^/\n/'
   } > "$tmp"
   mv "$tmp" "$f"
 }
 _set_body_locked() { # num body
-  local n="$1" f tmp
-  f="$(issue_file "$n")"
+  local n="$1" f title labels created tmp
+  if ! f="$(issue_file "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not locate its file" >&2
+    return 1
+  fi
+  if ! title="$(title_of "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not read its current title" >&2
+    return 1
+  fi
+  if ! labels="$(labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g')"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not read its current labels, refusing to silently drop them" >&2
+    return 1
+  fi
+  if ! created="$(created_of "$n")"; then
+    echo "fwf issues: refusing to rewrite issue $n's body -- could not read its created timestamp" >&2
+    return 1
+  fi
   tmp="$f.tmp.$$"
   {
-    printf '# LI-%s: %s\n' "$n" "$(title_of "$n")"
-    labels_of "$n" | paste -sd, - 2>/dev/null | sed 's/,/, /g' | sed -n 's/^\(..*\)$/labels: \1/p'
-    printf 'created: %s\n\n' "$(created_of "$n")"
+    printf '# LI-%s: %s\n' "$n" "$title"
+    [ -n "$labels" ] && printf 'labels: %s\n' "$labels"
+    printf 'created: %s\n\n' "$created"
     printf '%s\n' "$2"
     awk '/^## comment /{found=1} found{print}' "$f" | sed '1s/^/\n/'
   } > "$tmp"

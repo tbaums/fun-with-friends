@@ -2108,6 +2108,35 @@ ISS create --title "Gated thing" --label product-wip >/dev/null
 ISS edit 3 --remove-label product-wip >/dev/null 2>&1 && ok "remove last label survives" || bad "remove last label survives"
 assert_contains "un-gated issue enters survey" "$(ISS list --search "is:open -label:product-wip")" "LI-3"
 
+# issue #211: a collapsed labels_of read must never silently drop labels on
+# rewrite -- "the highest-consequence instance of this class in the tree"
+# per the ticket, because a dropped product-wip un-gates a ticket. Real
+# fixture: chmod the issue file unreadable mid-edit (not a mock).
+ISS create --title "Gated for #211" --body "body text" --label product-wip --label bug >/dev/null
+ISSF211="$(find "$ISSRUN/issues/example/open" -name '4-*.md')"
+chmod 000 "$ISSF211"
+IE211OUT="$(ISS edit 4 --title "Should be refused" 2>&1)"; IE211RC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --title edit REFUSES, exit non-zero" "1" "$IE211RC"
+assert_contains "refusal names the cause" "$IE211OUT" "could not read its current labels"
+assert_contains "the file is left COMPLETELY untouched (old title, both labels intact)" \
+  "$(cat "$ISSF211")" "# LI-4: Gated for #211"
+assert_contains "  ...product-wip specifically survives the refused edit" "$(cat "$ISSF211")" "product-wip"
+assert_not_contains "the refused title never lands" "$(cat "$ISSF211")" "Should be refused"
+# --body goes through the SAME guard (_set_body_locked), same fixture shape.
+chmod 000 "$ISSF211"
+IB211OUT="$(ISS edit 4 --body "new body" 2>&1)"; IB211RC=$?
+chmod 644 "$ISSF211"
+assert_eq "unreadable issue file: --body edit ALSO refuses, exit non-zero" "1" "$IB211RC"
+assert_contains "  ...body edit refusal also names the cause" "$IB211OUT" "could not read"
+assert_contains "  ...original body survives the refused edit" "$(cat "$ISSF211")" "body text"
+# Normal (readable) edit is completely unaffected by the guard -- labels
+# survive a title-only edit exactly as before this fix.
+ISS edit 4 --title "A real edit" >/dev/null
+assert_contains "a normal edit still works and still preserves labels" \
+  "$(cat "$ISSF211")" "labels: product-wip, bug"
+assert_contains "  ...and the real title actually lands" "$(cat "$ISSF211")" "# LI-4: A real edit"
+
 section "local issues backend — render integration"
 LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "gh issue rewritten to fwf issues" "$LIMPL" "fwf --profile example issues list"
