@@ -236,11 +236,15 @@ instead of stalling silently (issue #99).
   ungroomed `product-wip` draft blocks `--pm-only`), even with `--force`. The
   claim-window case (issue #147) defers to the SAME shared pane-liveness
   signal `fwf supervise` uses (`fwf-pane-liveness.sh`, built on issue #165's
-  wedge classifier) — a claimant whose pane is still alive (or whose
-  liveness can't yet be confirmed) blocks; a claimant `fwf supervise` would
-  itself classify WEDGED does not, no matter the claim's age. Claim age is a
-  fallback ONLY for a claimant with no liveness signal recorded at all
-  (`FWF_CLAIM_LIVENESS_FALLBACK_SECS`, default 900s/15m). The
+  wedge classifier) — a claimant whose pane is HEALTHY/WORKING, or whose
+  liveness can't yet be confirmed, blocks; WEDGED (a live pane that stopped
+  progressing) ALSO blocks — it's `fwf supervise`'s own respawn target, not
+  the idle guard's, so tearing down the floor under it would only be a
+  softer version of the founding incident. Only a claimant whose pane is
+  CONFIRMED ABSENT (no matching tmux pane at all — `fwf_role_pane_alive`)
+  lets the idle proceed. Claim age is a fallback ONLY for a claimant with no
+  liveness signal recorded at all (`FWF_CLAIM_LIVENESS_FALLBACK_SECS`,
+  default 900s/15m). The
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 

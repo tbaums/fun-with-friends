@@ -1544,17 +1544,29 @@ EOS
     || bad "build-only proceeds: old claim, no pane signal ever recorded (abandoned)"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: abandoned claim did not block" || ok "build session torn down: abandoned claim did not block"
 
-  # A CONFIRMED-WEDGED pane (the #165 classifier itself says dead) never
-  # blocks, no matter how fresh the claim -- "a claim whose impl died before
-  # 15 min elapsed lets the floor idle... once the supervisor marks the pane
-  # dead," not only once claim-age crosses 15 minutes.
+  # WEDGED with NO matching pane in the build session (the session exists,
+  # but nothing is labeled IMPL7) is CONFIRMED ABSENT -- proceeds, no matter
+  # how fresh the claim.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   mkdir -p "$F88TRUN/state/example/tick-watch"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl7"
   env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
-    && ok "build-only proceeds: claim's pane is CONFIRMED wedged/dead (fresh claim, doesn't matter)" \
-    || bad "build-only proceeds: claim's pane is CONFIRMED wedged/dead (fresh claim, doesn't matter)"
-  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: confirmed-dead claimant did not block" || ok "build session torn down: confirmed-dead claimant did not block"
+    && ok "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter" \
+    || bad "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: confirmed-absent claimant did not block" || ok "build session torn down: confirmed-absent claimant did not block"
+
+  # GV advisory (PR #256): WEDGED is a LIVE pane that stopped progressing,
+  # not a dead one -- #165's own remedy is respawn, never a floor teardown.
+  # A wedged-but-PRESENT pane must still BLOCK, exactly like HEALTHY/WORKING
+  # -- the regression this asserts against directly.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  tmux set -p -t "${F88SESS}-build" @l "IMPL5 · dev impl · impl5/*"
+  printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl5"
+  F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+    && bad "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)" \
+    || ok "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)"
+  assert_contains "refusal still names the claim window (WEDGED-but-present blocks)" "$F147OUT3" "claim window"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (wedged-but-present refusal survives --force)" || bad "build session untouched (wedged-but-present refusal survives --force)"
 
   # LONG-TICKET case: a claim aged well PAST the 15-min fallback whose pane
   # is STILL actively heartbeating must NOT idle -- proves the primary
