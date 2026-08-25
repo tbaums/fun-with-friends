@@ -1038,6 +1038,61 @@ fwf_repo_slug() {
   printf '%s' "$url"
 }
 
+# $1=role (implN/qaN/conductor/pm/gv/captain) -> rc 0 if a live tmux pane for
+# this role exists RIGHT NOW in its session, rc 1 if the session is down or
+# no matching pane exists. The genuine "dead/absent (no live pane)" predicate
+# #147's own ACs name -- cheap and structural, distinct from WEDGED (#165),
+# which means the pane is still THERE, just stuck (see fwf_claim_liveness_blocks).
+fwf_role_pane_alive() {
+  case "${1:?fwf_role_pane_alive needs a role}" in
+    impl*)     fwf_find_pane "$BUILD_SESSION" "IMPL${1#impl} ·" >/dev/null 2>&1 ;;
+    qa*)       fwf_find_pane "$BUILD_SESSION" "QA${1#qa} ·" >/dev/null 2>&1 ;;
+    conductor) fwf_find_pane "$BUILD_SESSION" "CONDUCTOR ·" >/dev/null 2>&1 ;;
+    pm)        fwf_find_pane "$COORD_SESSION" "PM ·" >/dev/null 2>&1 ;;
+    gv)        fwf_find_pane "$COORD_SESSION" "GRAND VIZIER" >/dev/null 2>&1 ;;
+    captain)   fwf_find_pane "$COORD_SESSION" "CAPTAIN ·" >/dev/null 2>&1 ;;
+    *)         return 1 ;;
+  esac
+}
+
+# $1=role $2=claim age in whole seconds. rc 0 = this claimant BLOCKS idling
+# (pane confirmed alive in ANY state, or liveness is unconfirmed/ambiguous --
+# fail safe); rc 1 = confirmed SAFE to idle past (pane CONFIRMED ABSENT, or
+# no liveness signal has EVER existed for this role AND the claim is already
+# past the fallback window).
+#
+# GV advisory on PR #256, corrected here: WEDGED (#165: "tick static AND
+# tokens flat past FWF_WEDGE_MIN_SECS") is a LIVE pane that stopped
+# progressing, not a dead one -- #165's own remedy for it is fwf-respawn.sh
+# ("the only verdict that may trigger a respawn"), never a floor teardown.
+# Treating WEDGED as safe-to-idle put this guard and the supervisor on
+# OPPOSITE actions for the same verdict: revive vs. tear down. So WEDGED
+# only permits idling when the pane is ALSO confirmed absent (fwf_role_pane_alive
+# false) -- a wedged-but-PRESENT pane blocks, deferring to respawn, exactly
+# like HEALTHY/WORKING. If FWF_SUPERVISE_AUTORESPAWN=1 later respawns a
+# wedged claimant, it either resumes ticking (still blocks here, correctly --
+# real work may resume) or stays wedged (still blocks) until a human
+# intervenes; this guard never reaps on WEDGED itself, so there is no race
+# between the two consumers of the one shared verdict.
+fwf_claim_liveness_blocks() {
+  local role="${1:?fwf_claim_liveness_blocks needs a role}" age="${2:-0}" fallback="${FWF_CLAIM_LIVENESS_FALLBACK_SECS:-900}" snap verdict
+  case "$age" in ''|*[!0-9]*) age=0;; esac
+  snap="$FWF_STATE_DIR/tick-watch/$role"
+  if [ ! -f "$snap" ]; then
+    # No signal has EVER been recorded for this role -- the ticket's own
+    # "no pane to classify" case (point 2 of the Ask). Stamp a first
+    # baseline for a LATER call (this run does not itself get to use it: a
+    # single sample has nothing to diff against) and fall back to claim-age.
+    "$FWF_LIB_DIR/fwf-pane-liveness.sh" "$role" >/dev/null 2>&1 || true
+    if [ "$age" -lt "$fallback" ]; then return 0; else return 1; fi
+  fi
+  verdict="$("$FWF_LIB_DIR/fwf-pane-liveness.sh" "$role" 2>/dev/null || true)"
+  if [ "$verdict" = "WEDGED" ]; then
+    if fwf_role_pane_alive "$role"; then return 0; else return 1; fi
+  fi
+  return 0   # HEALTHY / WORKING / UNKNOWN (ambiguous, too-fresh baseline): fail safe
+}
+
 fwf_build_plane_blocked() {
   local pr_count staging_ahead
   pr_count="$(gh pr list -R "$(fwf_repo_slug)" --state open --json number --jq 'length' 2>/dev/null)" \
@@ -1054,6 +1109,37 @@ fwf_build_plane_blocked() {
   if [ "$staging_ahead" -gt 0 ]; then
     printf 'mid-promotion: %s is %s commit(s) ahead of %s' "$STAGING_BRANCH" "$staging_ahead" "$INTEGRATION_BRANCH"; return 0
   fi
+
+  # Claim-window guard (issue #147): a ticket can be claimed with no PR
+  # pushed yet -- the multi-minute window between CLAIM and the first push,
+  # which the pr_count==0 check above cannot see at all. Reaching this point
+  # already means there is NO open PR for ANY issue, so a live claim on ANY
+  # open issue means "no PR yet" by construction -- no per-claim PR lookup
+  # needed. Only the FIRST "CLAIM implN" comment on an issue is the winning
+  # claimant per the atomic-claim protocol; a later one lost the race and
+  # never proceeded to build.
+  local claims claim_created claim_body role_tag now claim_age resolved=""
+  claims="$(gh issue list -R "$(fwf_repo_slug)" --state open --json comments --jq \
+    '.[] | (.comments // []) | map(select(.body | test("^CLAIM impl[0-9]+$"))) | (.[0] // empty) | "\(.createdAt)\t\(.body)"' \
+    2>/dev/null)" \
+    || { printf 'could not scan open issues for live claims (gh failed) — assuming blocked'; return 0; }
+  now="$(date -u +%s)"
+  local claim_epoch
+  while IFS=$'\t' read -r claim_created claim_body; do
+    [ -n "$claim_created" ] || continue
+    role_tag="${claim_body#CLAIM }"
+    case " $resolved " in *" $role_tag "*) continue;; esac
+    claim_epoch="$(fwf_iso_to_epoch "$claim_created" 2>/dev/null || true)"
+    case "$claim_epoch" in ''|*[!0-9]*) claim_epoch="$now";; esac
+    claim_age=$(( now - claim_epoch ))
+    [ "$claim_age" -ge 0 ] || claim_age=0
+    if fwf_claim_liveness_blocks "$role_tag" "$claim_age"; then
+      printf 'claim window: %s has a live claim with no PR yet (pane alive or unconfirmed)' "$role_tag"
+      return 0
+    fi
+    resolved="$resolved $role_tag"
+  done <<< "$claims"
+
   printf ''
 }
 
