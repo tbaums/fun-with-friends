@@ -11,6 +11,15 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-08-25
+
+### Changed
+- **Conductor promote gate is tip-triggered, not timer-triggered** (#202, code 8105c8b, docs 8105c8b) — the conductor promotes when the staging tip actually advances rather than on a fixed timer, so a ready promotion no longer waits out a cycle.
+
+### Fixed
+- **reconcile-guard escalates a lost-CAS self-healing race to a human artifact** (#238, code e394952, docs e394952) — surfaces the race for a human decision instead of silently retrying past it.
+- **Clear 8 SC2034 shellcheck warnings on staging** (#257, code 15afdc8, docs none — internal) — discard output instead of capturing it, so the shellcheck gate stops red-failing the base for everyone.
+
 ## [0.30.1] - 2026-08-24
 
 ### Changed
