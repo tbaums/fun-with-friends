@@ -70,6 +70,28 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --- issue #156 hole #1: kill-safe process-group ownership -------------------
+# Become a process-group LEADER exactly once (guarded by a sentinel), BEFORE any
+# lock/admission work, so the cargo child launched below inherits our group. A
+# kill then takes cargo down WITH us — trappable signals via the trap installed
+# further down, and an untrappable SIGKILL (tmux `respawn-pane -k`) via the
+# memory-admission reaper, which SIGKILLs the stamped group when it drops our
+# now-dead reservation. Without this, a killed gate ORPHANS a multi-GB cargo
+# (reparented to PID1, still building) while its lock auto-releases, and the
+# next agent stacks a SECOND build on top of the orphan — the failed prototype's
+# fatal flaw. macOS has no setsid(1); /usr/bin/perl (present on macOS and Linux)
+# does setpgid then re-execs the original argv. FAIL-CLOSED when the leader is
+# REQUIRED but perl is absent — never silently run ungrouped.
+if [ "${FWF_GATE_PGLEADER_ENABLE:-1}" = 1 ] && [ -z "${_FWF_GATE_IS_PGLEADER:-}" ]; then
+  if command -v perl >/dev/null 2>&1; then
+    export _FWF_GATE_IS_PGLEADER=1
+    exec perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$0" "$@"
+  else
+    echo "fwf gate: FWF_GATE_PGLEADER_ENABLE=1 but perl is absent — refusing to gate ungrouped (set FWF_GATE_PGLEADER_ENABLE=0 to override)" >&2
+    exit 1
+  fi
+fi
+
 # --- issue #175: do not leak OUR profile resolution into the wrapped command --
 # Sourcing lib.sh below resolves a profile — we need it, for the lock paths —
 # and in doing so SETS FWF_PROFILE/FWF_PAIRS/FWF_REPO in this shell. Those
@@ -143,24 +165,57 @@ fwf_gate_lock_acquire "$role" || exit "$EX_SKIPPED"
 
 e2e_held=0
 cargo_build_slot=""
+mem_token=""
 _fwf_gate_release() {
   fwf_gate_lock_release "$role"
   [ "$e2e_held" = 1 ] && fwf_e2e_lock_release
   fwf_cargo_build_slot_release "$cargo_build_slot"
+  fwf_mem_admit_release "$mem_token"
 }
 trap _fwf_gate_release EXIT
+
+# issue #156 hole #1: on a TRAPPABLE kill, release the lock(s) AND take the
+# whole process group (cargo included) down WITH it — never leave cargo orphaned
+# building while the lock is gone. Only meaningful when we're the pgleader; the
+# single `kill -KILL -$$` is one syscall that reaps the whole group atomically
+# (us included), so locks are released FIRST. An untrappable SIGKILL bypasses
+# this entirely — that path is covered by the admission reaper, not here.
+_fwf_gate_signal_cleanup() {
+  trap - TERM INT HUP EXIT
+  _fwf_gate_release
+  [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && kill -KILL -"$$" 2>/dev/null
+  exit 143
+}
+trap _fwf_gate_signal_cleanup TERM INT HUP
 
 if [ "$want_e2e" = 1 ]; then
   fwf_e2e_lock_acquire "$role" || { echo "fwf gate: e2e lock busy, deferring" >&2; exit "$EX_SKIPPED"; }
   e2e_held=1
 fi
 
-# issue #138 piece C: bound how many roles build cargo at once. Held for the
-# WHOLE wrapped command (not just the isolate step below), since the actual
-# build/test happens inside it — released by the trap above on any exit path.
+# Bound how many roles run a full cargo build at once. Two mechanisms, mutually
+# exclusive per invocation:
+#
+#   FWF_MEM_ADMIT_ENABLE=1 (issue #156, strategy b — the chosen design): gate
+#   the START on MEASURED free RAM. fwf_mem_admit holds only a sub-second
+#   decision mutex, NEVER a lock across the build — so hole #3 is closed by
+#   construction: an un-admitted gate exits EX_SKIPPED promptly, releasing its
+#   #123 per-role gate lock (via the trap), so a 25min sibling build can never
+#   push this waiting gate past the 1800s max-run ceiling. reserve_gb comes from
+#   the op-class (e2e build vs plain build).
+#
+#   default (issue #138 piece C): the pre-existing concurrency SEMAPHORE, held
+#   for the WHOLE wrapped command — kept as the safe fallback until criterion
+#   (3)'s real-box profiling calibrates the reservation sizes.
 if [ "$want_cargo_build" = 1 ]; then
-  cargo_build_slot="$(fwf_cargo_build_slot_acquire "$role")" \
-    || { echo "fwf gate: cargo build slots busy, deferring" >&2; exit "$EX_SKIPPED"; }
+  if [ "${FWF_MEM_ADMIT_ENABLE:-0}" = 1 ]; then
+    if [ "$want_e2e" = 1 ]; then reserve_gb="$FWF_MEM_RESERVE_E2E_GB"; else reserve_gb="$FWF_MEM_RESERVE_BUILD_GB"; fi
+    mem_token="$(fwf_mem_admit "$role" "$reserve_gb")" \
+      || { echo "fwf gate: insufficient free RAM to admit this build, deferring this tick" >&2; exit "$EX_SKIPPED"; }
+  else
+    cargo_build_slot="$(fwf_cargo_build_slot_acquire "$role")" \
+      || { echo "fwf gate: cargo build slots busy, deferring" >&2; exit "$EX_SKIPPED"; }
+  fi
 fi
 
 # Per-worktree cargo target isolation (issue #151): guarantee this gate builds

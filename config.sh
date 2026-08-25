@@ -121,6 +121,44 @@ E2E_LOCK="$FWF_RUN/e2e.lock"
 # keeps concurrent full cargo builds from CPU/IO-thrashing each other.
 FWF_CARGO_BUILD_CONCURRENCY="${FWF_CARGO_BUILD_CONCURRENCY:-2}"
 CARGO_BUILD_LOCK="$FWF_RUN/cargo-build.lock"
+
+# --- memory-admission control (issue #156) -----------------------------------
+# The build-serialization mechanism #156's discovery chose (strategy b): gate
+# every heavy build's START on MEASURED ground-truth free RAM minus the summed
+# live reservations, holding only a sub-second decision mutex for the atomic
+# measure+reserve — NEVER a lock across the multi-GB build. That structurally
+# avoids the failed prototype's fatal orphan-hole (no lock is held across the
+# build, so nothing auto-releases into an orphan) and never blocks a waiting
+# #123 gate for 25min while it holds its per-role lock. See lib.sh's
+# fwf_mem_admit and docs/proposals/156-build-serialization.md.
+#
+# OPT-IN: default OFF, so the existing cargo-build SEMAPHORE stays in force and
+# nothing changes until a real-box profiling run (criterion 3) calibrates the
+# reserve sizes below. Flip FWF_MEM_ADMIT_ENABLE=1 once they're measured.
+FWF_MEM_ADMIT_ENABLE="${FWF_MEM_ADMIT_ENABLE:-0}"
+MEM_ADMIT="$FWF_RUN/mem-admit.lock"
+FWF_MEM_ADMIT_TIMEOUT="${FWF_MEM_ADMIT_TIMEOUT:-900}"        # bounded wait; < the 1800s gate max-run ceiling (hole #2/#3)
+FWF_MEM_ADMIT_POLL="${FWF_MEM_ADMIT_POLL:-5}"                # seconds between admission attempts
+FWF_MEM_ADMIT_STALE_SECS="${FWF_MEM_ADMIT_STALE_SECS:-1800}" # ~30m backstop for an indeterminate (cross-host/unparseable) reservation
+FWF_MEM_ADMIT_REPORT_SECS="${FWF_MEM_ADMIT_REPORT_SECS:-30}" # how often the "queued on RAM" line prints (mirrors the e2e lock cadence)
+FWF_MEM_ADMIT_DECISION_STALE_SECS="${FWF_MEM_ADMIT_DECISION_STALE_SECS:-60}" # backstop for the sub-second decision mutex itself
+# Free-RAM floor to hold back for the OS + resident consumers the mechanism
+# CANNOT bound (rust-analyzer, proc-macro servers, editors). PROVISIONAL.
+FWF_MEM_ADMIT_FLOOR_GB="${FWF_MEM_ADMIT_FLOOR_GB:-8}"
+# Measured PEAK RSS to reserve per op-class. PROVISIONAL PLACEHOLDERS — these
+# are the exact numbers criterion (3) says MUST be measured on the real
+# multi-agent box before this is trusted. Reserving the link-PEAK (not current
+# usage) bounds a spike that lands minutes into a build.
+FWF_MEM_RESERVE_FAST_GB="${FWF_MEM_RESERVE_FAST_GB:-2}"   # cargo check / fast gate
+FWF_MEM_RESERVE_BUILD_GB="${FWF_MEM_RESERVE_BUILD_GB:-6}" # full cargo build+test (rustc link peak)
+FWF_MEM_RESERVE_E2E_GB="${FWF_MEM_RESERVE_E2E_GB:-6}"     # cargo build + playwright chromium+webkit
+
+# Kill-safe gate process-group ownership (issue #156 hole #1). fwf-gate.sh makes
+# itself a process-group LEADER so a kill takes cargo down WITH the release —
+# never orphaning a multi-GB build that a second gate then stacks on. Default ON
+# where perl is present; set 0 to disable (debugging on a box without perl).
+FWF_GATE_PGLEADER_ENABLE="${FWF_GATE_PGLEADER_ENABLE:-1}"
+
 STOP_FILE="$FWF_RUN/STOP"   # fwf-stop.sh creates this; agents that notice it commit WIP, cancel their loop, and idle
 
 # Hard token-budget enforcement (issue #96, Ticket B of #70's discovery — see

@@ -1460,6 +1460,207 @@ fwf_cargo_build_slot_release() {
   rm -rf "$CARGO_BUILD_LOCK/slot-$1"
 }
 
+# --- memory-admission control (issue #156, strategy b) -----------------------
+# The build-serialization mechanism #156's discovery chose. Rather than hold a
+# lock across the whole multi-GB build (strategy a — which orphans cargo on a
+# single-pid kill AND re-creates the #123 gate-ceiling tension), it gates only
+# the START of a heavy build: acquire a sub-second decision mutex, atomically
+# MEASURE ground-truth free RAM and SUBTRACT the summed live reservations, and
+# admit iff what's left clears this op-class's reserved PEAK plus a floor — then
+# record the reservation and RELEASE the mutex BEFORE the build runs. No lock is
+# held across the build, so nothing auto-releases into an orphan, and a 25min
+# sibling build never blocks a waiting gate past #123's 1800s ceiling (an
+# un-admitted gate exits promptly, freeing its per-role gate lock).
+#
+# Ground-truth measurement is the self-healing core: any untracked consumer —
+# an orphaned cargo, a resident rust-analyzer, a hand-run `cargo build` — lowers
+# measured-free directly, so admission tightens automatically without the
+# mechanism having to know that consumer exists. Constants live in config.sh
+# beside E2E_LOCK/CARGO_BUILD_LOCK. OPT-IN via FWF_MEM_ADMIT_ENABLE (default 0)
+# until criterion (3)'s real-box profiling calibrates the reserve sizes.
+
+# Free RAM in whole GiB (conservative — rounds DOWN). macOS sums the reclaimable
+# vm_stat page classes (free+inactive+speculative+purgeable); Linux reads
+# MemAvailable. An unreadable probe returns 0 so admission FAILS CLOSED — a
+# build that cannot measure defers, never barges onto a box it can't size.
+fwf_free_ram_gb() {
+  local os psize pages
+  os="$(uname -s 2>/dev/null)"
+  if [ "$os" = "Darwin" ]; then
+    psize="$(sysctl -n hw.pagesize 2>/dev/null)"
+    case "$psize" in ''|*[!0-9]*) echo 0; return 0;; esac
+    pages="$(vm_stat 2>/dev/null | awk '
+      /Pages free/        {f=$NF}
+      /Pages inactive/    {i=$NF}
+      /Pages speculative/ {s=$NF}
+      /Pages purgeable/   {p=$NF}
+      END { gsub(/[^0-9]/,"",f); gsub(/[^0-9]/,"",i); gsub(/[^0-9]/,"",s); gsub(/[^0-9]/,"",p);
+            print (f+0)+(i+0)+(s+0)+(p+0) }')"
+    case "$pages" in ''|*[!0-9]*) echo 0; return 0;; esac
+    echo $(( pages * psize / 1073741824 ))
+    return 0
+  fi
+  awk '/^MemAvailable:/{print int($2/1024/1024); ok=1} END{if(!ok)print 0}' /proc/meminfo 2>/dev/null || echo 0
+}
+
+# Sum of reserved_gb across all LIVE reservation entries. Called ONLY inside the
+# decision mutex, AFTER _fwf_mem_admit_reap has dropped dead/stale ones — so
+# "live" here means "still present after the reap".
+_fwf_mem_admit_reserved_sum() {
+  local sum=0 f v
+  for f in "$MEM_ADMIT"/res-*; do
+    [ -e "$f" ] || continue
+    v="$(_fwf_e2e_owner_field reserved_gb "$f")"
+    case "$v" in ''|*[!0-9]*) v=0;; esac
+    sum=$(( sum + v ))
+  done
+  echo "$sum"
+}
+
+# Guarded group-kill (hole #1 tree-death). A reservation stamped by a genuine
+# kill-safe pgleader records its process-group id; when that reservation is
+# reaped (its holder died — e.g. respawn-pane -k SIGKILLed the gate, orphaning
+# cargo into that group), SIGKILL the WHOLE group so the orphaned build dies
+# before the freed RAM is handed to the next admitter. Fail-safe: only a
+# same-host, pgleader-stamped, integer pgid that is neither 1 nor OUR OWN group
+# is ever signalled — killing a non-leader's group could take out an unrelated
+# tmux pane shell, and a non-pgleader reservation's group is left for
+# ground-truth measurement to absorb instead.
+_fwf_mem_admit_kill_group() { # $1=host $2=pgleader $3=pgid
+  local host="$1" pgleader="$2" pgid="$3" ownpgid
+  [ "$pgleader" = 1 ] || return 0
+  [ "$host" = "$(hostname)" ] || return 0
+  case "$pgid" in ''|*[!0-9]*) return 0;; esac
+  [ "$pgid" -gt 1 ] || return 0
+  ownpgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  [ "$pgid" = "$ownpgid" ] && return 0
+  echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose reservation holder died — SIGKILL group" >&2
+  kill -KILL -"$pgid" 2>/dev/null
+  return 0
+}
+
+# Reap dead/stale reservations INSIDE the decision mutex. A reservation whose
+# stamping pid is confirmed dead (same host) — or, cross-host/unparseable, one
+# past FWF_MEM_ADMIT_STALE_SECS — is dropped; if it was stamped by a pgleader,
+# its orphaned build tree is SIGKILLed first (hole #1) so the RAM is actually
+# reclaimed before the slot is granted. Same same-host/dead-PID vs
+# indeterminate-age reasoning as _fwf_e2e_owner_liveness.
+_fwf_mem_admit_reap() {
+  local f host pid ts now pgid pgleader
+  now="$(date +%s)"
+  for f in "$MEM_ADMIT"/res-*; do
+    [ -e "$f" ] || continue
+    host="$(_fwf_e2e_owner_field host "$f")"
+    pid="$(_fwf_e2e_owner_field pid "$f")"
+    ts="$(_fwf_e2e_owner_field acquired "$f")"
+    if [ "$host" = "$(hostname)" ] && [ -n "$pid" ]; then
+      kill -0 "$pid" 2>/dev/null && continue   # live same-host holder — keep
+    else
+      case "$ts" in ''|*[!0-9]*) continue;; esac  # indeterminate + unageable — keep (can't safely reap)
+      [ $(( now - ts )) -ge "$FWF_MEM_ADMIT_STALE_SECS" ] || continue
+    fi
+    pgleader="$(_fwf_e2e_owner_field pgleader "$f")"
+    pgid="$(_fwf_e2e_owner_field pgid "$f")"
+    _fwf_mem_admit_kill_group "$host" "$pgleader" "$pgid"
+    rm -f "$f"
+  done
+}
+
+# Dead/stale backstop for the decision mutex itself, so a holder that died
+# INSIDE the sub-second critical section can't wedge admission forever. Mirrors
+# the cargo-slot exclusive-reap idiom (an exclusive .reap section with the
+# liveness RE-VERIFIED inside it) so two contenders can't both destroy a mutex
+# one of them legitimately just re-took.
+_fwf_mem_admit_reap_mutex() {
+  local d="$MEM_ADMIT/decision" owner host pid ts now stale=0
+  owner="$d/owner"
+  [ -d "$d" ] || return 0
+  host="$(_fwf_e2e_owner_field host "$owner")"
+  pid="$(_fwf_e2e_owner_field pid "$owner")"
+  ts="$(_fwf_e2e_owner_field acquired "$owner")"
+  if [ "$host" = "$(hostname)" ] && [ -n "$pid" ]; then
+    kill -0 "$pid" 2>/dev/null && return 0
+    stale=1
+  else
+    now="$(date +%s)"
+    case "$ts" in ''|*[!0-9]*) return 0;; esac
+    [ $(( now - ts )) -ge "$FWF_MEM_ADMIT_DECISION_STALE_SECS" ] && stale=1
+  fi
+  [ "$stale" = 1 ] || return 0
+  mkdir "$d.reap" 2>/dev/null || return 0   # another reaper owns this — back off
+  pid="$(_fwf_e2e_owner_field pid "$owner")"
+  if [ -n "$pid" ] && [ "$host" = "$(hostname)" ] && kill -0 "$pid" 2>/dev/null; then
+    rmdir "$d.reap" 2>/dev/null; return 0   # re-verified live — leave it
+  fi
+  rm -rf "$d"
+  rmdir "$d.reap" 2>/dev/null
+}
+
+# $1 = holder label (role). $2 = reserve GiB (this op-class's measured PEAK).
+# On success: writes a reservation entry, echoes its token (the entry basename)
+# to stdout, returns 0. On timeout: returns 1 — the caller treats that as a SKIP
+# (defer to next tick), the same as a busy e2e lock, NEVER a build failure.
+# ALWAYS pair with fwf_mem_admit_release "$token" in a trap. When the gate is a
+# kill-safe pgleader ($_FWF_GATE_IS_PGLEADER=1), the reservation stamps the
+# process-group id so the reap above can take the build tree down on a SIGKILL.
+fwf_mem_admit() {
+  local label="${1:?fwf_mem_admit needs a label}" reserve="${2:?fwf_mem_admit needs a reserve GiB}"
+  local mutex="$MEM_ADMIT/decision" waited=0 qstart now last_report free reserved token acquired pgid pgleader
+  case "$reserve" in ''|*[!0-9]*) reserve=0;; esac
+  mkdir -p "$MEM_ADMIT" 2>/dev/null
+  qstart="$(date +%s)"; last_report=$(( qstart - FWF_MEM_ADMIT_REPORT_SECS - 1 ))
+  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
+  free=""; reserved=""
+  while true; do
+    if mkdir "$mutex" 2>/dev/null; then
+      # sub-second decision mutex: atomic measure+reserve. This is the TOCTOU
+      # fix — two admitters can't both read the same free RAM and both admit.
+      printf 'pid=%s\nhost=%s\nacquired=%s\n' "$$" "$(hostname)" "$(date +%s)" > "$mutex/owner"
+      _fwf_mem_admit_reap                        # drop dead entries (+ kill their orphaned trees)
+      free="$(fwf_free_ram_gb)"                  # ground truth — covers orphans/RA/hand-run cargo
+      reserved="$(_fwf_mem_admit_reserved_sum)"  # summed live reservations
+      case "$free" in ''|*[!0-9]*) free=0;; esac
+      case "$reserved" in ''|*[!0-9]*) reserved=0;; esac
+      if [ "$(( free - reserved ))" -ge "$(( reserve + FWF_MEM_ADMIT_FLOOR_GB ))" ]; then
+        acquired="$(date +%s)"
+        token="res-$$-$RANDOM"
+        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nreserved_gb=%s\nacquired=%s\n' \
+          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$reserve" "$acquired" > "$MEM_ADMIT/$token"
+        rm -rf "$mutex"
+        printf '%s\n' "$token"
+        return 0
+      fi
+      rm -rf "$mutex"
+    else
+      _fwf_mem_admit_reap_mutex
+    fi
+    now="$(date +%s)"
+    if [ "$waited" -ge "$FWF_MEM_ADMIT_TIMEOUT" ]; then
+      printf 'fwf#156: %s timed out after %ss on RAM admission (free %sGiB - reserved %sGiB < need %sGiB + %sGiB floor) — deferring this tick\n' \
+        "$label" "$FWF_MEM_ADMIT_TIMEOUT" "${free:-?}" "${reserved:-?}" "$reserve" "$FWF_MEM_ADMIT_FLOOR_GB" >&2
+      return 1
+    fi
+    if [ $(( now - last_report )) -ge "$FWF_MEM_ADMIT_REPORT_SECS" ]; then
+      printf 'fwf#156: %s queued on RAM admission — free %sGiB, reserved %sGiB, need %sGiB + %sGiB floor\n' \
+        "$label" "${free:-?}" "${reserved:-?}" "$reserve" "$FWF_MEM_ADMIT_FLOOR_GB" >&2
+      last_report="$now"
+    fi
+    sleep "$FWF_MEM_ADMIT_POLL"
+    waited=$(( waited + FWF_MEM_ADMIT_POLL ))
+  done
+}
+
+# $1 = the token fwf_mem_admit echoed. No-op if empty. On SIGKILL the trap never
+# runs and this never fires — but the stamped pid is then dead, so the next
+# admitter's reap drops the entry (and SIGKILLs its build group), and
+# ground-truth measurement covers the RAM until it heals. Self-healing.
+fwf_mem_admit_release() {
+  [ -n "${1:-}" ] || return 0
+  rm -f "$MEM_ADMIT/$1"
+}
+
 # --- per-role gate single-flight lock (issue #123) ---------------------------
 # Root cause 1 of the gate pileup: an agent relaunches the FULL gate
 # (test/run.sh / dash cargo test, or the conductor's promotion e2e) every tick
