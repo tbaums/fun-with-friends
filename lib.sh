@@ -1188,12 +1188,100 @@ fwf_pm_plane_blocked() {
 # "indeterminate" — liveness can't be checked, so it falls back to the age
 # backstop (FWF_E2E_LOCK_STALE_SECS) so the floor can't wedge forever.
 FWF_E2E_LOCK_TIMEOUT="${FWF_E2E_LOCK_TIMEOUT:-900}"        # bounded wait for a live/indeterminate-but-fresh holder
-FWF_E2E_LOCK_POLL="${FWF_E2E_LOCK_POLL:-5}"                # seconds between "waiting on" polls
+FWF_E2E_LOCK_POLL="${FWF_E2E_LOCK_POLL:-5}"                # seconds between liveness/timeout checks (unchanged, #196 AC f)
 FWF_E2E_LOCK_STALE_SECS="${FWF_E2E_LOCK_STALE_SECS:-1800}" # ~30m backstop, ONLY for indeterminate liveness
+# How often the "queued" line is actually PRINTED (issue #196 point 2) --
+# separate from FWF_E2E_LOCK_POLL, which still governs how often liveness is
+# CHECKED. At the default 5s poll over a 900s timeout, printing every poll is
+# ~180 identical lines, which is what makes the one useful line invisible.
+# The first line is always immediate; this only throttles the rest.
+FWF_E2E_LOCK_REPORT_SECS="${FWF_E2E_LOCK_REPORT_SECS:-30}"
 
 _fwf_e2e_owner_field() { # $1=field  $2=owner-file → value, or empty (never errors)
   [ -f "$2" ] || return 0
   awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$2" 2>/dev/null
+}
+
+# $1=epoch $2=now -> "MmSSs" duration, or empty when $1 is absent, unparseable,
+# or yields a NEGATIVE delta (issue #196 edge case: clock skew across hosts
+# must never render as a confident-looking negative or wildly-wrong number --
+# callers render an empty result as "unknown duration").
+_fwf_e2e_lock_age() {
+  local ts="$1" now="$2" delta
+  case "$ts" in ''|*[!0-9]*) printf ''; return 0;; esac
+  delta=$(( now - ts ))
+  [ "$delta" -ge 0 ] || { printf ''; return 0; }
+  printf '%dm%02ds' "$(( delta / 60 ))" "$(( delta % 60 ))"
+}
+
+# $1=liveness rc (0 live-same-host / 2 indeterminate) $2=holder $3=pid
+# $4=host $5=acquired-ts $6=consecutive-missing-owner-record-polls $7=now ->
+# echoes the holder-status phrase shared by the queued and timeout lines
+# (issue #196 AC a/b/c). A same-host LIVE holder's age is clock-skew-free and
+# reported plainly; an INDETERMINATE (cross-host, or unparseable stamp)
+# holder's age is caveated, since a skewed remote clock could otherwise read
+# as a confidently-wedged multi-hour hold and invite exactly the kill #195
+# warns against. An owner record that hasn't been readable across >=2
+# consecutive polls reports as "holder unknown" (AC c); a single miss --
+# the healthy mkdir-then-write race -- reports as "still acquiring", never
+# the alarming text, so a normal acquisition-in-progress is never misread.
+_fwf_e2e_lock_holder_phrase() {
+  local rc="$1" holder="$2" pid="$3" host="$4" ts="$5" missing="$6" now="$7" age
+  if [ -z "$holder" ] && [ -z "$pid" ]; then
+    if [ "$missing" -ge 2 ]; then
+      printf 'holder unknown (owner record missing/unreadable)'
+    else
+      printf 'still acquiring (owner record not yet written)'
+    fi
+    return 0
+  fi
+  age="$(_fwf_e2e_lock_age "$ts" "$now")"
+  if [ "$rc" = 0 ]; then
+    if [ -n "$age" ]; then
+      printf 'held by %s (pid %s, host %s, held %s, live)' "$holder" "$pid" "$host" "$age"
+    else
+      printf 'held by %s (pid %s, host %s, held for unknown duration, live)' "$holder" "$pid" "$host"
+    fi
+  else
+    if [ -n "$age" ]; then
+      printf 'held by %s (pid %s, host %s) liveness INDETERMINATE, held ~%s by remote clock — cross-host, may be skewed' "$holder" "$pid" "$host" "$age"
+    else
+      printf 'held by %s (pid %s, host %s) liveness INDETERMINATE, held for unknown duration' "$holder" "$pid" "$host"
+    fi
+  fi
+}
+
+# $1=label $2=liveness-rc $3=holder $4=pid $5=host $6=acquired-ts
+# $7=missing-streak $8=queue-start-epoch $9=now -> one grep-friendly line
+# (issue #196 AC a): our own queue age (this waiter's, never another
+# waiter's -- computed from OUR queue_start, not the owner record) plus the
+# holder-status phrase.
+_fwf_e2e_lock_queued_line() {
+  local label="$1" rc="$2" holder="$3" pid="$4" host="$5" ts="$6" missing="$7" qstart="$8" now="$9" qage
+  qage="$(_fwf_e2e_lock_age "$qstart" "$now")"; [ -n "$qage" ] || qage="unknown"
+  printf 'fwf: %s queued %s on the e2e lock — %s' "$label" "$qage" \
+    "$(_fwf_e2e_lock_holder_phrase "$rc" "$holder" "$pid" "$host" "$ts" "$missing" "$now")"
+}
+
+# $1=label $2=timeout-secs $3=liveness-rc $4=holder $5=pid $6=host
+# $7=acquired-ts $8=now $9=stale-secs -> one grep-friendly line (issue #196
+# AC b): distinguishes a live holder (a queue, not a wedge -- explicitly says
+# so, and says do not kill it) from an indeterminate one (names when the
+# backstop will act).
+_fwf_e2e_lock_timeout_line() {
+  local label="$1" timeout="$2" rc="$3" holder="$4" pid="$5" host="$6" ts="$7" now="$8" stale="$9" age
+  if [ -z "$holder" ] && [ -z "$pid" ]; then
+    printf 'fwf: %s timed out after %ss on the e2e lock — holder unknown (owner record missing/unreadable)' "$label" "$timeout"
+    return 0
+  fi
+  age="$(_fwf_e2e_lock_age "$ts" "$now")"; [ -n "$age" ] || age="unknown duration"
+  if [ "$rc" = 0 ]; then
+    printf 'fwf: %s timed out after %ss on the e2e lock — holder %s (pid %s) still LIVE, held %s. This is a queue, not a wedge; the holder is healthy. Do not kill it (see #195).' \
+      "$label" "$timeout" "$holder" "$pid" "$age"
+  else
+    printf 'fwf: %s timed out after %ss on the e2e lock — holder %s (pid %s, host %s) liveness INDETERMINATE, held %s; will be broken at the %ss backstop.' \
+      "$label" "$timeout" "$holder" "$pid" "$host" "$age" "$stale"
+  fi
 }
 
 # rc 0 = alive (same host, pid alive) — NEVER reclaim
@@ -1213,32 +1301,47 @@ _fwf_e2e_owner_liveness() { # $1=owner-file
 # $1 = holder label (e.g. "conductor", "impl2") → rc 0 acquired, 1 timed out.
 # ALWAYS pair with a trap to fwf_e2e_lock_release so a killed/failed holder
 # never leaves the lock behind: trap 'fwf_e2e_lock_release' EXIT
+#
+# Issue #196: poll cadence (FWF_E2E_LOCK_POLL), timeout (FWF_E2E_LOCK_TIMEOUT),
+# dead-PID break, and the indeterminate-liveness backstop (FWF_E2E_LOCK_STALE_SECS)
+# are all UNCHANGED (AC f) -- only what gets REPORTED, and how often, changes.
 fwf_e2e_lock_acquire() {
-  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" owner="$E2E_LOCK/owner" waited=0 rc ts now holder
+  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" owner="$E2E_LOCK/owner" waited=0 rc ts now holder pid host
+  local qstart missing=0 last_report
   mkdir -p "$(dirname "$E2E_LOCK")" 2>/dev/null   # so a missing $FWF_RUN can't masquerade as "lock held"
+  qstart="$(date +%s)"
+  last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 ))   # force the FIRST report immediate (point 2)
   while true; do
     if mkdir "$E2E_LOCK" 2>/dev/null; then
       printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
         "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$owner"
       return 0
     fi
-    _fwf_e2e_owner_liveness "$owner"; rc=$?
     holder="$(_fwf_e2e_owner_field role "$owner")"
+    pid="$(_fwf_e2e_owner_field pid "$owner")"
+    host="$(_fwf_e2e_owner_field host "$owner")"
+    ts="$(_fwf_e2e_owner_field acquired "$owner")"
+    if [ -z "$holder" ] && [ -z "$pid" ]; then missing=$(( missing + 1 )); else missing=0; fi
+    _fwf_e2e_owner_liveness "$owner"; rc=$?
     if [ "$rc" = 1 ]; then
-      echo "fwf: e2e lock held by dead PID $(_fwf_e2e_owner_field pid "$owner") (${holder:-unknown}) — breaking it" >&2
-      rm -rf "$E2E_LOCK"; continue
+      echo "fwf: e2e lock held by dead PID ${pid:-unknown} (${holder:-unknown}) — breaking it" >&2
+      rm -rf "$E2E_LOCK"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0; continue
     elif [ "$rc" = 2 ]; then
-      ts="$(_fwf_e2e_owner_field acquired "$owner")"; now="$(date +%s)"
+      now="$(date +%s)"
       if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
         echo "fwf: e2e lock indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
-        rm -rf "$E2E_LOCK"; continue
+        rm -rf "$E2E_LOCK"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0; continue
       fi
     fi
+    now="$(date +%s)"
     if [ "$waited" -ge "$FWF_E2E_LOCK_TIMEOUT" ]; then
-      echo "fwf: $label timed out after ${FWF_E2E_LOCK_TIMEOUT}s waiting on the e2e lock (held by ${holder:-unknown})" >&2
+      printf '%s\n' "$(_fwf_e2e_lock_timeout_line "$label" "$FWF_E2E_LOCK_TIMEOUT" "$rc" "$holder" "$pid" "$host" "$ts" "$now" "$FWF_E2E_LOCK_STALE_SECS")" >&2
       return 1
     fi
-    echo "fwf: $label waiting on the e2e lock (held by ${holder:-unknown})…" >&2
+    if [ $(( now - last_report )) -ge "$FWF_E2E_LOCK_REPORT_SECS" ]; then
+      printf '%s\n' "$(_fwf_e2e_lock_queued_line "$label" "$rc" "$holder" "$pid" "$host" "$ts" "$missing" "$qstart" "$now")" >&2
+      last_report="$now"
+    fi
     sleep "$FWF_E2E_LOCK_POLL"
     waited=$(( waited + FWF_E2E_LOCK_POLL ))
   done

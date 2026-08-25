@@ -294,6 +294,19 @@ not a per-role copy:
   dies mid-hold is recovered automatically — a live holder is never reclaimed
   no matter how long it runs, only a confirmed-dead one is broken immediately
   (`fwf_e2e_lock_acquire` / `fwf_e2e_lock_release` in `lib.sh`).
+  A queued waiter's stderr (issue #196) names the holder's role/PID/host,
+  its hold age, its liveness class (live / indeterminate), and the waiter's
+  OWN queue age — not just "waiting on … held by X" — so a healthy 20-minute
+  suite is never mistaken for a wedge from the outside. A same-host LIVE
+  holder's age is reported plainly; a cross-host INDETERMINATE holder's age
+  is caveated as clock-dependent (a skewed remote clock could otherwise read
+  as a confidently-wedged multi-hour hold). Reporting is throttled to
+  `FWF_E2E_LOCK_REPORT_SECS` (default 30s, first line always immediate) —
+  independent of `FWF_E2E_LOCK_POLL`, which still governs how often liveness
+  is actually checked — so a 900s wait prints a handful of lines, not ~180
+  identical ones. The timeout message itself says explicitly whether the
+  holder is healthy ("this is a queue, not a wedge — do not kill it") or
+  will be broken at the indeterminate-liveness backstop.
 
 - **The caller's environment, not the gate's** (issue #175) — `fwf gate`
   resolves a profile of its own to build those lock paths, and doing so sets
