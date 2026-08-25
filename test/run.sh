@@ -2318,6 +2318,33 @@ ISS edit "$NSOLO" --remove-label onlylabel >/dev/null 2>&1 && ok "removing the L
 assert_not_contains "the label file has no labels line left" \
   "$(cat "$(find "$ISSRUN/issues/example/open" -name "$NSOLO-*.md")")" "labels:"
 
+# issue #211 (qa1's review finding on this same PR): next_num()'s sequence
+# counter had the identical collapsing-read defect already fixed elsewhere
+# in this file -- an unreadable (not just absent) seq file used to
+# fabricate a fresh "1", durably colliding with whatever issue already has
+# that number. Fresh, isolated fixture -- this must not share $ISSRUN's
+# cumulative issue numbering with the tests above.
+NNRUN="$TMP/issrun-nextnum"
+NNISS() { FWF_RUN_DIR="$NNRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+NNISS create --title "First" >/dev/null
+NNISS create --title "Second" >/dev/null
+NNSEQ="$NNRUN/issues/example/seq"
+assert_eq "next_num: normal sequence advances to 2 after two creates" "2" "$(cat "$NNSEQ")"
+chmod 000 "$NNSEQ"
+NNOUT="$(NNISS create --title "Should refuse" 2>&1)"; NNRC=$?
+chmod 644 "$NNSEQ"
+assert_eq "next_num: unreadable seq file REFUSES the create, exit non-zero" "1" "$NNRC"
+assert_contains "  ...refusal names the cause" "$NNOUT" "could not read the sequence counter"
+assert_eq "  ...the seq file is left COMPLETELY untouched (still 2, not fabricated back to 1)" \
+  "2" "$(cat "$NNSEQ")"
+assert_not_contains "  ...no colliding LI-1/LI-2 duplicate was created" \
+  "$(ls "$NNRUN/issues/example/open")" "should-refuse"
+[ -d "$NNRUN/issues/example/.lock" ] && bad "the store lock is NOT leaked by the refused create" \
+  || ok "the store lock is NOT leaked by the refused create"
+NNISS create --title "Third" >/dev/null
+assert_eq "next_num: a normal create afterward still works (lock genuinely released, not stuck)" \
+  "3" "$(cat "$NNSEQ")"
+
 section "local issues backend — render integration"
 LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "gh issue rewritten to fwf issues" "$LIMPL" "fwf --profile example issues list"

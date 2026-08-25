@@ -35,6 +35,7 @@ never blank.
 | `cmd_edit --remove-label` | `fwf-issues.sh` | read-modify-write | 1 (+2: the pre-existing `\|\| true` legitimately absorbs "removed the last label, grep found nothing" — now scoped to only that step, not the underlying read) | same sibling-door defect |
 | `fwf_reconcile_record_history` | `lib.sh` | read-modify-write | 1 | a malformed/unreadable flap-streak file silently reset to 0/1, delaying the `ANOMALY` a reconcile storm must surface (issue #114 AC9) |
 | `fwf_reconcile_indeterminate_streak` | `lib.sh` | reader (echoed value is load-bearing for its caller's own escalation arithmetic, issue #238 AC7) | 1 | same collapse, **deliberately** not converted to refuse-to-write (see disposition below) |
+| `next_num()` | `fwf-issues.sh` | read-modify-write | 1 | **found by qa1's review of this same PR, not the original audit pass** — an unreadable (not absent) `$STORE/seq` used to collapse into "no sequence yet," fabricating the counter back to 1 and writing it back, durably colliding with/shadowing whatever issue already has that number. Same shape as `fwf_tick_bump`, in a file this PR had already fixed twice for the identical pattern — flagged as exactly the gap the audit's own "enumerated exhaustively, not sampled" bar exists to catch. |
 
 **`fwf_reconcile_indeterminate_streak`'s disposition, stated explicitly:** its
 return value is consumed directly by the caller's escalation decision, so

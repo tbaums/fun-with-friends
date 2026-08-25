@@ -108,9 +108,31 @@ comments_tsv() {
        inc { print }' "$(issue_file "$1")"
 }
 
+# issue #211 (found by qa1's review of this same PR -- an unaudited instance
+# of the exact pattern already fixed elsewhere in this file): a sequence
+# file that EXISTS but is transiently unreadable used to collapse into "no
+# sequence yet", so the counter got fabricated back to 1 and WRITTEN BACK --
+# durably colliding with/shadowing whatever issue already has number 1.
+# Same shape as fwf_tick_bump: absent file is a real, confident 0 (never
+# created before); a present-but-unreadable file refuses to write at all.
 next_num() {
   local n
-  n="$(cat "$STORE/seq" 2>/dev/null || echo 0)"; n=$((n+1)); printf '%s\n' "$n" > "$STORE/seq"
+  if [ -f "$STORE/seq" ]; then
+    if ! n="$(cat "$STORE/seq" 2>/dev/null)"; then
+      fwf_log_unknown_read next_num "seq file unreadable, refusing to fabricate a sequence number" || true
+      return 1
+    fi
+    case "$n" in
+      ''|*[!0-9]*)
+        fwf_log_unknown_read next_num "seq file malformed content, refusing to fabricate a sequence number" || true
+        return 1
+        ;;
+    esac
+  else
+    n=0
+  fi
+  n=$((n+1))
+  printf '%s\n' "$n" > "$STORE/seq"
   printf '%s\n' "$n"
 }
 
@@ -165,7 +187,13 @@ maybe_jq() { # $1=jq-expr-or-empty; stdin=json
 # --- subcommands ---------------------------------------------------------------
 _create_locked() { # title body labels(comma-joined)
   local n
-  n="$(next_num)"
+  # `return`, never `die`/`exit`, here -- this runs INSIDE with_lock's own
+  # "$@" || rc=$? wrapper; exiting directly would skip its rmdir and leak
+  # the store lock, blocking every future create.
+  if ! n="$(next_num)"; then
+    echo "fwf issues: refusing to create issue -- could not read the sequence counter" >&2
+    return 1
+  fi
   mkdir -p "$STORE/open"
   {
     printf '# LI-%s: %s\n' "$n" "$1"
@@ -186,7 +214,7 @@ cmd_create() {
     esac
   done
   [ -n "$title" ] || die "create: --title is required"
-  with_lock _create_locked "$title" "$body" "$labels"
+  with_lock _create_locked "$title" "$body" "$labels" || exit 1
 }
 
 _comment_locked() { # num body
