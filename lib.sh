@@ -2092,6 +2092,40 @@ fwf_wedge_verdict() {
   echo WORKING                                             # both flat but still in grace
 }
 
+# Lane-stale classifier (issue #140): a role can be HEALTHY/WORKING per
+# fwf_wedge_verdict above (the pane is genuinely alive, ticking normally) and
+# STILL be the "stranded review" failure the ticket is about — its own lane
+# has actionable work sitting untouched. This is a DIFFERENT failure shape
+# than a wedge (nothing here says the tick/token signals are wrong) so it is
+# a SEPARATE classifier, not a new branch of fwf_wedge_verdict: qa.tmpl's own
+# step 1 already re-derives its queue from GitHub every tick (issue #82), so
+# under a healthy loop this should almost never fire — it exists as the
+# backstop/observability route the ticket requires ("not a bare resume
+# stdout line") for exactly the case where something upstream of that re-scan
+# regresses. PURE: three scalar inputs -> one verdict word, unit-tests like
+# fwf_wedge_verdict.
+#   $1 = count of AWAITING_REVIEW PRs in this role's own lane (the ball is in
+#        ITS court on each — see fwf_pr_review_state)
+#   $2 = the oldest such PR's age-since-last-activity in seconds (updatedAt);
+#        that field only advances on a NEW comment/push, so it stays frozen
+#        for exactly as long as nobody -- crucially including this role --
+#        has acted on it.
+#   $3 = this role's own loop interval in seconds (fwf_interval_seconds) --
+#        the threshold scales with how often the role is SUPPOSED to look,
+#        via FWF_LANE_STALE_MULT (default 3): three missed cycles, not one,
+#        so an ordinary scheduling jitter never false-fires this.
+fwf_lane_stale_verdict() {
+  local count="$1" age="$2" interval="$3" mult="${FWF_LANE_STALE_MULT:-3}" threshold
+  case "$count"    in ''|*[!0-9]*) count=0;;    esac
+  case "$age"      in ''|*[!0-9]*) age=0;;      esac
+  case "$interval" in ''|*[!0-9]*) interval=0;; esac
+  [ "$count" -gt 0 ] || { echo LANE_HEALTHY; return 0; }
+  threshold=$(( interval * mult ))
+  [ "$threshold" -gt 0 ] || threshold="${FWF_LANE_STALE_FALLBACK_SECS:-300}"
+  if [ "$age" -ge "$threshold" ]; then echo LANE_STALE; return 0; fi
+  echo LANE_HEALTHY
+}
+
 # Parse an ISO-8601 UTC timestamp (e.g. gh's 2026-08-11T14:03:22Z) to epoch
 # seconds, portably across GNU and BSD date; echoes nothing on failure.
 fwf_iso_to_epoch() { # $1=iso8601

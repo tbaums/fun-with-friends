@@ -248,6 +248,20 @@ instead of stalling silently (issue #99).
   role, workflows, and hard-won quality lessons live in
   [`templates/dev/captain.tmpl`](templates/dev/captain.tmpl).
 
+- **Every QA/impl tick re-derives its work from GitHub, not remembered
+  context** (issue #140) — `qa.tmpl` re-lists open PRs in its own lane and
+  `implementer.tmpl` re-checks out its own open draft every single tick, so
+  `fwf stop`/`fwf resume`, a respawn, and a crash (`kill -9`, no clean-stop
+  checkpoint) all self-heal identically via the *ordinary* tick — there is no
+  separate resume code path to strand work behind. `fwf supervise` also
+  watches for the failure this replaces: a QA role that's genuinely alive
+  (HEALTHY/WORKING per the pane-liveness classifier above) but isn't
+  engaging an `AWAITING_REVIEW` PR in its own lane logs a `LANE_STALE` line
+  once that PR has sat untouched past `FWF_LANE_STALE_MULT` (default 3×) the
+  role's own loop interval — routed through the same observability channel
+  as a `WEDGED` verdict, not a one-off `resume` stdout line. Observation
+  only; it never auto-respawns.
+
   **Per-plane `up`/`down` flag matrix** (issue #155 — `--coord-only` is the
   non-destructive mirror of `--build-only`, for standing up just coordination
   from a cold/fully-down state, e.g. to groom the `product-wip` backlog

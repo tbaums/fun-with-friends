@@ -28,6 +28,13 @@
 # Snapshotting + classification ALWAYS run; only the respawn action is gated, so
 # the classifier can be observed in production before it is ever allowed to reap.
 #
+# Also classifies a SEPARATE failure shape (issue #140): a QA role can be
+# HEALTHY/WORKING by the above (the pane is genuinely alive) and still be the
+# "stranded review" incident the ticket is about — its own lane has an
+# AWAITING_REVIEW PR sitting untouched. See fwf_lane_stale_verdict (lib.sh);
+# this is the routed observability channel #140 requires instead of a bare
+# `resume` stdout line. Also log-only, never auto-respawns.
+#
 # Usage: fwf supervise [role ...]        (default: every role; --profile via the
 #                                          dispatcher's engine() — see #69)
 set -euo pipefail
@@ -39,6 +46,7 @@ source "$DIR/fwf-usage-data.sh"
 if [ "$#" -gt 0 ]; then roles="$*"; else roles="$(fwf_all_roles)"; fi
 
 autorespawn="${FWF_SUPERVISE_AUTORESPAWN:-0}"
+now="$(date -u +%s)"   # issue #140's lane-stale check ages a PR's updatedAt against this
 
 for role in $roles; do
   [ -n "$role" ] || continue
@@ -49,6 +57,54 @@ for role in $roles; do
     continue
   fi
   printf 'supervise: %-10s %s\n' "$role" "$verdict"
+
+  # Lane-stale check (issue #140): "idle while lane has open work" is a
+  # DIFFERENT failure than a wedge — the role is genuinely ticking (verdict
+  # above says so), it just isn't engaging its own actionable review queue.
+  # QA-only here: the impl-side "claim exists, no PR yet" liveness definition
+  # belongs to #147, not duplicated here — #140 only requires the two AGREE
+  # on using #165's world-derived aliveness, which this does by sharing
+  # fwf_wedge_verdict's own verdict as the gate (skip while WEDGED; that
+  # failure is already explained). Observation-only — never auto-respawns —
+  # because "you have work but haven't acted" is a judgment-level signal for
+  # an operator, not the same kind of clear-cut reap WEDGED is.
+  #
+  # Cost (ticket's own "keep it cheap/conditional" note): exactly ONE
+  # `gh pr list` per QA role per supervise pass, always — cheap and
+  # unconditional by design (there's no way to know if a lane has open work
+  # without asking). The per-PR `fwf-pr-review-state.sh` call (its own small
+  # handful of `gh` calls) is the part that's CONDITIONAL: it only runs for
+  # PRs that already exist in this QA's own lane, which is normally 0-1 —
+  # nowhere near GH rate-limit territory even at a 1-minute supervise
+  # cadence across a handful of QA roles.
+  case "$role" in
+    qa*)
+      if [ "$verdict" != "WEDGED" ]; then
+        qa_id="${role#qa}"
+        lane_count=0
+        lane_oldest_age=0
+        lane_prs="$(gh pr list --state open --json number,headRefName,isDraft,updatedAt \
+          --jq ".[] | select(.headRefName | startswith(\"impl${qa_id}/\")) | select(.isDraft==false) | \"\(.number) \(.updatedAt)\"" 2>/dev/null || true)"
+        if [ -n "$lane_prs" ]; then
+          while read -r pr_num pr_updated; do
+            [ -n "$pr_num" ] || continue
+            pr_state="$("$DIR/fwf-pr-review-state.sh" "$pr_num" 2>/dev/null | awk '{print $1}')"
+            [ "$pr_state" = "AWAITING_REVIEW" ] || continue
+            pr_epoch="$(fwf_iso_to_epoch "$pr_updated" 2>/dev/null || echo "$now")"
+            pr_age=$(( now - pr_epoch )); [ "$pr_age" -lt 0 ] && pr_age=0
+            lane_count=$(( lane_count + 1 ))
+            [ "$pr_age" -gt "$lane_oldest_age" ] && lane_oldest_age="$pr_age"
+          done <<< "$lane_prs"
+        fi
+        qa_interval_secs="$(fwf_interval_seconds "${QA_LOOP_INTERVAL:-1m}" 2>/dev/null || echo 60)"
+        lane_verdict="$(fwf_lane_stale_verdict "$lane_count" "$lane_oldest_age" "$qa_interval_secs")"
+        if [ "$lane_verdict" = "LANE_STALE" ]; then
+          printf 'supervise: %-10s LANE_STALE %s AWAITING_REVIEW PR(s) in lane, oldest untouched %ss (role is otherwise %s) — a role ticking normally but not engaging open review work\n' \
+            "$role" "$lane_count" "$lane_oldest_age" "$verdict"
+        fi
+      fi
+      ;;
+  esac
 
   [ "$verdict" = "WEDGED" ] || continue
   if [ "$autorespawn" = "1" ]; then

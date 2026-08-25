@@ -735,6 +735,63 @@ assert_contains "supervise reports a confirmed-old-baseline role's real verdict"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
 
+section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
+# Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
+# out. FWF_LANE_STALE_MULT pinned so the threshold is deterministic
+# (interval * mult); default interval used below is 60s.
+lsv() { FWF_PROFILE=example FWF_LANE_STALE_MULT=3 bash -c "source '$ROOT/lib.sh'; fwf_lane_stale_verdict $1"; }
+assert_eq "no AWAITING_REVIEW PRs in lane -> LANE_HEALTHY regardless of age" \
+  "LANE_HEALTHY" "$(lsv '0 99999 60')"
+assert_eq "one PR, well within the grace window -> LANE_HEALTHY" \
+  "LANE_HEALTHY" "$(lsv '1 30 60')"
+assert_eq "one PR, exactly at threshold-1 (interval*mult - 1) -> LANE_HEALTHY" \
+  "LANE_HEALTHY" "$(lsv '1 179 60')"
+assert_eq "one PR, exactly at the threshold (interval*mult) -> LANE_STALE" \
+  "LANE_STALE" "$(lsv '1 180 60')"
+assert_eq "one PR, well past the threshold -> LANE_STALE" \
+  "LANE_STALE" "$(lsv '1 3600 60')"
+assert_eq "multiple stale PRs still just one verdict -> LANE_STALE" \
+  "LANE_STALE" "$(lsv '3 900 60')"
+# Threshold scales with the role's OWN interval, not a fixed constant.
+assert_eq "slower interval -> proportionally longer grace (would be STALE at 60s interval, not at 300s)" \
+  "LANE_HEALTHY" "$(lsv '1 180 300')"
+# Robustness: malformed/negative inputs degrade to 0 — never crash, never a
+# fabricated LANE_STALE from garbage, and an unset/zero interval still gets a
+# sane (non-zero) fallback threshold rather than "0 * mult = 0" (which would
+# make EVERY nonzero age instantly STALE).
+assert_eq "malformed count degrades to 0 -> LANE_HEALTHY" "LANE_HEALTHY" "$(lsv 'x 3600 60')"
+assert_eq "malformed age degrades to 0 -> LANE_HEALTHY (count>0 but age=0 never reaches threshold)" \
+  "LANE_HEALTHY" "$(lsv '1 x 60')"
+assert_eq "malformed interval falls back to a sane non-zero threshold, not 0" \
+  "LANE_HEALTHY" "$(lsv '1 100 x')"
+
+section "world-derived, tick-idempotent resume (issue #140): no resume-specific code path"
+# The ticket's core acceptance criteria ("stop/resume/respawn/crash all
+# self-heal via the ORDINARY tick, with NO resume-specific code path") are
+# asserted directly against the RENDERED templates rather than re-described
+# in prose here -- a future edit that silently drops this behavior goes RED.
+TIR_QA="$(prov_env "fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+TIR_IMPL="$(prov_env "fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
+# QA side: every tick unconditionally re-derives its review queue from
+# GitHub (never from remembered/in-context state) -- this is what makes
+# stop/resume/respawn/crash all identical from the role's own perspective:
+# there is no "resume" branch to have, because every tick already re-scans.
+assert_contains "qa: every tick re-derives its queue from GitHub (gh pr list), not memory" \
+  "$TIR_QA" "gh pr list --base"
+assert_contains "qa: queue is scoped to open, non-draft PRs in this QA's own lane" \
+  "$TIR_QA" "Keep only PRs whose headRefName starts with"
+assert_contains "qa: re-review handoff is keyed off headRefOid (a fresh push), not remembered state" \
+  "$TIR_QA" "headRefOid changes"
+# Impl side: a claim-only draft with zero progress IS the cycle's work to
+# resume, checked out fresh each time (never assumed from context) -- the
+# same self-heal property for the "claim exists, no PR yet" symptom.
+assert_contains "impl: resuming a draft re-checks it out fresh (never assumes remembered context)" \
+  "$TIR_IMPL" "a respawned/compacted agent starts on the wrong branch with no memory of the claim"
+assert_contains "impl: a claim-only draft with zero progress is still this cycle's work, not idle" \
+  "$TIR_IMPL" "IS your cycle's work"
+assert_contains "impl: unprogressed drafts escalate (bounded), never sit silently idle" \
+  "$TIR_IMPL" "NEVER sit idle behind an unprogressed draft"
+
 section "fwf_verify_boot_ticks: boot health-gate — first-tick verify + re-arm + dead-role escalation (#133)"
 BG="$TMP/boot-gate"; mkdir -p "$BG"
 bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
