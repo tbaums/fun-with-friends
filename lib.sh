@@ -2033,6 +2033,46 @@ fwf_heartbeat_path() { echo "$FWF_STATE_DIR/heartbeat/$1"; } # $1=role tag
 # check (boot gate, respawn verify) keeps working unchanged.
 fwf_tick_path() { echo "$FWF_STATE_DIR/tick/$1"; } # $1=role tag
 
+# --- unknown-read log (issue #211 AC f/f0) -----------------------------------
+# A bounded, append-only diagnostic: every time a converted reader (e.g.
+# fwf_tick_read below, or fwf-issues.sh's labels_of) cannot complete its
+# read, it appends ONE line here -- so a transient failure is still visible
+# after the fact, not just in the moment it happened ("the point-in-time
+# probe alone will almost always come back clean on exactly the incident
+# this ticket exists to prevent"). `fwf usage` reports and can clear it.
+#
+# THE LOG ITSELF IS A WRITE THAT CAN FAIL (full disk, bad $FWF_RUN, an
+# unwritable path) -- and its failure must NEVER touch the calling reader's
+# own answer, or the diagnostic for collapsing reads becomes another
+# collapsing read. So every step here is best-effort and swallowed; the ONLY
+# thing a caller can observe is THIS function's own return status, which no
+# reader anywhere is allowed to check (fire-and-forget by design -- a test
+# calls this directly to assert the failure is reported, but no reader may
+# let it change its own contract).
+FWF_UNKNOWN_LOG_MAX_LINES="${FWF_UNKNOWN_LOG_MAX_LINES:-500}"
+fwf_unknown_log_path() { echo "$FWF_STATE_DIR/unknown-reads.log"; }
+fwf_log_unknown_read() { # $1=reader-name $2=reason (one line; no tabs/newlines)
+  local log ts n
+  log="$(fwf_unknown_log_path)"
+  mkdir -p "$(dirname "$log")" 2>/dev/null || return 1
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || ts="unknown-time"
+  # 2>/dev/null wraps the WHOLE group, not just the printf -- a redirection
+  # failure (can't open "$log" for append, e.g. an unwritable directory) is
+  # reported by the SHELL itself while setting up ">> $log", before a
+  # trailing "2>/dev/null" on the same simple command would ever apply to
+  # it. Only wrapping the group suppresses that message too.
+  { printf '%s\t%s\t%s\n' "$ts" "$1" "$2" >> "$log"; } 2>/dev/null || return 1
+  # Bound the log (keep only the last N lines) -- best-effort; a failure to
+  # trim is not itself a logging failure, the append above already landed.
+  n="$(wc -l < "$log" 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0;; esac
+  if [ "$n" -gt "$FWF_UNKNOWN_LOG_MAX_LINES" ]; then
+    tail -n "$FWF_UNKNOWN_LOG_MAX_LINES" "$log" > "$log.tmp.$$" 2>/dev/null \
+      && mv -f "$log.tmp.$$" "$log" 2>/dev/null
+  fi
+  return 0
+}
+
 # Current tick count for role $1. Echoes the count exactly as before (a bare
 # `$(fwf_tick_read role)` caller is unchanged — issue #211's AC (e)), but now
 # ALSO signals via exit status whether the echoed value can be trusted:
@@ -2049,9 +2089,12 @@ fwf_tick_read() { # $1=role
   local tf n
   tf="$(fwf_tick_path "$1")"
   [ -e "$tf" ] || { echo 0; return 0; }
-  n="$(cat "$tf" 2>/dev/null)" || { echo 0; return 1; }
+  if ! n="$(cat "$tf" 2>/dev/null)"; then
+    fwf_log_unknown_read fwf_tick_read "role=$1 unreadable" || true
+    echo 0; return 1
+  fi
   case "$n" in
-    ''|*[!0-9]*) echo 0; return 1;;
+    ''|*[!0-9]*) fwf_log_unknown_read fwf_tick_read "role=$1 malformed content" || true; echo 0; return 1;;
     *) echo "$n"; return 0;;
   esac
 }

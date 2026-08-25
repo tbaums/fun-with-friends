@@ -114,3 +114,30 @@ A collapsing **reader** misreports downstream. A collapsing
 **read-modify-write** site *persists* the collapsed value, destroying state
 — strictly worse, and the category most worth finding exhaustively.
 `fwf_tick_bump` (above) is this codebase's worked read-modify-write example.
+
+## Making a failure visible after the fact
+
+A point-in-time check almost always comes back clean on exactly the
+incident this convention exists to prevent — a transient read failure is
+usually over by the time anyone goes looking. So a converted reader doesn't
+just signal failure via exit status; it also appends ONE line (timestamp,
+reader, reason) to a bounded diagnostic log via `fwf_log_unknown_read`
+(lib.sh) — `fwf_tick_read` and `fwf-issues.sh`'s `labels_of` both do this on
+their failure paths. The success path never touches the log, so the common
+(healthy) case costs nothing beyond the read itself.
+
+**The log itself is a write that can fail** (full disk, an unwritable
+`$FWF_RUN`), and that failure must never touch the calling reader's own
+answer — otherwise the diagnostic for collapsing reads becomes another
+collapsing read. Every reader calls `fwf_log_unknown_read ... || true` and
+never inspects its return value; only a caller that explicitly wants to
+know whether the log write itself succeeded (e.g. a test) checks that
+status directly. `test/run.sh`'s fixture makes only the log's directory
+unwritable (not the value being read) and asserts the reader's own output
+is byte-for-byte identical to the writable-log case.
+
+`fwf usage` is the reporting surface: it prints a **live probe** (every
+role's tick read, queried right now) and **recent unknowns** (the log's
+contents), because both halves are needed — the live probe catches an
+ongoing failure, the log catches one that already resolved.
+`fwf usage --clear-unknown-log` clears it.

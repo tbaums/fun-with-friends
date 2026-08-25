@@ -788,7 +788,12 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   `fwf shell`.
 - [docs/collapsing-reads.md](docs/collapsing-reads.md) — the convention for
   shell readers that can fail: never let the failure collapse into a value
-  indistinguishable from a real one (issue #211).
+  indistinguishable from a real one (issue #211). A converted reader also
+  appends to a bounded diagnostic log on failure (`fwf_log_unknown_read`,
+  lib.sh) — `fwf usage` reports both a live probe (readers failing right
+  now) and recent unknowns from that log, since a transient failure is
+  often over by the time anyone checks. `fwf usage --clear-unknown-log`
+  clears it.
 
 ## Development
 

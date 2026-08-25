@@ -82,6 +82,38 @@ _fwf_usage_budget_line() { # $1=usage-data JSON (for the this-run-vs-cumulative 
   fi
 }
 
+# issue #211 AC (f): "readers returning unknown" has two halves that must
+# BOTH be reported, because a transient failure is over by the time anyone
+# checks -- a point-in-time probe alone almost always comes back clean on
+# exactly the incident this ticket exists to prevent.
+#   (i)  LIVE PROBE — query the converted readers for every role RIGHT NOW.
+#   (ii) RECENT UNKNOWNS — the bounded append log (lib.sh's
+#        fwf_log_unknown_read), written only by the failure path, so the
+#        common (all-healthy) case costs this report nothing beyond the read.
+_fwf_unknown_reads_section() {
+  printf '\ncollapsing-read diagnostics (issue #211):\n'
+  local role bad_ticks="" rc
+  for role in $(fwf_all_roles); do
+    if ! fwf_tick_read "$role" >/dev/null; then
+      bad_ticks="$bad_ticks $role"
+    fi
+  done
+  if [ -n "$bad_ticks" ]; then
+    printf '  live probe: tick read is UNTRUSTED right now for:%s\n' "$bad_ticks"
+  else
+    printf '  live probe: all roles'"'"' tick reads are trustworthy right now\n'
+  fi
+
+  local log; log="$(fwf_unknown_log_path)"
+  if [ -s "$log" ]; then
+    printf '  recent unknowns (last %s, timestamp / reader / reason):\n' "$FWF_UNKNOWN_LOG_MAX_LINES"
+    tail -n 20 "$log" | sed 's/^/    /'
+    printf '  (fwf usage --clear-unknown-log to clear)\n'
+  else
+    printf '  recent unknowns: none logged\n'
+  fi
+}
+
 main() {
   case "${1:-}" in
     "") ;;
@@ -90,7 +122,12 @@ main() {
       echo "fwf usage: cleared $BUDGET_HOLD_FILE (the writer will re-write it next tick if still over budget)"
       exit 0
       ;;
-    *) echo "fwf usage: unknown argument '$1' (expected no arguments, or --clear-hold)" >&2; exit 1;;
+    --clear-unknown-log)
+      rm -f "$(fwf_unknown_log_path)"
+      echo "fwf usage: cleared $(fwf_unknown_log_path)"
+      exit 0
+      ;;
+    *) echo "fwf usage: unknown argument '$1' (expected no arguments, --clear-hold, or --clear-unknown-log)" >&2; exit 1;;
   esac
   command -v jq >/dev/null 2>&1 || { echo "fwf usage: jq is required" >&2; exit 1; }
   local data
@@ -136,6 +173,7 @@ main() {
 
   printf '\n'
   _fwf_usage_budget_line "$data"
+  _fwf_unknown_reads_section
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi

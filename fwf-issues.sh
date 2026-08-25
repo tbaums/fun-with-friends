@@ -77,8 +77,14 @@ created_of(){ sed -n 's/^created: //p' "$(issue_file "$1")" | head -1; }
 # located/read -- distinct from a real empty label list, which returns 0.
 labels_of() {
   local f raw out
-  f="$(issue_file "$1")" || return 1
-  raw="$(sed -n 's/^labels: //p' "$f" 2>/dev/null | head -1)" || return 1
+  if ! f="$(issue_file "$1")"; then
+    fwf_log_unknown_read labels_of "issue=$1 file not found" || true
+    return 1
+  fi
+  if ! raw="$(sed -n 's/^labels: //p' "$f" 2>/dev/null | head -1)"; then
+    fwf_log_unknown_read labels_of "issue=$1 file unreadable" || true
+    return 1
+  fi
   [ -n "$raw" ] || return 0
   out="$(printf '%s\n' "$raw" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$')" || true
   [ -n "$out" ] && printf '%s\n' "$out"

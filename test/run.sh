@@ -643,6 +643,44 @@ assert_eq "the heartbeat is STILL touched on a refused bump -- a cycle DID start
 assert_eq "recovery: a later healthy bump after a refusal resumes from the REAL prior count, not from the refusal" "6" \
   "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; chmod 000 "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null 2>&1; chmod 644 "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
 
+section "fwf_log_unknown_read: the bounded diagnostic log for collapsing reads (#211 AC f/f0)"
+UL="$TMP/unknown-log"
+ul() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run" bash -c "source '$ROOT/lib.sh'; $1"; }
+ULOG="$UL/run/state/example/unknown-reads.log"
+assert_eq "a healthy fwf_tick_read writes NOTHING to the log (success path costs nothing)" "no" \
+  "$(ul 'fwf_tick_read healthyrole >/dev/null; [ -f "$(fwf_unknown_log_path)" ] && echo yes || echo no')"
+ul 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"; fwf_tick_read badrole >/dev/null'
+assert_contains "a failed read appends the reader name"        "$(cat "$ULOG")" "fwf_tick_read"
+assert_contains "  ...and the role it failed for"              "$(cat "$ULOG")" "role=badrole"
+assert_contains "  ...and a real UTC timestamp (this year)"    "$(cat "$ULOG")" "$(date -u +%Y)-"
+LINES1="$(wc -l < "$ULOG")"
+[ "$LINES1" -ge 1 ] && ok "log grew by at least one line" || bad "log grew by at least one line" "got $LINES1"
+
+# Bounded: repeated failures never grow the log past FWF_UNKNOWN_LOG_MAX_LINES.
+ul2() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run2" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/lib.sh'; $1"; }
+ul2 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"
+  for i in 1 2 3 4 5 6 7 8 9 10; do fwf_tick_read badrole >/dev/null; done'
+BOUNDED_LOG="$UL/run2/state/example/unknown-reads.log"
+BOUNDED_LINES="$(wc -l < "$BOUNDED_LOG")"
+assert_eq "log is bounded at FWF_UNKNOWN_LOG_MAX_LINES even after 10 failures" "5" "$BOUNDED_LINES"
+
+# issue #211 AC (f0), the load-bearing assertion: the LOG ITSELF is a write
+# that can fail, and that failure must NEVER touch the reader's own answer
+# -- only be reported separately, by the logger's own return status, which
+# no reader may check. Real fixture: the state dir made unwritable (not the
+# tick file itself, which stays readable) so ONLY the log append fails.
+UL3="$UL/run3"; mkdir -p "$UL3/state/example/tick"
+printf garbage > "$UL3/state/example/tick/badrole3"
+chmod 555 "$UL3/state/example"
+UL3OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/lib.sh'; fwf_tick_read badrole3; echo RC=\$?" 2>&1)"
+UL3LOGGERRC=0
+FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/lib.sh'; fwf_log_unknown_read x y" >/dev/null 2>&1 || UL3LOGGERRC=$?
+chmod 755 "$UL3/state/example"
+assert_contains "reader behaves IDENTICALLY with an unwritable log path (still echoes the 0 fallback)" "$UL3OUT" "0"
+assert_contains "  ...and still reports its own failure status normally (RC=1)" "$UL3OUT" "RC=1"
+assert_not_contains "  ...and the reader's stdout is never corrupted by the shell's own redirection error" "$UL3OUT" "Permission denied"
+assert_eq "the logger's OWN failure IS reported, separately, to a caller that asks" "1" "$UL3LOGGERRC"
+
 # the `fwf tick` subcommand is the agent-facing entrypoint and echoes the count.
 assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
   "$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run2" "$ROOT/fwf" tick impl9)"
@@ -3901,6 +3939,49 @@ assert_contains "STALE role renders the warning treatment, not a bare number" "$
 case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *) ok "no false \$0.0000 anywhere in the report";; esac
 STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
 assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
+
+section "fwf usage — collapsing-read diagnostics (#211 AC f): live probe + recent unknowns"
+URUN="$TMP/usage-unknown-reads"
+CLEAN="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "clean run: section header always present" "$CLEAN" "collapsing-read diagnostics"
+assert_contains "clean run: live probe reports all-trustworthy" "$CLEAN" "all roles' tick reads are trustworthy right now"
+assert_contains "clean run: recent unknowns reports none" "$CLEAN" "recent unknowns: none logged"
+
+# Seed a genuinely untrustworthy tick file for impl1 -- both halves (live
+# probe AND recent-unknowns) must surface it, since fwf_tick_read's own
+# failure path both returns non-zero (the live probe) AND appends to the
+# log (recent unknowns) in the same call.
+mkdir -p "$URUN/run/state/.__usage/tick"
+printf garbage > "$URUN/run/state/.__usage/tick/impl1"
+FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" bash -c "source '$ROOT/lib.sh'; fwf_tick_read impl1 >/dev/null"
+DIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "live probe names the untrustworthy role" "$DIRTY" "tick read is UNTRUSTED right now for: impl1"
+assert_contains "recent-unknowns section shows the logged entry" "$DIRTY" "fwf_tick_read"
+assert_contains "  ...naming the reason"                          "$DIRTY" "role=impl1 malformed content"
+assert_contains "tells the operator how to clear it"               "$DIRTY" "fwf usage --clear-unknown-log"
+
+FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" "$ROOT/fwf" usage --clear-unknown-log >/dev/null
+[ -f "$URUN/run/state/.__usage/unknown-reads.log" ] && bad "--clear-unknown-log actually removes the log file" || ok "--clear-unknown-log actually removes the log file"
+
+# Repair impl1 BEFORE re-checking "none logged": `fwf usage`'s own live
+# probe calls the same fwf_tick_read that logs on failure, so a STILL-BROKEN
+# role would immediately re-populate the log the instant this next `fwf
+# usage` call runs -- that is correct, truthful behavior (a real read
+# genuinely failed again), not a bug, but it means this specific assertion
+# needs a clean role to observe a clean log.
+echo 5 > "$URUN/run/state/.__usage/tick/impl1"
+AFTERCLEAR="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "after clearing AND repairing, recent unknowns reports none again" "$AFTERCLEAR" "recent unknowns: none logged"
+assert_contains "  ...and the live probe agrees (impl1 is healthy again)" "$AFTERCLEAR" "all roles' tick reads are trustworthy right now"
+
+# The live probe re-derives from CURRENT state every call, independent of
+# the log -- clearing the log must NOT hide a role that is STILL
+# untrustworthy. Break a DIFFERENT role (impl2) for this check so it
+# doesn't fight the "clean after repair" assertion just above.
+mkdir -p "$URUN/run/state/.__usage/tick"
+printf garbage > "$URUN/run/state/.__usage/tick/impl2"
+STILLDIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
+assert_contains "clearing the log does NOT silence the live probe for a still-broken role" "$STILLDIRTY" "tick read is UNTRUSTED right now for: impl2"
 
 section "fwf usage (#96/#108): budget-enforcement ARMED/NOT ARMED surface (GV-signoff residual-risk fix) + this-run-vs-cumulative"
 NOBUDGET="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
