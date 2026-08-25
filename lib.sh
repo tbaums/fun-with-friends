@@ -2229,6 +2229,66 @@ fwf_lane_stale_verdict() {
   echo LANE_HEALTHY
 }
 
+# Fetch-then-detach worktree refresh for a READ-ONLY role (issue #146):
+# PM/GV/Captain hold no code and answer "what has already SHIPPED", so their
+# worktree should track __DEFAULT__ (main) freshly, not drift stale across a
+# long session. impl/qa are OUT OF SCOPE (they're mid-ticket and dirty by
+# design — this function's own safety rule already leaves them untouched,
+# see SKIPPED_DIRTY/SKIPPED_BRANCH below, but callers should only invoke
+# this for the read-only roles per the ticket).
+#
+# Safety rule (never touch impl/qa's in-flight work): only a DETACHED, CLEAN
+# worktree is refreshed. A worktree ON A BRANCH, or with uncommitted changes,
+# is left completely untouched — read-only, no git command mutates it.
+#
+# Mechanism is fetch-THEN-detach (not detach-then-fetch): `origin/<base>` is
+# only as fresh as the LAST fetch, so fetching first is what makes "0 behind"
+# mean anything. Fail LOUD: the post-refresh behind-count is asserted
+# against the SAME freshly-fetched ref, not assumed from the checkout having
+# "worked" — a fetch that silently returns stale data still gets caught.
+#
+# $1 = role tag. Prints exactly one line to stdout:
+#   REFRESHED <sha>       detached+clean, fetched, now at <sha> (0 behind)
+#   STALE <n> <sha>       fetched + checked out, but still <n> behind (loud
+#                         failure case — route this to an alarm, never let
+#                         it read as success)
+#   SKIPPED_BRANCH <ref>  left untouched — on a real branch, not detached
+#   SKIPPED_DIRTY          left untouched — uncommitted changes present
+#   FETCH_FAILED           git fetch (or the checkout) itself failed
+#   NO_WORKTREE             this role has no worktree to refresh
+#
+# #169 carve-out: #169 (idle-backfill) can leave a coordination worktree
+# LEGITIMATELY dirty/on-a-branch while producing a deliverable, which would
+# otherwise misread as SKIPPED_DIRTY/SKIPPED_BRANCH's "anomaly" here. #146's
+# own text assigns that reconciliation to "whoever builds the SECOND of
+# {#146, #169}" — as of this function, #169 is still open/unbuilt, so no
+# carve-out exists yet; its implementer owns adding one.
+fwf_worktree_refresh_role() {
+  local role="${1:?fwf_worktree_refresh_role needs a role tag}" dir branch behind sha
+  dir="$(fwf_role_cwd "$role")"
+  [ -d "$dir/.git" ] || [ -f "$dir/.git" ] || { echo "NO_WORKTREE"; return 0; }
+  branch="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  if [ -n "$branch" ]; then
+    echo "SKIPPED_BRANCH $branch"
+    return 0
+  fi
+  if [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]; then
+    echo "SKIPPED_DIRTY"
+    return 0
+  fi
+  git -C "$dir" fetch origin "$DEFAULT_BRANCH" >/dev/null 2>&1 \
+    || { echo "FETCH_FAILED"; return 0; }
+  git -C "$dir" checkout -q --detach "origin/$DEFAULT_BRANCH" 2>/dev/null \
+    || { echo "FETCH_FAILED"; return 0; }
+  behind="$(git -C "$dir" rev-list --count "HEAD..origin/$DEFAULT_BRANCH" 2>/dev/null || true)"
+  sha="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo unknown)"
+  case "$behind" in
+    ''|*[!0-9]*) echo "STALE unknown $sha";;
+    0) echo "REFRESHED $sha";;
+    *) echo "STALE $behind $sha";;
+  esac
+}
+
 # Parse an ISO-8601 UTC timestamp (e.g. gh's 2026-08-11T14:03:22Z) to epoch
 # seconds, portably across GNU and BSD date; echoes nothing on failure.
 fwf_iso_to_epoch() { # $1=iso8601

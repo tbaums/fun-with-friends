@@ -172,6 +172,26 @@ if [ "${#preflight_roles[@]}" -gt 0 ]; then
     || { echo "fwf-up: no worktrees for profile '$PROFILE' (missing:$missing_wt) — run 'fwf provision' or 'fwf start' first." >&2; exit 1; }
 fi
 
+# Boot-time worktree refresh for the read-only roles (issue #146 AC4): a role
+# provisioned a while ago should start current with $DEFAULT_BRANCH, not
+# carry forward whatever it was at provision-time. Necessary but NOT
+# sufficient on its own — the per-tick refresh (each role's own template)
+# and fwf supervise's independent fail-loud check cover the drift that
+# accumulates DURING a run, which this boot-time pass cannot. Warn-only:
+# a refresh failure here must not block the launch, since the per-tick
+# retry + supervise alarm are what actually own reporting it.
+if [ "$FULL" = 1 ] || [ "$pm_only" = 1 ] || [ "$coord_only" = 1 ]; then
+  coord_refresh_roles=(pm captain)
+  fwf_role_suppressed gv || coord_refresh_roles+=(gv)
+  for r in "${coord_refresh_roles[@]}"; do
+    wt_result="$(fwf_worktree_refresh_role "$r" 2>/dev/null || echo "FETCH_FAILED unknown")"
+    case "${wt_result%% *}" in
+      REFRESHED|NO_WORKTREE) : ;;
+      *) echo "fwf-up: WARNING — $r worktree refresh: $wt_result (will retry every tick, issue #146)" >&2 ;;
+    esac
+  done
+fi
+
 mkdir -p "$FWF_RUN"
 rm -f "$STOP_FILE"   # a fresh launch IS a resume — clear any stale STOP sentinel so agents don't idle immediately
 printf '%s\n' "$FWF_TEMPLATE" > "$FWF_RUN/template"   # persist the running template so read-only tools (the dash) resolve it, not the dev default (#51)

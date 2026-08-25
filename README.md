@@ -262,6 +262,31 @@ instead of stalling silently (issue #99).
   as a `WEDGED` verdict, not a one-off `resume` stdout line. Observation
   only; it never auto-respawns.
 
+- **Read-only role worktrees track current `main`, every tick, not just at
+  boot** (issue #146) — PM/GV/Captain each auto-refresh their own worktree
+  via `fwf worktree-refresh <role>` (fetch-THEN-detach, so "0 behind" means 0
+  behind the freshly-fetched remote, never a stale local ref) at the start of
+  every cycle, before reading anything. A boot-time-only refresh (`fwf up`)
+  is necessary but not sufficient — the drift the ticket found (a worktree
+  225/297 commits behind, reasoning about a codebase that no longer existed)
+  accumulates *during* a run, not just at startup. The #147 safety rule still
+  applies (a worktree on a branch, or with uncommitted changes, is left
+  completely untouched, protecting impl/qa's mid-ticket work), but for a
+  read-only role that same state is flagged as an anomaly rather than
+  silently skipped (issue #169's idle-backfill deliverable is the one
+  expected exception to that anomaly rule, not yet built as of this writing —
+  see the carve-out note above `fwf_worktree_refresh_role` in `lib.sh`).
+  Fail LOUD, not silent: the CLI wrapper (`fwf worktree-refresh`) exits 0
+  ONLY for a confirmed-current refresh — a hard failure (fetch failed, no
+  worktree at all) and a deliberate safety skip (branch/dirty) get distinct
+  non-zero codes (1 and 2), so "non-zero means alarm" can never misread a
+  skip as success, a real gap an earlier revision of this PR had. `fwf
+  supervise` independently re-runs the SAME refresh every pass and alarms
+  `WORKTREE_STALE` / `WORKTREE_ANOMALY` through the same routed channel as
+  `LANE_STALE`/`WEDGED` above — never a bare stdout line self-reported by the
+  role being watched. `impl`/`qa` worktrees are explicitly out of scope
+  (their staleness needs rebase-on-claim, a distinct problem).
+
   **Per-plane `up`/`down` flag matrix** (issue #155 — `--coord-only` is the
   non-destructive mirror of `--build-only`, for standing up just coordination
   from a cold/fully-down state, e.g. to groom the `product-wip` backlog
