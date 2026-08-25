@@ -41,10 +41,15 @@ Two further intrinsic tensions with (a):
 - **#123 single-flight tension (hole #3).** A ~25 min conductor e2e holds the
   box lock; an impl gate then *blocks inside the wrapper while still holding its
   per-role gate lock* (`fwf_gate_lock_acquire`, `lib.sh`). The per-role lock has
-  a 1800 s max-run ceiling (`FWF_GATE_LOCK_MAX_RUN_SECS`, `lib.sh:1486`); a
+  a 1800 s max-run ceiling (`FWF_GATE_LOCK_MAX_RUN_SECS`, `lib.sh`); a
   merely-*waiting* gate that crosses it is misread as wedged and a **second gate
-  is stacked** — recreating the very pileup #123 fixed. (a) is bounded only by
-  the 900 s wait `< 1800 s` ceiling margin — fragile.
+  is stacked** — recreating the very pileup #123 fixed. The true bound is
+  `wait + build < 1800 s`, **not** the `900 < 1800` a naive reading suggests —
+  the max-run clock starts at lock-acquire, so the wait is charged against the
+  same ceiling as the build. **This tension is NOT unique to (a):** (b) as first
+  shipped inherited it, because the gate held its #123 lock across the up-to-900 s
+  admission wait too. It is closed for (b) by releasing and re-acquiring the #123
+  lock around that wait (BLOCKER 2, `fwf-gate.sh`) — see the holes table.
 - **(a) still does the redundant compile 2–3×.** It serializes the thrash but
   does nothing about qa and conductor each compiling the same PR.
 
@@ -60,9 +65,23 @@ minus the summed live reservations, reserving the op-class's measured **peak**
 the atomic measure+reserve, **never across the multi-GB build.**
 
 This structurally removes hole #1's mechanism: **no lock is held across the
-build, so nothing auto-releases into an orphan.** And it dissolves hole #3: an
-un-admitted gate exits `EX_SKIPPED` *promptly*, releasing its #123 per-role
-lock, so a 25 min sibling build never pushes a waiting gate past the ceiling.
+build, so nothing auto-releases into an orphan.**
+
+Hole #3 is **not** "dissolved by construction," as an earlier draft claimed —
+that framing was wrong and is corrected here. `fwf_mem_admit` BLOCKS up to
+`FWF_MEM_ADMIT_TIMEOUT` (900 s), and the gate holds its #123 per-role gate lock
+across that wait. The real ceiling is therefore not `900 < 1800`; it is
+`admission_wait + build_time < FWF_GATE_LOCK_MAX_RUN_SECS` (1800 s), because the
+per-role lock's max-run clock starts at lock-acquire, not at build-start. A
+~400 s admission wait ahead of a ~1500 s conductor e2e sums to 1900 s > 1800 s —
+the reaper would misread that *progressing* gate as wedged (`rc=3`) and stack a
+second. The fix (`fwf-gate.sh`) is to **release the #123 per-role gate lock
+before the admission wait and re-acquire it after admission** — so the max-run
+ceiling only ever times the actual build, never wait+build. Single-flight is
+preserved: the build starts only after re-acquiring the lock, so two builds for
+one role never run at once (a losing re-acquirer defers and frees its own
+reservation). An un-admitted gate that times out still exits `EX_SKIPPED`
+promptly, holding no lock.
 
 Reserving the link **peak** answers (a)'s single strongest objection — that a
 memory spike lands *minutes into* a build, after admission already said yes. By
@@ -87,9 +106,9 @@ now" is also false. See the REDUCE section.
 
 | Hole | The prototype's flaw | This design |
 |---|---|---|
-| **#1 FATAL** — single-pid kill orphans cargo + auto-releases lock → second build stacks on orphan | intrinsic to flock-across-build | **Kill-safe process-group wrapper** (`fwf-gate.sh`): the gate becomes a pgroup **leader**, cargo inherits the group. A trappable kill → trap releases + `kill -KILL -$$` takes cargo down *with* the lock. An untrappable SIGKILL → the admission **reaper** SIGKILLs the stamped pgid when it drops the now-dead reservation. Verified in `test/mem-admit-test.sh`. |
+| **#1 FATAL** — single-pid kill orphans cargo + auto-releases lock → second build stacks on orphan | intrinsic to flock-across-build | **Kill-safe process-group wrapper** (`fwf-gate.sh`): the gate becomes a pgroup **leader**, cargo inherits the group. A trappable kill → trap releases + `kill -KILL -$$` takes cargo down *with* the lock. An untrappable single-pid SIGKILL → a **tree-aware reaper** SIGKILLs the stamped pgid when it drops the now-dead holder. **This covers the DEFAULT `FWF_MEM_ADMIT_ENABLE=0` path too:** the group-SIGKILL recovery is a SHARED helper (`_fwf_kill_orphan_group`, `lib.sh`), the #138 cargo-build **slot owner now records `pgid`/`pgleader`**, and its slot reaper group-kills the orphan tree before freeing the slot — so a SIGKILL to a default-path gate can no longer leave cargo orphaned while the next gate stacks a second build. Verified in `test/mem-admit-test.sh` on both paths. |
 | **#2** — no bounded-wait / wedged-holder detection → a hung-but-alive holder freezes the box forever | absent | `fwf_mem_admit` mirrors the e2e-lock bounded-wait/report loop (`FWF_MEM_ADMIT_TIMEOUT=900`/`POLL=5`/`STALE_SECS=1800`/`REPORT_SECS=30`, same cadence as `lib.sh:1201`). Decision-mutex has its own dead-PID + stale backstop (`_fwf_mem_admit_reap_mutex`, reusing the cargo-slot exclusive `.reap` idiom, `lib.sh:1420`). |
-| **#3** — blocking lock violates #123 single-flight → waiting gate exceeds 1800 s → reaper stacks a second gate | intrinsic to across-build lock | **Closed by construction:** admission holds no lock across the build; an un-admitted gate exits `EX_SKIPPED` at once, freeing its #123 per-role lock (`fwf_gate_lock_release`). A 25 min sibling build never blocks a waiter. |
+| **#3** — blocking lock violates #123 single-flight → waiting gate exceeds 1800 s → reaper stacks a second gate | intrinsic to across-build lock | **Bounded by an explicit lock hand-off, NOT "by construction":** admission holds no lock across the *build*, but the gate DID hold its #123 per-role gate lock across the up-to-900 s admission *wait* — so the true ceiling is `admission_wait + build < FWF_GATE_LOCK_MAX_RUN_SECS` (1800 s), which a ~400 s wait + ~1500 s e2e violates. Fixed in `fwf-gate.sh`: the gate **releases** its #123 lock before the admission wait and **re-acquires** it after admission, so the max-run clock only ever times the build. A timed-out gate still exits `EX_SKIPPED` holding nothing. |
 | **#4** — coverage gap: bare `cargo check`/`build` debugging, and each resident `rust-analyzer` + proc-macro server, bypass a profile-var wrapper | unaddressed | **Honestly partial** — see the RAM-sources table. Ground-truth measurement *absorbs* these (they lower measured-free) but does not *bound* them. RA cannot be caught by a PATH `cargo` shim because RA resolves `rustc` itself. Bounded only out-of-band. |
 
 ## GV must-address criteria
@@ -183,13 +202,37 @@ Grounded in verified files:
 5. **Config** (`config.sh`) — `MEM_ADMIT` + `FWF_MEM_ADMIT_*` + provisional
    `FWF_MEM_RESERVE_*` beside `E2E_LOCK`/`CARGO_BUILD_LOCK`; `FWF_MEM_ADMIT_ENABLE`
    OFF by default. The #138 `FWF_CARGO_BUILD_CONCURRENCY` semaphore is retained
-   (the fallback), not removed — it carried the same tree-blind reap (checks only
-   the wrapper pid, `lib.sh:1421`), so admission supersedes it once calibrated.
-6. **Test** — `test/mem-admit-test.sh`: 23 checks, **Mac-runnable, no factory /
+   as the default fallback and, per BLOCKER 1's fix, its reap is **no longer
+   tree-blind**: the slot owner records `pgid`/`pgleader` and the reaper
+   group-SIGKILLs an orphaned build tree (via the shared `_fwf_kill_orphan_group`)
+   before freeing the slot — so the DEFAULT path is safe against a single-pid
+   SIGKILL regardless of the admission flag.
+6. **Shared kill-safe recovery + default-path coverage** (`lib.sh`, BLOCKER 1) —
+   the group-SIGKILL orphan-tree recovery is extracted into a SHARED helper
+   `_fwf_kill_orphan_group` (the admission reaper's `_fwf_mem_admit_kill_group`
+   is now a thin alias); `fwf_cargo_build_slot_acquire` stamps `pgid`/`pgleader`
+   and its reaper calls the shared helper before `rm -rf "$slot"`. The DEFAULT
+   `FWF_MEM_ADMIT_ENABLE=0` path is therefore protected identically to the
+   admission path.
+7. **Gate-lock hand-off across the admission wait** (`fwf-gate.sh`, BLOCKER 2) —
+   the gate releases its #123 per-role gate lock before the up-to-900 s
+   `fwf_mem_admit` wait and re-acquires it after admission (guarded by a
+   `gate_lock_held` flag so the release trap never rm's a sibling's lock), so a
+   merely-waiting gate is never misread as wedged and stacked.
+8. **Ownerless decision-mutex backstop** (`lib.sh`, BLOCKER 3) —
+   `_fwf_mem_admit_reap_mutex` now falls back to the mutex DIR's mtime when the
+   owner file is absent (a SIGKILL between `mkdir` and the owner write), so an
+   ownerless mutex ages out and is reaped instead of deferring ALL admissions
+   forever.
+9. **Test** — `test/mem-admit-test.sh`: 31 checks, **Mac-runnable, no factory /
    tmux / cargo / network**. Proves the free-RAM probe, admit/deny/reserve-sum,
-   dead-holder reap, the **hole-#1 orphan-tree SIGKILL**, the reap safety guards,
-   that the gate is a pgroup leader, and that **killing the gate takes the wrapped
-   build down with it** (not orphaned).
+   dead-holder reap, the **hole-#1 orphan-tree SIGKILL on BOTH the admission and
+   the DEFAULT #138 slot paths**, the reap safety guards, that the gate is a
+   pgroup leader, that **killing the gate takes the wrapped build down with it**
+   (not orphaned), that the DEFAULT slot owner records `pgid`/`pgleader`, that
+   the gate **releases its #123 lock during the admission wait** (BLOCKER 2), and
+   that an **ownerless decision mutex is reaped via the dir-mtime fallback**
+   (BLOCKER 3).
 
 ## Deferred to the real multi-agent box (cannot be validated on a Mac)
 

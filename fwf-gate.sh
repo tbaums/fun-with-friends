@@ -162,12 +162,17 @@ if [ -n "$tip_cmd" ]; then
 fi
 
 fwf_gate_lock_acquire "$role" || exit "$EX_SKIPPED"
+gate_lock_held=1   # issue #156 BLOCKER 2: tracked so the release trap never rm's
 
 e2e_held=0
 cargo_build_slot=""
 mem_token=""
+# Only release the #123 per-role gate lock if WE currently hold it. During the
+# admission wait (below) we deliberately drop it and a sibling tick may take it;
+# an unconditional release here would then rm the sibling's lock. gate_lock_held
+# is the guard.
 _fwf_gate_release() {
-  fwf_gate_lock_release "$role"
+  [ "$gate_lock_held" = 1 ] && fwf_gate_lock_release "$role"
   [ "$e2e_held" = 1 ] && fwf_e2e_lock_release
   fwf_cargo_build_slot_release "$cargo_build_slot"
   fwf_mem_admit_release "$mem_token"
@@ -210,8 +215,22 @@ fi
 if [ "$want_cargo_build" = 1 ]; then
   if [ "${FWF_MEM_ADMIT_ENABLE:-0}" = 1 ]; then
     if [ "$want_e2e" = 1 ]; then reserve_gb="$FWF_MEM_RESERVE_E2E_GB"; else reserve_gb="$FWF_MEM_RESERVE_BUILD_GB"; fi
+    # issue #156 BLOCKER 2: fwf_mem_admit BLOCKS up to FWF_MEM_ADMIT_TIMEOUT
+    # (900s) waiting for RAM. Do NOT hold the #123 per-role gate lock across
+    # that wait: the lock's max-run ceiling (FWF_GATE_LOCK_MAX_RUN_SECS=1800) is
+    # measured from lock-acquire, so admission_wait + build could exceed it (a
+    # ~400s wait + ~1500s conductor e2e = 1900s > 1800s) and the reaper would
+    # misread this progressing gate as WEDGED and stack a second. Release the
+    # lock BEFORE the wait and re-acquire AFTER admission, so the ceiling only
+    # ever times the actual build. Single-flight is preserved: the build starts
+    # only after re-acquiring the lock, so two builds for one role never run at
+    # once — a losing re-acquirer defers (its trap frees its own mem token).
+    fwf_gate_lock_release "$role"; gate_lock_held=0
     mem_token="$(fwf_mem_admit "$role" "$reserve_gb")" \
       || { echo "fwf gate: insufficient free RAM to admit this build, deferring this tick" >&2; exit "$EX_SKIPPED"; }
+    fwf_gate_lock_acquire "$role" \
+      || { echo "fwf gate: admitted but the per-role gate lock was taken during the wait — deferring this tick" >&2; exit "$EX_SKIPPED"; }
+    gate_lock_held=1
   else
     cargo_build_slot="$(fwf_cargo_build_slot_acquire "$role")" \
       || { echo "fwf gate: cargo build slots busy, deferring" >&2; exit "$EX_SKIPPED"; }

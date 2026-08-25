@@ -179,6 +179,103 @@ else
   bad "hole #1 gate kill test" "wrapped command never registered its pid"
 fi
 
+echo "== DEFAULT #138 path (BLOCKER 1): the SLOT reaper is tree-aware — a dead pgleader's orphan is SIGKILLed, no 2nd build stacks =="
+# This is the FATAL default-path fix: with FWF_MEM_ADMIT_ENABLE=0 the cargo-build
+# SEMAPHORE reaper runs, NOT the admission reaper. Prove it now group-kills an
+# orphaned build tree before freeing the slot (previously tree-blind → the next
+# gate stacked a 2nd build on the still-running orphan). Same orphan construction
+# as the admission-path test, driven through fwf_cargo_build_slot_acquire.
+PG2="$(perl -e '
+  use POSIX qw(setpgid);
+  setpgid(0,0) or die "setpgid: $!";
+  $|=1;
+  my $pid = fork();
+  if ($pid == 0) {
+    open(STDIN,  "<", "/dev/null");
+    open(STDOUT, ">", "/dev/null");
+    open(STDERR, ">", "/dev/null");
+    exec "sleep", "120";
+    die "exec: $!";
+  }
+  print "$$ $pid\n";
+')"
+L2="${PG2%% *}"; C2="${PG2##* }"
+STRAYS+=("$C2")
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$L2" 2>/dev/null || break; sleep 0.2; done
+kill -0 "$C2" 2>/dev/null && ok "default-path orphan stand-in alive before reap (pid $C2)" \
+  || bad "default-path orphan stand-in alive before reap" "pid $C2 already gone"
+# Stamp a dead-pgleader slot owner exactly as fwf_cargo_build_slot_acquire writes it now.
+mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+printf 'role=orphaned\npid=%s\npgid=%s\npgleader=1\nhost=%s\nworktree=%s\nacquired=%s\n' \
+  "$L2" "$L2" "$(hostname)" "$PWD" "$(( $(date +%s) - 10 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+# A fresh acquirer (concurrency 1) must reap the dead slot AND take the orphan
+# tree down BEFORE it is granted the freed slot.
+GOT="$(FWF_CARGO_BUILD_CONCURRENCY=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=5 FWF_CARGO_BUILD_LOCK_POLL=1 fwf_cargo_build_slot_acquire freshbuild)"; RG=$?
+[ "$RG" = 0 ] && [ "$GOT" = 1 ] && ok "default path: fresh acquirer reaps the dead slot and is granted it" \
+  || bad "default path: fresh acquirer reaps the dead slot and is granted it" "rc=$RG slot=[$GOT]"
+GONE2=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$C2" 2>/dev/null || { GONE2=1; break; }; sleep 0.2; done
+[ "$GONE2" = 1 ] && ok "BLOCKER 1: the SLOT reaper SIGKILLed the orphaned build tree (pid $C2 gone — no 2nd build stacks on it)" \
+  || bad "BLOCKER 1: the SLOT reaper SIGKILLed the orphaned build tree" "pid $C2 still alive — a 2nd build would stack on the orphan"
+fwf_cargo_build_slot_release 1
+rm -rf "$CARGO_BUILD_LOCK/slot-1.reap"
+
+echo "== BLOCKER 1: the DEFAULT-path slot owner now records pgid + pgleader =="
+# The reaper can only group-kill if the owner file carries the group. Prove a
+# normal acquire stamps them (this test is the pgleader=0 case; that's fine —
+# the reaper's fail-safe simply declines to signal a non-pgleader group).
+GOT3="$(FWF_CARGO_BUILD_CONCURRENCY=1 fwf_cargo_build_slot_acquire stamped)"; RG3=$?
+OWN3="$CARGO_BUILD_LOCK/slot-$GOT3/owner"
+if [ "$RG3" = 0 ] && [ -f "$OWN3" ]; then
+  P3="$(_fwf_e2e_owner_field pgid "$OWN3")"; PL3="$(_fwf_e2e_owner_field pgleader "$OWN3")"
+  case "$P3" in ''|*[!0-9]*) bad "slot owner records an integer pgid" "got [$P3]";; *) ok "slot owner records an integer pgid ($P3)";; esac
+  [ -n "$PL3" ] && ok "slot owner records a pgleader field ($PL3)" || bad "slot owner records a pgleader field" "empty"
+else
+  bad "slot acquire for pgid/pgleader stamp check" "rc=$RG3 slot=[$GOT3]"
+fi
+fwf_cargo_build_slot_release "$GOT3"
+
+echo "== BLOCKER 3: an OWNERLESS decision mutex is reaped via dir-mtime fallback =="
+# A SIGKILL between `mkdir "$mutex"` and the owner write leaves a decision dir
+# with NO owner file. Previously the empty ts returned "not stale" forever,
+# wedging ALL admissions. The dir-mtime fallback must now reap it.
+mkdir -p "$MEM_ADMIT/decision"          # ownerless: deliberately write NO owner file
+[ ! -f "$MEM_ADMIT/decision/owner" ] && ok "constructed an ownerless decision mutex (no owner file)" \
+  || bad "constructed an ownerless decision mutex"
+FWF_MEM_ADMIT_DECISION_STALE_SECS=0 _fwf_mem_admit_reap_mutex
+[ ! -d "$MEM_ADMIT/decision" ] && ok "BLOCKER 3: ownerless mutex reaped via dir-mtime fallback (admissions no longer wedged)" \
+  || bad "BLOCKER 3: ownerless mutex reaped via dir-mtime fallback" "decision dir still present — admissions wedged forever"
+rm -rf "$MEM_ADMIT/decision.reap"
+
+echo "== BLOCKER 2: fwf-gate.sh RELEASES the #123 per-role gate lock across the admission wait =="
+# With admission ON and an impossible reserve, fwf_mem_admit blocks (polls). The
+# gate must NOT hold its per-role gate lock during that wait, or admission_wait +
+# build could cross FWF_GATE_LOCK_MAX_RUN_SECS and the reaper stacks a 2nd gate.
+LOCKDIR="$(fwf_gate_lock_dir admitwait)"
+FWF_MEM_ADMIT_ENABLE=1 FWF_GATE_PGLEADER_ENABLE=1 \
+FWF_MEM_ADMIT_FLOOR_GB=0 FWF_MEM_RESERVE_BUILD_GB=999999 \
+FWF_MEM_ADMIT_TIMEOUT=30 FWF_MEM_ADMIT_POLL=1 FWF_MEM_ADMIT_REPORT_SECS=60 \
+  "$ROOT/fwf-gate.sh" admitwait --cargo-build -- true >/dev/null 2>&1 &
+GATE_WAIT_PID=$!
+STRAYS+=("$GATE_WAIT_PID")
+# Give it a moment to acquire-then-release the gate lock and enter the admission wait.
+RELEASED=0
+for _ in $(seq 1 25); do
+  kill -0 "$GATE_WAIT_PID" 2>/dev/null || break     # if it exited, stop (checked below)
+  [ -d "$LOCKDIR" ] || { RELEASED=1; break; }
+  sleep 0.2
+done
+if kill -0 "$GATE_WAIT_PID" 2>/dev/null && [ "$RELEASED" = 1 ]; then
+  ok "BLOCKER 2: gate lock is RELEASED while the gate is still alive and waiting on RAM admission"
+else
+  bad "BLOCKER 2: gate lock released during admission wait" "released=$RELEASED gate_alive=$(kill -0 "$GATE_WAIT_PID" 2>/dev/null && echo yes || echo no) lockdir_present=$([ -d "$LOCKDIR" ] && echo yes || echo no)"
+fi
+# Tear the waiting gate down. It never got admitted, so it has no build child —
+# a single-pid SIGKILL suffices (a group kill here risks the test's own group).
+kill -KILL "$GATE_WAIT_PID" 2>/dev/null
+wait "$GATE_WAIT_PID" 2>/dev/null
+rm -rf "$LOCKDIR" "$MEM_ADMIT"
+
 echo
 echo "mem-admit: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -1377,6 +1377,35 @@ FWF_CARGO_BUILD_LOCK_TIMEOUT="${FWF_CARGO_BUILD_LOCK_TIMEOUT:-900}"
 FWF_CARGO_BUILD_LOCK_POLL="${FWF_CARGO_BUILD_LOCK_POLL:-5}"
 FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 
+# --- SHARED kill-safe orphan-tree recovery (issue #156 hole #1) --------------
+# Extracted OUT of the admission-only path so the DEFAULT #138 cargo-build
+# semaphore path is protected too, regardless of FWF_MEM_ADMIT_ENABLE. A gate is
+# a process-group LEADER (fwf-gate.sh's setpgid re-exec), so its cargo child
+# runs in the gate's group. An untrappable single-pid SIGKILL to the gate (the
+# OOM killer on a 16GB box, `tmux respawn-pane -k`, `kill -9`) cannot fire the
+# gate's TERM/INT/HUP trap: the same-group cargo child reparents to PID1 and
+# keeps building. When a reaper (mem-admission OR the cargo-slot reaper) later
+# drops that dead holder's slot/reservation, it MUST take the orphaned build
+# tree down FIRST — or the freed slot/RAM is handed to the next gate, which
+# stacks a SECOND build on top of the still-running orphan (the failed
+# prototype's fatal flaw). This is that group-SIGKILL, with the same fail-safes
+# the admission reaper had: only a same-host, pgleader-stamped, integer pgid
+# that is neither 1 nor OUR OWN group is ever signalled — signalling a
+# non-leader's group could take out an unrelated tmux pane shell, and a
+# non-pgleader holder's group is left for ground-truth measurement to absorb.
+_fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid
+  local host="$1" pgleader="$2" pgid="$3" ownpgid
+  [ "$pgleader" = 1 ] || return 0
+  [ "$host" = "$(hostname)" ] || return 0
+  case "$pgid" in ''|*[!0-9]*) return 0;; esac
+  [ "$pgid" -gt 1 ] || return 0
+  ownpgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  [ "$pgid" = "$ownpgid" ] && return 0
+  echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
+  kill -KILL -"$pgid" 2>/dev/null
+  return 0
+}
+
 # $1 = holder label (e.g. "impl2", "conductor"). On success, echoes the
 # acquired slot number (1..FWF_CARGO_BUILD_CONCURRENCY) to stdout and returns
 # 0; ALWAYS pair with fwf_cargo_build_slot_release "$slot" in a trap so a
@@ -1384,14 +1413,20 @@ FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 # callers treat that as a SKIP (defer to next tick), the same as a busy e2e
 # lock, never as a build failure.
 fwf_cargo_build_slot_acquire() {
-  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder reap_reason pid2
+  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder reap_reason pid2 pgid pgleader
+  # issue #156 hole #1 (DEFAULT path): stamp the holder's process group so this
+  # slot's reaper can take an orphaned build tree down on a single-pid SIGKILL —
+  # the same protection the admission path already had, now covering the default.
+  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
   mkdir -p "$CARGO_BUILD_LOCK" 2>/dev/null
   while true; do
     for n in $(seq 1 "$FWF_CARGO_BUILD_CONCURRENCY"); do
       slot="$CARGO_BUILD_LOCK/slot-$n"
       if mkdir "$slot" 2>/dev/null; then
-        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
-          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
+        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
         echo "$n"
         return 0
       fi
@@ -1424,10 +1459,19 @@ fwf_cargo_build_slot_acquire() {
         continue   # re-verified: it's live now (someone else already reaped+reacquired) — leave it alone
       fi
       echo "fwf: cargo build slot $n held by $reap_reason — breaking it" >&2
+      # issue #156 hole #1 (DEFAULT path): the dead holder may have been
+      # single-pid SIGKILLed (OOM / respawn-pane -k / kill -9), orphaning its
+      # cargo tree into the holder's now-leaderless process group. Take that
+      # tree down BEFORE freeing the slot, or the next acquirer stacks a second
+      # build on the still-running orphan (the tree-blind reap this closes).
+      _fwf_kill_orphan_group \
+        "$(_fwf_e2e_owner_field host "$owner")" \
+        "$(_fwf_e2e_owner_field pgleader "$owner")" \
+        "$(_fwf_e2e_owner_field pgid "$owner")"
       rm -rf "$slot"
       if mkdir "$slot" 2>/dev/null; then
-        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
-          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
+        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
         rmdir "$slot.reap" 2>/dev/null
         echo "$n"
         return 0
@@ -1517,27 +1561,11 @@ _fwf_mem_admit_reserved_sum() {
   echo "$sum"
 }
 
-# Guarded group-kill (hole #1 tree-death). A reservation stamped by a genuine
-# kill-safe pgleader records its process-group id; when that reservation is
-# reaped (its holder died — e.g. respawn-pane -k SIGKILLed the gate, orphaning
-# cargo into that group), SIGKILL the WHOLE group so the orphaned build dies
-# before the freed RAM is handed to the next admitter. Fail-safe: only a
-# same-host, pgleader-stamped, integer pgid that is neither 1 nor OUR OWN group
-# is ever signalled — killing a non-leader's group could take out an unrelated
-# tmux pane shell, and a non-pgleader reservation's group is left for
-# ground-truth measurement to absorb instead.
-_fwf_mem_admit_kill_group() { # $1=host $2=pgleader $3=pgid
-  local host="$1" pgleader="$2" pgid="$3" ownpgid
-  [ "$pgleader" = 1 ] || return 0
-  [ "$host" = "$(hostname)" ] || return 0
-  case "$pgid" in ''|*[!0-9]*) return 0;; esac
-  [ "$pgid" -gt 1 ] || return 0
-  ownpgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-  [ "$pgid" = "$ownpgid" ] && return 0
-  echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose reservation holder died — SIGKILL group" >&2
-  kill -KILL -"$pgid" 2>/dev/null
-  return 0
-}
+# Back-compat alias for the admission reaper's tree-death kill. The real
+# implementation is now the SHARED _fwf_kill_orphan_group (defined above, beside
+# the cargo-build semaphore) so the DEFAULT #138 path is covered by the exact
+# same guarded group-SIGKILL, not an admission-only copy.
+_fwf_mem_admit_kill_group() { _fwf_kill_orphan_group "$@"; }
 
 # Reap dead/stale reservations INSIDE the decision mutex. A reservation whose
 # stamping pid is confirmed dead (same host) — or, cross-host/unparseable, one
@@ -1583,7 +1611,19 @@ _fwf_mem_admit_reap_mutex() {
     stale=1
   else
     now="$(date +%s)"
-    case "$ts" in ''|*[!0-9]*) return 0;; esac
+    case "$ts" in
+      ''|*[!0-9]*)
+        # OWNERLESS mutex (issue #156 hole/BLOCKER 3): a SIGKILL landing between
+        # `mkdir "$mutex"` and the `printf >owner` in fwf_mem_admit leaves a
+        # decision dir with NO owner file — host/pid/acquired all empty. Without
+        # a fallback the empty ts returned "not stale" here forever, wedging the
+        # decision mutex and permanently deferring ALL cargo-build admissions.
+        # Fall back to the mutex DIR's own mtime so an ownerless mutex still ages
+        # out and is reaped. A dir we cannot age even by mtime is left alone.
+        ts="$(fwf_file_mtime "$d")"
+        case "$ts" in ''|*[!0-9]*) return 0;; esac
+        ;;
+    esac
     [ $(( now - ts )) -ge "$FWF_MEM_ADMIT_DECISION_STALE_SECS" ] && stale=1
   fi
   [ "$stale" = 1 ] || return 0
