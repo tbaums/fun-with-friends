@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-08-25
+
+### Changed
+- **Memory-admission control is now ON by default** (#156 follow-up, config default) — `FWF_MEM_ADMIT_ENABLE` defaults to `1`, so every heavy build's START is gated on measured free RAM minus live reservations. This actively *prevents* the concurrent-build memory thrash #156 targets, rather than only cleaning up orphans after an OOM. The per-op reserve sizes (`FWF_MEM_RESERVE_FAST/BUILD/E2E_GB`, `FWF_MEM_ADMIT_FLOOR_GB`) are conservative placeholders biased toward preventing OOM over throughput — measure per-op peaks on a real box and tune them. Set `FWF_MEM_ADMIT_ENABLE=0` to restore the prior #138-semaphore-only behavior.
+
 ## [0.32.0] - 2026-08-25
 
 ### Added
