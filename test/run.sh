@@ -4544,6 +4544,29 @@ if command -v sccache >/dev/null 2>&1; then
   assert_eq "an explicit non-sccache RUSTC_WRAPPER is never overridden" "some-other-wrapper" "$(ci_f 4 "$R")"
 fi
 
+# J. issue #268: passing configure_sccache=0 skips step (3) entirely, leaving
+# RUSTC_WRAPPER/SCCACHE_DIR exactly as found -- even when sccache IS installed
+# and would otherwise auto-configure (case G above). Target-dir isolation
+# (steps 1-2) still runs regardless of this param.
+ci_run_noconfigure() { # $1 = setup snippet
+  FWF_PROFILE=example bash -c '
+    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
+    shared="$(mktemp -d "${TMPDIR:-/tmp}/fwf-shared.XXXXXX")"
+    '"$1"'
+    fwf_cargo_isolate 0; rc=$?
+    printf "%s|%s|%s" "${CARGO_TARGET_DIR:-UNSET}" "${RUSTC_WRAPPER:-UNSET}" "$rc"
+    rm -rf "$wt" "$shared"
+  '
+}
+if command -v sccache >/dev/null 2>&1; then
+  R="$(FWF_RUN_DIR="$TMP/ci-sccache-run3" ci_run_noconfigure ':')"
+  assert_eq "configure_sccache=0: RUSTC_WRAPPER stays unset even though sccache is installed" "UNSET" "$(ci_f 2 "$R")"
+  assert_eq "  ...and isolate still succeeds"                                                  "0"     "$(ci_f 3 "$R")"
+fi
+R="$(ci_run_noconfigure 'export CARGO_TARGET_DIR="$shared"')"
+assert_eq "configure_sccache=0 still composes with target isolation (target dropped)" "UNSET" "$(ci_f 1 "$R")"
+
 # --------------------------------------------------------------------------
 section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"
 
@@ -4686,6 +4709,48 @@ assert_contains "caller's own FWF_PAIRS is preserved"   "$(cat "$F175REPORT")" "
 assert_contains "caller's own FWF_REPO is preserved"    "$(cat "$F175REPORT")" "REPO=$ROOT"
 
 # --------------------------------------------------------------------------
+section "fwf gate does not leak sccache config into an unrelated wrapped command (issue #268)"
+# fwf_cargo_isolate's sccache step used to run unconditionally inside every
+# `fwf gate` invocation, so RUSTC_WRAPPER/SCCACHE_DIR leaked into the wrapped
+# command's env even when it had nothing to do with cargo -- corrupting the
+# G/H sccache self-tests above whenever THEY ran via the ordinary gate path
+# (`fwf gate <role> -- bash -c "bash test/run.sh"`, every role's routine
+# fast gate). Only a gate that passes --cargo-build should configure it.
+F268RUN="$TMP/run268"; mkdir -p "$F268RUN/state/example"
+F268REPORT="$TMP/f268-env.txt"
+cat > "$TMP/f268-probe.sh" <<'F268EOF'
+#!/usr/bin/env bash
+printf 'WRAPPER=%s
+' "${RUSTC_WRAPPER-<unset>}"
+printf 'SCCACHE_DIR=%s
+' "${SCCACHE_DIR-<unset>}"
+F268EOF
+chmod +x "$TMP/f268-probe.sh"
+
+if command -v sccache >/dev/null 2>&1; then
+  # (a) ordinary gate, no --cargo-build: the wrapped command must NOT see
+  #     sccache configured, even though it IS installed and would otherwise
+  #     auto-configure (this is the exact repro from #268).
+  env -u RUSTC_WRAPPER -u SCCACHE_DIR FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
+      "$ROOT/fwf-gate.sh" f268a -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+  assert_contains "no --cargo-build: RUSTC_WRAPPER not configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=<unset>"
+  assert_contains "no --cargo-build: SCCACHE_DIR not configured for wrapped cmd"   "$(cat "$F268REPORT")" "SCCACHE_DIR=<unset>"
+
+  # (b) --cargo-build IS passed: the wrapped command still gets sccache, since
+  #     it is actually going to build cargo -- the speed-up #138 piece A intends.
+  env -u RUSTC_WRAPPER -u SCCACHE_DIR FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
+      "$ROOT/fwf-gate.sh" f268b --cargo-build -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+  assert_contains "--cargo-build: RUSTC_WRAPPER IS configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=sccache"
+else
+  echo "  skip #268 leak tests (sccache not installed on this box)"
+fi
+
+# (c) a caller's own explicit RUSTC_WRAPPER survives regardless of --cargo-build
+#     -- no --cargo-build never touches it, and #138's own no-override rule
+#     covers the --cargo-build path.
+env RUSTC_WRAPPER=caller-wrapper FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f268c -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+assert_contains "caller's own RUSTC_WRAPPER survives with no --cargo-build" "$(cat "$F268REPORT")" "WRAPPER=caller-wrapper"
 
 # --------------------------------------------------------------------------
 # reconcile ENFORCEMENT (#179): the classifier was always sound; what was
