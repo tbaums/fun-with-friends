@@ -881,6 +881,28 @@ assert_contains "supervise reports a confirmed-old-baseline role's real verdict"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
 
+# issue #211 AC (h) -- the AC that protects the floor: under a simulated
+# tick READ failure, supervise must classify UNKNOWN and NOT reap, even
+# with auto-respawn explicitly ENABLED (FWF_SUPERVISE_AUTORESPAWN=1) --
+# proving this isn't just "the flag happened to be off" (the pre-existing
+# test above), but that an untrustworthy read genuinely never reaches the
+# WEDGED branch that can trigger a respawn at all. AC (g) (above, the
+# fwf_tick_bump byte-level test) proves the counter itself; this proves the
+# CONSEQUENCE -- a fix that passes (g) and fails (h) turns data corruption
+# into destroyed in-flight work, which is the worse failure.
+mkdir -p "$SV_RUN/state/example/tick"
+echo 5 > "$SV_RUN/state/example/tick/svunknown"
+FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
+read -r SVU_T SVU_TOK SVU_EP < "$SV_RUN/state/example/tick-watch/svunknown"
+printf '%s %s %s\n' "$SVU_T" "$SVU_TOK" "$(( SVU_EP - 700 ))" > "$SV_RUN/state/example/tick-watch/svunknown"
+printf garbage > "$SV_RUN/state/example/tick/svunknown"   # simulate a tick READ failure
+SVUOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
+assert_contains "AC(h): a simulated tick-read failure classifies UNKNOWN, not WEDGED" "$SVUOUT" "svunknown  UNKNOWN"
+assert_not_contains "AC(h): supervise does NOT reap -- no respawn attempted even WITH autorespawn=1" "$SVUOUT" "respawning"
+assert_not_contains "AC(h): fwf-respawn.sh is never invoked at all for this role" "$SVUOUT" "respawn FAILED"
+assert_eq "AC(h): the tick counter itself is unmodified by this whole pass (still 'garbage')" "garbage" \
+  "$(cat "$SV_RUN/state/example/tick/svunknown")"
+
 section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
 # Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
 # out. FWF_LANE_STALE_MULT pinned so the threshold is deterministic
@@ -2215,34 +2237,52 @@ ISS create --title "Gated thing" --label product-wip >/dev/null
 ISS edit 3 --remove-label product-wip >/dev/null 2>&1 && ok "remove last label survives" || bad "remove last label survives"
 assert_contains "un-gated issue enters survey" "$(ISS list --search "is:open -label:product-wip")" "LI-3"
 
+# issue #211 AC (d): labels_of itself must produce DIFFERENT outcomes for
+# "genuinely no labels" (a real, confident empty answer) vs "file unreadable"
+# (untrustworthy) -- the #200 shape this ticket's discrimination test
+# targets. `source ... help` runs the harmless default subcommand so the
+# functions are defined without dispatching a real command first.
+LOF() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example bash -c "source '$ROOT/fwf-issues.sh' help >/dev/null 2>&1; $1"; }
+NOLABEL_OUT="$(ISS create --title "No labels at all")"
+NOLABEL_N="$(printf '%s' "$NOLABEL_OUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+LOF_EMPTY_N="$(LOF "labels_of $NOLABEL_N >/dev/null; echo \$?")"
+assert_eq "labels_of: a genuinely label-less issue -> exit 0 (real, confident empty)" "0" "$LOF_EMPTY_N"
+LOF_MISSING_RC="$(LOF 'if labels_of 99999 >/dev/null 2>&1; then echo 0; else echo $?; fi')"
+assert_eq "labels_of: a nonexistent issue number -> exit 1 (untrustworthy, DIFFERENT from empty)" "1" "$LOF_MISSING_RC"
+
 # issue #211: a collapsed labels_of read must never silently drop labels on
 # rewrite -- "the highest-consequence instance of this class in the tree"
 # per the ticket, because a dropped product-wip un-gates a ticket. Real
 # fixture: chmod the issue file unreadable mid-edit (not a mock).
-ISS create --title "Gated for #211" --body "body text" --label product-wip --label bug >/dev/null
-ISSF211="$(find "$ISSRUN/issues/example/open" -name '4-*.md')"
+# Issue number captured dynamically, not hardcoded -- this section runs
+# after other tests in this file that also call ISS create, so the "next"
+# number shifts as more are added upstream; hardcoding it here is exactly
+# the kind of fragile-fixture bug this session has hit before.
+G211OUT="$(ISS create --title "Gated for #211" --body "body text" --label product-wip --label bug)"
+N211="$(printf '%s' "$G211OUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+ISSF211="$(find "$ISSRUN/issues/example/open" -name "$N211-*.md")"
 chmod 000 "$ISSF211"
-IE211OUT="$(ISS edit 4 --title "Should be refused" 2>&1)"; IE211RC=$?
+IE211OUT="$(ISS edit "$N211" --title "Should be refused" 2>&1)"; IE211RC=$?
 chmod 644 "$ISSF211"
 assert_eq "unreadable issue file: --title edit REFUSES, exit non-zero" "1" "$IE211RC"
 assert_contains "refusal names the cause" "$IE211OUT" "could not read its current labels"
 assert_contains "the file is left COMPLETELY untouched (old title, both labels intact)" \
-  "$(cat "$ISSF211")" "# LI-4: Gated for #211"
+  "$(cat "$ISSF211")" "# LI-$N211: Gated for #211"
 assert_contains "  ...product-wip specifically survives the refused edit" "$(cat "$ISSF211")" "product-wip"
 assert_not_contains "the refused title never lands" "$(cat "$ISSF211")" "Should be refused"
 # --body goes through the SAME guard (_set_body_locked), same fixture shape.
 chmod 000 "$ISSF211"
-IB211OUT="$(ISS edit 4 --body "new body" 2>&1)"; IB211RC=$?
+IB211OUT="$(ISS edit "$N211" --body "new body" 2>&1)"; IB211RC=$?
 chmod 644 "$ISSF211"
 assert_eq "unreadable issue file: --body edit ALSO refuses, exit non-zero" "1" "$IB211RC"
 assert_contains "  ...body edit refusal also names the cause" "$IB211OUT" "could not read"
 assert_contains "  ...original body survives the refused edit" "$(cat "$ISSF211")" "body text"
 # Normal (readable) edit is completely unaffected by the guard -- labels
 # survive a title-only edit exactly as before this fix.
-ISS edit 4 --title "A real edit" >/dev/null
+ISS edit "$N211" --title "A real edit" >/dev/null
 assert_contains "a normal edit still works and still preserves labels" \
   "$(cat "$ISSF211")" "labels: product-wip, bug"
-assert_contains "  ...and the real title actually lands" "$(cat "$ISSF211")" "# LI-4: A real edit"
+assert_contains "  ...and the real title actually lands" "$(cat "$ISSF211")" "# LI-$N211: A real edit"
 
 # issue #211: --add-label and --remove-label are a SIBLING path into the
 # same rewrite -- they compute the label list themselves rather than going
@@ -2250,7 +2290,7 @@ assert_contains "  ...and the real title actually lands" "$(cat "$ISSF211")" "# 
 # status check or the exact same defect is reachable through a different
 # door. Same real chmod-000 fixture as above.
 chmod 000 "$ISSF211"
-ALOUT="$(ISS edit 4 --add-label zzz 2>&1)"; ALRC=$?
+ALOUT="$(ISS edit "$N211" --add-label zzz 2>&1)"; ALRC=$?
 chmod 644 "$ISSF211"
 assert_eq "unreadable issue file: --add-label ALSO refuses, exit non-zero" "1" "$ALRC"
 assert_contains "  ...refusal names the cause" "$ALOUT" "could not read its current labels"
@@ -2258,7 +2298,7 @@ assert_not_contains "  ...the new label never lands" "$(cat "$ISSF211")" "zzz"
 assert_contains "  ...existing labels survive untouched" "$(cat "$ISSF211")" "product-wip, bug"
 
 chmod 000 "$ISSF211"
-RLOUT="$(ISS edit 4 --remove-label bug 2>&1)"; RLRC=$?
+RLOUT="$(ISS edit "$N211" --remove-label bug 2>&1)"; RLRC=$?
 chmod 644 "$ISSF211"
 assert_eq "unreadable issue file: --remove-label ALSO refuses, exit non-zero" "1" "$RLRC"
 assert_contains "  ...refusal names the cause" "$RLOUT" "could not read its current labels"
@@ -2269,12 +2309,14 @@ assert_contains "  ...the label being removed is STILL there (refusal, not a sil
 # including the "remove the LAST label" edge case that motivated the
 # original `|| true` (now scoped to only the grep-found-nothing step, not
 # the labels_of read itself).
-ISS edit 4 --add-label approved >/dev/null
+ISS edit "$N211" --add-label approved >/dev/null
 assert_contains "normal --add-label still works" "$(cat "$ISSF211")" "approved"
-ISS create --title "Solo-labeled" --label onlylabel >/dev/null
-ISS edit 5 --remove-label onlylabel >/dev/null 2>&1 && ok "removing the LAST label still survives (pipefail regression, re-verified post-#211)" \
+SOLOOUT="$(ISS create --title "Solo-labeled" --label onlylabel)"
+NSOLO="$(printf '%s' "$SOLOOUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+ISS edit "$NSOLO" --remove-label onlylabel >/dev/null 2>&1 && ok "removing the LAST label still survives (pipefail regression, re-verified post-#211)" \
   || bad "removing the LAST label still survives"
-assert_not_contains "the label file has no labels line left" "$(cat "$(find "$ISSRUN/issues/example/open" -name '5-*.md')")" "labels:"
+assert_not_contains "the label file has no labels line left" \
+  "$(cat "$(find "$ISSRUN/issues/example/open" -name "$NSOLO-*.md")")" "labels:"
 
 section "local issues backend — render integration"
 LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
