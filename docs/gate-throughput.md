@@ -205,6 +205,47 @@ shadow-log data before anyone could respect it anyway.
   data until that wiring happens and gates actually run on the live floor —
   this write-up covers the always-on-gate-time half only.
 
+## Piece C: a real concurrency-bound race, found and fixed post-review (2026-08-24)
+
+qa1's review caught a single anomalous `saw 3` on the e2e concurrency test
+(`FWF_CARGO_BUILD_CONCURRENCY=2`), correctly refused to wave it through as
+flaky, and GV independently diagnosed and reproduced the mechanism: two
+contenders can both read the *same* stale (dead-PID) slot owner and both
+decide to reap it. The original code's `rm -rf "$slot"` was unconditional —
+the *second* reaper destroyed the slot the *first* had already legitimately
+re-acquired, so both returned believing they held it. Not a test-harness
+artifact; GV's own faithful model reproduced it 3/3 and verified a fix (an
+exclusive `mkdir`-based reap section, with the liveness check **re-verified
+inside** it) 3/3.
+
+That fix is what's implemented in `fwf_cargo_build_slot_acquire`. While
+verifying it, further adversarial stress-testing (4–8 simultaneous
+contenders racing a single pre-stamped-dead slot, far more contenders than
+this mechanism realistically sees in production) surfaced one more gap in
+the *same* fix: the reap section's own `rm -rf "$slot"; mkdir "$slot"`
+recreate step didn't check whether its own `mkdir` succeeded — an
+independent, unrelated contender's ordinary top-level `mkdir "$slot"` could
+win that exact gap, and the reaper would silently overwrite its fresh owner
+file. Closed the same way: check the recreate `mkdir`'s result, and if it
+lost, back off without writing (the outer loop re-observes the now-live slot
+on its next pass).
+
+**Honest residual risk, not swept under the rug:** under the most
+adversarial synthetic condition tested (8 contenders, all racing a single
+already-dead slot within the same sub-second window — a scenario
+deliberately engineered to be far more contentious than production, where a
+dead-holder slot requires an actual crashed `fwf-gate.sh` process and
+realistically sees at most 2–3 contenders, not 8, discovering it at once),
+a residual double-acquisition was still observed at a low, single-digit
+percentage rate, and its exact mechanism was not conclusively pinned down
+despite timestamped tracing (mkdir's own atomicity was independently
+verified sound — 20 concurrent processes racing one bare `mkdir`, exactly 1
+winner — so the residual gap is somewhere in the surrounding retry logic,
+not the primitive itself). The two-contender case matching GV's own model
+— the realistic shape of this defect in production — was verified clean
+across 10+ repeated trials with the combined fix. Flagged here rather than
+claimed as fully closed.
+
 ## Not yet built (future increments of this ticket)
 
 - **A, the cross-worktree half** — a fixed-target-dir scheme so sccache can

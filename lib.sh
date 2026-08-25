@@ -1184,7 +1184,7 @@ FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 # callers treat that as a SKIP (defer to next tick), the same as a busy e2e
 # lock, never as a build failure.
 fwf_cargo_build_slot_acquire() {
-  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder
+  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder reap_reason pid2
   mkdir -p "$CARGO_BUILD_LOCK" 2>/dev/null
   while true; do
     for n in $(seq 1 "$FWF_CARGO_BUILD_CONCURRENCY"); do
@@ -1197,18 +1197,51 @@ fwf_cargo_build_slot_acquire() {
       fi
       owner="$slot/owner"
       _fwf_e2e_owner_liveness "$owner"; rc=$?
+      reap_reason=""
       if [ "$rc" = 1 ]; then
         holder="$(_fwf_e2e_owner_field role "$owner")"
-        echo "fwf: cargo build slot $n held by dead PID $(_fwf_e2e_owner_field pid "$owner") (${holder:-unknown}) — breaking it" >&2
-        rm -rf "$slot"; continue 2
+        reap_reason="dead PID $(_fwf_e2e_owner_field pid "$owner") (${holder:-unknown})"
       elif [ "$rc" = 2 ]; then
         ts="$(_fwf_e2e_owner_field acquired "$owner")"; now="$(date +%s)"
         if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_CARGO_BUILD_LOCK_STALE_SECS" ]; then
-          holder="$(_fwf_e2e_owner_field role "$owner")"
-          echo "fwf: cargo build slot $n indeterminate-liveness past the ${FWF_CARGO_BUILD_LOCK_STALE_SECS}s backstop — breaking it" >&2
-          rm -rf "$slot"; continue 2
+          reap_reason="indeterminate-liveness past the ${FWF_CARGO_BUILD_LOCK_STALE_SECS}s backstop"
         fi
       fi
+      [ -n "$reap_reason" ] || continue
+      # Two contenders can both read the SAME stale owner and both decide to
+      # reap — an unconditional `rm -rf` here let the SECOND reaper destroy
+      # the slot the FIRST had already legitimately re-acquired, so both
+      # returned believing they held it (a real, reproduced race — not a
+      # test-harness artifact). Fix: an exclusive reap section (mkdir is the
+      # same atomic primitive the slot itself uses; no flock, which macOS
+      # lacks) with the liveness check RE-VERIFIED INSIDE it — the read
+      # above can be stale by the time we get here, and acting on a stale
+      # read is exactly what destroys a slot someone else already holds.
+      mkdir "$slot.reap" 2>/dev/null || continue   # lost the reap race — another contender owns this slot right now
+      pid2="$(_fwf_e2e_owner_field pid "$owner")"
+      if [ -n "$pid2" ] && kill -0 "$pid2" 2>/dev/null; then
+        rmdir "$slot.reap" 2>/dev/null
+        continue   # re-verified: it's live now (someone else already reaped+reacquired) — leave it alone
+      fi
+      echo "fwf: cargo build slot $n held by $reap_reason — breaking it" >&2
+      rm -rf "$slot"
+      if mkdir "$slot" 2>/dev/null; then
+        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
+        rmdir "$slot.reap" 2>/dev/null
+        echo "$n"
+        return 0
+      fi
+      # The exclusive .reap lock only protects against ANOTHER REAPER racing
+      # us to this same stale slot — it does NOT stop an entirely different,
+      # independent contender's ORDINARY top-level `mkdir "$slot"` (the very
+      # first branch above) from winning the exact gap between our `rm -rf`
+      # and our own recreate-`mkdir`. If that happened, THEIR write is now in
+      # "$slot/owner" — overwriting it here would silently evict a holder who
+      # believes it already succeeded. Back off instead: release the reap
+      # lock and let the outer loop re-observe the (now legitimately live)
+      # slot on the next pass.
+      rmdir "$slot.reap" 2>/dev/null
     done
     if [ "$waited" -ge "$FWF_CARGO_BUILD_LOCK_TIMEOUT" ]; then
       echo "fwf: $label timed out after ${FWF_CARGO_BUILD_LOCK_TIMEOUT}s waiting for a cargo build slot (all $FWF_CARGO_BUILD_CONCURRENCY busy)" >&2

@@ -2935,6 +2935,63 @@ CB_PEAK_REACHED_2="$(grep -c '^2$' "$CB_PEAKS" || true)"
 [ "$CB_PEAK_REACHED_2" -ge 1 ] && ok "e2e: concurrency actually reaches 2 (a semaphore, not an accidental mutex-of-1)" \
   || bad "e2e: concurrency actually reaches 2 (a semaphore, not an accidental mutex-of-1)" "peaks log: $(cat "$CB_PEAKS")"
 
+# Double-reap race (GV-caught, reproduced 3/3): TWO contenders can both read
+# the SAME stale (dead-PID) owner and both decide to reap it — an
+# unconditional `rm -rf` let the SECOND reaper destroy the slot the FIRST had
+# ALREADY legitimately re-acquired, so both returned believing they held the
+# same slot. FWF_CARGO_BUILD_CONCURRENCY=1 and a pre-stamped DEAD slot-1 means
+# BOTH racers must go through the reap path simultaneously — this is the
+# scenario the ordinary "dead" test above (one racer, no contention) can
+# never exercise. Per GV's own caught mistake: the winner MUST stay alive
+# for the duration of its hold (sleep before releasing) — a racer that
+# acquires and immediately exits makes even the buggy code look correct,
+# because its "dead" PID becomes real garbage the other racer would
+# legitimately reap next, masking the double-reap entirely.
+CBRACE="$TMP/cargobuild-race"; mkdir -p "$CBRACE"
+CBRACE_COUNTER="$CBRACE/holders"; CBRACE_PEAKS="$CBRACE/peaks.log"
+mkdir -p "$CBRACE_COUNTER"; : > "$CBRACE_PEAKS"
+cat > "$TMP/cargo-race-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+label="$1"; counter_dir="$2"; peaks_file="$3"
+s="$(fwf_cargo_build_slot_acquire "$label")" || { echo "$label TIMEOUT"; exit 0; }
+me="$counter_dir/$$-$RANDOM"
+: > "$me"
+n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+echo "$n" >> "$peaks_file"
+sleep 1
+rm -f "$me"
+fwf_cargo_build_slot_release "$s"
+echo "$label GOT=$s"
+EOSCRIPT
+race_run() { # $1=which racer's stdout file
+  FWF_RUN_DIR="$CBRACE/run" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=1 \
+    FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=10 \
+    ROOT_PATH="$ROOT" bash "$TMP/cargo-race-drive.sh" "$1" "$CBRACE_COUNTER" "$CBRACE_PEAKS" > "$CBRACE/$1.out" 2>&1
+}
+# Pre-stamp the ONLY slot with a dead owner, in the SAME run dir race_run uses.
+FWF_RUN_DIR="$CBRACE/run" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+  printf "role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\n" \
+    "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+'
+race_run racer-a &
+RACEA_PID=$!
+race_run racer-b &
+RACEB_PID=$!
+wait "$RACEA_PID"; wait "$RACEB_PID"
+RACE_PEAK_MAX="$(sort -n "$CBRACE_PEAKS" | tail -1)"
+[ -n "$RACE_PEAK_MAX" ] && [ "$RACE_PEAK_MAX" -le 1 ] && ok "double-reap race: peak concurrent holders never exceeds 1 (saw ${RACE_PEAK_MAX:-none})" \
+  || bad "double-reap race: peak concurrent holders never exceeds 1" "saw ${RACE_PEAK_MAX:-none} — peaks: $(cat "$CBRACE_PEAKS")"
+# NOT asserted: "at most one racer ever reports GOT=1". Both racers
+# legitimately report GOT=1 in the correct, non-buggy case too -- racer-a
+# acquires, holds, releases; racer-b then legitimately acquires the SAME
+# slot number SEQUENTIALLY afterward. That is correct semaphore behavior,
+# not the defect. The peak-concurrency check above is the real assertion:
+# it fails only if both were EVER concurrently inside their hold, which is
+# what the double-reap bug actually produces.
+
 # --------------------------------------------------------------------------
 # per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
 # the gate while its OWN prior run is still in flight must NOT stack a second
