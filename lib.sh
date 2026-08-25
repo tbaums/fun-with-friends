@@ -1765,10 +1765,28 @@ fwf_reconcile_lock_release() { # $1=branch
 # resets the streak.
 fwf_reconcile_record_history() {
   local branch="$1" state="$2"
-  local f="$FWF_RECONCILE_HISTORY_DIR/$branch" streak=0
+  local f="$FWF_RECONCILE_HISTORY_DIR/$branch" streak=0 trusted=1
   mkdir -p "$FWF_RECONCILE_HISTORY_DIR" 2>/dev/null || true
-  [ -f "$f" ] && streak="$(cat "$f" 2>/dev/null || echo 0)"
-  case "$streak" in ''|*[!0-9]*) streak=0;; esac
+  # issue #211: a file that EXISTS but can't be read/parsed is a different
+  # answer from "never recorded before" (streak=0, genuinely confident) --
+  # collapsing the two used to silently reset a real flap streak on a
+  # transient glitch, delaying the exact ANOMALY this counter exists to
+  # surface. An untrustworthy read now REFUSES to overwrite the real streak
+  # (skips this tick's update entirely, same recover-next-time shape as
+  # fwf_tick_bump) rather than fabricating a fresh 0/1.
+  if [ -f "$f" ]; then
+    if ! streak="$(cat "$f" 2>/dev/null)"; then
+      fwf_log_unknown_read fwf_reconcile_record_history "branch=$branch unreadable" || true
+      trusted=0
+    fi
+    case "$streak" in
+      ''|*[!0-9]*)
+        fwf_log_unknown_read fwf_reconcile_record_history "branch=$branch malformed content" || true
+        trusted=0
+        ;;
+    esac
+  fi
+  [ "$trusted" -eq 1 ] || return 0
   if [ "$state" = RECONCILED ]; then
     streak=$((streak + 1))
     printf '%s\n' "$streak" > "$f"
@@ -1792,8 +1810,26 @@ fwf_reconcile_indeterminate_streak() {
   local branch="$1" indeterminate="$2" f streak=0
   f="$FWF_RECONCILE_INDETERMINATE_DIR/$branch"
   mkdir -p "$FWF_RECONCILE_INDETERMINATE_DIR" 2>/dev/null || true
-  [ -f "$f" ] && streak="$(cat "$f" 2>/dev/null || echo 0)"
-  case "$streak" in ''|*[!0-9]*) streak=0;; esac
+  # issue #211: this function's echoed streak is load-bearing for its
+  # caller's OWN escalation decision (issue #238 AC7), so — unlike
+  # fwf_reconcile_record_history above — it cannot simply refuse to answer
+  # on an unreadable file without breaking that caller's arithmetic. Logged
+  # for observability instead: a fabricated reset here under-counts a
+  # secondary escalation-frequency signal, not the primary safety mechanism
+  # (an indeterminate result already escalates on its own merit regardless
+  # of this counter, per the header comment above) — a real gap, smaller
+  # blast radius than fwf_tick_bump's, and out of scope to redesign here.
+  if [ -f "$f" ]; then
+    if ! streak="$(cat "$f" 2>/dev/null)"; then
+      fwf_log_unknown_read fwf_reconcile_indeterminate_streak "branch=$branch unreadable, streak reset to 0/1 rather than the real count" || true
+    fi
+    case "$streak" in
+      ''|*[!0-9]*)
+        fwf_log_unknown_read fwf_reconcile_indeterminate_streak "branch=$branch malformed content, streak reset to 0/1 rather than the real count" || true
+        streak=0
+        ;;
+    esac
+  fi
   if [ "$indeterminate" -eq 1 ]; then streak=$((streak + 1)); else streak=0; fi
   printf '%s\n' "$streak" > "$f"
   printf '%s' "$streak"

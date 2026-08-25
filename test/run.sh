@@ -4682,6 +4682,29 @@ assert_eq "fwf_reconcile_indeterminate_streak: a clean(0) call resets it to 0" "
 S4="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
 assert_eq "fwf_reconcile_indeterminate_streak: the next increment starts from the reset value, not the old streak" "1" "$S4"
 
+# issue #211: a streak file that EXISTS but is malformed/unreadable is a
+# DIFFERENT answer from "never recorded" -- collapsing the two used to
+# silently reset a real flap/indeterminate streak on a transient glitch,
+# delaying the ANOMALY this counter exists to surface (fwf_reconcile_
+# record_history) or under-counting a secondary escalation signal
+# (fwf_reconcile_indeterminate_streak, whose echoed value is load-bearing
+# for its own caller so it logs rather than refusing to answer).
+rec_setup reconcile-history-collapse
+mkdir -p "$REC_RUN/state/example/reconcile-history"
+printf garbage > "$REC_RUN/state/example/reconcile-history/staging"
+RHOUT="$(rec_run 'fwf_reconcile_record_history staging RECONCILED')"
+assert_eq "malformed history file: record_history REFUSES to write (no fabricated streak)" "garbage" \
+  "$(cat "$REC_RUN/state/example/reconcile-history/staging")"
+assert_eq "  ...and prints nothing (never a fabricated ANOMALY line either)" "" "$RHOUT"
+
+rec_setup indeterminate-streak-collapse
+mkdir -p "$REC_RUN/state/example/reconcile-indeterminate"
+printf garbage > "$REC_RUN/state/example/reconcile-indeterminate/staging"
+ISOUT="$(rec_run 'fwf_reconcile_indeterminate_streak staging 1')"
+assert_eq "malformed indeterminate-streak file: still echoes a number (caller's arithmetic is load-bearing)" "1" "$ISOUT"
+assert_contains "  ...but the collapse is logged for observability (#211 AC f)" \
+  "$(cat "$REC_RUN/state/example/unknown-reads.log" 2>/dev/null)" "fwf_reconcile_indeterminate_streak"
+
 # --- captain-tick guard is wired at the template level (#114 AC4/AC5) ------
 # Every REAL captain template that owns a RELEASE ENGINEERING job (promotes
 # to __DEFAULT__ and assigns tickets) must carry the STALE-BASE GUARD
