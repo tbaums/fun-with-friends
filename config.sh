@@ -134,8 +134,9 @@ CARGO_BUILD_LOCK="$FWF_RUN/cargo-build.lock"
 #
 # OPT-IN: default OFF, so the existing cargo-build SEMAPHORE stays in force and
 # nothing changes until a real-box profiling run (criterion 3) calibrates the
-# reserve sizes below. Flip FWF_MEM_ADMIT_ENABLE=1 once they're measured.
-FWF_MEM_ADMIT_ENABLE="${FWF_MEM_ADMIT_ENABLE:-0}"
+# reserve sizes below are CONSERVATIVE PLACEHOLDERS (bias: prevent OOM over throughput);
+# admission is ON by default (v0.32.1) — measure per-op peaks on the box and tune the reserves.
+FWF_MEM_ADMIT_ENABLE="${FWF_MEM_ADMIT_ENABLE:-1}"
 MEM_ADMIT="$FWF_RUN/mem-admit.lock"
 FWF_MEM_ADMIT_TIMEOUT="${FWF_MEM_ADMIT_TIMEOUT:-900}"        # bounded wait; < the 1800s gate max-run ceiling (hole #2/#3)
 FWF_MEM_ADMIT_POLL="${FWF_MEM_ADMIT_POLL:-5}"                # seconds between admission attempts
