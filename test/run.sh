@@ -2983,10 +2983,152 @@ assert_contains "the new stamp overwrites the dead one"  "$DEAD_OUT" "NEWOWNER"
 
 LIVE_OUT="$(FWF_RUN_DIR="$E2ERUN/live" FWF_E2E_LOCK_STALE_SECS=1 FWF_E2E_LOCK_TIMEOUT=2 FWF_E2E_LOCK_POLL=1 \
   FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-lock-drive.sh" live)"
-assert_contains "a blocked wait names the current holder" "$LIVE_OUT" "waiting on the e2e lock (held by selfheld)"
+assert_contains "a blocked wait names the current holder (queued, issue #196)" "$LIVE_OUT" "queued"
+assert_contains "queued line names the holder role/pid, live"                 "$LIVE_OUT" "held by selfheld (pid"
 assert_contains "acquire times out rather than hanging"   "$LIVE_OUT" "timed out"
 assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
 case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
+
+# --------------------------------------------------------------------------
+section "e2e lock waiter observability (issue #196): holder identity, hold age, liveness, queue age"
+# The waiter's own queue age and a hold age CONSISTENT with a fabricated
+# owner-record timestamp -- AC (a). Drives fwf_e2e_lock_acquire directly
+# (not a fresh subprocess this time) so the SAME process's own $$ is a
+# genuinely LIVE pid throughout, and a fixed 1262s-old acquired timestamp
+# gives a deterministic expected hold age (21m02s) to assert against.
+E196RUN="$TMP/e2e196"
+cat > "$TMP/e2e-196-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  ac-a)
+    # a SECOND (fabricated) process holds the lock: known role/pid(self)/host/acquired.
+    # Echo OUR OWN pid first (this fixture's $$, distinct from test/run.sh's)
+    # so the caller can assert on the pid it actually stamped, not guess it.
+    echo "FIXTURE_PID=$$"
+    mkdir -p "$E2E_LOCK"
+    printf 'role=conductor\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 1262 ))" > "$E2E_LOCK/owner"
+    rc=0; fwf_e2e_lock_acquire impl1 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+  ac-b-live)
+    mkdir -p "$E2E_LOCK"
+    printf 'role=conductor\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 1574 ))" > "$E2E_LOCK/owner"
+    rc=0; fwf_e2e_lock_acquire impl1 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+  ac-b-indeterminate)
+    mkdir -p "$E2E_LOCK"
+    printf 'role=conductor\npid=999999999\nhost=otherbox\nworktree=/x\nacquired=%s\n' \
+      "$(( $(date +%s) - 1574 ))" > "$E2E_LOCK/owner"
+    rc=0; fwf_e2e_lock_acquire impl1 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+  ac-c-persistent)
+    mkdir -p "$E2E_LOCK"   # owner record never written, never released -> persistent miss
+    rc=0; fwf_e2e_lock_acquire impl1 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+  ac-d-bounded)
+    mkdir -p "$E2E_LOCK"
+    printf 'role=conductor\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$E2E_LOCK/owner"
+    rc=0; fwf_e2e_lock_acquire impl1 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+esac
+EOSCRIPT
+
+# A hold age is asserted as a RANGE, not an exact string: real wall-clock
+# seconds elapse between the fixture stamping `acquired` and a report line
+# actually being built (even the "immediate" first report has some real
+# processing time before it, and under load that can cross a whole-second
+# boundary), so the exact second is not deterministic.
+_e2e_lock_hold_secs() { # $1=output -> total seconds from its "held <N>m<SS>s" match, or empty
+  printf '%s\n' "$1" | grep -oE 'held ~?[0-9]+m[0-9]+s' | tail -1 | sed -E 's/^held ~?([0-9]+)m([0-9]+)s$/\1 \2/' \
+    | { read -r m s 2>/dev/null && printf '%s' "$(( m * 60 + s ))" || true; }
+}
+
+ACA_OUT="$(FWF_RUN_DIR="$E196RUN/aca" FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 FWF_E2E_LOCK_REPORT_SECS=30 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-196-drive.sh" ac-a)"
+ACA_PID="$(printf '%s\n' "$ACA_OUT" | sed -n 's/^FIXTURE_PID=//p')"
+assert_contains "AC(a): names the holder role"        "$ACA_OUT" "held by conductor"
+[ -n "$ACA_PID" ] && assert_contains "AC(a): names the holder pid" "$ACA_OUT" "pid $ACA_PID" \
+  || bad "AC(a): names the holder pid" "fixture never reported its own pid"
+ACA_SECS="$(_e2e_lock_hold_secs "$ACA_OUT")"
+{ [ -n "$ACA_SECS" ] && [ "$ACA_SECS" -ge 1262 ] && [ "$ACA_SECS" -le 1270 ]; } \
+  && ok "AC(a): hold age consistent with the fabricated acquired (~1262s, got ${ACA_SECS}s)" \
+  || bad "AC(a): hold age consistent with the fabricated acquired" "expected ~1262-1270s, got [${ACA_SECS:-none}] in: $ACA_OUT"
+assert_contains "AC(a): names OUR OWN queue age (starts at 0m00s)" "$ACA_OUT" "queued 0m0"
+
+AC_B_LIVE="$(FWF_RUN_DIR="$E196RUN/acb-live" FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-196-drive.sh" ac-b-live)"
+assert_contains "AC(b) live: timeout message says LIVE"        "$AC_B_LIVE" "still LIVE"
+AC_B_LIVE_SECS="$(_e2e_lock_hold_secs "$AC_B_LIVE")"
+{ [ -n "$AC_B_LIVE_SECS" ] && [ "$AC_B_LIVE_SECS" -ge 1574 ] && [ "$AC_B_LIVE_SECS" -le 1585 ]; } \
+  && ok "AC(b) live: timeout message carries hold age (~1574s, got ${AC_B_LIVE_SECS}s)" \
+  || bad "AC(b) live: timeout message carries hold age" "expected ~1574-1585s, got [${AC_B_LIVE_SECS:-none}] in: $AC_B_LIVE"
+assert_contains "AC(b) live: says queue not wedge, do not kill" "$AC_B_LIVE" "This is a queue, not a wedge"
+
+AC_B_IND="$(FWF_RUN_DIR="$E196RUN/acb-ind" FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 FWF_E2E_LOCK_STALE_SECS=1800 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-196-drive.sh" ac-b-indeterminate)"
+assert_contains "AC(b) indeterminate: timeout message says INDETERMINATE" "$AC_B_IND" "liveness INDETERMINATE"
+AC_B_IND_SECS="$(_e2e_lock_hold_secs "$AC_B_IND")"
+{ [ -n "$AC_B_IND_SECS" ] && [ "$AC_B_IND_SECS" -ge 1574 ] && [ "$AC_B_IND_SECS" -le 1585 ]; } \
+  && ok "AC(b) indeterminate: timeout message carries hold age (~1574s, got ${AC_B_IND_SECS}s)" \
+  || bad "AC(b) indeterminate: timeout message carries hold age" "expected ~1574-1585s, got [${AC_B_IND_SECS:-none}] in: $AC_B_IND"
+assert_contains "AC(b) indeterminate: names when the backstop breaks it"  "$AC_B_IND" "broken at the 1800s backstop"
+assert_not_contains "AC(b): the two liveness words actually differ" "$AC_B_LIVE" "INDETERMINATE"
+
+# AC(c), the streak threshold itself: a SINGLE miss (missing=1, the healthy
+# mkdir-then-write race) must never say "holder unknown"; only >=2
+# CONSECUTIVE misses does. Direct calls to the phrase builder -- the same
+# function the real acquire loop calls -- rather than a real-timing race
+# (a background release scheduled against a live poll/sleep loop is exactly
+# the kind of thing that can lose the race under sandbox/CI load and flake).
+AC_C_1="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_lock_holder_phrase 2 '' '' '' '' 1 \$(date +%s)")"
+assert_not_contains "AC(c): a SINGLE miss (missing=1) never says holder unknown" "$AC_C_1" "holder unknown"
+assert_contains     "AC(c): a single miss reads as still acquiring instead"      "$AC_C_1" "still acquiring"
+AC_C_2="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_lock_holder_phrase 2 '' '' '' '' 2 \$(date +%s)")"
+assert_contains "AC(c): two consecutive misses (missing=2) says holder unknown" "$AC_C_2" "holder unknown"
+
+# ...and the real acquire LOOP genuinely accumulates the streak across real
+# polls (not just the phrase-builder in isolation): owner record never
+# written, never released -> a persistent miss, end to end.
+AC_C_PERSIST="$(FWF_RUN_DIR="$E196RUN/acc-persist" FWF_E2E_LOCK_TIMEOUT=3 FWF_E2E_LOCK_POLL=1 FWF_E2E_LOCK_REPORT_SECS=1 FWF_E2E_LOCK_STALE_SECS=100 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-196-drive.sh" ac-c-persistent)"
+assert_contains "AC(c): a PERSISTENT owner-record miss (>=2 polls) says holder unknown end-to-end" "$AC_C_PERSIST" "holder unknown"
+
+# AC(d): over a bounded real wait at a fast poll, the number of "queued" lines
+# is bounded by the report interval, not the poll interval.
+AC_D_OUT="$(FWF_RUN_DIR="$E196RUN/acd" FWF_E2E_LOCK_TIMEOUT=6 FWF_E2E_LOCK_POLL=1 FWF_E2E_LOCK_REPORT_SECS=2 FWF_E2E_LOCK_STALE_SECS=3600 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-196-drive.sh" ac-d-bounded)"
+AC_D_LINES="$(printf '%s\n' "$AC_D_OUT" | grep -c '^fwf: impl1 queued')"
+# ~6s wait / 2s report interval -> ~4 lines (1 immediate + ~3 more); NOT ~6
+# (the poll-interval count a pre-#196 caller would have produced).
+[ "$AC_D_LINES" -ge 2 ] && [ "$AC_D_LINES" -le 5 ] \
+  && ok "AC(d): queued-line count bounded by the report interval ($AC_D_LINES lines, expected 2-5)" \
+  || bad "AC(d): queued-line count bounded by the report interval" "$AC_D_LINES lines, expected 2-5"
+
+# AC(e): the owner-record format is pinned -- role/pid/host/worktree/acquired
+# are all present and parseable (the shared contract with #195/#205).
+E196_PIN="$TMP/e2e196-pin"; mkdir -p "$E196_PIN"
+FWF_RUN_DIR="$E196_PIN" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  fwf_e2e_lock_acquire pinrole
+"   # deliberately no release -- inspecting the owner record it left behind
+for f in role pid host worktree acquired; do
+  grep -q "^$f=" "$E196_PIN/e2e.lock/owner" 2>/dev/null \
+    && ok "AC(e): owner record pins field '$f'" \
+    || bad "AC(e): owner record pins field '$f'" "not found in $E196_PIN/e2e.lock/owner"
+done
+assert_eq "AC(e): pinned role value is parseable"   "role=pinrole" "$(grep '^role=' "$E196_PIN/e2e.lock/owner" 2>/dev/null)"
+case "$(grep '^pid=' "$E196_PIN/e2e.lock/owner" 2>/dev/null)" in
+  pid=*[!0-9]*|pid=) bad "AC(e): pinned pid value is parseable (numeric)" ;;
+  *) ok "AC(e): pinned pid value is parseable (numeric)" ;;
+esac
 
 # --------------------------------------------------------------------------
 section "cargo build concurrency SEMAPHORE (issue #138 piece C): N slots, not a mutex"
