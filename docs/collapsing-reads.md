@@ -5,6 +5,11 @@ times in this codebase in three different subsystems: a read that could not
 be completed collapsed into a value indistinguishable from a real one, and a
 downstream consumer treated that fallback as a measurement.
 
+See [collapsing-reads-audit.md](collapsing-reads-audit.md) for the
+exhaustive audit this convention's ticket also requires — every site
+matching the mechanical patterns below, in both directions, with a stated
+disposition for each.
+
 ## The rule
 
 > A reader that cannot complete its read MUST NOT return a value that is

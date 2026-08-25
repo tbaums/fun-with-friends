@@ -793,7 +793,10 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   lib.sh) — `fwf usage` reports both a live probe (readers failing right
   now) and recent unknowns from that log, since a transient failure is
   often over by the time anyone checks. `fwf usage --clear-unknown-log`
-  clears it.
+  clears it. [docs/collapsing-reads-audit.md](docs/collapsing-reads-audit.md)
+  is the exhaustive audit — every matching site in the tree, both failure
+  directions, with a stated disposition (fixed / owned by another ticket /
+  safe, because).
 
 ## Development
 
