@@ -4157,6 +4157,48 @@ assert_eq "no QA-* sentinel at all -> AWAITING_REVIEW" "AWAITING_REVIEW" "$(prs_
 assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "source '$PRS'; main abc")"
 
 # --------------------------------------------------------------------------
+# fwf pr-reviewer (issue #194): resolve a PR's CURRENTLY ASSIGNED reviewer
+# from its recorded `fwf-Reviewer:` marker, never re-derived from a branch
+# prefix. Same stubbed-fixture pattern as pr-review-state above -- drives the
+# REAL helper, never a decoy grep.
+PRV="$ROOT/fwf-pr-reviewer.sh"
+prv() { # $1=body  $2=comments-json (or omit for '[]')
+  FWF_PROFILE=example bash -c "
+    source '$PRV'
+    pr_raw() { printf '%s' '{\"body\":\"$1\",\"comments\":${2:-[]}}'; }
+    main 84"
+}
+
+section "pr-reviewer (#194): precedence -- comment beats body, newest comment wins, body is the default"
+assert_eq "body marker alone -> body wins" "qa1" "$(prv 'fwf-Reviewer: qa1')"
+assert_eq "body marker + one comment marker -> the comment wins (the actual ordering question)" \
+  "qa2" "$(prv 'fwf-Reviewer: qa1' '[{"body":"fwf-Reviewer: qa2","createdAt":"2026-08-25T00:01:00Z"}]')"
+assert_eq "two comment markers -> the newer wins" \
+  "qa3" "$(prv 'fwf-Reviewer: qa1' '[{"body":"fwf-Reviewer: qa2","createdAt":"2026-08-25T00:01:00Z"},{"body":"fwf-Reviewer: qa3","createdAt":"2026-08-25T00:02:00Z"}]')"
+assert_eq "older comment listed AFTER a newer one in thread order still loses (sorted by createdAt, not thread position)" \
+  "qa3" "$(prv 'fwf-Reviewer: qa1' '[{"body":"fwf-Reviewer: qa3","createdAt":"2026-08-25T00:02:00Z"},{"body":"fwf-Reviewer: qa2","createdAt":"2026-08-25T00:01:00Z"}]')"
+
+section "pr-reviewer (#194): no marker at all -> NO_MARKER, the caller applies the branch-prefix fallback"
+assert_eq "empty body, no comments -> NO_MARKER" "NO_MARKER" "$(prv '')"
+assert_eq "a marker not at column 0 (mid-line, quoted) never counts -- the #82 self-trigger-style guard" \
+  "NO_MARKER" "$(prv 'saw your fwf-Reviewer: qa1 note')"
+
+section "pr-reviewer (#194): the degenerate zero-configured-QA-seats case is reachable and distinguishable"
+assert_eq "an explicit 'fwf-Reviewer: none' resolves to the literal none, not NO_MARKER" \
+  "none" "$(prv 'fwf-Reviewer: none')"
+
+section "pr-reviewer (#194) AC precursor -- unreadable != empty (issue #211's own lesson, applied here)"
+UNKOUT="$(FWF_PROFILE=example bash -c "
+  source '$PRV'
+  pr_raw() { return 1; }
+  main 84")"
+assert_eq "a PR that could not be read at all -> UNKNOWN, NEVER collapsed into NO_MARKER" "UNKNOWN" "$UNKOUT"
+assert_eq "non-numeric PR arg -> UNKNOWN" "UNKNOWN" "$(FWF_PROFILE=example bash -c "source '$PRV'; main abc")"
+
+section "pr-reviewer (#194): CLI wiring -- 'fwf pr-reviewer' dispatches to fwf-pr-reviewer.sh"
+assert_contains "help mentions pr-reviewer" "$("$ROOT/fwf" help)" "pr-reviewer <pr>"
+
+# --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
 # any role raises on an issue/PR, that the captain's per-tick sweep picks up
 # reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests
