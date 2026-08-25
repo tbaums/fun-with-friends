@@ -1378,6 +1378,43 @@ EOS
   tmux kill-session -t "${F143BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F143BSESS}-build" 2>/dev/null
   unset F143_SECRET
+
+  # --- boot-time worktree refresh (issue #146 AC4) ---------------------------
+  # `fwf up` should land every read-only role's worktree at 0-behind
+  # $DEFAULT_BRANCH, not just leave it wherever it happened to be at
+  # provision-time. Needs REAL git worktrees (not the mkdir-only fixtures
+  # above -- there's nothing to fetch/detach there): one shared origin,
+  # cloned for pm/gv/captain, then advanced AFTER cloning so every role
+  # worktree starts genuinely behind -- exactly the drift the ticket reports.
+  F146ORIGIN="$TMP/wt146origin.git"; mkdir -p "$F146ORIGIN"
+  ( cd "$F146ORIGIN" && git init -q --bare && git symbolic-ref HEAD refs/heads/main )
+  F146SEED="$TMP/wt146seed"
+  git clone -q "$F146ORIGIN" "$F146SEED"
+  ( cd "$F146SEED" && git config user.email t@t.co && git config user.name t \
+      && echo a > f && git add -A && git commit -qm c1 && git push -q origin main )
+  F146WT="$TMP/wt146"; mkdir -p "$F146WT"
+  for r in pm gv captain; do
+    git clone -q "$F146ORIGIN" "$F146WT/ex-$r" \
+      && ( cd "$F146WT/ex-$r" && git checkout -q --detach main )
+  done
+  ( cd "$F146SEED" && echo b >> f && git add -A && git commit -qm c2 && git push -q origin main )
+  F146_NEW_SHA="$(git -C "$F146ORIGIN" rev-parse main)"
+  F146RUN="$TMP/run146"; mkdir -p "$F146RUN/state/example"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' \
+    > "$F146RUN/state/example/floor-events.log"
+  F146SESS="fwf-selftest-146-$$"
+  env FWF_PROFILE=example FWF_RUN_DIR="$F146RUN" FWF_SESSION="$F146SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F146WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 \
+      "$ROOT/fwf-up.sh" --coord-only >/dev/null 2>&1
+  assert_eq "fwf up lands pm's worktree at the fresh remote tip (0 behind), not provision-time state" \
+    "$F146_NEW_SHA" "$(git -C "$F146WT/ex-pm" rev-parse HEAD 2>/dev/null)"
+  assert_eq "  ...same for gv" \
+    "$F146_NEW_SHA" "$(git -C "$F146WT/ex-gv" rev-parse HEAD 2>/dev/null)"
+  assert_eq "  ...same for captain" \
+    "$F146_NEW_SHA" "$(git -C "$F146WT/ex-captain" rev-parse HEAD 2>/dev/null)"
+  tmux kill-session -t "${F146SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F146SESS}-build" 2>/dev/null
 else
   printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
 fi
@@ -3839,6 +3876,145 @@ for f in templates/_local-issues/*.tmpl; do
     *) ok "_local-issues/$(basename "$f"): correctly has no independent loop (composes onto a base that's already covered)" ;;
   esac
 done
+
+# --------------------------------------------------------------------------
+section "worktree refresh for read-only roles (#146): fetch-then-detach, fail-loud on staleness"
+# Real git fixtures: a bare "origin.git" and a worktree dir named to match
+# fwf_role_cwd's own convention ($WT_BASE/${WT_PREFIX}-<role>), so the
+# function under test resolves the SAME path a real role worktree would.
+WTR_BASE="$TMP/wtr146"
+wtr_setup() { # $1=label -> $WTR_BASE-<label>/{origin.git, <prefix>-foorole}
+  local base="$WTR_BASE-$1"
+  WTR_ORIGIN="$base/origin.git"; WTR_WT="$base/testwt-foorole"
+  mkdir -p "$WTR_ORIGIN" "$WTR_WT"
+  ( cd "$WTR_ORIGIN" && git init -q --bare && git symbolic-ref HEAD refs/heads/main )
+  ( cd "$WTR_WT" && git init -q && git symbolic-ref HEAD refs/heads/main \
+      && git config user.email t@t.co && git config user.name t \
+      && echo a > f && git add -A && git commit -qm c1 \
+      && git remote add origin "$WTR_ORIGIN" && git push -q origin main \
+      && git checkout -q --detach main )
+}
+wtr_advance_origin() { # push a new commit to origin from a throwaway clone
+  local seed="$WTR_ORIGIN.seed.$$"
+  git clone -q "$WTR_ORIGIN" "$seed" \
+    && ( cd "$seed" && git config user.email t@t.co && git config user.name t \
+         && echo b >> f && git add -A && git commit -qm c2 && git push -q origin main )
+  rm -rf "$seed"
+}
+wtr_run() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; WT_PREFIX=testwt WT_BASE='$WTR_BASE-$1' DEFAULT_BRANCH=main $2"; }
+
+# A. detached + clean + already current -> REFRESHED, no-op ancestry-wise.
+wtr_setup a
+R="$(wtr_run a 'fwf_worktree_refresh_role foorole')"
+assert_contains "detached+clean, already current -> REFRESHED" "$R" "REFRESHED"
+
+# B. detached + clean + origin has advanced -> fetched AND checked out to the
+# new tip (the core "fetch-then-detach" mechanism, not detach-then-fetch).
+wtr_setup b
+wtr_advance_origin
+NEW_SHA="$(git -C "$WTR_ORIGIN" rev-parse main)"
+R="$(wtr_run b 'fwf_worktree_refresh_role foorole')"
+assert_contains "origin advanced -> REFRESHED" "$R" "REFRESHED"
+assert_contains "REFRESHED lands on the NEW tip, not the old one" "$R" "$NEW_SHA"
+assert_eq "worktree HEAD actually moved to the new tip" "$NEW_SHA" "$(git -C "$WTR_WT" rev-parse HEAD)"
+
+# C. SAFETY RULE — on a real branch (impl/qa mid-ticket shape) -> left
+# COMPLETELY untouched, never fetched/checked-out over.
+wtr_setup c
+git -C "$WTR_WT" checkout -qb feature-branch
+R="$(wtr_run c 'fwf_worktree_refresh_role foorole')"
+assert_contains "on a branch -> SKIPPED_BRANCH, names the branch" "$R" "SKIPPED_BRANCH feature-branch"
+assert_eq "worktree is STILL on that branch afterward (never touched)" "feature-branch" "$(git -C "$WTR_WT" symbolic-ref --short HEAD)"
+
+# D. SAFETY RULE — uncommitted changes -> left COMPLETELY untouched.
+wtr_setup d
+echo dirty >> "$WTR_WT/f"
+R="$(wtr_run d 'fwf_worktree_refresh_role foorole')"
+assert_contains "dirty worktree -> SKIPPED_DIRTY" "$R" "SKIPPED_DIRTY"
+assert_contains "the uncommitted change is STILL there afterward (never touched)" "$(git -C "$WTR_WT" status --porcelain)" "f"
+
+# E. FAIL LOUD — origin unreachable -> FETCH_FAILED, not silently "fine".
+wtr_setup e
+rm -rf "$WTR_ORIGIN"
+R="$(wtr_run e 'fwf_worktree_refresh_role foorole')"
+assert_contains "unreachable origin -> FETCH_FAILED (loud, not silent)" "$R" "FETCH_FAILED"
+
+# F. no worktree at all for this role -> NO_WORKTREE, not a crash.
+NOWT_BASE="$TMP/wtr146-nowt"; mkdir -p "$NOWT_BASE"
+R="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; WT_PREFIX=testwt WT_BASE='$NOWT_BASE' DEFAULT_BRANCH=main fwf_worktree_refresh_role foorole")"
+assert_contains "no worktree present -> NO_WORKTREE, no crash" "$R" "NO_WORKTREE"
+
+# --- CLI wrapper (fwf-worktree-refresh.sh): exit codes are the "loud" contract ---
+wtr_cli() { FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" bash "$ROOT/fwf-worktree-refresh.sh" foorole; }
+
+wtr_setup g
+OUT="$(wtr_cli g)"; RC=$?
+assert_eq "CLI: REFRESHED exits 0"                     "0" "$RC"
+assert_contains "CLI: REFRESHED prints a confirming line" "$OUT" "refreshed"
+
+wtr_setup h
+git -C "$WTR_WT" checkout -qb feature-branch
+OUT="$(wtr_cli h 2>&1)"; RC=$?
+assert_eq "CLI: SKIPPED_BRANCH is not itself a hard failure (exit 0)" "0" "$RC"
+assert_contains "CLI: SKIPPED_BRANCH names it as an anomaly for a read-only role" "$OUT" "anomaly"
+
+wtr_setup i
+rm -rf "$WTR_ORIGIN"
+OUT="$(wtr_cli i 2>&1)"; RC=$?
+assert_eq "CLI: FETCH_FAILED is a hard failure — exit 1, never read as success" "1" "$RC"
+assert_contains "CLI: FETCH_FAILED names the role as STALE" "$OUT" "STALE"
+
+# --- fail-loud ROUTING (#146 AC3): fwf-supervise.sh independently re-checks
+# pm/gv/captain worktree freshness every pass, through the SAME routed #165/
+# #140 channel -- not a bare stdout line from the role's own script. Fixture
+# dirs are named to match the ROLE being supervised (fwf_role_cwd's own
+# convention), unlike the "foorole" fixtures above.
+wtr_setup_role() { # $1=label  $2=role -> $WTR_BASE-<label>/{origin.git, testwt-<role>}
+  local base="$WTR_BASE-$1" role="$2"
+  WTR_ORIGIN="$base/origin.git"; WTR_WT="$base/testwt-$role"
+  mkdir -p "$WTR_ORIGIN" "$WTR_WT"
+  ( cd "$WTR_ORIGIN" && git init -q --bare && git symbolic-ref HEAD refs/heads/main )
+  ( cd "$WTR_WT" && git init -q && git symbolic-ref HEAD refs/heads/main \
+      && git config user.email t@t.co && git config user.name t \
+      && echo a > f && git add -A && git commit -qm c1 \
+      && git remote add origin "$WTR_ORIGIN" && git push -q origin main \
+      && git checkout -q --detach main )
+}
+wtsv_run() { # $1=fixture label  $2=role -> supervise output, with an
+             # old-enough tick-watch baseline so the wedge check itself
+             # doesn't short-circuit on UNKNOWN before reaching this watchdog.
+  local svrun="$TMP/wtrsv-$1-$2"
+  mkdir -p "$svrun/state/example/tick-watch"
+  printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$svrun/state/example/tick-watch/$2"
+  FWF_PROFILE=example FWF_RUN_DIR="$svrun" FWF_WEDGE_MIN_SECS=600 \
+    FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" \
+    "$ROOT/fwf-supervise.sh" "$2" 2>&1
+}
+
+wtr_setup_role j gv
+OUT="$(wtsv_run j gv)"
+assert_not_contains "supervise: fresh 0-behind gv worktree -> no staleness alarm" "$OUT" "WORKTREE_STALE"
+assert_not_contains "  ...and no anomaly either" "$OUT" "WORKTREE_ANOMALY"
+
+wtr_setup_role k pm
+git -C "$WTR_WT" checkout -qb feature-branch
+OUT="$(wtsv_run k pm)"
+assert_contains "supervise: pm worktree left on a branch -> WORKTREE_ANOMALY alarm" "$OUT" "WORKTREE_ANOMALY SKIPPED_BRANCH"
+
+wtr_setup_role l captain
+rm -rf "$WTR_ORIGIN"
+OUT="$(wtsv_run l captain)"
+assert_contains "supervise: captain fetch failure -> WORKTREE_STALE alarm (routed, not a bare stdout line)" "$OUT" "WORKTREE_STALE"
+
+# Carve-out (#146 acceptance): impl/qa worktree staleness is explicitly OUT
+# of scope for this ticket -- proven here by NOT special-casing impl1 at all
+# and asserting the watchdog still never fires for it, even though its
+# fixture is genuinely behind.
+wtr_setup_role m impl1
+wtr_advance_origin
+OUT="$(wtsv_run m impl1)"
+assert_not_contains "supervise: impl/qa are explicitly out of scope -- never alarmed by this watchdog" "$OUT" "WORKTREE_STALE"
+assert_not_contains "  ...nor the anomaly alarm" "$OUT" "WORKTREE_ANOMALY"
 
 # --------------------------------------------------------------------------
 # branch reconcile (#114): stop the swarm building on a stale base. Real git

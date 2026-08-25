@@ -35,6 +35,16 @@
 # this is the routed observability channel #140 requires instead of a bare
 # `resume` stdout line. Also log-only, never auto-respawns.
 #
+# Also watches worktree freshness for the read-only roles (issue #146):
+# pm/gv/captain each auto-refresh their OWN worktree at the start of every
+# tick (fwf worktree-refresh, lib.sh's fwf_worktree_refresh_role), but that
+# is self-reported -- a role that stops ticking or whose refresh silently
+# fails goes stale again with nothing catching it. This loop independently
+# re-runs the SAME refresh and alarms WORKTREE_STALE / WORKTREE_ANOMALY
+# through this routed channel (never a bare stdout line from the role's own
+# script) when a worktree is still not at 0-behind afterward. impl/qa are
+# explicitly out of scope for #146 and are untouched by this check.
+#
 # Usage: fwf supervise [role ...]        (default: every role; --profile via the
 #                                          dispatcher's engine() — see #69)
 set -euo pipefail
@@ -103,6 +113,34 @@ for role in $roles; do
             "$role" "$lane_count" "$lane_oldest_age" "$verdict"
         fi
       fi
+      ;;
+  esac
+
+  # Worktree freshness watchdog (issue #146): the per-tick auto-refresh lives
+  # in the role's OWN template (`fwf worktree-refresh __ROLETAG__`) and is
+  # self-reported -- a role that stops ticking, or whose refresh silently
+  # fails (network blip, left on a branch), goes stale again with nothing
+  # catching it: the identical "silent" the ticket is about. This is the
+  # INDEPENDENT check the ticket requires -- the supervisor re-runs the SAME
+  # refresh (fwf_worktree_refresh_role, lib.sh) and alarms through this
+  # routed channel, not a bare stdout line from the role's own script, when
+  # the worktree is still not at 0-behind afterward. impl/qa are explicitly
+  # OUT of scope (#146) and fall through this case untouched.
+  case "$role" in
+    pm|gv|captain)
+      wt_result="$(fwf_worktree_refresh_role "$role" 2>/dev/null || echo "FETCH_FAILED unknown")"
+      wt_state="${wt_result%% *}"
+      case "$wt_state" in
+        REFRESHED|NO_WORKTREE) : ;;
+        SKIPPED_BRANCH|SKIPPED_DIRTY)
+          printf 'supervise: %-10s WORKTREE_ANOMALY %s -- a read-only role should never have local branch/uncommitted state\n' \
+            "$role" "$wt_result"
+          ;;
+        *)
+          printf 'supervise: %-10s WORKTREE_STALE %s -- refresh attempted and role is still not at 0-behind origin/%s\n' \
+            "$role" "$wt_result" "$DEFAULT_BRANCH"
+          ;;
+      esac
       ;;
   esac
 

@@ -214,6 +214,23 @@ UTILITIES
                          guard (read/safety-net path, before any assignment) —
                          one shared classifier for both. Exits non-zero iff
                          some branch is unsafe to build on right now.
+  worktree-refresh <role>
+                         Fetch-then-detach refresh for a READ-ONLY role's
+                         worktree (PM/GV/Captain), issue #146 — a detached,
+                         clean worktree is fetched + re-detached onto current
+                         __DEFAULT__ every call; a worktree on a branch or
+                         with uncommitted changes is left completely
+                         untouched. Exits non-zero (STALE/FETCH_FAILED) if
+                         the worktree is still behind after the attempt —
+                         never silently reads as success. impl/qa are out of
+                         scope (their own safety rule already protects
+                         mid-ticket work, but callers should only invoke
+                         this for read-only roles). `fwf supervise`
+                         independently re-runs this same refresh for pm/gv/
+                         captain every pass and alarms WORKTREE_STALE /
+                         WORKTREE_ANOMALY through its routed channel if a
+                         role is still stale afterward — not dependent on
+                         the role noticing on its own.
   eval --role R --models M1,M2 [--template T] [--scenario S] [--trials N]
        [--judge-model M]
                          Role-level model eval: render the role's production
@@ -716,6 +733,7 @@ case "$cmd" in
   authz)     engine fwf-authz.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
+  worktree-refresh) engine fwf-worktree-refresh.sh "$@";;
   reconcile-guard) engine fwf-reconcile-guard.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
