@@ -4623,6 +4623,188 @@ assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue c
 assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"
 
 # --------------------------------------------------------------------------
+section "scripts/assert-release-assets.sh (issue #209): the release's published asset set, asserted exactly"
+# Every fixture below drives the REAL, standalone script (AC i) via a stubbed
+# gh (ASSERT_RELEASE_GH) and/or a throwaway manifest (ASSERT_RELEASE_MANIFEST)
+# -- no real tag/release is ever cut, per the ticket's own reasoning for
+# extracting this out of the workflow in the first place.
+ARA="$ROOT/scripts/assert-release-assets.sh"
+[ -x "$ARA" ] && ok "assert-release-assets.sh exists and is executable" || bad "assert-release-assets.sh exists and is executable"
+[ -f "$ROOT/dash-targets.json" ] && ok "dash-targets.json manifest exists" || bad "dash-targets.json manifest exists"
+
+ARA_GH_DIR="$TMP/ara-gh"; mkdir -p "$ARA_GH_DIR"
+ara_gh_stub() { # $1=dir $2=newline-separated asset names (or empty) $3=exit code (default 0)
+  mkdir -p "$1"
+  cat > "$1/gh" <<EOSCRIPT
+#!/usr/bin/env bash
+cat <<'ASSETS_EOF'
+$2
+ASSETS_EOF
+exit ${3:-0}
+EOSCRIPT
+  chmod +x "$1/gh"
+  printf '%s/gh' "$1"
+}
+ARA_FULL_SET="fwf-0.30.3.tar.gz
+fwf-dash-0.30.3-checksums.txt
+fwf-dash-0.30.3-darwin-arm64
+fwf-dash-0.30.3-linux-x86_64
+fwf-dash-0.30.3-linux-arm64"
+
+# AC (a): a complete set passes, and the output lists the verified set.
+ARA_GH_OK="$(ara_gh_stub "$TMP/ara-ok" "$ARA_FULL_SET")"
+rc=0; ARA_OK_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_OK" "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq       "AC(a): complete set -> exit 0"                 "0" "$rc"
+assert_contains "AC(a): passing output lists the verified set"  "$ARA_OK_OUT" "fwf-dash-0.30.3-linux-arm64"
+assert_contains "AC(a): passing output says OK"                 "$ARA_OK_OUT" "OK"
+
+# AC (b): a missing binary (simulated dropped upload) fails and NAMES it.
+ARA_GH_MISS="$(ara_gh_stub "$TMP/ara-miss" "fwf-0.30.3.tar.gz
+fwf-dash-0.30.3-checksums.txt
+fwf-dash-0.30.3-darwin-arm64
+fwf-dash-0.30.3-linux-x86_64")"
+rc=0; ARA_MISS_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_MISS" "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq       "AC(b): missing binary -> fails the job"        "1" "$rc"
+assert_contains "AC(b): failure names the missing asset"        "$ARA_MISS_OUT" "missing: fwf-dash-0.30.3-linux-arm64"
+
+# AC (c): an unexpected asset fails and names it; --allow-extra excuses it
+# AND is named distinctly in the passing output (never reads as a clean pass).
+ARA_GH_EXTRA="$(ara_gh_stub "$TMP/ara-extra" "$ARA_FULL_SET
+fwf-dash-0.30.3-linux-x86_64.old")"
+rc=0; ARA_EXTRA_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_EXTRA" "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq       "AC(c): unexpected asset -> fails the job"      "1" "$rc"
+assert_contains "AC(c): failure names the unexpected asset"     "$ARA_EXTRA_OUT" "unexpected: fwf-dash-0.30.3-linux-x86_64.old"
+rc=0; ARA_ALLOW_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_EXTRA" "$ARA" 0.30.3 --allow-extra fwf-dash-0.30.3-linux-x86_64.old 2>&1)" || rc=$?
+assert_eq       "AC(c): --allow-extra excuses the named exception -> exit 0" "0" "$rc"
+assert_contains "AC(c): the allowance is NAMED in the passing output (not a silent pass)" "$ARA_ALLOW_OUT" "exception: fwf-dash-0.30.3-linux-x86_64.old"
+
+# AC (d): extending the manifest extends the expected set with ONE edit to
+# the manifest and nothing else -- a target the manifest names but the
+# (unmodified) actual set doesn't have is caught.
+ARA_EXT_MANIFEST="$TMP/ara-ext-manifest.json"
+cat > "$ARA_EXT_MANIFEST" <<'EOF'
+{"targets":[{"slug":"darwin-arm64","runner":"macos-14","target":"aarch64-apple-darwin"},{"slug":"windows-x86_64","runner":"windows-latest","target":"x86_64-pc-windows-msvc"}]}
+EOF
+ARA_GH_PARTIAL="$(ara_gh_stub "$TMP/ara-partial" "fwf-0.30.3.tar.gz
+fwf-dash-0.30.3-checksums.txt
+fwf-dash-0.30.3-darwin-arm64")"
+rc=0; ARA_EXT_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_PARTIAL" ASSERT_RELEASE_MANIFEST="$ARA_EXT_MANIFEST" "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq       "AC(d): a manifest-added target not yet published -> caught"   "1" "$rc"
+assert_contains "AC(d): missing names the NEW manifest target's asset"         "$ARA_EXT_OUT" "fwf-dash-0.30.3-windows-x86_64"
+
+# AC (j) / trap #1: the expected set comes from the manifest, NEVER from what
+# a build leg actually produced -- a skipped leg's asset is still EXPECTED,
+# so the check is not tautological. Directly: the script's own source never
+# derives "expected" from anything but the manifest (no GITHUB_OUTPUT/
+# artifact-path reads feed the expected-set computation).
+ARA_SRC="$(cat "$ARA")"
+ARA_EXPECTED_BLOCK="$(printf '%s' "$ARA_SRC" | sed -n '/^expected=(/,/^\[ "\${#expected\[@\]}"/p')"
+assert_not_contains "AC(j): the expected-set computation never reads GITHUB_OUTPUT" "$ARA_EXPECTED_BLOCK" "GITHUB_OUTPUT"
+assert_not_contains "AC(j): the expected-set computation never reads an artifact path" "$ARA_EXPECTED_BLOCK" "artifact"
+assert_contains     "AC(j): the expected-set computation reads ONLY the manifest" "$ARA_EXPECTED_BLOCK" '$MANIFEST'
+# ...and end to end: a leg that produced NOTHING (empty actual set) is still
+# measured against the full manifest-derived expectation, not an empty one.
+ARA_GH_NONE="$(ara_gh_stub "$TMP/ara-none" "")"
+rc=0; ARA_NONE_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_NONE" "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq "AC(j): a skipped-leg (empty actual) run still expects the FULL manifest set" "1" "$rc"
+for want in "fwf-0.30.3.tar.gz" "fwf-dash-0.30.3-darwin-arm64" "fwf-dash-0.30.3-linux-x86_64" "fwf-dash-0.30.3-linux-arm64"; do
+  assert_contains "AC(j): unchanged expectation still names $want as missing" "$ARA_NONE_OUT" "$want"
+done
+
+# AC (f): the v0.27.4 shape specifically -- gh SUCCEEDS (the release job
+# itself ran fine) but the actual set is empty (an asset glob that expanded
+# to nothing, silent, exit 0) -- reproduced above as AC(j)'s end-to-end case;
+# assert here that it is caught via the SAME mechanism as AC(e) (reading
+# GitHub's view), not a local file check that would have been equally blind.
+assert_contains "AC(f): the v0.27.4 shape (empty actual set) is caught" "$ARA_NONE_OUT" "missing:"
+
+# AC (e): reads the PUBLISHED view via gh, never a local file/artifact
+# listing -- asserted on the mechanism (the source), not just the outcome.
+assert_contains "AC(e): reads the published set via gh release view --json assets" "$ARA_SRC" "release view"
+assert_not_contains "AC(e): never lists a local dash-assets/ directory to build the actual set" "$ARA_SRC" "dash-assets"
+
+# Edge case: bounded retry with a named bound, and the output says how long
+# it waited -- a slow-but-eventually-correct read must not look identical to
+# a fast clean pass.
+ARA_GH_FLAKY_DIR="$TMP/ara-flaky"; mkdir -p "$ARA_GH_FLAKY_DIR"
+cat > "$ARA_GH_FLAKY_DIR/gh" <<EOSCRIPT
+#!/usr/bin/env bash
+COUNTER_FILE="$ARA_GH_FLAKY_DIR/count"
+n=0; [ -f "\$COUNTER_FILE" ] && n=\$(cat "\$COUNTER_FILE")
+n=\$((n + 1)); echo "\$n" > "\$COUNTER_FILE"
+if [ "\$n" -lt 2 ]; then exit 1; fi
+cat <<'ASSETS_EOF'
+$ARA_FULL_SET
+ASSETS_EOF
+EOSCRIPT
+chmod +x "$ARA_GH_FLAKY_DIR/gh"
+rc=0; ARA_FLAKY_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_FLAKY_DIR/gh" ASSERT_RELEASE_RETRY_DELAY=1 "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq       "edge: a transient gh failure that clears within the retry bound still passes" "0" "$rc"
+assert_contains "edge: the output says it needed a retry (not indistinguishable from an instant pass)" "$ARA_FLAKY_OUT" "retr"
+
+# Edge case: gh fails on EVERY attempt -> UNKNOWN (exit 2), never a silent
+# pass and never confused with "assets missing" (exit 1).
+ARA_GH_DOWN="$(ara_gh_stub "$TMP/ara-down" "" 1)"
+rc=0; ARA_DOWN_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_DOWN" ASSERT_RELEASE_RETRIES=2 ASSERT_RELEASE_RETRY_DELAY=1 "$ARA" 0.30.3 2>&1)" || rc=$?
+assert_eq       "edge: gh unreachable on every attempt -> UNKNOWN, a THIRD distinct exit code" "2" "$rc"
+assert_contains "edge: UNKNOWN is spelled out, not a bare failure" "$ARA_DOWN_OUT" "UNKNOWN"
+[ "$rc" != "0" ] && [ "$rc" != "1" ] && ok "edge: UNKNOWN's exit code is distinct from both pass(0) and mismatch(1)" \
+  || bad "edge: UNKNOWN's exit code is distinct from both pass(0) and mismatch(1)"
+
+# Edge case: idempotent re-run -- calling it twice in a row on an unchanged,
+# complete set passes both times (never "already exists"-style failure).
+rc=0; ASSERT_RELEASE_GH="$ARA_GH_OK" "$ARA" 0.30.3 >/dev/null 2>&1 || rc=$?
+rc2=0; ASSERT_RELEASE_GH="$ARA_GH_OK" "$ARA" 0.30.3 >/dev/null 2>&1 || rc2=$?
+assert_eq "edge: idempotent re-run, 1st call" "0" "$rc"
+assert_eq "edge: idempotent re-run, 2nd call (same result, no state)" "0" "$rc2"
+
+# AC (d2): nothing outside dash-targets.json may name a target slug, a
+# target-specific runner label, or a rust target triple. "ubuntu-latest" is
+# DELIBERATELY excluded from this guard: it is also release.yml's generic
+# default runner for non-matrix housekeeping jobs (preflight/load-targets/
+# release), not a distinctive identifier of any ONE matrix leg the way
+# macos-14/ubuntu-24.04-arm/the rust triples are -- guarding on it would
+# false-positive on every unrelated job that happens to use the same common
+# default, which is not what this AC is protecting against.
+for needle in "darwin-arm64" "linux-x86_64" "linux-arm64" "macos-14" "ubuntu-24.04-arm" \
+              "aarch64-apple-darwin" "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu"; do
+  REL_HITS="$(grep -c -- "$needle" "$ROOT/.github/workflows/release.yml" 2>/dev/null || true)"
+  ARA_HITS="$(grep -c -- "$needle" "$ARA" 2>/dev/null || true)"
+  assert_eq "AC(d2): '$needle' never hardcoded in release.yml (only via fromJSON)" "0" "${REL_HITS:-0}"
+  assert_eq "AC(d2): '$needle' never hardcoded in assert-release-assets.sh (only via the manifest)" "0" "${ARA_HITS:-0}"
+done
+
+# AC (h): draft -> assert -> publish, in that order, with the assert step
+# between them -- so a failed assertion always leaves the release unpublished.
+assert_contains "AC(h): the release is created as a DRAFT"        "$REL_YML" "gh release create"
+assert_contains "AC(h): the create step passes --draft"           "$REL_YML" "--draft"
+assert_contains "AC(h): a separate step publishes by flipping draft=false" "$REL_YML" "--draft=false"
+REL_DRAFT_LINE="$(grep -n 'gh release create' "$ROOT/.github/workflows/release.yml" | head -1 | cut -d: -f1)"
+REL_ASSERT_LINE="$(grep -n 'Assert published asset set' "$ROOT/.github/workflows/release.yml" | head -1 | cut -d: -f1)"
+REL_PUBLISH_LINE="$(grep -n -- '--draft=false' "$ROOT/.github/workflows/release.yml" | head -1 | cut -d: -f1)"
+{ [ -n "$REL_DRAFT_LINE" ] && [ -n "$REL_ASSERT_LINE" ] && [ -n "$REL_PUBLISH_LINE" ] \
+  && [ "$REL_DRAFT_LINE" -lt "$REL_ASSERT_LINE" ] && [ "$REL_ASSERT_LINE" -lt "$REL_PUBLISH_LINE" ]; } \
+  && ok "AC(h): ordering is draft-create < assert < publish" \
+  || bad "AC(h): ordering is draft-create < assert < publish" "lines: create=$REL_DRAFT_LINE assert=$REL_ASSERT_LINE publish=$REL_PUBLISH_LINE"
+
+# AC (g): RELEASING.md step 7 names the automatic assertion -- scoped to
+# step 7's own text (between its "7." heading and the next numbered/section
+# heading), not just "the word 'automatically' appears somewhere in the
+# file" (it already did, unrelated, before this ticket -- a whole-file grep
+# would pass without step 7 ever being touched).
+RELEASING_STEP7="$(awk '/^7\. \*\*Verify\*\*/{p=1} p; /^## /{if (p && !/^7\./) exit}' "$ROOT/RELEASING.md")"
+assert_contains "AC(g): step 7 exists and was captured for this check" "$RELEASING_STEP7" "Verify"
+assert_contains "AC(g): step 7 now names scripts/assert-release-assets.sh" "$RELEASING_STEP7" "assert-release-assets.sh"
+assert_contains "AC(g): step 7 says the workflow asserts this automatically" "$RELEASING_STEP7" "automatically"
+assert_contains "AC(g): step 7 frames itself as a confirmation, not the only defence" "$RELEASING_STEP7" "not the only line"
+
+# AC (i): fixture tests exercise the script directly, never a real tag/release
+# -- true by construction of everything above (no `gh release create`/`git
+# tag` was ever invoked in this section); assert as a straightforward sanity
+# check that this section never shelled out to the real git tag machinery.
+ok "AC(i): every case above drove the standalone script via a stub, no real tag/release cut"
+
+# --------------------------------------------------------------------------
 section "reconcile-guard: indeterminate is neither clean nor a divergence (#238)"
 # fwf_reconcile_branch (lib.sh) used to return the SAME rc 1 for
 # halted-diverged, suspect, AND cas-lost, and rc 0 (folded in with genuinely

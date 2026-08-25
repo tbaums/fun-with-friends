@@ -62,6 +62,16 @@ Prebuilt binaries are produced and uploaded by the release workflow
 in GitHub Releases over TLS plus the sha256 checksum (which guards against a
 corrupted/mismatched download); GPG signing is not done in v1.
 
+The target list (slug/runner/rust-target) lives in one declarative manifest,
+[`dash-targets.json`](../dash-targets.json) — the workflow's build matrix and
+its own asset-set assertion (`scripts/assert-release-assets.sh`, issue #209)
+both derive from it, never from each other. The release is created as a
+**draft**, every asset uploaded, the published set asserted **exactly**
+against the manifest, and only then published (`--draft=false`) — a missing
+or unexpected asset fails the workflow with nothing ever made public, rather
+than shipping an incomplete release silently (the v0.27.4 incident this
+closes).
+
 ## What it shows
 
 Derived-first, so it works with the factory **parked** — nothing here depends on

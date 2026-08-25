@@ -64,21 +64,39 @@ jobs:
           printf '%s\n' "$out"
 
   # --------------------------------------------------------------------------
+  # Issue #209 AC (d)/(d2)/(j): the dash-binaries matrix and
+  # scripts/assert-release-assets.sh's expected asset set both derive from
+  # ONE declared source of truth (dash-targets.json), never from each other
+  # and never from what a build leg actually produced -- deriving the
+  # expectation from the run's own outputs is what makes a check
+  # tautological (a skipped leg drops its own expectation too, so the check
+  # passes on exactly the failure it exists to catch). This job's only job
+  # is to turn that file into a matrix `fromJSON` can consume; nothing here
+  # or below may name a target slug or runner label directly.
+  load-targets:
+    name: load dash-targets.json
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: load
+        run: echo "matrix=$(jq -c '.targets' dash-targets.json)" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------------------------------------
   # Cross-compile the dash binary for the supported os/arch matrix and upload
   # each as a release asset (issue #63), so `fwf dash` can download a prebuilt
   # binary instead of running `cargo build` on first use. Each target builds on
   # its native runner (no cross-linker), keeping the pure-Rust crate trivial.
   dash-binaries:
     name: dash binary (${{ matrix.slug }})
-    needs: preflight     # issue #179: no artifact is built onto a diverged base
+    needs: [preflight, load-targets]     # issue #179: no artifact is built onto a diverged base
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { slug: darwin-arm64,  runner: macos-14,         target: aarch64-apple-darwin }
-          - { slug: linux-x86_64,  runner: ubuntu-latest,    target: x86_64-unknown-linux-gnu }
-          - { slug: linux-arm64,   runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+        include: ${{ fromJSON(needs.load-targets.outputs.matrix) }}
     defaults:
       run:
         working-directory: dash
@@ -172,7 +190,13 @@ jobs:
           echo "----- $sums -----"
           cat "dash-assets/$sums"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (DRAFT — issue #209)
+        # Draft -> upload -> assert -> publish, not publish -> assert. The
+        # v0.27.4 failure was a release that was ALREADY PUBLIC with assets
+        # missing; asserting after publish only turns that into a red check
+        # on an incomplete release the operator now has to un-ship. As a
+        # draft, a failed assertion below means NOTHING was ever published --
+        # recovery is fix-and-rerun, not a runbook for undoing a live release.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -190,8 +214,30 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "${{ steps.pkg.outputs.path }}" \
             "${assets[@]}" \
+            --draft \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
+
+      - name: Assert published asset set (issue #209)
+        # Reads GitHub's own view of the DRAFT's assets (never a local file
+        # listing — an upload that silently landed nowhere, the v0.27.4
+        # shape, is exactly what a local check would miss) against
+        # dash-targets.json, the single declared source of truth. A mismatch
+        # fails this job with nothing ever published (see the draft note
+        # above) -- fix and re-run, not a runbook for an already-public
+        # release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="$(cat VERSION)"
+          scripts/assert-release-assets.sh "$ver"
+
+      - name: Publish release (issue #209)
+        # Only reached if the assertion above passed. Flipping draft=false is
+        # the one and only publish action in this workflow.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Reconcile staging/integration to main (issues #114, #179)
         env:
