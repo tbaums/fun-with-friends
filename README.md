@@ -786,6 +786,9 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   swept by the captain every tick so it can't go unseen (issue #113).
 - [docs/containers.md](docs/containers.md) — the containerization design and
   `fwf shell`.
+- [docs/collapsing-reads.md](docs/collapsing-reads.md) — the convention for
+  shell readers that can fail: never let the failure collapse into a value
+  indistinguishable from a real one (issue #211).
 
 ## Development
 
