@@ -735,6 +735,36 @@ assert_contains "supervise reports a confirmed-old-baseline role's real verdict"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
 
+section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
+# Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
+# out. FWF_LANE_STALE_MULT pinned so the threshold is deterministic
+# (interval * mult); default interval used below is 60s.
+lsv() { FWF_PROFILE=example FWF_LANE_STALE_MULT=3 bash -c "source '$ROOT/lib.sh'; fwf_lane_stale_verdict $1"; }
+assert_eq "no AWAITING_REVIEW PRs in lane -> LANE_HEALTHY regardless of age" \
+  "LANE_HEALTHY" "$(lsv '0 99999 60')"
+assert_eq "one PR, well within the grace window -> LANE_HEALTHY" \
+  "LANE_HEALTHY" "$(lsv '1 30 60')"
+assert_eq "one PR, exactly at threshold-1 (interval*mult - 1) -> LANE_HEALTHY" \
+  "LANE_HEALTHY" "$(lsv '1 179 60')"
+assert_eq "one PR, exactly at the threshold (interval*mult) -> LANE_STALE" \
+  "LANE_STALE" "$(lsv '1 180 60')"
+assert_eq "one PR, well past the threshold -> LANE_STALE" \
+  "LANE_STALE" "$(lsv '1 3600 60')"
+assert_eq "multiple stale PRs still just one verdict -> LANE_STALE" \
+  "LANE_STALE" "$(lsv '3 900 60')"
+# Threshold scales with the role's OWN interval, not a fixed constant.
+assert_eq "slower interval -> proportionally longer grace (would be STALE at 60s interval, not at 300s)" \
+  "LANE_HEALTHY" "$(lsv '1 180 300')"
+# Robustness: malformed/negative inputs degrade to 0 — never crash, never a
+# fabricated LANE_STALE from garbage, and an unset/zero interval still gets a
+# sane (non-zero) fallback threshold rather than "0 * mult = 0" (which would
+# make EVERY nonzero age instantly STALE).
+assert_eq "malformed count degrades to 0 -> LANE_HEALTHY" "LANE_HEALTHY" "$(lsv 'x 3600 60')"
+assert_eq "malformed age degrades to 0 -> LANE_HEALTHY (count>0 but age=0 never reaches threshold)" \
+  "LANE_HEALTHY" "$(lsv '1 x 60')"
+assert_eq "malformed interval falls back to a sane non-zero threshold, not 0" \
+  "LANE_HEALTHY" "$(lsv '1 100 x')"
+
 section "fwf_verify_boot_ticks: boot health-gate — first-tick verify + re-arm + dead-role escalation (#133)"
 BG="$TMP/boot-gate"; mkdir -p "$BG"
 bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
