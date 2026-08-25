@@ -746,9 +746,21 @@ PL_SNAP="$PL_RUN/state/example/tick-watch/plrole1"
 assert_eq "an existing baseline too fresh to diff -> STILL UNKNOWN (untouched, not reset)" "UNKNOWN" "$(pl plrole1)"
 
 # Age the baseline past the threshold with zero tick/token movement -> WEDGED.
+# issue #211: WEDGED requires a TRUSTED token read too (tick alone can't
+# distinguish WEDGED from "long single cycle, tokens still flowing"), so
+# this fixture seeds a plausible usage cache -- last_success_epoch set, so
+# _fwf_usage_role reports "stale" (trusted) rather than "unknown" -- exactly
+# what a previously-active-but-now-stuck REAL role looks like (its Claude
+# project dir/cache doesn't vanish just because it stopped ticking). Totals
+# are flat (0) to match "no movement." A role with NO usage cache at all
+# ("unknown" state) is the different, correctly-UNKNOWN case covered
+# separately below.
+mkdir -p "$PL_RUN/state/example/usage-cache"
+printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+  "$(( $(date -u +%s) - 3600 ))" > "$PL_RUN/state/example/usage-cache/plrole1.json"
 read -r PL_T PL_TOK PL_EP < "$PL_SNAP"
 printf '%s %s %s\n' "$PL_T" "$PL_TOK" "$(( PL_EP - 700 ))" > "$PL_SNAP"
-assert_eq "old-enough baseline, no movement -> WEDGED" "WEDGED" "$(pl plrole1)"
+assert_eq "old-enough baseline, no movement, TRUSTED (stale) token read -> WEDGED" "WEDGED" "$(pl plrole1)"
 # Consuming the window refreshes the baseline (matches fwf-supervise.sh's own
 # sliding-window model) -- an IMMEDIATE re-query is fresh again, not WEDGED again.
 assert_eq "the window is consumed -- an immediate re-query is fresh again -> UNKNOWN" "UNKNOWN" "$(pl plrole1)"
@@ -777,12 +789,55 @@ assert_eq "an untrustworthy current read -> UNKNOWN, never a false WEDGED" "UNKN
 assert_eq "the untrustworthy value is NEVER stamped as the next baseline (snapshot untouched)" \
   "$PL_T3 $PL_TOK3 $(( PL_EP3 - 700 ))" "$(cat "$PL_RUN/state/example/tick-watch/plrole3")"
 
+if command -v jq >/dev/null 2>&1; then
+  # issue #211: _fwf_usage_role is ALREADY an honest three-state reader (its
+  # own state:"unknown" for a role with no resolvable usage data) -- the
+  # collapse was the CALLER (this script) reading .tokens directly and
+  # ignoring .state. A synthetic test role has no real Claude project dir,
+  # so _fwf_usage_role genuinely reports "unknown" for it -- no mocking
+  # needed, this is the real code path.
+  mkdir -p "$PL_RUN/state/example/tick"
+  echo 5 > "$PL_RUN/state/example/tick/plrole4"
+  pl plrole4 >/dev/null   # stamp a baseline
+  read -r PL_T4 PL_TOK4 PL_EP4 < "$PL_RUN/state/example/tick-watch/plrole4"
+  printf '%s %s %s\n' "$PL_T4" "$PL_TOK4" "$(( PL_EP4 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole4"
+  # tick file left UNCHANGED (still 5) -> d_tick == 0, so tokens are the
+  # ONLY signal left to distinguish WORKING from WEDGED -- and they're
+  # unreliable (unknown), so this must bail UNKNOWN, never fabricate WEDGED.
+  assert_eq "tick static + untrustworthy token read -> UNKNOWN, never a fabricated WEDGED" \
+    "UNKNOWN" "$(pl plrole4)"
+  assert_eq "  ...and the baseline is NEVER stamped from an untrustworthy token read" \
+    "$PL_T4 $PL_TOK4 $(( PL_EP4 - 700 ))" "$(cat "$PL_RUN/state/example/tick-watch/plrole4")"
+
+  # The OTHER direction: tick DID advance -- fwf_wedge_verdict never
+  # consults tokens once d_tick>0, so an untrustworthy token read must NOT
+  # degrade a verdict it cannot actually affect (regression guard: an
+  # earlier draft of this fix broke exactly this case).
+  mkdir -p "$PL_RUN/state/example/tick"
+  echo 5 > "$PL_RUN/state/example/tick/plrole5"
+  pl plrole5 >/dev/null
+  read -r PL_T5 PL_TOK5 PL_EP5 < "$PL_RUN/state/example/tick-watch/plrole5"
+  printf '%s %s %s\n' "$PL_T5" "$PL_TOK5" "$(( PL_EP5 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole5"
+  echo 6 > "$PL_RUN/state/example/tick/plrole5"   # ticked since the baseline
+  assert_eq "tick advanced + untrustworthy token read -> still HEALTHY, tokens irrelevant" \
+    "HEALTHY" "$(pl plrole5)"
+else
+  printf '  skip jq-dependent #211 token-collapse tests (jq not installed)\n'
+fi
+
 section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-liveness.sh)"
 # The loop's own output format is not asserted anywhere pre-#147 (grep
 # confirms it), so this covers the refactored shape directly: one line per
 # role, UNKNOWN gets its own explanatory line, and roles are independent.
 SV_RUN="$TMP/supervise"; mkdir -p "$SV_RUN/state/example/tick-watch"
 printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-watch/svwedged"
+# issue #211: WEDGED needs a TRUSTED token read too -- see the matching
+# fixture note on plrole1 above. Without this, svwedged's usage state reads
+# "unknown" (no real Claude project dir for a synthetic test role) and the
+# correct verdict is now UNKNOWN, not a fabricated WEDGED.
+mkdir -p "$SV_RUN/state/example/usage-cache"
+printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+  "$(( $(date -u +%s) - 3600 ))" > "$SV_RUN/state/example/usage-cache/svwedged.json"
 SVOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
 assert_contains "supervise reports a confirmed-old-baseline role's real verdict" "$SVOUT" "svwedged   WEDGED"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
@@ -1695,8 +1750,16 @@ EOS
   # but nothing is labeled IMPL7) is CONFIRMED ABSENT -- proceeds, no matter
   # how fresh the claim.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
-  mkdir -p "$F88TRUN/state/example/tick-watch"
+  mkdir -p "$F88TRUN/state/example/tick-watch" "$F88TRUN/state/example/usage-cache"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl7"
+  # issue #211: this test's whole point is exercising the WEDGED verdict, but
+  # WEDGED now also requires a TRUSTED (not "unknown") token read -- see the
+  # matching fixture note on plrole1/svwedged above. Without this, impl7's
+  # verdict correctly reads UNKNOWN, and fwf_claim_liveness_blocks (lib.sh)
+  # fails safe on UNKNOWN (always blocks), never reaching the WEDGED-plus-
+  # pane-absent branch this test is actually about.
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl7.json"
   env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter" \
     || bad "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter"
@@ -1709,6 +1772,12 @@ EOS
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   tmux set -p -t "${F88SESS}-build" @l "IMPL5 · dev impl · impl5/*"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl5"
+  # issue #211: this test is specifically about the WEDGED verdict (as
+  # opposed to UNKNOWN, which happens to block for the same reason here but
+  # is not what this test claims to exercise) -- see the impl7 fixture note
+  # above for why a trusted usage cache is required to actually reach it.
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl5.json"
   F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)" \
     || ok "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)"
@@ -4231,9 +4300,16 @@ wtr_setup_role() { # $1=label  $2=role -> $WTR_BASE-<label>/{origin.git, testwt-
 wtsv_run() { # $1=fixture label  $2=role -> supervise output, with an
              # old-enough tick-watch baseline so the wedge check itself
              # doesn't short-circuit on UNKNOWN before reaching this watchdog.
+             # issue #211: also needs a TRUSTED (stale, not "unknown") usage
+             # cache -- otherwise the verdict itself is (correctly) UNKNOWN,
+             # and fwf-supervise.sh's own UNKNOWN case `continue`s past the
+             # worktree watchdog entirely, same root cause as the WEDGED
+             # fixtures above.
   local svrun="$TMP/wtrsv-$1-$2"
-  mkdir -p "$svrun/state/example/tick-watch"
+  mkdir -p "$svrun/state/example/tick-watch" "$svrun/state/example/usage-cache"
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$svrun/state/example/tick-watch/$2"
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$svrun/state/example/usage-cache/$2.json"
   FWF_PROFILE=example FWF_RUN_DIR="$svrun" FWF_WEDGE_MIN_SECS=600 \
     FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" \
     "$ROOT/fwf-supervise.sh" "$2" 2>&1
