@@ -693,6 +693,48 @@ assert_eq "malformed tick delta degrades to 0 (flat) -> WEDGED at threshold" "WE
 assert_eq "malformed token delta treated as flat -> WEDGED"  "WEDGED" "$(wv '0 x 600')"
 assert_eq "negative token delta (cache reset) treated as flat -> WEDGED" "WEDGED" "$(wv '0 -50 600')"
 
+section "fwf-pane-liveness.sh: shared point-in-time aliveness QUERY (issue #147, built on #165)"
+# A one-shot query needs different timing than fwf-supervise.sh's tight loop:
+# it must not diff against a baseline younger than FWF_WEDGE_MIN_SECS (a
+# genuinely wedged role would never accumulate enough elapsed time in any
+# single window to classify as WEDGED otherwise, no matter how many times
+# it's queried).
+PL_RUN="$TMP/pane-liveness"; mkdir -p "$PL_RUN"
+pl() { FWF_PROFILE=example FWF_RUN_DIR="$PL_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-pane-liveness.sh" "$1"; }
+assert_eq "no baseline at all yet -> UNKNOWN"        "UNKNOWN" "$(pl plrole1)"
+PL_SNAP="$PL_RUN/state/example/tick-watch/plrole1"
+[ -f "$PL_SNAP" ] && ok "a first baseline is stamped for a later query" || bad "a first baseline is stamped for a later query"
+assert_eq "an existing baseline too fresh to diff -> STILL UNKNOWN (untouched, not reset)" "UNKNOWN" "$(pl plrole1)"
+
+# Age the baseline past the threshold with zero tick/token movement -> WEDGED.
+read -r PL_T PL_TOK PL_EP < "$PL_SNAP"
+printf '%s %s %s\n' "$PL_T" "$PL_TOK" "$(( PL_EP - 700 ))" > "$PL_SNAP"
+assert_eq "old-enough baseline, no movement -> WEDGED" "WEDGED" "$(pl plrole1)"
+# Consuming the window refreshes the baseline (matches fwf-supervise.sh's own
+# sliding-window model) -- an IMMEDIATE re-query is fresh again, not WEDGED again.
+assert_eq "the window is consumed -- an immediate re-query is fresh again -> UNKNOWN" "UNKNOWN" "$(pl plrole1)"
+
+# A role whose TICK has advanced (simulated: seed an old baseline at tick=0,
+# then bump the live tick file) classifies HEALTHY once the window ages out.
+mkdir -p "$PL_RUN/state/example/tick"
+echo 5 > "$PL_RUN/state/example/tick/plrole2"
+pl plrole2 >/dev/null   # stamp baseline at tick=5
+read -r PL_T2 PL_TOK2 PL_EP2 < "$PL_RUN/state/example/tick-watch/plrole2"
+printf '%s %s %s\n' "$PL_T2" "$PL_TOK2" "$(( PL_EP2 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole2"
+echo 6 > "$PL_RUN/state/example/tick/plrole2"   # ticked since the baseline
+assert_eq "tick advanced since an old-enough baseline -> HEALTHY" "HEALTHY" "$(pl plrole2)"
+
+section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-liveness.sh)"
+# The loop's own output format is not asserted anywhere pre-#147 (grep
+# confirms it), so this covers the refactored shape directly: one line per
+# role, UNKNOWN gets its own explanatory line, and roles are independent.
+SV_RUN="$TMP/supervise"; mkdir -p "$SV_RUN/state/example/tick-watch"
+printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-watch/svwedged"
+SVOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
+assert_contains "supervise reports a confirmed-old-baseline role's real verdict" "$SVOUT" "svwedged   WEDGED"
+assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
+assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
+
 section "fwf_verify_boot_ticks: boot health-gate — first-tick verify + re-arm + dead-role escalation (#133)"
 BG="$TMP/boot-gate"; mkdir -p "$BG"
 bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
@@ -1355,12 +1397,25 @@ if command -v tmux >/dev/null 2>&1; then
   # Configurable via F88_PR_COUNT / F88_WIP_COUNT (default 0 == "safe"), so
   # the SAME stub serves both this section (always safe) and the dedicated
   # deadlock-guard section below (which drives each count deliberately).
+  # Two DIFFERENT "issue list" callers now share this stub (issue #147 added
+  # the second): fwf_pm_plane_blocked's --json number/--jq length (a bare
+  # count, F88_WIP_COUNT) and fwf_build_plane_blocked's NEW --json comments
+  # claim scan (tab-separated "createdAt\tCLAIM implN" lines, F88_CLAIMS) --
+  # distinguished by which --json field was actually requested, exactly the
+  # way the real difference between the two callers is expressed. Default
+  # F88_CLAIMS empty (no live claims) preserves this fixture's existing
+  # "safe" default for every test that doesn't set it.
   F88GHSTUB="$TMP/gh88stub"; mkdir -p "$F88GHSTUB"
   cat > "$F88GHSTUB/gh" <<'EOS'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr list") echo "${F88_PR_COUNT:-0}";;
-  "issue list") echo "${F88_WIP_COUNT:-0}";;
+  "issue list")
+    case "$*" in
+      *"comments"*) printf '%s' "${F88_CLAIMS:-}" ;;
+      *) echo "${F88_WIP_COUNT:-0}" ;;
+    esac
+    ;;
   *) echo 0;;
 esac
 EOS
@@ -1462,6 +1517,59 @@ EOS
   # (1a-safe) once the PR count is 0 and staging==integration, build-only proceeds
   env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "build-only proceeds once the deadlock guard is clear" || bad "build-only proceeds once the deadlock guard is clear"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down once safe" || ok "build session torn down once safe"
+
+  # --- (1a-claim) CLAIM-WINDOW guard (issue #147): pr_count==0 and
+  # staging==integration are NOT enough -- a ticket can be claimed with no
+  # PR pushed yet, and the ORIGINAL #105 guard was blind to that window
+  # entirely. Reuses the SAME fwf-down.sh mechanism, not a new one.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  F147_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  F147OUT="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl9" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+    && bad "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)" \
+    || ok "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)"
+  assert_contains "refusal names the claim window"  "$F147OUT" "claim window"
+  assert_contains "refusal names the claiming role" "$F147OUT" "impl9"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (claim-window refusal survives --force)" || bad "build session untouched (claim-window refusal survives --force)"
+
+  # An OLD claim (past the 15-min fallback) that STILL has no pane signal
+  # recorded at all is abandoned -- "no live pane AND no PR -> idles", the
+  # ticket's own narrowing of the old "stale claim -> idles" rule. A
+  # DIFFERENT role tag than the fresh-claim case above: fwf_claim_liveness_blocks
+  # stamps a baseline as a side effect even while blocking, so reusing the
+  # same role here would spuriously find a (just-stamped) signal.
+  F147_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
+  F147_OLD="$(date -u -d "@$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="$F147_OLD"$'\t'"CLAIM impl8" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+    && ok "build-only proceeds: old claim, no pane signal ever recorded (abandoned)" \
+    || bad "build-only proceeds: old claim, no pane signal ever recorded (abandoned)"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: abandoned claim did not block" || ok "build session torn down: abandoned claim did not block"
+
+  # A CONFIRMED-WEDGED pane (the #165 classifier itself says dead) never
+  # blocks, no matter how fresh the claim -- "a claim whose impl died before
+  # 15 min elapsed lets the floor idle... once the supervisor marks the pane
+  # dead," not only once claim-age crosses 15 minutes.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  mkdir -p "$F88TRUN/state/example/tick-watch"
+  printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl7"
+  env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+    && ok "build-only proceeds: claim's pane is CONFIRMED wedged/dead (fresh claim, doesn't matter)" \
+    || bad "build-only proceeds: claim's pane is CONFIRMED wedged/dead (fresh claim, doesn't matter)"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: confirmed-dead claimant did not block" || ok "build session torn down: confirmed-dead claimant did not block"
+
+  # LONG-TICKET case: a claim aged well PAST the 15-min fallback whose pane
+  # is STILL actively heartbeating must NOT idle -- proves the primary
+  # signal (liveness) overrides claim-age once a real signal exists, the
+  # regression a naive claim-age-only rule would have baked in.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  mkdir -p "$F88TRUN/state/example/tick" "$F88TRUN/state/example/tick-watch"
+  printf '5 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl6"
+  echo 6 > "$F88TRUN/state/example/tick/impl6"   # ticked since the baseline -> HEALTHY
+  F147OUT2="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_OLD"$'\t'"CLAIM impl6" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+    && bad "build-only refused: claim is 15+ min old but the pane is still actively ticking" \
+    || ok "build-only refused: claim is 15+ min old but the pane is still actively ticking"
+  assert_contains "refusal still names the claim window (age alone did not decide it)" "$F147OUT2" "claim window"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (long-ticket refusal survives --force)" || bad "build session untouched (long-ticket refusal survives --force)"
+  tmux kill-session -t "${F88SESS}-build" 2>/dev/null   # done with this section's build session
 
   # (1b) pm-only refused while an open product-wip draft exists — --force does NOT override
   tmux split-window -h -t "${F88SESS}-coord" -c "$TMP"

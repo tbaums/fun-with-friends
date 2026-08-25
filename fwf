@@ -138,8 +138,11 @@ SIZING + MODELS + TEMPLATE  (accepted by start/provision/up/respawn/resume/down)
                          — the deterministic anti-thrash bound (#88). Each unit
                          ALSO refuses — NOT overridable by --force — while
                          idling it could strand work: --build-only while any PR
-                         is open or a promotion is in flight; --pm-only while
-                         any product-wip draft is open (issue #105).
+                         is open, a promotion is in flight, or a ticket is
+                         CLAIMED but not yet pushed as a PR and that claimant's
+                         pane is alive-or-unconfirmed (issue #147, sharing
+                         'fwf supervise's #165 liveness signal); --pm-only
+                         while any product-wip draft is open (issue #105).
 
 PER-PLANE IDLING (issue #105)
   The captain idles the build floor and the PM pane INDEPENDENTLY, driven by
