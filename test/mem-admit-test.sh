@@ -276,6 +276,43 @@ kill -KILL "$GATE_WAIT_PID" 2>/dev/null
 wait "$GATE_WAIT_PID" 2>/dev/null
 rm -rf "$LOCKDIR" "$MEM_ADMIT"
 
+echo "== BLOCKER 2 (DEFAULT #138 path): fwf-gate.sh RELEASES the #123 gate lock across the SLOT-acquire wait =="
+# The adversarial-verifier blocker: the release/re-acquire hand-off was applied
+# ONLY to the admission path. Prove it now holds on the AS-SHIPPED default path
+# (FWF_MEM_ADMIT_ENABLE=0), where fwf_cargo_build_slot_acquire can block up to 900s
+# for a slot. If the gate held its per-role gate lock across that wait, slot_wait +
+# build could cross FWF_GATE_LOCK_MAX_RUN_SECS and the reaper would stack a 2nd
+# gate (a #151-class double-build). Occupy the only slot with a LIVE holder (this
+# test's own pid — never reaped) so the gate is forced to WAIT, then assert its
+# gate-lock dir is ABSENT while it is still alive and polling.
+rm -rf "$CARGO_BUILD_LOCK"
+mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+printf 'role=occupant\npid=%s\npgid=%s\npgleader=0\nhost=%s\nworktree=%s\nacquired=%s\n' \
+  "$$" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$CARGO_BUILD_LOCK/slot-1/owner"
+DLOCKDIR="$(fwf_gate_lock_dir defaultwait)"
+FWF_MEM_ADMIT_ENABLE=0 FWF_GATE_PGLEADER_ENABLE=1 \
+FWF_CARGO_BUILD_CONCURRENCY=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=30 FWF_CARGO_BUILD_LOCK_POLL=1 \
+  "$ROOT/fwf-gate.sh" defaultwait --cargo-build -- true >/dev/null 2>&1 &
+GATE_DEF_PID=$!
+STRAYS+=("$GATE_DEF_PID")
+# Give it a moment to acquire-then-release the gate lock and enter the slot wait.
+DRELEASED=0
+for _ in $(seq 1 25); do
+  kill -0 "$GATE_DEF_PID" 2>/dev/null || break     # if it exited, stop (checked below)
+  [ -d "$DLOCKDIR" ] || { DRELEASED=1; break; }
+  sleep 0.2
+done
+if kill -0 "$GATE_DEF_PID" 2>/dev/null && [ "$DRELEASED" = 1 ]; then
+  ok "BLOCKER 2 (default path): gate lock is RELEASED while the gate is still alive and waiting on a cargo build slot"
+else
+  bad "BLOCKER 2 (default path): gate lock released during slot-acquire wait" "released=$DRELEASED gate_alive=$(kill -0 "$GATE_DEF_PID" 2>/dev/null && echo yes || echo no) lockdir_present=$([ -d "$DLOCKDIR" ] && echo yes || echo no)"
+fi
+# Tear the waiting gate down. It never got a slot, so it has no build child —
+# a single-pid SIGKILL suffices (a group kill here risks the test's own group).
+kill -KILL "$GATE_DEF_PID" 2>/dev/null
+wait "$GATE_DEF_PID" 2>/dev/null
+rm -rf "$DLOCKDIR" "$CARGO_BUILD_LOCK"
+
 echo
 echo "mem-admit: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

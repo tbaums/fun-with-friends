@@ -198,42 +198,77 @@ if [ "$want_e2e" = 1 ]; then
   e2e_held=1
 fi
 
+# issue #156 BLOCKER 2 (SHARED hand-off): run a BLOCKING resource wait WITHOUT
+# holding the #123 per-role gate lock, then re-acquire it before the build — so
+# the lock's max-run ceiling (FWF_GATE_LOCK_MAX_RUN_SECS=1800, measured from
+# acquire) only ever times the ACTUAL build, never wait+build. Used by BOTH the
+# default #138 slot-acquire path AND the admission path — ONE implementation, so
+# the release/re-acquire hand-off can never again be applied to one path but not
+# the other (the exact asymmetry an adversarial verifier caught: it had been
+# bolted onto the admission path only, leaving the as-shipped DEFAULT path holding
+# the gate lock across fwf_cargo_build_slot_acquire's up-to-900s wait).
+#
+#   $1     name of the shell var to receive the acquired handle (slot number /
+#          mem token the wait command echoes) — set ONLY on success.
+#   $2     name of the release fn (takes the handle) called to free the resource
+#          if we WIN the wait but LOSE the gate-lock re-acquire — so a losing
+#          re-acquirer never leaks its slot/token. Single-flight: the build starts
+#          ONLY after a successful re-acquire, so two builds for one role never run
+#          at once.
+#   $3...  the blocking wait command + args; its stdout is the handle.
+#
+# Releases the gate lock and clears gate_lock_held FIRST, so the EXIT / TERM-INT-
+# HUP trap (_fwf_gate_release) honors the not-held window and never rm's a
+# sibling's lock that was taken while we waited. The re-acquire goes through
+# fwf_gate_lock_acquire, which mkdir's a fresh lock dir and RE-STAMPS acquired=now,
+# so the ceiling restarts at build start.
+# rc 0 = holds the resource AND re-holds the gate lock (gate_lock_held=1), out var
+#        set — caller proceeds to build. rc 1 = deferred: either the wait timed out
+#        (the wait fn already logged why) or we lost the re-acquire (logged here) —
+#        in both cases the resource is freed and gate_lock_held is 0; the caller
+#        must exit EX_SKIPPED.
+_fwf_gate_locked_wait() {
+  local __outvar="$1" __release_fn="$2"; shift 2
+  local __handle
+  fwf_gate_lock_release "$role"; gate_lock_held=0
+  __handle="$("$@")" || return 1
+  if ! fwf_gate_lock_acquire "$role"; then
+    echo "fwf gate: resource acquired but the per-role gate lock was taken during the wait — deferring this tick" >&2
+    "$__release_fn" "$__handle"
+    return 1
+  fi
+  gate_lock_held=1
+  printf -v "$__outvar" '%s' "$__handle"
+  return 0
+}
+
 # Bound how many roles run a full cargo build at once. Two mechanisms, mutually
-# exclusive per invocation:
+# exclusive per invocation — BOTH now route their blocking wait through the SAME
+# _fwf_gate_locked_wait hand-off, so hole #3's bound holds identically on either:
+# the #123 gate lock is DROPPED across the wait and only ever times the build, so
+# slot_wait + build < 1800 and admission_wait + build < 1800 by construction (the
+# wait no longer counts against the 1800s max-run ceiling), and a 25min sibling
+# build can never push a waiting gate past that ceiling into a reaper-induced
+# double-build.
 #
-#   FWF_MEM_ADMIT_ENABLE=1 (issue #156, strategy b — the chosen design): gate
-#   the START on MEASURED free RAM. fwf_mem_admit holds only a sub-second
-#   decision mutex, NEVER a lock across the build — so hole #3 is closed by
-#   construction: an un-admitted gate exits EX_SKIPPED promptly, releasing its
-#   #123 per-role gate lock (via the trap), so a 25min sibling build can never
-#   push this waiting gate past the 1800s max-run ceiling. reserve_gb comes from
-#   the op-class (e2e build vs plain build).
+#   FWF_MEM_ADMIT_ENABLE=1 (issue #156, strategy b — the chosen design): gate the
+#   START on MEASURED free RAM. fwf_mem_admit holds only a sub-second decision
+#   mutex, NEVER a lock across the build. reserve_gb comes from the op-class (e2e
+#   build vs plain build).
 #
-#   default (issue #138 piece C): the pre-existing concurrency SEMAPHORE, held
-#   for the WHOLE wrapped command — kept as the safe fallback until criterion
-#   (3)'s real-box profiling calibrates the reservation sizes.
+#   default (issue #138 piece C): the pre-existing concurrency SEMAPHORE. It is
+#   held for the wrapped command, but — like the admission path — its up-to-900s
+#   fwf_cargo_build_slot_acquire WAIT now happens with the #123 gate lock RELEASED,
+#   so wait+build no longer trips the ceiling. Kept as the safe fallback until
+#   criterion (3)'s real-box profiling calibrates the reservation sizes.
 if [ "$want_cargo_build" = 1 ]; then
   if [ "${FWF_MEM_ADMIT_ENABLE:-0}" = 1 ]; then
     if [ "$want_e2e" = 1 ]; then reserve_gb="$FWF_MEM_RESERVE_E2E_GB"; else reserve_gb="$FWF_MEM_RESERVE_BUILD_GB"; fi
-    # issue #156 BLOCKER 2: fwf_mem_admit BLOCKS up to FWF_MEM_ADMIT_TIMEOUT
-    # (900s) waiting for RAM. Do NOT hold the #123 per-role gate lock across
-    # that wait: the lock's max-run ceiling (FWF_GATE_LOCK_MAX_RUN_SECS=1800) is
-    # measured from lock-acquire, so admission_wait + build could exceed it (a
-    # ~400s wait + ~1500s conductor e2e = 1900s > 1800s) and the reaper would
-    # misread this progressing gate as WEDGED and stack a second. Release the
-    # lock BEFORE the wait and re-acquire AFTER admission, so the ceiling only
-    # ever times the actual build. Single-flight is preserved: the build starts
-    # only after re-acquiring the lock, so two builds for one role never run at
-    # once — a losing re-acquirer defers (its trap frees its own mem token).
-    fwf_gate_lock_release "$role"; gate_lock_held=0
-    mem_token="$(fwf_mem_admit "$role" "$reserve_gb")" \
-      || { echo "fwf gate: insufficient free RAM to admit this build, deferring this tick" >&2; exit "$EX_SKIPPED"; }
-    fwf_gate_lock_acquire "$role" \
-      || { echo "fwf gate: admitted but the per-role gate lock was taken during the wait — deferring this tick" >&2; exit "$EX_SKIPPED"; }
-    gate_lock_held=1
+    _fwf_gate_locked_wait mem_token fwf_mem_admit_release fwf_mem_admit "$role" "$reserve_gb" \
+      || exit "$EX_SKIPPED"
   else
-    cargo_build_slot="$(fwf_cargo_build_slot_acquire "$role")" \
-      || { echo "fwf gate: cargo build slots busy, deferring" >&2; exit "$EX_SKIPPED"; }
+    _fwf_gate_locked_wait cargo_build_slot fwf_cargo_build_slot_release fwf_cargo_build_slot_acquire "$role" \
+      || exit "$EX_SKIPPED"
   fi
 fi
 
