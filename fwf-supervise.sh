@@ -68,6 +68,15 @@ for role in $roles; do
   # failure is already explained). Observation-only — never auto-respawns —
   # because "you have work but haven't acted" is a judgment-level signal for
   # an operator, not the same kind of clear-cut reap WEDGED is.
+  #
+  # Cost (ticket's own "keep it cheap/conditional" note): exactly ONE
+  # `gh pr list` per QA role per supervise pass, always — cheap and
+  # unconditional by design (there's no way to know if a lane has open work
+  # without asking). The per-PR `fwf-pr-review-state.sh` call (its own small
+  # handful of `gh` calls) is the part that's CONDITIONAL: it only runs for
+  # PRs that already exist in this QA's own lane, which is normally 0-1 —
+  # nowhere near GH rate-limit territory even at a 1-minute supervise
+  # cadence across a handful of QA roles.
   case "$role" in
     qa*)
       if [ "$verdict" != "WEDGED" ]; then
