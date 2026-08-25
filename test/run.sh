@@ -604,6 +604,45 @@ assert_eq "a bump also refreshes the heartbeat (boot-gate/respawn stay wired)" "
 # malformed counter file must degrade to 0, never crash arithmetic.
 assert_eq "malformed counter file -> reads 0"          "0" \
   "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_read impl9')"
+
+section "fwf_tick_read / fwf_tick_bump: a read that cannot complete must not collapse into a confident value (#211)"
+# Exit status is the encoding (issue #211 decision): echo unchanged, signal
+# failure via a non-zero return, and a caller that cares MUST declare-then-
+# assign on separate lines or the status gets masked by `local` itself.
+assert_eq "absent tick file: exit 0 -- 'never ticked' is a real answer, not a failure" \
+  "0" "$(tk 'fwf_tick_read impl94 >/dev/null; echo $?')"
+assert_eq "malformed tick file: exit 1 -- the value is NOT to be trusted" \
+  "1" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_read impl9 >/dev/null; echo $?')"
+assert_eq "unreadable tick file (chmod 000): exit 1, still echoes the 0 fallback" \
+  "1" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; chmod 000 "$(fwf_tick_path impl9)"; r=$(fwf_tick_read impl9); rc=$?; chmod 644 "$(fwf_tick_path impl9)"; echo $rc')"
+# THE MASKING TRAP, pinned by a test rather than left to a paragraph: the
+# combined `local n="$(cmd)"` form loses the inner command's status because
+# `local` is itself the command `$?` reports on (verified empirically in this
+# bash: 5.3.9 masks it too, not just older shells).
+assert_eq "combined 'local n=\$(cmd)' MASKS the status -- always reads 0 regardless" \
+  "0" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)";
+    _masked() { local n="$(fwf_tick_read impl9)"; return $?; }
+    _masked; echo $?')"
+assert_eq "declare-then-assign on separate lines correctly PROPAGATES the status" \
+  "1" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)";
+    _unmasked() { local n; n="$(fwf_tick_read impl9)"; return $?; }
+    _unmasked; echo $?')"
+
+# fwf_tick_bump: a stale/failed read must REFUSE TO WRITE, never overwrite a
+# deep counter with 1 -- the live corruption bug this ticket exists to close.
+assert_eq "healthy bump still returns the new count normally" "6" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
+assert_eq "bump on a malformed counter echoes UNKNOWN, not a fabricated '1'" "UNKNOWN" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
+assert_eq "bump on a malformed counter exits non-zero" "1" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null; echo $?')"
+assert_eq "a role at tick 5000 with a momentarily-unreadable file is NOT reset to 1 -- the file is left untouched" \
+  "garbage" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null; cat "$(fwf_tick_path impl9)"')"
+assert_eq "the heartbeat is STILL touched on a refused bump -- a cycle DID start, that half is independently true" \
+  "yes" "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; printf garbage > "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null; [ -f "$(fwf_heartbeat_path impl9)" ] && echo yes || echo no')"
+assert_eq "recovery: a later healthy bump after a refusal resumes from the REAL prior count, not from the refusal" "6" \
+  "$(tk 'mkdir -p "$(dirname "$(fwf_tick_path impl9)")"; echo 5 > "$(fwf_tick_path impl9)"; chmod 000 "$(fwf_tick_path impl9)"; fwf_tick_bump impl9 >/dev/null 2>&1; chmod 644 "$(fwf_tick_path impl9)"; fwf_tick_bump impl9')"
+
 # the `fwf tick` subcommand is the agent-facing entrypoint and echoes the count.
 assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
   "$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run2" "$ROOT/fwf" tick impl9)"
@@ -723,6 +762,20 @@ read -r PL_T2 PL_TOK2 PL_EP2 < "$PL_RUN/state/example/tick-watch/plrole2"
 printf '%s %s %s\n' "$PL_T2" "$PL_TOK2" "$(( PL_EP2 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole2"
 echo 6 > "$PL_RUN/state/example/tick/plrole2"   # ticked since the baseline
 assert_eq "tick advanced since an old-enough baseline -> HEALTHY" "HEALTHY" "$(pl plrole2)"
+
+# issue #211: an untrustworthy current read must never collapse into a
+# confident verdict (WEDGED is the dangerous direction -- it can trigger a
+# respawn), and its fallback value must never be stamped as the next
+# baseline -- that would corrupt every future delta comparison durably.
+mkdir -p "$PL_RUN/state/example/tick"
+echo 5 > "$PL_RUN/state/example/tick/plrole3"
+pl plrole3 >/dev/null   # stamp a baseline at tick=5
+read -r PL_T3 PL_TOK3 PL_EP3 < "$PL_RUN/state/example/tick-watch/plrole3"
+printf '%s %s %s\n' "$PL_T3" "$PL_TOK3" "$(( PL_EP3 - 700 ))" > "$PL_RUN/state/example/tick-watch/plrole3"
+printf garbage > "$PL_RUN/state/example/tick/plrole3"   # the live read now fails
+assert_eq "an untrustworthy current read -> UNKNOWN, never a false WEDGED" "UNKNOWN" "$(pl plrole3)"
+assert_eq "the untrustworthy value is NEVER stamped as the next baseline (snapshot untouched)" \
+  "$PL_T3 $PL_TOK3 $(( PL_EP3 - 700 ))" "$(cat "$PL_RUN/state/example/tick-watch/plrole3")"
 
 section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-liveness.sh)"
 # The loop's own output format is not asserted anywhere pre-#147 (grep

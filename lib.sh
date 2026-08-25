@@ -2033,25 +2033,61 @@ fwf_heartbeat_path() { echo "$FWF_STATE_DIR/heartbeat/$1"; } # $1=role tag
 # check (boot gate, respawn verify) keeps working unchanged.
 fwf_tick_path() { echo "$FWF_STATE_DIR/tick/$1"; } # $1=role tag
 
-# Current tick count for role $1 (0 if it has never ticked / file absent or
-# malformed — never errors, so callers can use it in arithmetic directly).
+# Current tick count for role $1. Echoes the count exactly as before (a bare
+# `$(fwf_tick_read role)` caller is unchanged — issue #211's AC (e)), but now
+# ALSO signals via exit status whether the echoed value can be trusted:
+#   - file absent (role has never ticked) -> echoes 0, returns 0. This is a
+#     real, confident answer ("no ticks yet"), never a failure — issue #211's
+#     "succeeded-and-empty is not a failure" distinction (the #200 shape).
+#   - file present but unreadable, or present with malformed content -> still
+#     echoes 0 (unchanged fallback for a caller that doesn't check status),
+#     but returns 1. A caller that cares MUST use the two-line
+#     `local n; n="$(fwf_tick_read role)" || handle_unknown` form — a combined
+#     `local n="$(fwf_tick_read role)"` MASKS the status because `local`
+#     itself is the command whose exit code `$?` would see (issue #211).
 fwf_tick_read() { # $1=role
-  local n; n="$(cat "$(fwf_tick_path "$1")" 2>/dev/null || true)"
-  case "$n" in ''|*[!0-9]*) echo 0;; *) echo "$n";; esac
+  local tf n
+  tf="$(fwf_tick_path "$1")"
+  [ -e "$tf" ] || { echo 0; return 0; }
+  n="$(cat "$tf" 2>/dev/null)" || { echo 0; return 1; }
+  case "$n" in
+    ''|*[!0-9]*) echo 0; return 1;;
+    *) echo "$n"; return 0;;
+  esac
 }
 
 # Atomically bump role $1's tick counter and refresh its heartbeat — the single
 # cycle-start action a looping role runs at step-0. Read-inc-write is safe
 # because each role is the SOLE writer of its own counter (one pane, one serial
 # loop); the write goes through a temp+mv so a reader never catches a half-
-# written value. Echoes the new count.
+# written value. Echoes the new count and returns 0 on a normal bump.
+#
+# issue #211: if the CURRENT count cannot be trusted (fwf_tick_read's exit
+# status, read via the two-line form so it is never masked), this REFUSES TO
+# WRITE rather than overwrite a possibly-5000-deep counter with 1 — a stale
+# read must not durably reset a live counter. Echoes UNKNOWN and returns 1;
+# the heartbeat file is still touched (a cycle DID start — that half of the
+# signal is independently true) but the tick counter is left untouched so a
+# later, healthy read recovers the real count. fwf-pane-liveness.sh reads
+# this same UNKNOWN-producing path and must never let it collapse into a
+# false WEDGED (a flat tick reads identically to "no movement").
 fwf_tick_bump() { # $1=role
   local role="$1" tf hb cur next
   tf="$(fwf_tick_path "$role")"; hb="$(fwf_heartbeat_path "$role")"
   mkdir -p "$(dirname "$tf")" "$(dirname "$hb")" 2>/dev/null || true
-  cur="$(fwf_tick_read "$role")"; next=$((cur + 1))
-  printf '%s\n' "$next" > "$tf.tmp.$$" && mv -f "$tf.tmp.$$" "$tf"
+  # `if cur=$(...); then` (not `cur=$(...); rc=$?`) deliberately -- this
+  # function runs under callers' `set -e` (the `fwf` dispatcher itself is
+  # `set -euo pipefail`), and a bare failing assignment statement would abort
+  # the whole call before `rc=$?` ever ran. A command's exit status inside an
+  # `if` condition is exempt from `set -e` by design; this is that exemption
+  # used on purpose, not an oversight (issue #211's own `set -e` warning).
   touch "$hb" 2>/dev/null || true
+  if ! cur="$(fwf_tick_read "$role")"; then
+    echo UNKNOWN
+    return 1
+  fi
+  next=$((cur + 1))
+  printf '%s\n' "$next" > "$tf.tmp.$$" && mv -f "$tf.tmp.$$" "$tf"
   echo "$next"
 }
 
