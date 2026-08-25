@@ -409,7 +409,18 @@ fwf_missing_worktrees() { # $@=role tags to check
 # — see docs/gate-throughput.md for the full numbers.
 # Run with the current directory inside the worktree (the gate and the warm
 # build both are). Emits a loud line on any repair — GREEN gates are audited.
+#
+# $1 = configure_sccache (default 1). Issue #268: the caller may be about to
+# run an arbitrary wrapped command that has nothing to do with cargo (e.g.
+# `fwf gate <role> -- bash -c "bash test/run.sh"`, which is every role's
+# ordinary fast gate). Exporting RUSTC_WRAPPER/SCCACHE_DIR unconditionally
+# leaks sccache into that command's environment regardless of whether it
+# touches cargo at all. Pass 0 to skip step (3) below and leave the caller's
+# RUSTC_WRAPPER/SCCACHE_DIR exactly as found; steps (1)-(2) (target isolation)
+# still run either way — they only ever unset/remove, never export, so they
+# carry none of this leak risk.
 fwf_cargo_isolate() {
+  local configure_sccache="${1:-1}"
   local root; root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
   [ -n "$root" ] || return 0
   # (1) shared ambient CARGO_TARGET_DIR
@@ -441,7 +452,7 @@ fwf_cargo_isolate() {
   # chose an explicit RUSTC_WRAPPER (#151's same rule), and a no-op entirely
   # if sccache isn't installed — this never forces new tooling onto a profile
   # that doesn't have it.
-  fwf_cargo_sccache_configure
+  [ "$configure_sccache" = 1 ] && fwf_cargo_sccache_configure
   return 0
 }
 

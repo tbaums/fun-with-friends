@@ -168,7 +168,14 @@ fi
 # which is the one mechanism that lets a gate go GREEN on code not on its branch.
 # cwd here is the pane's worktree. No-op for non-Rust gates. Fail CLOSED: if
 # isolation can't be established, do NOT run the command — a red gate is safe.
-fwf_cargo_isolate || { echo "fwf gate: could not isolate cargo target — refusing to run gate" >&2; exit 1; }
+#
+# issue #268: only let this configure sccache (RUSTC_WRAPPER/SCCACHE_DIR) when
+# the wrapped command is actually going to build cargo (--cargo-build was
+# passed, mirroring the concurrency semaphore's own gating above) — otherwise
+# every ordinary gate invocation (e.g. `-- bash -c "bash test/run.sh"`, which
+# is every role's routine fast gate) leaked sccache into an unrelated wrapped
+# command's environment regardless of whether it touched cargo at all.
+fwf_cargo_isolate "$want_cargo_build" || { echo "fwf gate: could not isolate cargo target — refusing to run gate" >&2; exit 1; }
 
 # Hand the wrapped command the CALLER's environment, not ours (issue #175).
 # Deliberately after fwf_cargo_isolate, which still needs our resolution.
