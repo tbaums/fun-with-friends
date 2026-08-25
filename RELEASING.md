@@ -63,6 +63,12 @@ resolution — see [docs/dash.md](docs/dash.md).
    /tmp/rel/fwf-X.Y.Z/fwf doctor
    ```
 
+   As of issue #209, the workflow now asserts this exact set automatically —
+   `scripts/assert-release-assets.sh` runs against the draft release before
+   it is ever published, so a missing or unexpected asset fails the workflow
+   with nothing made public. This step is a confirmation, not the only line
+   of defence.
+
 ## Re-syncing staging/integration (issue #114)
 
 Every release (or direct-to-`main` hotfix) can leave `staging`/`integration`
