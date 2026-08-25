@@ -11,6 +11,19 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-25
+
+### Added
+- **release.yml asserts the published asset set against the build matrix** (#209, code b8555bf, docs b8555bf) — the release job now verifies every expected artifact is present before publishing, so a partial upload fails loudly instead of shipping a short asset set.
+
+### Changed
+- **QA/impl tick is idempotent and world-derived — resume/respawn/crash all self-heal** (#140, code 409aafe, docs 409aafe) — a seat re-derives its state from the world each tick, so a restarted or crashed seat resumes cleanly instead of duplicating or dropping work.
+- **e2e lock waiter reports holder identity, hold age, liveness, and queue age** (#196, code e327756, docs e327756) — a blocked waiter now surfaces who holds the lock and for how long, turning an opaque hang into a diagnosable wait.
+
+### Fixed
+- **Role worktrees no longer silently rot — PM/GV trees are refreshed** (#146, code 950c6a8, docs 950c6a8) — agents were grooming against an ancient tree; the worktrees are now refreshed so reviews run against current state.
+- **fwf gate only configures sccache when --cargo-build is set** (#268, code 94ba03b, docs none — internal) — the cargo-isolate wrapper was unconditionally leaking RUSTC_WRAPPER/SCCACHE_DIR into every wrapped command's env, poisoning the e2e gate; now scoped to cargo builds.
+
 ## [0.30.3] - 2026-08-25
 
 ### Changed
