@@ -70,6 +70,28 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --- issue #156 hole #1: kill-safe process-group ownership -------------------
+# Become a process-group LEADER exactly once (guarded by a sentinel), BEFORE any
+# lock/admission work, so the cargo child launched below inherits our group. A
+# kill then takes cargo down WITH us — trappable signals via the trap installed
+# further down, and an untrappable SIGKILL (tmux `respawn-pane -k`) via the
+# memory-admission reaper, which SIGKILLs the stamped group when it drops our
+# now-dead reservation. Without this, a killed gate ORPHANS a multi-GB cargo
+# (reparented to PID1, still building) while its lock auto-releases, and the
+# next agent stacks a SECOND build on top of the orphan — the failed prototype's
+# fatal flaw. macOS has no setsid(1); /usr/bin/perl (present on macOS and Linux)
+# does setpgid then re-execs the original argv. FAIL-CLOSED when the leader is
+# REQUIRED but perl is absent — never silently run ungrouped.
+if [ "${FWF_GATE_PGLEADER_ENABLE:-1}" = 1 ] && [ -z "${_FWF_GATE_IS_PGLEADER:-}" ]; then
+  if command -v perl >/dev/null 2>&1; then
+    export _FWF_GATE_IS_PGLEADER=1
+    exec perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$0" "$@"
+  else
+    echo "fwf gate: FWF_GATE_PGLEADER_ENABLE=1 but perl is absent — refusing to gate ungrouped (set FWF_GATE_PGLEADER_ENABLE=0 to override)" >&2
+    exit 1
+  fi
+fi
+
 # --- issue #175: do not leak OUR profile resolution into the wrapped command --
 # Sourcing lib.sh below resolves a profile — we need it, for the lock paths —
 # and in doing so SETS FWF_PROFILE/FWF_PAIRS/FWF_REPO in this shell. Those
@@ -140,27 +162,127 @@ if [ -n "$tip_cmd" ]; then
 fi
 
 fwf_gate_lock_acquire "$role" || exit "$EX_SKIPPED"
+gate_lock_held=1   # issue #156 BLOCKER 2: tracked so the release trap never rm's
 
 e2e_held=0
 cargo_build_slot=""
+mem_token=""
+# Only release the #123 per-role gate lock if WE currently hold it. During the
+# admission wait (below) we deliberately drop it and a sibling tick may take it;
+# an unconditional release here would then rm the sibling's lock. gate_lock_held
+# is the guard.
 _fwf_gate_release() {
-  fwf_gate_lock_release "$role"
+  [ "$gate_lock_held" = 1 ] && fwf_gate_lock_release "$role"
   [ "$e2e_held" = 1 ] && fwf_e2e_lock_release
   fwf_cargo_build_slot_release "$cargo_build_slot"
+  fwf_mem_admit_release "$mem_token"
 }
 trap _fwf_gate_release EXIT
+
+# issue #156 hole #1: on a TRAPPABLE kill, release the lock(s) AND take the
+# whole process group (cargo included) down WITH it — never leave cargo orphaned
+# building while the lock is gone. Only meaningful when we're the pgleader; the
+# single `kill -KILL -$$` is one syscall that reaps the whole group atomically
+# (us included), so locks are released FIRST. An untrappable SIGKILL bypasses
+# this entirely — that path is covered by the admission reaper, not here.
+_fwf_gate_signal_cleanup() {
+  trap - TERM INT HUP EXIT
+  _fwf_gate_release
+  [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && kill -KILL -"$$" 2>/dev/null
+  exit 143
+}
+trap _fwf_gate_signal_cleanup TERM INT HUP
 
 if [ "$want_e2e" = 1 ]; then
   fwf_e2e_lock_acquire "$role" || { echo "fwf gate: e2e lock busy, deferring" >&2; exit "$EX_SKIPPED"; }
   e2e_held=1
 fi
 
-# issue #138 piece C: bound how many roles build cargo at once. Held for the
-# WHOLE wrapped command (not just the isolate step below), since the actual
-# build/test happens inside it — released by the trap above on any exit path.
+# issue #156 BLOCKER 2 (SHARED hand-off): run a BLOCKING resource wait WITHOUT
+# holding the #123 per-role gate lock, then re-acquire it before the build — so
+# the lock's max-run ceiling (FWF_GATE_LOCK_MAX_RUN_SECS=1800, measured from
+# acquire) only ever times the ACTUAL build, never wait+build. Used by BOTH the
+# default #138 slot-acquire path AND the admission path — ONE implementation, so
+# the release/re-acquire hand-off can never again be applied to one path but not
+# the other (the exact asymmetry an adversarial verifier caught: it had been
+# bolted onto the admission path only, leaving the as-shipped DEFAULT path holding
+# the gate lock across fwf_cargo_build_slot_acquire's up-to-900s wait).
+#
+#   $1     name of the shell var to receive the acquired handle (slot number /
+#          mem token the wait command echoes) — set ONLY on success.
+#   $2     name of the release fn (takes the handle) called to free the resource
+#          if we WIN the wait but LOSE the gate-lock re-acquire — so a losing
+#          re-acquirer never leaks its slot/token. Single-flight: the build starts
+#          ONLY after a successful re-acquire, so two builds for one role never run
+#          at once.
+#   $3...  the blocking wait command + args; its stdout is the handle.
+#
+# Releases the gate lock and clears gate_lock_held FIRST, so the EXIT / TERM-INT-
+# HUP trap (_fwf_gate_release) honors the not-held window and never rm's a
+# sibling's lock that was taken while we waited. The re-acquire goes through
+# fwf_gate_lock_acquire, which mkdir's a fresh lock dir and RE-STAMPS acquired=now,
+# so the ceiling restarts at build start.
+# rc 0 = holds the resource AND re-holds the gate lock (gate_lock_held=1), out var
+#        set — caller proceeds to build. rc 1 = deferred: either the wait timed out
+#        (the wait fn already logged why) or we lost the re-acquire (logged here) —
+#        in both cases the resource is freed and gate_lock_held is 0; the caller
+#        must exit EX_SKIPPED.
+_fwf_gate_locked_wait() {
+  local __outvar="$1" __release_fn="$2"; shift 2
+  local __handle
+  fwf_gate_lock_release "$role"; gate_lock_held=0
+  __handle="$("$@")" || return 1
+  # issue #156 BLOCKER 2 (signal window): publish the won handle to the caller's
+  # outvar (cargo_build_slot / mem_token) BEFORE re-acquiring the gate lock,
+  # mirroring the old direct-assignment admission code. A trappable TERM/INT/HUP
+  # arriving DURING fwf_gate_lock_acquire (resource already won, lock not yet
+  # re-held) then finds the handle in the global, so _fwf_gate_signal_cleanup ->
+  # _fwf_gate_release clean-releases it in that window instead of reading an empty
+  # global and leaking the won slot/token until the next dead-pid reap.
+  printf -v "$__outvar" '%s' "$__handle"
+  if ! fwf_gate_lock_acquire "$role"; then
+    echo "fwf gate: resource acquired but the per-role gate lock was taken during the wait — deferring this tick" >&2
+    # Free EXACTLY once: unpublish the handle FIRST so the EXIT/TERM-INT-HUP trap's
+    # _fwf_gate_release cannot ALSO free it (a double-free could rm a slot/token a
+    # sibling has since re-acquired), THEN release via the local handle. Single-
+    # flight holds: the build below starts only on the return-0 path, after a
+    # successful re-acquire.
+    printf -v "$__outvar" ''
+    "$__release_fn" "$__handle"
+    return 1
+  fi
+  gate_lock_held=1
+  return 0
+}
+
+# Bound how many roles run a full cargo build at once. Two mechanisms, mutually
+# exclusive per invocation — BOTH now route their blocking wait through the SAME
+# _fwf_gate_locked_wait hand-off, so hole #3's bound holds identically on either:
+# the #123 gate lock is DROPPED across the wait and only ever times the build, so
+# slot_wait + build < 1800 and admission_wait + build < 1800 by construction (the
+# wait no longer counts against the 1800s max-run ceiling), and a 25min sibling
+# build can never push a waiting gate past that ceiling into a reaper-induced
+# double-build.
+#
+#   FWF_MEM_ADMIT_ENABLE=1 (issue #156, strategy b — the chosen design): gate the
+#   START on MEASURED free RAM. fwf_mem_admit holds only a sub-second decision
+#   mutex, NEVER a lock across the build. reserve_gb comes from the op-class (e2e
+#   build vs plain build).
+#
+#   default (issue #138 piece C): the pre-existing concurrency SEMAPHORE. It is
+#   held for the wrapped command, but — like the admission path — its up-to-900s
+#   fwf_cargo_build_slot_acquire WAIT now happens with the #123 gate lock RELEASED,
+#   so wait+build no longer trips the ceiling. Kept as the safe fallback until
+#   criterion (3)'s real-box profiling calibrates the reservation sizes.
 if [ "$want_cargo_build" = 1 ]; then
-  cargo_build_slot="$(fwf_cargo_build_slot_acquire "$role")" \
-    || { echo "fwf gate: cargo build slots busy, deferring" >&2; exit "$EX_SKIPPED"; }
+  if [ "${FWF_MEM_ADMIT_ENABLE:-0}" = 1 ]; then
+    if [ "$want_e2e" = 1 ]; then reserve_gb="$FWF_MEM_RESERVE_E2E_GB"; else reserve_gb="$FWF_MEM_RESERVE_BUILD_GB"; fi
+    _fwf_gate_locked_wait mem_token fwf_mem_admit_release fwf_mem_admit "$role" "$reserve_gb" \
+      || exit "$EX_SKIPPED"
+  else
+    _fwf_gate_locked_wait cargo_build_slot fwf_cargo_build_slot_release fwf_cargo_build_slot_acquire "$role" \
+      || exit "$EX_SKIPPED"
+  fi
 fi
 
 # Per-worktree cargo target isolation (issue #151): guarantee this gate builds
