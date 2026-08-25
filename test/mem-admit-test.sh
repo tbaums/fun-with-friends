@@ -251,24 +251,43 @@ echo "== BLOCKER 2: fwf-gate.sh RELEASES the #123 per-role gate lock across the 
 # With admission ON and an impossible reserve, fwf_mem_admit blocks (polls). The
 # gate must NOT hold its per-role gate lock during that wait, or admission_wait +
 # build could cross FWF_GATE_LOCK_MAX_RUN_SECS and the reaper stacks a 2nd gate.
+#
+# The check must catch the TRUE acquire->release transition, NOT the pre-acquire
+# startup window (poll #1 fires before the gate has mkdir'd its lock, so a bare
+# first-absent read passes even against a mutant that HOLDS the lock across the
+# wait). So drive the gate's stderr to a log and wait until it LOGS that it has
+# ENTERED the blocking RAM-admission wait — which happens strictly AFTER it
+# acquired and then released the gate lock — and only THEN assert the lock dir is
+# absent while the gate is still alive. A mutant that holds the lock across the
+# wait still logs the wait but leaves the lock dir PRESENT at that point, so this
+# assertion FAILS against it (the old pre-acquire-absent read never could).
 LOCKDIR="$(fwf_gate_lock_dir admitwait)"
+AWLOG="$TMP/admitwait.log"
 FWF_MEM_ADMIT_ENABLE=1 FWF_GATE_PGLEADER_ENABLE=1 \
 FWF_MEM_ADMIT_FLOOR_GB=0 FWF_MEM_RESERVE_BUILD_GB=999999 \
-FWF_MEM_ADMIT_TIMEOUT=30 FWF_MEM_ADMIT_POLL=1 FWF_MEM_ADMIT_REPORT_SECS=60 \
-  "$ROOT/fwf-gate.sh" admitwait --cargo-build -- true >/dev/null 2>&1 &
+FWF_MEM_ADMIT_TIMEOUT=30 FWF_MEM_ADMIT_POLL=1 FWF_MEM_ADMIT_REPORT_SECS=1 \
+  "$ROOT/fwf-gate.sh" admitwait --cargo-build -- true >/dev/null 2>"$AWLOG" &
 GATE_WAIT_PID=$!
 STRAYS+=("$GATE_WAIT_PID")
-# Give it a moment to acquire-then-release the gate lock and enter the admission wait.
-RELEASED=0
-for _ in $(seq 1 25); do
-  kill -0 "$GATE_WAIT_PID" 2>/dev/null || break     # if it exited, stop (checked below)
-  [ -d "$LOCKDIR" ] || { RELEASED=1; break; }
+# Wait until the gate has ENTERED the blocking admission wait (logged "RAM
+# admission"), then — only once we KNOW it is past acquire+release — assert the
+# lock dir is absent. ENTERED_WAIT stays 0 if it never got there (checked below).
+ENTERED_WAIT=0; RELEASED=0
+for _ in $(seq 1 50); do
+  kill -0 "$GATE_WAIT_PID" 2>/dev/null || break     # exited early (checked below)
+  if grep -q "RAM admission" "$AWLOG" 2>/dev/null; then
+    ENTERED_WAIT=1
+    # Past acquire+release now: an absent lock here is the DURING-WAIT release,
+    # not the pre-acquire window — the present->absent transition we require.
+    [ -d "$LOCKDIR" ] || RELEASED=1
+    break
+  fi
   sleep 0.2
 done
-if kill -0 "$GATE_WAIT_PID" 2>/dev/null && [ "$RELEASED" = 1 ]; then
+if kill -0 "$GATE_WAIT_PID" 2>/dev/null && [ "$ENTERED_WAIT" = 1 ] && [ "$RELEASED" = 1 ] && [ ! -d "$LOCKDIR" ]; then
   ok "BLOCKER 2: gate lock is RELEASED while the gate is still alive and waiting on RAM admission"
 else
-  bad "BLOCKER 2: gate lock released during admission wait" "released=$RELEASED gate_alive=$(kill -0 "$GATE_WAIT_PID" 2>/dev/null && echo yes || echo no) lockdir_present=$([ -d "$LOCKDIR" ] && echo yes || echo no)"
+  bad "BLOCKER 2: gate lock released during admission wait" "entered_wait=$ENTERED_WAIT released=$RELEASED gate_alive=$(kill -0 "$GATE_WAIT_PID" 2>/dev/null && echo yes || echo no) lockdir_present=$([ -d "$LOCKDIR" ] && echo yes || echo no)"
 fi
 # Tear the waiting gate down. It never got admitted, so it has no build child —
 # a single-pid SIGKILL suffices (a group kill here risks the test's own group).
@@ -290,22 +309,33 @@ mkdir -p "$CARGO_BUILD_LOCK/slot-1"
 printf 'role=occupant\npid=%s\npgid=%s\npgleader=0\nhost=%s\nworktree=%s\nacquired=%s\n' \
   "$$" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$CARGO_BUILD_LOCK/slot-1/owner"
 DLOCKDIR="$(fwf_gate_lock_dir defaultwait)"
+DLOG="$TMP/defaultwait.log"
 FWF_MEM_ADMIT_ENABLE=0 FWF_GATE_PGLEADER_ENABLE=1 \
 FWF_CARGO_BUILD_CONCURRENCY=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=30 FWF_CARGO_BUILD_LOCK_POLL=1 \
-  "$ROOT/fwf-gate.sh" defaultwait --cargo-build -- true >/dev/null 2>&1 &
+  "$ROOT/fwf-gate.sh" defaultwait --cargo-build -- true >/dev/null 2>"$DLOG" &
 GATE_DEF_PID=$!
 STRAYS+=("$GATE_DEF_PID")
-# Give it a moment to acquire-then-release the gate lock and enter the slot wait.
-DRELEASED=0
-for _ in $(seq 1 25); do
-  kill -0 "$GATE_DEF_PID" 2>/dev/null || break     # if it exited, stop (checked below)
-  [ -d "$DLOCKDIR" ] || { DRELEASED=1; break; }
+# Same present->absent discipline as the admission check: poll #1 fires during the
+# gate's pre-acquire startup window, so a bare first-absent read passes even
+# against a mutant that HOLDS the gate lock across fwf_cargo_build_slot_acquire's
+# wait. Instead wait until the gate LOGS that it entered the blocking slot wait
+# ("waiting for a cargo build slot") — strictly AFTER acquire+release — then
+# assert the lock dir is absent while the gate is still alive and polling. A
+# lock-holding mutant logs the same wait but leaves the lock PRESENT here → FAIL.
+DENTERED=0; DRELEASED=0
+for _ in $(seq 1 50); do
+  kill -0 "$GATE_DEF_PID" 2>/dev/null || break     # exited early (checked below)
+  if grep -q "waiting for a cargo build slot" "$DLOG" 2>/dev/null; then
+    DENTERED=1
+    [ -d "$DLOCKDIR" ] || DRELEASED=1
+    break
+  fi
   sleep 0.2
 done
-if kill -0 "$GATE_DEF_PID" 2>/dev/null && [ "$DRELEASED" = 1 ]; then
+if kill -0 "$GATE_DEF_PID" 2>/dev/null && [ "$DENTERED" = 1 ] && [ "$DRELEASED" = 1 ] && [ ! -d "$DLOCKDIR" ]; then
   ok "BLOCKER 2 (default path): gate lock is RELEASED while the gate is still alive and waiting on a cargo build slot"
 else
-  bad "BLOCKER 2 (default path): gate lock released during slot-acquire wait" "released=$DRELEASED gate_alive=$(kill -0 "$GATE_DEF_PID" 2>/dev/null && echo yes || echo no) lockdir_present=$([ -d "$DLOCKDIR" ] && echo yes || echo no)"
+  bad "BLOCKER 2 (default path): gate lock released during slot-acquire wait" "entered_wait=$DENTERED released=$DRELEASED gate_alive=$(kill -0 "$GATE_DEF_PID" 2>/dev/null && echo yes || echo no) lockdir_present=$([ -d "$DLOCKDIR" ] && echo yes || echo no)"
 fi
 # Tear the waiting gate down. It never got a slot, so it has no build child —
 # a single-pid SIGKILL suffices (a group kill here risks the test's own group).

@@ -232,13 +232,26 @@ _fwf_gate_locked_wait() {
   local __handle
   fwf_gate_lock_release "$role"; gate_lock_held=0
   __handle="$("$@")" || return 1
+  # issue #156 BLOCKER 2 (signal window): publish the won handle to the caller's
+  # outvar (cargo_build_slot / mem_token) BEFORE re-acquiring the gate lock,
+  # mirroring the old direct-assignment admission code. A trappable TERM/INT/HUP
+  # arriving DURING fwf_gate_lock_acquire (resource already won, lock not yet
+  # re-held) then finds the handle in the global, so _fwf_gate_signal_cleanup ->
+  # _fwf_gate_release clean-releases it in that window instead of reading an empty
+  # global and leaking the won slot/token until the next dead-pid reap.
+  printf -v "$__outvar" '%s' "$__handle"
   if ! fwf_gate_lock_acquire "$role"; then
     echo "fwf gate: resource acquired but the per-role gate lock was taken during the wait — deferring this tick" >&2
+    # Free EXACTLY once: unpublish the handle FIRST so the EXIT/TERM-INT-HUP trap's
+    # _fwf_gate_release cannot ALSO free it (a double-free could rm a slot/token a
+    # sibling has since re-acquired), THEN release via the local handle. Single-
+    # flight holds: the build below starts only on the return-0 path, after a
+    # successful re-acquire.
+    printf -v "$__outvar" ''
     "$__release_fn" "$__handle"
     return 1
   fi
   gate_lock_held=1
-  printf -v "$__outvar" '%s' "$__handle"
   return 0
 }
 

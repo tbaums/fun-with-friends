@@ -11,6 +11,11 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-25
+
+### Added
+- **Kill-safe process-group build ownership + #123 gate-lock hand-off, on both the default #138 semaphore path and the opt-in memory-admission path** (#156, code d902ac4, docs d902ac4) — the build gate now owns its cargo build under a dedicated process group, so a killed or reaped gate tears down the whole build subtree instead of orphaning it. The #123 per-role gate lock is handed off around the blocking wait — released before the gate blocks on a cargo build slot (#138 default path) or on RAM admission, then re-acquired at build start — via the shared `_fwf_gate_locked_wait` helper that drives both paths through one implementation. The won slot/token is published to the caller before the re-acquire so a signal in that window clean-releases it. Kill-safety and the gate-lock hand-off are **active by default**; the memory-admission control itself remains **opt-in** (`FWF_MEM_ADMIT_ENABLE` defaults to `0`) pending real-box memory calibration.
+
 ## [0.31.0] - 2026-08-25
 
 ### Added
