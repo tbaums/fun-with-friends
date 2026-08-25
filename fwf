@@ -185,6 +185,15 @@ UTILITIES
                          is still in flight; --e2e additionally takes the
                          floor-wide e2e lock (issue #65) for a harness that
                          shares fixed ports across roles.
+  gate-rust-scope --against BRANCH [--safe GLOB]... [--log FILE]
+                    [--full-suite-secs N]
+                         SHADOW classifier for whether a profile's Rust suite
+                         COULD be skipped for the current branch's diff
+                         (issue #138, piece B) — never skips anything itself;
+                         always prints "Rust suite WOULD SKIP/RUN ..." and
+                         logs the verdict for the future keep-or-drop-B
+                         measurement. FWF_GATE_FULL=1 forces RUN regardless of
+                         the diff (kill switch, plumbed ahead of the flip).
   authz <issue>          Verify HUMAN authorization to build/un-gate <issue>
                          (issue #150): AUTHORIZED (exit 0) iff the operator
                          un-gate signal — a comment emitted only by a human
@@ -700,6 +709,7 @@ case "$cmd" in
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
+  gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;

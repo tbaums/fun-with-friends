@@ -2812,6 +2812,187 @@ assert_contains "acquire returns non-zero on timeout"     "$LIVE_OUT" "RC=1"
 case "$LIVE_OUT" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live holder not broken, even past the age backstop";; esac
 
 # --------------------------------------------------------------------------
+section "cargo build concurrency SEMAPHORE (issue #138 piece C): N slots, not a mutex"
+CBRUN="$TMP/cargobuild138"
+cat > "$TMP/cargo-build-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  symmetry)
+    s="$(fwf_cargo_build_slot_acquire testrole)" && echo "ACQUIRED=$s"
+    [ -f "$CARGO_BUILD_LOCK/slot-$s/owner" ] && echo STAMPED
+    grep -q '^role=testrole$' "$CARGO_BUILD_LOCK/slot-$s/owner" && echo ROLEOK
+    fwf_cargo_build_slot_release "$s"
+    [ -d "$CARGO_BUILD_LOCK/slot-$s" ] && echo STILLTHERE || echo RELEASED
+    ;;
+  two-slots-then-block)
+    s1="$(fwf_cargo_build_slot_acquire holder1)" && echo "S1=$s1"
+    s2="$(fwf_cargo_build_slot_acquire holder2)" && echo "S2=$s2"
+    rc=0; fwf_cargo_build_slot_acquire holder3 2>&1 || rc=$?
+    echo "RC3=$rc"
+    fwf_cargo_build_slot_release "$s1"
+    s4="$(fwf_cargo_build_slot_acquire holder4)" && echo "S4=$s4"
+    ;;
+  dead)
+    mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+    printf 'role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\n' \
+      "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+    rc=0; s="$(fwf_cargo_build_slot_acquire impl9 2>&1)" || rc=$?
+    echo "OUT=$s"
+    echo "RC=$rc"
+    grep -q '^role=impl9$' "$CARGO_BUILD_LOCK/slot-1/owner" 2>/dev/null && echo NEWOWNER
+    ;;
+  live)
+    mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+    printf 'role=selfheld\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+    rc=0; fwf_cargo_build_slot_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+esac
+EOSCRIPT
+
+CB_SYM="$(FWF_RUN_DIR="$CBRUN/sym" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" symmetry)"
+assert_contains "acquire succeeds and returns a slot number" "$CB_SYM" "ACQUIRED=1"
+assert_contains "acquire writes a holder-identity stamp"     "$CB_SYM" "STAMPED"
+assert_contains "stamp carries the caller's role label"      "$CB_SYM" "ROLEOK"
+assert_contains "release removes that slot's dir"            "$CB_SYM" "RELEASED"
+case "$CB_SYM" in *STILLTHERE*) bad "release must remove the slot dir";; esac
+
+CB_TWO="$(FWF_RUN_DIR="$CBRUN/two" FWF_CARGO_BUILD_CONCURRENCY=2 FWF_CARGO_BUILD_LOCK_TIMEOUT=1 FWF_CARGO_BUILD_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" two-slots-then-block)"
+assert_contains "SEMAPHORE: 1st concurrent holder gets a slot" "$CB_TWO" "S1=1"
+assert_contains "SEMAPHORE: 2nd concurrent holder gets a DIFFERENT slot" "$CB_TWO" "S2=2"
+assert_contains "SEMAPHORE: (N+1)th holder times out, not a mutex-of-1" "$CB_TWO" "RC3=1"
+assert_contains "SEMAPHORE: releasing frees a slot for the next waiter" "$CB_TWO" "S4=1"
+
+CB_DEAD="$(FWF_RUN_DIR="$CBRUN/dead" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" dead)"
+assert_contains "dead-PID slot holder is named and broken" "$CB_DEAD" "breaking it"
+assert_contains "dead-PID slot is re-acquired, not deadlocked" "$CB_DEAD" "RC=0"
+assert_contains "the new stamp overwrites the dead one" "$CB_DEAD" "NEWOWNER"
+
+CB_LIVE="$(FWF_RUN_DIR="$CBRUN/live" FWF_CARGO_BUILD_CONCURRENCY=1 FWF_CARGO_BUILD_LOCK_STALE_SECS=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=2 FWF_CARGO_BUILD_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/cargo-build-drive.sh" live)"
+assert_contains "a blocked wait names the busy state" "$CB_LIVE" "waiting for a cargo build slot"
+assert_contains "acquire times out rather than hanging" "$CB_LIVE" "timed out"
+assert_contains "acquire returns non-zero on timeout"   "$CB_LIVE" "RC=1"
+case "$CB_LIVE" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live slot holder not broken, even past the age backstop";; esac
+
+# fwf_render auto-detection: a profile's GATE_CMD/E2E_CMD containing "cargo"
+# gets --cargo-build with no template changes; one that doesn't never pays for it.
+cbr_render() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; GATE_CMD='$1'; E2E_CMD='$2'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1"; }
+CBR_CARGO="$(cbr_render 'cd dash && cargo test' 'bash test/run.sh')"
+assert_contains     "GATE_CMD with cargo -> --cargo-build auto-appended" "$CBR_CARGO" "fwf gate impl1 --cargo-build -- bash"
+assert_not_contains "E2E_CMD without cargo -> no --cargo-build"          "$CBR_CARGO" "fwf gate impl1 --e2e --cargo-build --"
+assert_contains     "E2E_CMD without cargo still gets --e2e alone"       "$CBR_CARGO" "fwf gate impl1 --e2e -- bash"
+
+CBR_NOCARGO="$(cbr_render 'bash test/run.sh' 'bash test/run.sh')"
+assert_not_contains "neither GATE_CMD nor E2E_CMD has cargo -> flag never appears" "$CBR_NOCARGO" "--cargo-build"
+
+CBR_E2ECARGO="$(cbr_render 'bash test/run.sh' 'cd dash && cargo test')"
+assert_contains "E2E_CMD with cargo -> --cargo-build auto-appended on __E2E__ too" "$CBR_E2ECARGO" "fwf gate impl1 --e2e --cargo-build --"
+
+# End-to-end through fwf-gate.sh itself: N=2 concurrent --cargo-build
+# invocations must never let a 3rd (or more) hold at the SAME instant. Each
+# holder registers itself in a shared counter dir for the duration of its
+# hold and records the concurrency level it observed; the peak observed
+# across all three must never exceed 2, and must actually REACH 2 at some
+# point (proving this is a semaphore, not an accidental mutex-of-1).
+CBGRUN="$TMP/cargobuild-e2e"
+mkdir -p "$CBGRUN"
+CB_COUNTER="$CBGRUN/holders"; CB_PEAKS="$CBGRUN/peaks.log"
+mkdir -p "$CB_COUNTER"; : > "$CB_PEAKS"
+cat > "$TMP/cargo-build-harness.sh" <<'EOSCRIPT'
+set -uo pipefail
+counter_dir="$1"; peaks_file="$2"; hold="$3"
+me="$counter_dir/$$-$RANDOM"
+: > "$me"
+n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+echo "$n" >> "$peaks_file"
+sleep "$hold"
+rm -f "$me"
+echo DONE
+EOSCRIPT
+run_cargo_gated() { # $1=role $2=holdsecs
+  FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=2 \
+    FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=15 \
+    "$ROOT/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2"
+}
+run_cargo_gated cbe2e-a 2 > "$CBGRUN/a.out" 2>&1 & CBA_PID=$!
+run_cargo_gated cbe2e-b 2 > "$CBGRUN/b.out" 2>&1 & CBB_PID=$!
+sleep 0.3
+run_cargo_gated cbe2e-c 1 > "$CBGRUN/c.out" 2>&1 & CBC_PID=$!
+wait "$CBA_PID"; CBA_RC=$?
+wait "$CBB_PID"; CBB_RC=$?
+wait "$CBC_PID"; CBC_RC=$?
+assert_eq "e2e: holder a completes" "0" "$CBA_RC"
+assert_eq "e2e: holder b completes" "0" "$CBB_RC"
+assert_eq "e2e: holder c completes (waited for a slot, not lost)" "0" "$CBC_RC"
+CB_PEAK_MAX="$(sort -n "$CB_PEAKS" | tail -1)"
+[ "$CB_PEAK_MAX" -le 2 ] && ok "e2e: peak concurrent holders never exceeds FWF_CARGO_BUILD_CONCURRENCY=2 (saw $CB_PEAK_MAX)" \
+  || bad "e2e: peak concurrent holders never exceeds FWF_CARGO_BUILD_CONCURRENCY=2" "saw $CB_PEAK_MAX"
+CB_PEAK_REACHED_2="$(grep -c '^2$' "$CB_PEAKS" || true)"
+[ "$CB_PEAK_REACHED_2" -ge 1 ] && ok "e2e: concurrency actually reaches 2 (a semaphore, not an accidental mutex-of-1)" \
+  || bad "e2e: concurrency actually reaches 2 (a semaphore, not an accidental mutex-of-1)" "peaks log: $(cat "$CB_PEAKS")"
+
+# Double-reap race (GV-caught, reproduced 3/3): TWO contenders can both read
+# the SAME stale (dead-PID) owner and both decide to reap it — an
+# unconditional `rm -rf` let the SECOND reaper destroy the slot the FIRST had
+# ALREADY legitimately re-acquired, so both returned believing they held the
+# same slot. FWF_CARGO_BUILD_CONCURRENCY=1 and a pre-stamped DEAD slot-1 means
+# BOTH racers must go through the reap path simultaneously — this is the
+# scenario the ordinary "dead" test above (one racer, no contention) can
+# never exercise. Per GV's own caught mistake: the winner MUST stay alive
+# for the duration of its hold (sleep before releasing) — a racer that
+# acquires and immediately exits makes even the buggy code look correct,
+# because its "dead" PID becomes real garbage the other racer would
+# legitimately reap next, masking the double-reap entirely.
+CBRACE="$TMP/cargobuild-race"; mkdir -p "$CBRACE"
+CBRACE_COUNTER="$CBRACE/holders"; CBRACE_PEAKS="$CBRACE/peaks.log"
+mkdir -p "$CBRACE_COUNTER"; : > "$CBRACE_PEAKS"
+cat > "$TMP/cargo-race-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+label="$1"; counter_dir="$2"; peaks_file="$3"
+s="$(fwf_cargo_build_slot_acquire "$label")" || { echo "$label TIMEOUT"; exit 0; }
+me="$counter_dir/$$-$RANDOM"
+: > "$me"
+n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+echo "$n" >> "$peaks_file"
+sleep 1
+rm -f "$me"
+fwf_cargo_build_slot_release "$s"
+echo "$label GOT=$s"
+EOSCRIPT
+race_run() { # $1=which racer's stdout file
+  FWF_RUN_DIR="$CBRACE/run" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=1 \
+    FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=10 \
+    ROOT_PATH="$ROOT" bash "$TMP/cargo-race-drive.sh" "$1" "$CBRACE_COUNTER" "$CBRACE_PEAKS" > "$CBRACE/$1.out" 2>&1
+}
+# Pre-stamp the ONLY slot with a dead owner, in the SAME run dir race_run uses.
+FWF_RUN_DIR="$CBRACE/run" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$CARGO_BUILD_LOCK/slot-1"
+  printf "role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\n" \
+    "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
+'
+race_run racer-a &
+RACEA_PID=$!
+race_run racer-b &
+RACEB_PID=$!
+wait "$RACEA_PID"; wait "$RACEB_PID"
+RACE_PEAK_MAX="$(sort -n "$CBRACE_PEAKS" | tail -1)"
+[ -n "$RACE_PEAK_MAX" ] && [ "$RACE_PEAK_MAX" -le 1 ] && ok "double-reap race: peak concurrent holders never exceeds 1 (saw ${RACE_PEAK_MAX:-none})" \
+  || bad "double-reap race: peak concurrent holders never exceeds 1" "saw ${RACE_PEAK_MAX:-none} — peaks: $(cat "$CBRACE_PEAKS")"
+# NOT asserted: "at most one racer ever reports GOT=1". Both racers
+# legitimately report GOT=1 in the correct, non-buggy case too -- racer-a
+# acquires, holds, releases; racer-b then legitimately acquires the SAME
+# slot number SEQUENTIALLY afterward. That is correct semaphore behavior,
+# not the defect. The peak-concurrency check above is the real assertion:
+# it fails only if both were EVER concurrently inside their hold, which is
+# what the double-reap bug actually produces.
+
+# --------------------------------------------------------------------------
 # per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
 # the gate while its OWN prior run is still in flight must NOT stack a second
 # — it skips this tick instead. Non-blocking (unlike the e2e lock above): a
@@ -3769,11 +3950,24 @@ ci_run() { # $1 = setup snippet (runs with $wt=worktree, $shared=out-of-tree dir
     '"$1"'
     fwf_cargo_isolate; rc=$?
     ts=none; [ -L target ] && ts=symlink; { [ -d target ] && [ ! -L target ]; } && ts=dir
-    printf "%s|%s|%s|%s" "${CARGO_TARGET_DIR:-UNSET}" "$ts" "$rc" "${RUSTC_WRAPPER:-UNSET}"
+    printf "%s|%s|%s|%s|%s" "${CARGO_TARGET_DIR:-UNSET}" "$ts" "$rc" "${RUSTC_WRAPPER:-UNSET}" "${SCCACHE_DIR:-UNSET}"
     rm -rf "$wt" "$shared"
   '
 }
 ci_f() { printf '%s' "$2" | cut -d'|' -f"$1"; }
+# Like ci_run, but with cargo/sccache's directory stripped from PATH — for
+# asserting the "sccache not installed -> no-op" fail-open branch regardless
+# of whether THIS box happens to have sccache installed.
+ci_run_nosccache() {
+  FWF_PROFILE=example PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash -c '
+    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
+    '"$1"'
+    fwf_cargo_isolate; rc=$?
+    printf "%s|%s|%s" "${RUSTC_WRAPPER:-UNSET}" "${SCCACHE_DIR:-UNSET}" "$rc"
+    rm -rf "$wt"
+  '
+}
 
 # A. shared ambient CARGO_TARGET_DIR (outside the worktree) is dropped.
 R="$(ci_run 'export CARGO_TARGET_DIR="$shared"')"
@@ -3803,6 +3997,115 @@ assert_eq "healthy no-op succeeds"                      "0"     "$(ci_f 3 "$R")"
 R="$(ci_run 'export RUSTC_WRAPPER=sccache; export CARGO_TARGET_DIR="$shared"')"
 assert_eq "sccache RUSTC_WRAPPER preserved"        "sccache" "$(ci_f 4 "$R")"
 assert_eq "  ...while shared target dir is dropped" "UNSET"  "$(ci_f 1 "$R")"
+
+# G. issue #138 piece A: sccache auto-configured when installed + not already
+# set — points RUSTC_WRAPPER + SCCACHE_DIR at a shared, profile-scoped cache.
+if command -v sccache >/dev/null 2>&1; then
+  R="$(FWF_RUN_DIR="$TMP/ci-sccache-run" ci_run ':')"
+  assert_eq "sccache auto-configured when installed and unset" "sccache" "$(ci_f 4 "$R")"
+  assert_not_contains "SCCACHE_DIR points at a real path"       "$(ci_f 5 "$R")" "UNSET"
+  assert_contains     "SCCACHE_DIR is profile-scoped"           "$(ci_f 5 "$R")" "/example"
+  # ...and still composes with target-dir isolation (both fire together).
+  R2="$(FWF_RUN_DIR="$TMP/ci-sccache-run2" ci_run 'export CARGO_TARGET_DIR="$shared"')"
+  assert_eq "sccache auto-config composes with target isolation (target dropped)" "UNSET"   "$(ci_f 1 "$R2")"
+  assert_eq "  ...and sccache still auto-configured"                              "sccache" "$(ci_f 4 "$R2")"
+else
+  echo "  skip sccache auto-configure positive tests (sccache not installed on this box)"
+fi
+
+# H. sccache NOT installed -> no forced tooling, unchanged from today (fail-open).
+RN="$(ci_run_nosccache ':')"
+assert_eq "no sccache on PATH -> RUSTC_WRAPPER stays unset" "UNSET" "$(printf '%s' "$RN" | cut -d'|' -f1)"
+assert_eq "  ...and isolate still succeeds"                 "0"     "$(printf '%s' "$RN" | cut -d'|' -f3)"
+
+# I. an explicit RUSTC_WRAPPER the caller already set is never overridden,
+# even when sccache is installed (mirrors #151's rule for CARGO_TARGET_DIR).
+if command -v sccache >/dev/null 2>&1; then
+  R="$(ci_run 'export RUSTC_WRAPPER=some-other-wrapper')"
+  assert_eq "an explicit non-sccache RUSTC_WRAPPER is never overridden" "some-other-wrapper" "$(ci_f 4 "$R")"
+fi
+
+# --------------------------------------------------------------------------
+section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"
+
+gts_setup() { # $1=label -> a throwaway local repo, 'main' at one commit -> $GTS_DIR
+  GTS_DIR="$TMP/gts-$1"; mkdir -p "$GTS_DIR"
+  ( cd "$GTS_DIR" && git init -q && git symbolic-ref HEAD refs/heads/main \
+    && git config user.email t@t.co && git config user.name t \
+    && echo base > README.md && git add -A && git commit -qm base )
+}
+gts_run() { ( cd "$GTS_DIR" && FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1" ); }
+gts_touch() { echo "${RANDOM}${RANDOM}" >> "$1"; } # $1=path, creates parent dirs first if needed
+
+# --- SKIP: every changed file matches a --safe glob -----------------------
+gts_setup skip
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p lib && gts_touch lib/foo.sh && git add -A && git commit -qm "bash-only change" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "bash-only change on the safe list -> SKIP" "$DEC" "SKIP"
+
+# --- RUN: a changed file that touches the Rust dir (not on the safe list) -
+gts_setup run-dash
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash/src && gts_touch dash/src/main.rs && git add -A && git commit -qm "rust change" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "dash/ touch, not on safe list -> RUN"         "$DEC" "RUN"
+assert_contains "RUN names the offending path"                 "$DEC" "dash/src/main.rs"
+assert_contains "RUN reason is fail-open, not fail-safe"       "$DEC" "fail-open"
+
+# --- RUN: unknown path (fail-open on the unrecognized case) ---------------
+gts_setup run-unknown
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch rust-toolchain.toml && git add -A && git commit -qm "toolchain pin bump" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "unrecognized path -> RUN (fail-open)" "$DEC" "RUN"
+
+# --- RUN: whole-branch diff, NOT last-commit-only (the primary false-GREEN
+# guard) — an EARLIER commit touches dash/, HEAD only touches a safe path.
+gts_setup whole-branch
+( cd "$GTS_DIR" && git checkout -qb feature \
+    && mkdir -p dash/src && gts_touch dash/src/lib.rs && git add -A && git commit -qm "touches dash" \
+    && mkdir -p lib && gts_touch lib/foo.sh && git add -A && git commit -qm "then only bash" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh' 'docs/*' '*.md'")"
+assert_contains "earlier dash/ commit still forces RUN even though HEAD doesn't touch it" "$DEC" "RUN"
+
+# --- SKIP: no changes at all vs the target ----------------------------------
+gts_setup no-changes
+( cd "$GTS_DIR" && git checkout -qb feature )
+DEC="$(gts_run "fwf_gate_rust_scope_decide main 'lib/*.sh'")"
+assert_contains "identical branch -> SKIP" "$DEC" "SKIP"
+
+# --- RUN: unresolvable diff base fails SAFE, not silently ------------------
+gts_setup fail-safe
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
+DEC="$(gts_run "fwf_gate_rust_scope_decide does-not-exist 'docs/*' '*.md'")"
+assert_contains "unresolvable base -> RUN"           "$DEC" "RUN"
+assert_contains "unresolvable base reason is fail-safe" "$DEC" "fail-safe"
+
+# --- CLI wrapper: loud WOULD SKIP / WOULD RUN lines + shadow log -----------
+gts_setup cli-skip
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
+GTS_LOG="$TMP/gts-cli-skip-run/shadow.log"
+CLIOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-skip-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --log "$GTS_LOG")"
+assert_contains "CLI: loud WOULD SKIP line"          "$CLIOUT" "Rust suite WOULD SKIP"
+assert_contains "CLI: shadow log records SKIP"       "$(cat "$GTS_LOG")" "decision=SKIP"
+assert_contains "CLI: shadow log records the target" "$(cat "$GTS_LOG")" "against=main"
+
+gts_setup cli-run
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash && gts_touch dash/x.rs && git add -A && git commit -qm "rust" )
+GTS_LOG2="$TMP/gts-cli-run-run/shadow.log"
+CLIOUT2="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --log "$GTS_LOG2" --full-suite-secs 42)"
+assert_contains "CLI: loud WOULD RUN line"                "$CLIOUT2" "Rust suite WOULD RUN"
+assert_contains "CLI: shadow log records RUN"             "$(cat "$GTS_LOG2")" "decision=RUN"
+assert_contains "CLI: shadow log records the measured wall-clock" "$(cat "$GTS_LOG2")" "full_suite_secs=42"
+
+# --- CLI wrapper: ALWAYS exits 0 -- it observes, never gates ---------------
+rc=0; (cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run2" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' >/dev/null 2>&1) || rc=$?
+assert_eq "CLI: exits 0 even on a RUN verdict (shadow never gates)" "0" "$rc"
+
+# --- Kill switch: FWF_GATE_FULL=1 forces RUN regardless of an otherwise-SKIP-eligible diff ---
+gts_setup killswitch
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only, would normally SKIP" )
+KSOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_GATE_FULL=1 FWF_RUN_DIR="$TMP/gts-ks-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
+assert_contains "FWF_GATE_FULL=1 forces WOULD RUN even on a docs-only diff" "$KSOUT" "Rust suite WOULD RUN"
+assert_contains "FWF_GATE_FULL=1 names itself as the reason"                "$KSOUT" "FWF_GATE_FULL=1"
 
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"

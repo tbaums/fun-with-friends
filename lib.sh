@@ -393,9 +393,20 @@ fwf_missing_worktrees() { # $@=role tags to check
 #       target. If it cannot be removed we FAIL CLOSED (return non-zero): a red
 #       gate is always safe; a green one built against a shared dir is not.
 # RUSTC_WRAPPER (sccache) is deliberately left untouched: sccache is a
-# content-addressed compile cache, so sharing it across worktrees is SOUND and
-# is the right way to recover cross-worktree cache speed without the name+version
-# clobber. Private target dir + shared sccache compose cleanly.
+# content-addressed compile cache, so sharing it is name+version-safe (unlike
+# a shared target/). MEASURED (issue #138 piece A, 2026-08-24, sccache 0.17.0
+# / cargo 1.98.0, this repo's dash/ crate): sccache's Rust hash key includes
+# the resolved --out-dir/-L dependency= paths (i.e. CARGO_TARGET_DIR itself),
+# so two DIFFERENT worktrees — which by design (#151, above) have DIFFERENT
+# CARGO_TARGET_DIRs — get a 0% cross-worktree hit rate; isolated retests ruled
+# out the local crate's manifest path, invocation cwd, and --remap-path-prefix
+# as the cause; forcing CARGO_TARGET_DIR identical across worktrees restored a
+# 50% hit rate (all dependency compiles) but reintroduces the exact
+# cross-worktree collision #151 fixed unless serialized (piece C). So sharing
+# sccache here delivers a real but NARROWER win than hoped: repeat builds
+# WITHIN one worktree after a target wipe/`cargo clean` hit the shared cache;
+# cross-worktree compile-time sharing needs piece C's concurrency bound first
+# — see docs/gate-throughput.md for the full numbers.
 # Run with the current directory inside the worktree (the gate and the warm
 # build both are). Emits a loud line on any repair — GREEN gates are audited.
 fwf_cargo_isolate() {
@@ -421,7 +432,81 @@ fwf_cargo_isolate() {
          rm -f "$t" || { echo "fwf#151: FAILED to remove $t — refusing to gate against a shared target dir" >&2; return 1; } ;;
     esac
   fi
+  # (3) issue #138 piece A: auto-configure a shared sccache cache. MEASURED
+  # (see fwf_cargo_sccache_configure's header and docs/gate-throughput.md):
+  # this delivers a same-worktree win (a repeat build after a target wipe hits
+  # the shared cache) but NOT cross-worktree compile sharing — sccache's Rust
+  # hash key includes CARGO_TARGET_DIR's own path, which #151 (above)
+  # deliberately keeps different per worktree. No-op for a caller that already
+  # chose an explicit RUSTC_WRAPPER (#151's same rule), and a no-op entirely
+  # if sccache isn't installed — this never forces new tooling onto a profile
+  # that doesn't have it.
+  fwf_cargo_sccache_configure
   return 0
+}
+
+# issue #138 piece A: point RUSTC_WRAPPER at a profile-scoped shared sccache
+# cache dir — SOUND to share (content-addressed, unlike a shared target/), but
+# MEASURED to only pay off for a REPEAT build within the same worktree (e.g.
+# after a target wipe/`cargo clean`), not across worktrees: sccache's Rust
+# hash key includes CARGO_TARGET_DIR's own path, and every worktree
+# deliberately has a different one (#151). See docs/gate-throughput.md for
+# the numbers. Called by fwf_cargo_isolate; also safe to call standalone.
+# Idempotent and a no-op if: sccache isn't installed (nothing changes for a
+# box/profile without it), or RUSTC_WRAPPER is already set to something else
+# (an explicit caller choice always wins — never silently overridden).
+fwf_cargo_sccache_configure() {
+  command -v sccache >/dev/null 2>&1 || return 0
+  [ -z "${RUSTC_WRAPPER:-}" ] || return 0
+  export RUSTC_WRAPPER=sccache
+  export SCCACHE_DIR="${SCCACHE_DIR:-$FWF_RUN/sccache/$PROFILE}"
+  mkdir -p "$SCCACHE_DIR" 2>/dev/null || true
+}
+
+# Gate-throughput (issue #138, piece B — SHADOW MODE): classify whether the
+# Rust suite COULD be skipped for the current branch, without ever acting on
+# the answer. Never used to actually skip anything while B ships in shadow —
+# every caller runs the full Rust suite regardless of this verdict; the point
+# is to validate the classifier against real branches and accumulate the
+# would-skip-rate data the A->B measurement decision needs, with zero
+# false-GREEN surface (nothing the gate decides ever changes).
+#
+# $1 = branch/ref to diff the WHOLE current branch against (merge-base..HEAD,
+#      never last-commit-only — an early commit touching dash/ must still
+#      trigger RUN even if HEAD itself doesn't touch it: the primary
+#      false-GREEN guard named in the ticket).
+# $2.. = glob patterns for paths KNOWN to be safe to skip on (e.g. 'docs/*'
+#      '*.md'). Fail-OPEN: any changed file matching NONE of the patterns
+#      (an unknown path, a generator, dash/**, Cargo.lock, ...) -> RUN. This
+#      is a denylist of what's exempt, not an allowlist of what's dangerous —
+#      an unrecognized path is guilty until proven safe.
+# Fail-SAFE: an unresolvable diff base (detached/ambiguous) -> RUN.
+#
+# Prints exactly one line to stdout: "SKIP <base-sha>" or "RUN <reason>".
+fwf_gate_rust_scope_decide() {
+  local against="$1"; shift
+  local -a safe=("$@")
+  local base
+  base="$(git merge-base HEAD "$against" 2>/dev/null)" \
+    || { printf 'RUN fail-safe: could not resolve a merge-base against %s\n' "$against"; return 0; }
+  local changed
+  changed="$(git diff --name-only "$base"...HEAD 2>/dev/null)"
+  [ -n "$changed" ] || { printf 'SKIP %s\n' "$base"; return 0; }
+  local f matched pat
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    matched=0
+    for pat in ${safe[@]+"${safe[@]}"}; do
+      # shellcheck disable=SC2254  # deliberately UNQUOTED: --safe globs (e.g.
+      # 'docs/*') are meant to expand as case-pattern globs, not match literally.
+      case "$f" in $pat) matched=1; break;; esac
+    done
+    if [ "$matched" -eq 0 ]; then
+      printf 'RUN fail-open: %s is not on the safe-path list (base %s)\n' "$f" "$base"
+      return 0
+    fi
+  done <<<"$changed"
+  printf 'SKIP %s\n' "$base"
 }
 
 # Shared scratch root for source-blind (worktree-less) roles: per-profile, OUTSIDE
@@ -665,17 +750,25 @@ $text"
   # floor-wide would only add a throughput bottleneck with no hermeticity
   # benefit. __E2E__ does, via --e2e, preserving the existing issue #65
   # cross-role serialization for a harness whose ports are fixed.
-  text="${text//__GATE__/fwf gate $role_tag -- bash -c $(printf '%q' "$GATE_CMD")}"
-  text="${text//__E2E__/fwf gate $role_tag --e2e -- bash -c $(printf '%q' "$E2E_CMD")}"
+  # Issue #138 piece C: auto-append --cargo-build whenever the profile's own
+  # command string mentions cargo, so a Rust-building profile gets the
+  # concurrency bound with no template/profile changes, and a profile with no
+  # Rust suite never pays for a slot it doesn't need.
+  local _fwf_gate_cargo_flag="" _fwf_e2e_cargo_flag=""
+  case "$GATE_CMD" in *cargo*) _fwf_gate_cargo_flag=" --cargo-build";; esac
+  case "$E2E_CMD" in *cargo*) _fwf_e2e_cargo_flag=" --cargo-build";; esac
+  text="${text//__GATE__/fwf gate $role_tag$_fwf_gate_cargo_flag -- bash -c $(printf '%q' "$GATE_CMD")}"
+  text="${text//__E2E__/fwf gate $role_tag --e2e$_fwf_e2e_cargo_flag -- bash -c $(printf '%q' "$E2E_CMD")}"
   # __PROMOTE_GATE__ (issue #202): the conductor's promote-into-integration
-  # gate specifically — same as __E2E__, plus --tip-cmd so a tick that finds
-  # __STAGING__ unchanged since the last COMPLETED gate skips before ever
-  # taking the lock, and a tip that moves mid-run reports EX_STALE (76)
-  # instead of a false-promotable green. Deliberately its OWN macro, not a
-  # change to __E2E__: __E2E__ is also used for an implementer's own local
+  # gate specifically — same as __E2E__ (including its own --cargo-build
+  # auto-detection above), plus --tip-cmd so a tick that finds __STAGING__
+  # unchanged since the last COMPLETED gate skips before ever taking the
+  # lock, and a tip that moves mid-run reports EX_STALE (76) instead of a
+  # false-promotable green. Deliberately its OWN macro, not a change to
+  # __E2E__: __E2E__ is also used for an implementer's own local
   # self-verification (dev/implementer.tmpl), which has no "watched shared
   # ref" to key a skip on.
-  text="${text//__PROMOTE_GATE__/fwf gate $role_tag --e2e --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") -- bash -c $(printf '%q' "$E2E_CMD")}"
+  text="${text//__PROMOTE_GATE__/fwf gate $role_tag --e2e$_fwf_e2e_cargo_flag --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") -- bash -c $(printf '%q' "$E2E_CMD")}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
@@ -1067,6 +1160,104 @@ fwf_e2e_lock_acquire() {
 
 fwf_e2e_lock_release() {
   rm -rf "$E2E_LOCK"
+}
+
+# --- floor-wide cargo build concurrency bound (issue #138 piece C) ----------
+# Root cause 3 of the gate-throughput ticket: nothing bounds how many roles
+# run a full cargo build SIMULTANEOUSLY — every role's build competes for the
+# same CPU/IO, so N concurrent full builds each run many times slower than
+# one alone (measured directly in piece A's own sccache experiments: cargo
+# builds this box ran in ~8s solo were visibly contended when a sibling
+# worktree's gate/build ran at the same time). Unlike fwf_e2e_lock_* (a single
+# MUTEX several roles wait on and share) this is a SEMAPHORE: up to
+# FWF_CARGO_BUILD_CONCURRENCY roles may hold a build slot at once; the (N+1)th
+# waits. Same dead-holder-reap + age-backstop pattern as the e2e lock above,
+# applied per slot, so a crashed holder never wedges the semaphore.
+FWF_CARGO_BUILD_LOCK_TIMEOUT="${FWF_CARGO_BUILD_LOCK_TIMEOUT:-900}"
+FWF_CARGO_BUILD_LOCK_POLL="${FWF_CARGO_BUILD_LOCK_POLL:-5}"
+FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
+
+# $1 = holder label (e.g. "impl2", "conductor"). On success, echoes the
+# acquired slot number (1..FWF_CARGO_BUILD_CONCURRENCY) to stdout and returns
+# 0; ALWAYS pair with fwf_cargo_build_slot_release "$slot" in a trap so a
+# killed/failed holder never leaves its slot behind. Returns 1 on timeout —
+# callers treat that as a SKIP (defer to next tick), the same as a busy e2e
+# lock, never as a build failure.
+fwf_cargo_build_slot_acquire() {
+  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder reap_reason pid2
+  mkdir -p "$CARGO_BUILD_LOCK" 2>/dev/null
+  while true; do
+    for n in $(seq 1 "$FWF_CARGO_BUILD_CONCURRENCY"); do
+      slot="$CARGO_BUILD_LOCK/slot-$n"
+      if mkdir "$slot" 2>/dev/null; then
+        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
+        echo "$n"
+        return 0
+      fi
+      owner="$slot/owner"
+      _fwf_e2e_owner_liveness "$owner"; rc=$?
+      reap_reason=""
+      if [ "$rc" = 1 ]; then
+        holder="$(_fwf_e2e_owner_field role "$owner")"
+        reap_reason="dead PID $(_fwf_e2e_owner_field pid "$owner") (${holder:-unknown})"
+      elif [ "$rc" = 2 ]; then
+        ts="$(_fwf_e2e_owner_field acquired "$owner")"; now="$(date +%s)"
+        if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_CARGO_BUILD_LOCK_STALE_SECS" ]; then
+          reap_reason="indeterminate-liveness past the ${FWF_CARGO_BUILD_LOCK_STALE_SECS}s backstop"
+        fi
+      fi
+      [ -n "$reap_reason" ] || continue
+      # Two contenders can both read the SAME stale owner and both decide to
+      # reap — an unconditional `rm -rf` here let the SECOND reaper destroy
+      # the slot the FIRST had already legitimately re-acquired, so both
+      # returned believing they held it (a real, reproduced race — not a
+      # test-harness artifact). Fix: an exclusive reap section (mkdir is the
+      # same atomic primitive the slot itself uses; no flock, which macOS
+      # lacks) with the liveness check RE-VERIFIED INSIDE it — the read
+      # above can be stale by the time we get here, and acting on a stale
+      # read is exactly what destroys a slot someone else already holds.
+      mkdir "$slot.reap" 2>/dev/null || continue   # lost the reap race — another contender owns this slot right now
+      pid2="$(_fwf_e2e_owner_field pid "$owner")"
+      if [ -n "$pid2" ] && kill -0 "$pid2" 2>/dev/null; then
+        rmdir "$slot.reap" 2>/dev/null
+        continue   # re-verified: it's live now (someone else already reaped+reacquired) — leave it alone
+      fi
+      echo "fwf: cargo build slot $n held by $reap_reason — breaking it" >&2
+      rm -rf "$slot"
+      if mkdir "$slot" 2>/dev/null; then
+        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
+        rmdir "$slot.reap" 2>/dev/null
+        echo "$n"
+        return 0
+      fi
+      # The exclusive .reap lock only protects against ANOTHER REAPER racing
+      # us to this same stale slot — it does NOT stop an entirely different,
+      # independent contender's ORDINARY top-level `mkdir "$slot"` (the very
+      # first branch above) from winning the exact gap between our `rm -rf`
+      # and our own recreate-`mkdir`. If that happened, THEIR write is now in
+      # "$slot/owner" — overwriting it here would silently evict a holder who
+      # believes it already succeeded. Back off instead: release the reap
+      # lock and let the outer loop re-observe the (now legitimately live)
+      # slot on the next pass.
+      rmdir "$slot.reap" 2>/dev/null
+    done
+    if [ "$waited" -ge "$FWF_CARGO_BUILD_LOCK_TIMEOUT" ]; then
+      echo "fwf: $label timed out after ${FWF_CARGO_BUILD_LOCK_TIMEOUT}s waiting for a cargo build slot (all $FWF_CARGO_BUILD_CONCURRENCY busy)" >&2
+      return 1
+    fi
+    echo "fwf: $label waiting for a cargo build slot (all $FWF_CARGO_BUILD_CONCURRENCY busy)…" >&2
+    sleep "$FWF_CARGO_BUILD_LOCK_POLL"
+    waited=$(( waited + FWF_CARGO_BUILD_LOCK_POLL ))
+  done
+}
+
+# $1 = the slot number fwf_cargo_build_slot_acquire echoed. No-op if empty
+# (a caller that never acquired has nothing to release).
+fwf_cargo_build_slot_release() {
+  [ -n "${1:-}" ] || return 0
+  rm -rf "$CARGO_BUILD_LOCK/slot-$1"
 }
 
 # --- per-role gate single-flight lock (issue #123) ---------------------------

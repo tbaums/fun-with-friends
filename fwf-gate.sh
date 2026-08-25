@@ -18,11 +18,20 @@
 #       anything, so floor-wide serialization would only add a throughput
 #       bottleneck with no hermeticity benefit.
 #
-# Usage: fwf gate <role> [--e2e] [--tip-cmd 'CMD'] -- <command> [args...]
+# --cargo-build (issue #138 piece C) additionally bounds how many roles run a
+# full cargo build SIMULTANEOUSLY, via a SEMAPHORE — not a mutex like the e2e
+# lock: up to FWF_CARGO_BUILD_CONCURRENCY roles hold a build slot at once
+# (fwf_cargo_build_slot_acquire/release, lib.sh), so N concurrent full builds
+# no longer CPU/IO-thrash each other. Auto-appended by fwf_render whenever a
+# profile's GATE_CMD/E2E_CMD contains "cargo" (see lib.sh) — a profile with no
+# Rust suite never passes it and pays zero overhead.
+#
+# Usage: fwf gate <role> [--e2e] [--cargo-build] [--tip-cmd 'CMD'] -- <command> [args...]
 #   <role>     the per-role lock key (e.g. impl2, qa2, conductor) — the
 #              literal role tag used elsewhere (heartbeat path, etc).
 #   --e2e      ALSO take the floor-wide e2e lock. Use for an E2E_CMD-class
 #              run; omit for the fast GATE_CMD (see above).
+#   --cargo-build  ALSO take a cargo-build concurrency slot (see above).
 #   --tip-cmd  Make this gate TIP-triggered, not just timer-triggered (issue
 #              #202): CMD is evaluated (via `eval`, in the caller's cwd) to
 #              read the value of whatever ref this gate cares about (e.g.
@@ -49,7 +58,8 @@
 #
 # Exit codes: the wrapped command's own exit code on a real run; 75 (the
 # traditional EX_TEMPFAIL) when this tick was SKIPPED — a prior gate for this
-# role is still running, a --e2e run found the floor-wide lock busy, or
+# role is still running, a --e2e run found the floor-wide lock busy, a
+# --cargo-build run found every build slot busy past its timeout, or
 # --tip-cmd found the watched ref unchanged since the last completed gate; 76
 # (EX_STALE) when --tip-cmd detected the watched ref moved DURING the run —
 # a real result exists but is for a superseded tip and must not be treated as
@@ -96,17 +106,19 @@ source "$DIR/lib.sh"
 EX_SKIPPED=75
 EX_STALE=76
 
-usage() { echo "usage: fwf gate <role> [--e2e] [--tip-cmd 'CMD'] -- <command> [args...]" >&2; }
+usage() { echo "usage: fwf gate <role> [--e2e] [--cargo-build] [--tip-cmd 'CMD'] -- <command> [args...]" >&2; }
 
 role="${1:-}"
 [ -n "$role" ] || { usage; exit 1; }
 shift
 
 want_e2e=0
+want_cargo_build=0
 tip_cmd=""
 while :; do
   case "${1:-}" in
     --e2e) want_e2e=1; shift ;;
+    --cargo-build) want_cargo_build=1; shift ;;
     --tip-cmd) [ $# -ge 2 ] || { usage; exit 1; }; tip_cmd="$2"; shift 2 ;;
     *) break ;;
   esac
@@ -130,15 +142,25 @@ fi
 fwf_gate_lock_acquire "$role" || exit "$EX_SKIPPED"
 
 e2e_held=0
+cargo_build_slot=""
 _fwf_gate_release() {
   fwf_gate_lock_release "$role"
   [ "$e2e_held" = 1 ] && fwf_e2e_lock_release
+  fwf_cargo_build_slot_release "$cargo_build_slot"
 }
 trap _fwf_gate_release EXIT
 
 if [ "$want_e2e" = 1 ]; then
   fwf_e2e_lock_acquire "$role" || { echo "fwf gate: e2e lock busy, deferring" >&2; exit "$EX_SKIPPED"; }
   e2e_held=1
+fi
+
+# issue #138 piece C: bound how many roles build cargo at once. Held for the
+# WHOLE wrapped command (not just the isolate step below), since the actual
+# build/test happens inside it — released by the trap above on any exit path.
+if [ "$want_cargo_build" = 1 ]; then
+  cargo_build_slot="$(fwf_cargo_build_slot_acquire "$role")" \
+    || { echo "fwf gate: cargo build slots busy, deferring" >&2; exit "$EX_SKIPPED"; }
 fi
 
 # Per-worktree cargo target isolation (issue #151): guarantee this gate builds

@@ -471,6 +471,12 @@ fwf gate <role> [--e2e] -- <cmd...>                 the shared guarded gate/e2e 
                                                     __GATE__/__E2E__ render calls (issue #123); exits
                                                     75 rather than stacking a second run when <role>'s
                                                     own prior gate is still in flight
+fwf gate-rust-scope --against BRANCH [--safe GLOB]...  SHADOW classifier for whether a profile's Rust
+  [--log FILE] [--full-suite-secs N]                 suite could be skipped for this diff (issue #138);
+                                                    never skips anything itself — logs would-skip/
+                                                    would-run for the future keep-or-drop decision.
+                                                    FWF_GATE_FULL=1 forces would-run regardless of
+                                                    the diff — see docs/gate-throughput.md
 fwf flag-captain <n> --role R --reason TEXT         raise a persisted "needs-captain" flag on issue/PR
   fwf flag-captain <n> --clear [--note TEXT]        <n> for the captain's per-tick sweep to pick up
   fwf flag-captain sweep                            (issue #113) — see docs/needs-captain.md
