@@ -48,10 +48,16 @@ resolution — see [docs/dash.md](docs/dash.md).
    workflow's last step also auto-reconciles `staging`/`integration` back to
    `main` (issue #114 — see "Re-syncing staging/integration" below); no manual
    step needed on the happy path.
-7. **Verify** the published release and the artifacts (the tarball AND the five
-   `fwf-dash-*` assets — binaries + checksums):
+7. **Verify** the published release and the artifacts (the tarball AND the four
+   `fwf-dash-*` assets — 3 binaries + checksums — five total):
    ```bash
-   gh release view vX.Y.Z            # expect fwf-X.Y.Z.tar.gz + 4 fwf-dash binaries + checksums
+   gh release view vX.Y.Z --json assets -q '.assets[].name' | sort
+   # expect exactly these five, and nothing else:
+   #   fwf-X.Y.Z.tar.gz
+   #   fwf-dash-X.Y.Z-checksums.txt
+   #   fwf-dash-X.Y.Z-darwin-arm64
+   #   fwf-dash-X.Y.Z-linux-arm64
+   #   fwf-dash-X.Y.Z-linux-x86_64
    gh release download vX.Y.Z -p '*.tar.gz' -D /tmp/rel
    tar -C /tmp/rel -xzf /tmp/rel/fwf-X.Y.Z.tar.gz
    /tmp/rel/fwf-X.Y.Z/fwf doctor
