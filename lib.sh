@@ -1605,9 +1605,14 @@ fwf_gate_tip_record() {
 #
 # rc 0 whether or not a writer was actually started (armed = a budget ceiling
 # set AND a loop is now running for this profile) — callers that need to know
-# check fwf_budget_writer_running after calling this.
+# check fwf_budget_writer_running after calling this. Issue #149: the
+# subscription brake arms this SAME writer independently of the token/$
+# guards — a profile that only sets --session-pct/--weekly-pct (no token/$
+# ceiling at all) must still get a running loop, or the flag would be
+# silently inert.
 fwf_budget_writer_start() {
-  { [ -n "${FWF_TOKEN_BUDGET:-}" ] || [ -n "${FWF_BUDGET_USD:-}" ]; } || return 0   # no budget configured: never arm
+  { [ -n "${FWF_TOKEN_BUDGET:-}" ] || [ -n "${FWF_BUDGET_USD:-}" ] \
+    || [ -n "${FWF_SESSION_PCT_PARK:-}" ] || [ -n "${FWF_WEEKLY_PCT_PARK:-}" ]; } || return 0   # nothing configured: never arm
   fwf_budget_writer_running && return 0        # already running for this profile — same run, don't re-baseline
   fwf_budget_baseline_ensure                   # genuinely fresh arm: snapshot run-start usage (issue #108)
   mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
@@ -1684,6 +1689,130 @@ fwf_budget_baseline_read() {
   jq -re 'if (.tokens_total|type)=="number" and (.cost_usd|type)=="number"
           then "\(.tokens_total)\t\(.cost_usd)" else empty end' \
     "$BUDGET_BASELINE_FILE" 2>/dev/null
+}
+
+# --- subscription-usage brake (issue #149) -----------------------------------
+# fwf does not (cannot, from inside this environment) read the Claude
+# subscription's own usage meters; it only consumes a small structured signal
+# an operator-run helper writes to $SUBSCRIPTION_USAGE_FILE:
+#   {"session_pct": <number 0-100>, "weekly_pct": <number 0-100>, "as_of": "<ISO-8601>"}
+# See docs/subscription-budget.md for what the helper should read from (never
+# OCR a screenshot — that class of bug is exactly what this issue replaces).
+#
+# Emits on success: "session_pct\tweekly_pct\tas_of_epoch" and returns 0.
+# On any failure, emits a caller-facing REASON string instead and returns 1
+# (a global var would NOT work here: callers invoke this via `x="$(...)"`
+# command substitution, which forks a subshell, so a global set inside this
+# function is invisible to the caller the instant it returns). Every one of
+# the four blind shapes named in #149's AC is distinguished, because
+# "missing" collapses several distinct on-disk states that must each park
+# rather than silently read as healthy:
+#   missing           - the file was never created (helper never ran / died
+#                        before its first write)
+#   empty             - the file exists but is zero bytes (helper died
+#                        mid-write, the write truncated to nothing)
+#   unparseable       - the file has content but is not valid JSON (helper
+#                        died mid-write, partway through a write)
+#   malformed-schema  - valid JSON, but session_pct/weekly_pct/as_of are
+#                        missing or not the expected type/shape (the upstream
+#                        source's shape moved under the helper) -- NEVER a
+#                        partial parse that defaults the missing fields
+fwf_subscription_usage_read() {
+  if [ ! -f "$SUBSCRIPTION_USAGE_FILE" ]; then
+    printf 'missing (never created)'
+    return 1
+  fi
+  if [ ! -s "$SUBSCRIPTION_USAGE_FILE" ]; then
+    printf 'empty (zero bytes)'
+    return 1
+  fi
+  command -v jq >/dev/null 2>&1 || { printf 'jq unavailable'; return 1; }
+  if ! jq -e . "$SUBSCRIPTION_USAGE_FILE" >/dev/null 2>&1; then
+    printf 'unparseable (not valid JSON)'
+    return 1
+  fi
+  local line
+  line="$(jq -re '
+    if (.session_pct|type)=="number" and (.weekly_pct|type)=="number" and (.as_of|type)=="string"
+    then "\(.session_pct)\t\(.weekly_pct)\t\(.as_of)"
+    else empty end
+  ' "$SUBSCRIPTION_USAGE_FILE" 2>/dev/null)" || { printf 'malformed-schema (missing/wrong-typed fields)'; return 1; }
+  [ -n "$line" ] || { printf 'malformed-schema (missing/wrong-typed fields)'; return 1; }
+
+  local session_pct weekly_pct as_of as_of_epoch
+  session_pct="$(printf '%s' "$line" | cut -f1)"
+  weekly_pct="$(printf '%s' "$line" | cut -f2)"
+  as_of="$(printf '%s' "$line" | cut -f3)"
+  as_of_epoch="$(date -d "$as_of" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$as_of" +%s 2>/dev/null || true)"
+  if [ -z "$as_of_epoch" ]; then
+    printf 'malformed-schema (as_of not a parseable timestamp)'
+    return 1
+  fi
+  printf '%s\t%s\t%s\n' "$session_pct" "$weekly_pct" "$as_of_epoch"
+}
+
+# Monotonic-within-window sanity (#149 AC): a rolling-window usage percentage
+# is not expected to fall, so a reading that drops from what was last
+# ACCEPTED is treated as an under-read (the OCR digit-drop bug this issue
+# replaces — "11%" misread as "1%") rather than trusted immediately.
+#
+# Deliberately NOT a permanent ratchet, even though the AC's own wording
+# ("keep the higher previous value") reads that way taken literally. A
+# permanent ratchet composes badly with the SEPARATE resume AC: a genuine
+# window reset (a new 5h session starting, a new week beginning) is ALSO a
+# real drop with no distinguishing signal in this interface, so a literal
+# ratchet would hold the pre-reset high value forever and RESUME could never
+# fire again after a single park — dead code masquerading as a safety
+# feature. Instead: a single lower reading is masked (one-off misread, the
+# actual bug this AC names), but is remembered as a CANDIDATE; a SECOND
+# consecutive poll that is also not higher than the accepted value confirms
+# the candidate and the ratchet advances down to it. This is the same
+# N-consecutive-confirmation shape already used elsewhere on this floor for
+# "is this drop real or a blip" (the e2e lock's "≥2 consecutive polls before
+# reporting holder unknown", #238's "three consecutive indeterminate
+# escalate") — a one-off bad read does not repeat identically on the very
+# next poll; a real reset does.
+#
+# $1 = session|weekly  $2 = new reading (0-100). Echoes the effective value.
+fwf_subscription_monotonic_apply() {
+  local kind="$1" new="$2"
+  command -v jq >/dev/null 2>&1 || { printf '%s' "$new"; return 0; }
+  local state accepted pending
+  state="$( [ -f "$SUBSCRIPTION_MONOTONIC_FILE" ] && cat "$SUBSCRIPTION_MONOTONIC_FILE" 2>/dev/null || echo '{}' )"
+  printf '%s' "$state" | jq -e . >/dev/null 2>&1 || state='{}'
+  accepted="$(printf '%s' "$state" | jq -re --arg k "$kind" '.[$k].accepted // empty' 2>/dev/null || true)"
+  pending="$(printf '%s' "$state" | jq -re --arg k "$kind" '.[$k].pending // empty' 2>/dev/null || true)"
+
+  local effective new_accepted new_pending
+  if [ -z "$accepted" ]; then
+    # First-ever reading for this kind: nothing to compare against.
+    effective="$new"; new_accepted="$new"; new_pending=""
+  elif [ "$(awk -v a="$new" -v b="$accepted" 'BEGIN{print (a>=b)?1:0}')" = 1 ]; then
+    # At or above the accepted value: trust it immediately, clear any
+    # pending candidate (a transient dip followed by a normal reading again
+    # is exactly what a one-off misread looks like — never confirm it).
+    effective="$new"; new_accepted="$new"; new_pending=""
+  elif [ -n "$pending" ]; then
+    # Second consecutive sub-accepted reading: confirmed, ratchet down to it.
+    effective="$new"; new_accepted="$new"; new_pending=""
+  else
+    # First sub-accepted reading: hold the line, remember it as a candidate.
+    effective="$accepted"; new_accepted="$accepted"; new_pending="$new"
+  fi
+
+  mkdir -p "$FWF_STATE_DIR" 2>/dev/null || true
+  local pending_json
+  if [ -n "$new_pending" ]; then pending_json="$new_pending"; else pending_json=null; fi
+  printf '%s' "$state" | jq -c --arg k "$kind" --argjson acc "$new_accepted" --argjson pend "$pending_json" \
+    '.[$k] = {accepted: $acc, pending: $pend}' > "$SUBSCRIPTION_MONOTONIC_FILE" 2>/dev/null
+  printf '%s' "$effective"
+}
+
+# Explicit reset — mirrors fwf_budget_baseline_clear: call ONLY from a full
+# teardown so the next `fwf up` doesn't inherit a stale ratchet/parked-state
+# from a previous, unrelated run.
+fwf_subscription_state_clear() {
+  rm -f "$SUBSCRIPTION_MONOTONIC_FILE" "$SUBSCRIPTION_PARKED_FILE"
 }
 
 # --- branch reconcile (issue #114) -------------------------------------------
