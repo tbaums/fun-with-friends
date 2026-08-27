@@ -1,0 +1,5 @@
+An example of the sentinel format, indented as code per Markdown convention:
+
+    OPERATOR-UNGATE #218
+
+That block above is a 4-space indented code block, not a live signal.

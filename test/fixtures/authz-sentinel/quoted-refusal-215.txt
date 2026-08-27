@@ -1,0 +1,8 @@
+Copying the tool's own denial here as evidence for the team:
+
+```
+$ fwf authz 238
+HELD #238 — no operator un-gate signal (OPERATOR-UNGATE) in the thread
+```
+
+So #238 is still not authorized as of this comment.

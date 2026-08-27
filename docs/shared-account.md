@@ -97,3 +97,59 @@ forever even after qa posted a plain-comment request, and a qa that only
 posted its request and never re-checked would never notice implN's fix — the
 respawn-safe fix is that the durable PR thread is the source of truth for
 both directions, not a role's local memory of what it last saw.
+
+## The operator un-gate authorization signal (issue #150, anchored per #218)
+
+A third instance of rule 2, one level up the pipeline: a human operator's
+approval to build a gated ticket is also just a comment on the shared
+account, so a role cannot trust label state or another pane's on-screen text
+as "the human approved this" — a role once hallucinated a confirmation out of
+another pane's autosuggest ghost text, re-gated four approved tickets, and
+closed three PRs on the strength of it. The fix is the same shape as
+`QA-*`/`GV-*`: a durable, greppable marker, checked by one tested helper
+instead of hand-parsed prose.
+
+```
+fwf authz <issue>
+```
+
+prints one of four verdicts, each with both a distinct **exit code** and a
+human-readable line naming a concrete next action:
+
+| Verdict | Exit code | Meaning |
+|---|---|---|
+| `AUTHORIZED` | 0 | An anchored, correctly-referenced sentinel is present — safe to proceed, do not re-gate. |
+| `HELD` | 10 | No anchored sentinel. Routine, expected, boring — hold and ask. |
+| `INVALID` | 11 | A sentinel-**shaped** line sits at column 0 but is malformed (no parseable issue reference, or names a different issue than the thread it's in). Security-relevant — a forgery attempt or a botched operator action — and surfaced on `fwf dash`'s decisions panel, not only here. |
+| `INDETERMINATE` | 2 | The thread could not be read — an *availability* failure, not an authorization one. Fail closed: treat exactly like `HELD`. |
+
+**Column-0-per-comment, like `QA-*`/`GV-*` — but per LINE, not just the first
+line of the comment**, and with one more step: fenced (` ``` `/`~~~`) and
+indented code regions are stripped BEFORE the column-0 check runs. A fence at
+column 0 is the natural way to *document* the sentinel's format — every doc
+describing the un-gate flow shows the payload that way — so content inside
+one must never itself authorize, regardless of where it sits. The matcher
+also tolerates up to two leading `*`/`_` characters (a markdown bold/italic
+opener): the real operator un-gate comments on this floor are posted as
+`**OPERATOR-UNGATE #<n>** — ...`, measured from live threads before deciding
+this, not assumed — a strict byte-0 requirement would silently `HELD` every
+currently-authorized ticket.
+
+The verdict keys on the **comment thread only, never the issue body** — a
+ticket can legitimately contain the sentinel's literal text in its own body
+while *specifying* this mechanism, and that must never self-authorize it.
+
+**A security oracle must not emit a string that satisfies its own matcher:**
+none of `fwf authz`'s own output ever prints the literal sentinel — every
+occurrence, including a quoted matched line in an `AUTHORIZED` verdict, is
+defanged (`OPERATOR-UNGATE` → `OPERATOR[-]UNGATE`) before printing. That is
+what stops a `HELD`/`INVALID` message — or this doc's own examples — from
+later being pasted back into a thread and satisfying the matcher it was
+reporting on.
+
+**The mechanical check is a floor, not a ceiling.** A role that distrusts an
+`AUTHORIZED` verdict still holds and says why — that override is conformant
+behaviour, not a bug to be refactored away.
+
+An operator un-gates via `fwf dash`'s approve action, which posts the
+anchored sentinel and removes the gate label in one step; see `docs/dash.md`.

@@ -251,6 +251,14 @@ has_gv_signoff() { # $1=number
   local thread; thread="$(di_read view "$1" --comments 2>/dev/null || true)"
   case "$thread" in *GV-SIGNOFF*) return 0;; *) return 1;; esac
 }
+# #218 AC (i): an INVALID sentinel (a column-0-anchored but malformed or
+# wrong-issue un-gate attempt — either a forgery attempt or a botched operator
+# action) is security-relevant and must be visible on the board itself, not
+# only in `fwf authz`'s own output that nobody but a role reads.
+has_invalid_sentinel() { # $1=number
+  "$DIR/fwf-authz.sh" "$1" >/dev/null 2>&1
+  [ "$?" = 11 ]
+}
 # Templates where the CAPTAIN sequences releases of GV-signed-off items in
 # dependency order — so a gated + GV-SIGNOFF issue is the captain's queue, not a
 # human go/no-go (#51). The human's decisions in these modes surface via the
@@ -288,6 +296,17 @@ decisions_json() { # $1 = open_issues_json
               '{id:$id, title:$title, flags:$flags, body:$body}'
           done
     fi
+    # #218 AC (i): an INVALID sentinel is its own decision row, independent of
+    # GV sign-off state or release-sequencing mode — a forged-looking un-gate
+    # attempt matters regardless of whether GV has otherwise blessed the work.
+    printf '%s\n' "$issues" | jq -r '.[] | select(.gated) | .number' | while read -r num; do
+      [ -n "$num" ] || continue
+      has_invalid_sentinel "$num" || continue
+      title="$(printf '%s' "$issues" | jq -r --argjson n "$num" '.[] | select(.number==$n) | .title')"
+      jq -n --arg id "$num" --arg title "$title" \
+        '{id:$id, title:$title, flags:("⚠ INVALID SENTINEL — see: fwf authz " + $id),
+          body:"A sentinel-shaped comment on this issue is anchored at column 0 but malformed or references the wrong issue (issue #218). This is security-relevant — a forgery attempt or a botched operator action — inspect before treating it as noise."}'
+    done
   } | jq -s '.'
 }
 

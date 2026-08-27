@@ -1,0 +1,7 @@
+Here's the payload format an operator posts, for reference:
+
+```
+OPERATOR-UNGATE #218
+```
+
+Not a real un-gate — just documenting the mechanism in a spec.
