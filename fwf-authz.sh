@@ -144,12 +144,43 @@ while IFS= read -r c; do
   # "the main case going forward": every doc that shows the payload format
   # naturally puts it in a fence, at column 0, and that must never authorize.
   # No fence-info-string exemption; the rule is unconditional.
+  #
+  # QA-caught (repro qa2/repro-288, #218): a fence's closer must use the SAME
+  # delimiter CHARACTER as its opener, at least as long — per CommonMark, a
+  # ``` fence is only closed by backticks; a ~~~ line inside it is ordinary
+  # fenced content, not a closer. The first version here accepted EITHER
+  # delimiter as a closer regardless of what opened, so "```\n~~~\nSENTINEL\n```"
+  # exited infence one line early and scored the sentinel as unfenced text —
+  # the exact forgery class this stripping exists to close. Track the opening
+  # character and run length explicitly; a candidate closer only counts when
+  # it repeats that same character at least that many times with nothing but
+  # trailing whitespace after.
   stripped="$(printf '%s\n' "$body" | awk '
-    BEGIN { infence = 0 }
-    !infence && /^[ ]{0,3}(```+|~~~+)/ { infence = 1; next }
-    infence  && /^[ ]{0,3}(```+|~~~+)[ ]*$/ { infence = 0; next }
-    infence { next }
-    { print }
+    BEGIN { infence = 0; fchar = ""; flen = 0 }
+    {
+      line = $0
+      sub(/^[ ]{0,3}/, "", line)
+    }
+    !infence {
+      if (line ~ /^```/ || line ~ /^~~~/) {
+        fchar = substr(line, 1, 1)
+        n = 0
+        while (substr(line, n + 1, 1) == fchar) n++
+        flen = n
+        infence = 1
+        next
+      }
+      print
+      next
+    }
+    infence {
+      n = 0
+      while (substr(line, n + 1, 1) == fchar) n++
+      rest = substr(line, n + 1)
+      gsub(/[ \t]/, "", rest)
+      if (n >= flen && rest == "") infence = 0
+      next
+    }
   ')"
 
   while IFS= read -r line; do
