@@ -20,7 +20,12 @@
 #     roles:[{role,state,detail}],
 #     decisions:[{id,title,flags,body}],
 #     issues:[{number,title,gated,body}],
-#     floor_idle:{active,since,reason,actor} }
+#     floor_idle:{active,since,reason,actor},
+#     unrouted_prs:[{pr,author,branch,created_at,reason}] }
+#   unrouted_prs (issue #194 AC (d)) is data-layer only as of this field's
+#   introduction -- dash/src/data.rs does not yet deserialize or render it;
+#   query `fwf-dash-data.sh` directly (or `.unrouted_prs` off its JSON) until
+#   the Rust side picks it up.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The dash reflects the RUNNING factory, so it opts in to resolving the
@@ -357,9 +362,48 @@ activity_json() {
       }'
 }
 
+# --- unrouted PRs (issue #194 AC (d)) ---------------------------------------
+# A PR whose fwf-Reviewer: assignment is "none", absent with no branch-prefix
+# fallback, or names a configured QA seat that isn't currently live -- so a
+# PR nobody can reach is structurally distinguishable from one being actively
+# reviewed. NOT YET rendered by the dash/ (Rust) frontend -- this emits the
+# data half; dash/src/data.rs consuming it into a visible panel is separate
+# follow-up work (no cargo test harness for dash/ lives in THIS repo's gate).
+# $1 = roles_json (for which qaN seats are currently live)
+unrouted_prs_json() {
+  local roles_j="${1:-[]}"
+  if [ "${FWF_ISSUES:-gh}" = "local" ]; then echo '[]'; return 0; fi
+  local open live_qa
+  open="$(gh_pr list --state open --json number,headRefName,isDraft,author,createdAt,body,comments 2>/dev/null || true)"
+  [ -n "$open" ] || open='[]'
+  live_qa="$(printf '%s' "$roles_j" | jq -c '[.[] | select(.role|test("^qa[0-9]+$")) | select(.state!="down") | .role]')"
+  jq -n --argjson open "$open" --argjson live "$live_qa" '
+    def marker_of($body): ($body | capture("(?m)^fwf-Reviewer:[ \t]*(?<v>[A-Za-z0-9_-]+)"; "").v) // null;
+    def resolved($pr):
+      ([$pr.comments[]? | select((.body // "") | test("(?m)^fwf-Reviewer:"))] | sort_by(.createdAt) | last) as $c
+      | if $c != null then (marker_of($c.body // "") // null) else (marker_of($pr.body // "") // null) end;
+    def fallback($pr):
+      (($pr.headRefName | capture("^impl(?<n>[0-9]+)/"; "").n) // null) as $n | if $n then "qa"+$n else null end;
+    [ $open[] | select(.isDraft|not)
+      | . as $pr
+      | (resolved($pr)) as $r
+      | (
+          if   $r == "none" then "no QA seat configured"
+          elif $r == null and (fallback($pr) == null) then "no fwf-Reviewer marker and branch does not match implN/*"
+          elif $r == null then null
+          elif ($live | index($r)) then null
+          else "assigned to " + $r + ", which is not currently live"
+          end
+        ) as $reason
+      | select($reason != null)
+      | {pr:$pr.number, author:($pr.author.login // "unknown"), branch:$pr.headRefName,
+         created_at:($pr.createdAt // ""), reason:$reason}
+    ]'
+}
+
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade
+  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade unrouted_prs
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -378,6 +422,7 @@ main() {
   needs_you="$(needs_you_json)"
   upgrade="$(upgrade_json)"
   installed="$(installed_version_json)"
+  unrouted_prs="$(unrouted_prs_json "$roles")"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
@@ -386,10 +431,11 @@ main() {
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
     --argjson activity "$activity" --argjson needs_you "$needs_you" \
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
+    --argjson unrouted_prs "$unrouted_prs" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
       activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
-      installed:$installed}'
+      installed:$installed, unrouted_prs:$unrouted_prs}'
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------
