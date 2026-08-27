@@ -4213,6 +4213,30 @@ assert_eq "empty body, no comments -> NO_MARKER" "NO_MARKER" "$(prv '')"
 assert_eq "a marker not at column 0 (mid-line, quoted) never counts -- the #82 self-trigger-style guard" \
   "NO_MARKER" "$(prv 'saw your fwf-Reviewer: qa1 note')"
 
+# QA adversarial (issue #194 review): a marker QUOTED inside a fenced code
+# block, or blockquoted, is still at column 0 of ITS line, so a naive
+# `(?m)^fwf-Reviewer:` check (what resolve_reviewer() actually does) treats
+# it as a real assignment. This is the SAME defect family #218 fixed for the
+# authz sentinel (unanchored-by-quotation) -- the ticket names #218
+# explicitly as the same shape of bug -- and this script's own header
+# comment claims "never mid-line/quoted", but implements only a column-0
+# regex with no fence/blockquote stripping. A comment quoting a prior/
+# hypothetical marker purely for discussion ("that assignment was wrong,
+# ignore it") silently becomes a real re-assignment, and since newest-
+# comment-wins, it takes precedence over any real marker.
+prv_raw() { # $1=raw-json (already-valid JSON, passed via env to dodge shell-quoting of its content) -> resolve_reviewer's answer
+  FWF_PROFILE=example RAWJSON="$1" bash -c '
+    source '"'$PRV'"'
+    pr_raw() { printf '"'"'%s'"'"' "$RAWJSON"; }
+    main 84'
+}
+FENCED_JSON="$(jq -nc --arg b $'Quoting what someone posted earlier, for context only:\n```\nfwf-Reviewer: qa3\n```\nThat assignment was a mistake, ignore it.' '{body:$b, comments:[]}')"
+assert_eq "QA adversarial: a marker fenced inside \`\`\` (quoted for discussion) must resolve NO_MARKER, not the quoted seat" \
+  "NO_MARKER" "$(prv_raw "$FENCED_JSON")"
+BLOCKQUOTE_JSON="$(jq -nc --arg b $'> fwf-Reviewer: qa2\nThat was a draft someone else wrote, not a real assignment.' '{body:$b, comments:[]}')"
+assert_eq "QA adversarial: a blockquoted marker (> fwf-Reviewer: qaN) must resolve NO_MARKER, not the quoted seat" \
+  "NO_MARKER" "$(prv_raw "$BLOCKQUOTE_JSON")"
+
 section "pr-reviewer (#194): the degenerate zero-configured-QA-seats case is reachable and distinguishable"
 assert_eq "an explicit 'fwf-Reviewer: none' resolves to the literal none, not NO_MARKER" \
   "none" "$(prv 'fwf-Reviewer: none')"
