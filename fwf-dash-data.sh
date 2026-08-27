@@ -245,17 +245,48 @@ installed_version_json() {
 # --- issues + decisions -----------------------------------------------------
 # All open issues, with bodies + labels, in one backend call (gh and the local
 # store share the --json field names even though their plain columns differ).
+# issue #266 AC (b3): a DEGRADED list read (fwf-ghcache.sh exit 2 — served,
+# but never confirmed fresh against upstream) is the sharpest case, because a
+# row that never made it into this snapshot has no per-row check downstream
+# to mark it — has_gv_signoff/gv_signoff_state is never even reached for a
+# row absent from the list. `main()` invokes this via `issues="$(open_issues_json)"`
+# — a command substitution, i.e. a SUBSHELL — so a plain variable set inside
+# it is invisible to the caller once that subshell exits; a PID-scoped file
+# is what actually crosses that boundary (decisions_json, called from the
+# SAME top-level process, reads it back). A fresh/validated read (exit 0) or
+# a hard failure the gh backend already falls back on (any other exit) write
+# 0 — always written, so a stale value from an earlier call in the same PID
+# can never linger past this call.
+LIST_DEGRADED_FILE="${TMPDIR:-/tmp}/fwf-dash-list-degraded.$$"
 open_issues_json() {
-  di_read list --state open --limit 500 --json number,title,labels,body 2>/dev/null \
-    | jq 'map({number:.number, title:.title, gated:(any(.labels[]?; .name=="'"$WIP_LABEL"'")), body:(.body // "")})' \
+  local raw rc=0
+  raw="$(di_read list --state open --limit 500 --json number,title,labels,body 2>/dev/null)" || rc=$?
+  if [ "$rc" = 2 ]; then echo 1 > "$LIST_DEGRADED_FILE" 2>/dev/null; else echo 0 > "$LIST_DEGRADED_FILE" 2>/dev/null; fi
+  printf '%s' "$raw" | jq 'map({number:.number, title:.title, gated:(any(.labels[]?; .name=="'"$WIP_LABEL"'")), body:(.body // "")})' \
     2>/dev/null || echo '[]'
 }
 
-# A gated issue carrying a current GV sign-off is a human decision.
-has_gv_signoff() { # $1=number
-  local thread; thread="$(di_read view "$1" --comments 2>/dev/null || true)"
-  case "$thread" in *GV-SIGNOFF*) return 0;; *) return 1;; esac
+# A gated issue's GV sign-off state — THREE-way (issue #266 build note; same
+# shape as fwf authz's INDETERMINATE, #211/#219's convention): SIGNED / NONE /
+# INDETERMINATE. "Could not tell" must never render as "no sign-off" — a
+# degraded read (fwf-ghcache.sh exit 2) that didn't find the marker is
+# INDETERMINATE, not NONE, because the marker could be sitting on a page/
+# snapshot state this read never confirmed. Uses `--json comments` (not
+# `--comments`, which fwf-ghcache.sh's reshape_view doesn't model at all and
+# always falls straight through to the unmodified tier1 fallback, bypassing
+# this signal entirely) so the degraded exit code actually reaches here.
+gv_signoff_state() { # $1=number -> SIGNED | NONE | INDETERMINATE
+  local n="$1" rc=0 thread
+  thread="$(di_read view "$n" --json comments --jq '[.comments[].body] | join("\n")' 2>/dev/null)" || rc=$?
+  if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then echo INDETERMINATE; return; fi
+  case "$thread" in
+    *GV-SIGNOFF*) echo SIGNED;;
+    *) [ "$rc" = 2 ] && echo INDETERMINATE || echo NONE;;
+  esac
 }
+# Back-compat boolean shape for any caller that just wants "is this a
+# decision" without the third state.
+has_gv_signoff() { [ "$(gv_signoff_state "$1")" = SIGNED ]; }
 # #218 AC (i): an INVALID sentinel (a column-0-anchored but malformed or
 # wrong-issue un-gate attempt — either a forgery attempt or a botched operator
 # action) is security-relevant and must be visible on the board itself, not
@@ -275,7 +306,13 @@ captain_sequences_releases() {
 # Decision rows: gated + GV-SIGNOFF, enriched with the captain's recommendation
 # (status.json) when fresh; plus any release-kind decisions the captain queued.
 decisions_json() { # $1 = open_issues_json
-  local issues="$1" num title body rec flags
+  local issues="$1" num title body rec flags state
+  # issue #266 AC (b2): counts tickets whose sign-off state was INDETERMINATE
+  # (a degraded read that never found the marker — could be genuinely absent
+  # or sitting on a snapshot state this read never confirmed). A plain shell
+  # var set inside the `while read` below would be lost — that loop runs in a
+  # subshell (piped from jq) — so a file is the counter instead.
+  local indet_f; indet_f="$(mktemp 2>/dev/null || echo /tmp/fwf-dash-indet.$$)"; : > "$indet_f"
   {
     # A gated + GV-SIGNOFF issue is a human decision ONLY where the human un-gates
     # (dev-style). In captain-sequenced templates the captain releases these in
@@ -283,7 +320,11 @@ decisions_json() { # $1 = open_issues_json
     if ! captain_sequences_releases; then
     printf '%s\n' "$issues" | jq -r '.[] | select(.gated) | .number' | while read -r num; do
       [ -n "$num" ] || continue
-      has_gv_signoff "$num" || continue
+      state="$(gv_signoff_state "$num")"
+      case "$state" in
+        NONE) continue;;
+        INDETERMINATE) printf '%s\n' "$num" >> "$indet_f"; continue;;
+      esac
       title="$(printf '%s' "$issues" | jq -r --argjson n "$num" '.[] | select(.number==$n) | .title')"
       body="$(printf '%s'  "$issues" | jq -r --argjson n "$num" '.[] | select(.number==$n) | .body')"
       rec=""
@@ -312,7 +353,32 @@ decisions_json() { # $1 = open_issues_json
         '{id:$id, title:$title, flags:("⚠ INVALID SENTINEL — see: fwf authz " + $id),
           body:"A sentinel-shaped comment on this issue is anchored at column 0 but malformed or references the wrong issue (issue #218). This is security-relevant — a forgery attempt or a botched operator action — inspect before treating it as noise."}'
     done
-  } | jq -s '.'
+  } | jq -s '.' | {
+    # issue #266 AC (b2)/(b3): the two "we could not tell" summaries, appended
+    # after the main rows so they never displace a real decision — a count of
+    # zero means neither exists in the array below, exactly as before this
+    # ticket. (b2) wording is the ticket's own: "N tickets whose sign-off
+    # state could not be verified."
+    local base indet_n
+    base="$(cat)"
+    indet_n="$(wc -l < "$indet_f" 2>/dev/null | tr -d ' ')"; indet_n="${indet_n:-0}"
+    if [ "$indet_n" -gt 0 ]; then
+      base="$(printf '%s' "$base" | jq -c --arg n "$indet_n" --arg ids "$(paste -sd, "$indet_f" 2>/dev/null)" \
+        '. + [{id:"INDET", title:($n + " tickets whose sign-off state could not be verified"),
+               flags:"⚠ SIGN-OFF UNVERIFIED",
+               body:("A degraded (unconfirmed-fresh) read found no GV-SIGNOFF comment for issue(s) " + $ids + " — this does NOT mean none exists; the read that would have found it never confirmed it was looking at the current thread (issue #266). Re-check once ghcache reports current for these.")}]')"
+    fi
+    local list_degraded=0
+    [ -f "$LIST_DEGRADED_FILE" ] && list_degraded="$(cat "$LIST_DEGRADED_FILE" 2>/dev/null)"
+    if [ "${list_degraded:-0}" = 1 ]; then
+      base="$(printf '%s' "$base" | jq -c \
+        '. + [{id:"LISTDEG", title:"the open-issue list itself is degraded — some tickets may be missing or stale",
+               flags:"⚠ ISSUE LIST UNCONFIRMED",
+               body:"The canonical open-issues snapshot was served without confirming it against upstream (issue #266) — a just-filed or just-gated ticket may be entirely absent from this queue, or present with stale labels, until the next confirmed read."}]')"
+    fi
+    printf '%s' "$base"
+  }
+  rm -f "$indet_f"
 }
 
 # --- activity (factory motion: building / in test / merged) -----------------
@@ -436,6 +502,7 @@ main() {
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
       activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
       installed:$installed, unrouted_prs:$unrouted_prs}'
+  rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------

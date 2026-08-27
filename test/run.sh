@@ -2763,6 +2763,133 @@ GHI invalidate pr 42
 GHI invalidate bogus 42 && bad "invalidate rejects an unknown topic" || ok "invalidate rejects an unknown topic"
 GHI invalidate issue nope && bad "invalidate rejects a non-numeric id" || ok "invalidate rejects a non-numeric id"
 
+# --------------------------------------------------------------------------
+# fwf-ghcache.sh (issue #266): a reader can distinguish "served, current" from
+# "served, freshness never confirmed" -- AC (a). The lock-wait fallback (three
+# identical sites pre-#266: refresh_canonical, ensure_view_resource,
+# ensure_view_comments) used to report plain success either way. FWF_GHCACHE_
+# LOCK_WAIT/FWF_GHCACHE_WAITER_ITERS (AC f) drive the fallback branch to ~0s
+# instead of its ~20s default, so this asserts the BRANCH, not the duration.
+section "fwf-ghcache.sh: a degraded (unconfirmed-fresh) read is distinguishable from a validated one (issue #266)"
+DGROOT="$TMP/ghcache-degraded"; mkdir -p "$DGROOT/x__y/locks" "$DGROOT/x__y/views"
+printf '%s' '[{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}]' > "$DGROOT/x__y/issues.json"
+touch -t 202001010000 "$DGROOT/x__y/issues.ts"   # force STALE regardless of wall-clock TTL
+mkdir -p "$DGROOT/x__y/locks/canon-issue.lock"    # simulate ANOTHER pane already refreshing
+GHD() { FWF_GHCACHE_DIR="$DGROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=1 FWF_GHCACHE_LOCK_WAIT=0 FWF_GHCACHE_WAITER_ITERS=0 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GDRC=0; GDOUT="$(GHD serve issue list --json number)" || GDRC=$?
+assert_eq "(a) a degraded list read still serves the last-known-good data" '[{"number":9}]' "$GDOUT"
+assert_eq "(a) a degraded list read exits 2 -- distinguishable from 0 (validated) or 1 (no data)" "2" "$GDRC"
+[ -f "$DGROOT/x__y/issues.json.degraded" ] && ok "(a) the degraded marker file exists next to the served snapshot" \
+  || bad "(a) the degraded marker file exists next to the served snapshot"
+
+# A genuinely-fresh read (no contended lock, no stale .ts) exits 0, not 2 --
+# the discriminating case: without it, (a) could pass by always returning 2.
+FRROOT="$TMP/ghcache-fresh"; mkdir -p "$FRROOT/x__y"
+printf '%s' '[{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}]' > "$FRROOT/x__y/issues.json"
+touch "$FRROOT/x__y/issues.ts"
+FRRC=0; FWF_GHCACHE_DIR="$FRROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false \
+  bash "$ROOT/fwf-ghcache.sh" serve issue list --json number >/dev/null 2>&1 || FRRC=$?
+assert_eq "(a) a genuinely fresh read exits 0, not 2 -- the discriminating case" "0" "$FRRC"
+
+# A degraded resource VIEW (not just list) propagates the same way through
+# reshape_view -- the second of the three sites named in the ticket.
+mkdir -p "$DGROOT/x__y/locks"
+printf '%s' '{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}' > "$DGROOT/x__y/views/issue-9.json"
+touch -t 202001010000 "$DGROOT/x__y/views/issue-9.ts"
+mkdir -p "$DGROOT/x__y/locks/view-issue-9.lock"
+GVDRC=0; GHD serve issue view 9 --json title >/dev/null 2>&1 || GVDRC=$?
+assert_eq "(a) a degraded per-resource view read also exits 2" "2" "$GVDRC"
+
+# --------------------------------------------------------------------------
+# fwf-ghcache.sh (issue #266 mechanism 2, AC c/d): a comment added past the
+# 100-comment page boundary must be visible on the next read. A page-1 ETag
+# only proves page 1 unchanged; a >=100-comment thread has a page 2+ a new
+# comment can land on, invisible to that check. A fake upstream speaking the
+# real conditional-request shape (status line + ETag, honouring
+# If-None-Match, page 2 unconditional) is required -- the offline
+# seeded-snapshot harness above (GHC/GHV, FWF_REAL_GH=/bin/false) never
+# issues a conditional request at all and cannot exercise this.
+section "fwf-ghcache.sh: a comment past the 100-comment page boundary is visible on the next read (issue #266 mechanism 2)"
+FAKEGH266_STATE="$TMP/fakegh266-state"; mkdir -p "$FAKEGH266_STATE"
+printf '150' > "$FAKEGH266_STATE/count"
+printf 'etag-v1' > "$FAKEGH266_STATE/etag"
+FAKEGH266="$TMP/fakegh266"
+cat > "$FAKEGH266" <<'EOF'
+#!/usr/bin/env bash
+# Speaks the exact shape ensure_view_comments calls: `api -i .../comments?
+# ...&page=N [-H "If-None-Match: <etag>"]` for page 1 (conditional), and
+# `api .../comments?...&page=N` for page 2+ (unconditional, no headers) --
+# matching real GitHub: each request gets its own ETag, but this cache only
+# ever stores/sends the page-1 one, exactly like the real code under test.
+set -u
+STATE="${FAKEGH266_STATE:?}"
+count="$(cat "$STATE/count" 2>/dev/null || echo 0)"
+etag="$(cat "$STATE/etag" 2>/dev/null || echo v1)"
+page=1
+url=""
+for a in "$@"; do case "$a" in /repos/*) url="$a";; esac; done
+for a in "$@"; do case "$a" in *page=*) p="${a##*page=}"; page="${p%%&*}";; esac; done
+conditional=0; inm=""; prev=""
+for a in "$@"; do
+  [ "$a" = "-i" ] && conditional=1
+  if [ "$prev" = "-H" ]; then case "$a" in "If-None-Match: "*) inm="${a#If-None-Match: }";; esac; fi
+  prev="$a"
+done
+# ensure_view_resource fetches the bare issue first (no /comments in the
+# path, no page param) -- respond with a minimal valid issue object so that
+# call succeeds distinctly from the comments-endpoint logic below.
+case "$url" in
+  */comments*) ;;
+  *)
+    if [ "$conditional" = 1 ]; then printf 'HTTP/2.0 200 OK\r\n\r\n'; fi
+    jq -nc '{number:42, title:"t", body:"b", state:"open", html_url:"u", created_at:"2026-01-01T00:00:00Z", updated_at:"2026-01-01T00:00:00Z", closed_at:null, user:{login:"u"}, labels:[], assignees:[]}'
+    exit 0
+    ;;
+esac
+emit_page() {
+  local pg="$1" start end
+  start=$(( (pg-1)*100 + 1 )); end=$(( pg*100 )); [ "$end" -gt "$count" ] && end="$count"
+  if [ "$start" -gt "$end" ]; then echo '[]'; return; fi
+  jq -nc --argjson s "$start" --argjson e "$end" \
+    '[range($s;$e+1) | {id:., body:("c"+(.|tostring)), created_at:"2026-01-01T00:00:00Z", updated_at:"2026-01-01T00:00:00Z", user:{login:"u"}}]'
+}
+if [ "$conditional" = 1 ] && [ "$page" = 1 ]; then
+  if [ -n "$inm" ] && [ "$inm" = "$etag" ]; then
+    printf 'HTTP/2.0 304 Not Modified\r\nETag: %s\r\n\r\n' "$etag"
+  else
+    printf 'HTTP/2.0 200 OK\r\nETag: %s\r\n\r\n' "$etag"
+    emit_page 1
+  fi
+else
+  emit_page "$page"
+fi
+EOF
+chmod +x "$FAKEGH266"
+M2ROOT="$TMP/ghcache-mech2"; mkdir -p "$M2ROOT/x__y"
+GH266() { FWF_GHCACHE_DIR="$M2ROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH266" FAKEGH266_STATE="$FAKEGH266_STATE" bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+M2_1="$(GH266 serve issue view 42 --json comments --jq '.comments | length')"
+assert_eq "mechanism 2 setup: initial fetch returns all 150 (2 pages)" "150" "$M2_1"
+# Simulate a new comment landing on page 2 (id 151) -- page 1's content and
+# ETag are UNCHANGED, so a real GitHub page-1 conditional request still 304s.
+printf '151' > "$FAKEGH266_STATE/count"
+rm -f "$M2ROOT/x__y/views/42-comments.ts"   # force the next read to re-check upstream
+M2_2="$(GH266 serve issue view 42 --json comments --jq '.comments | length')"
+assert_eq "(c) a comment added past the 100-comment boundary IS visible on the next read (RED before the fix: stayed 150)" "151" "$M2_2"
+M2_3="$(GH266 serve issue view 42 --json comments --jq '[.comments[].body] | contains(["c151"])')"
+assert_eq "(c) specifically, the NEW (151st) comment is present, not just the count" "true" "$M2_3"
+
+# (d) UNDER 100 comments, the page-1-304 fast path is UNCHANGED: no page-2
+# request happens at all (real_gh would only ever be called for page 1).
+printf '50' > "$FAKEGH266_STATE/count"
+printf 'etag-small' > "$FAKEGH266_STATE/etag"
+M3ROOT="$TMP/ghcache-mech2-small"; mkdir -p "$M3ROOT/x__y"
+GH266S() { FWF_GHCACHE_DIR="$M3ROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH266" FAKEGH266_STATE="$FAKEGH266_STATE" bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+M3_1="$(GH266S serve issue view 42 --json comments --jq '.comments | length')"
+assert_eq "(d) under 100: initial fetch returns all 50" "50" "$M3_1"
+rm -f "$M3ROOT/x__y/views/42-comments.ts"
+M3_2="$(GH266S serve issue view 42 --json comments --jq '.comments | length')"
+assert_eq "(d) under 100: a page-1 304 still short-circuits correctly (count unchanged, no growth to miss)" "50" "$M3_2"
+
 section "pane recovery helpers (issue #36)"
 RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"
 assert_contains "dev impl label canonical" "$RL_DEV" "IMPL2 · any issue → instant draft PR · impl2/*"
@@ -3175,6 +3302,57 @@ assert_contains "the row's flags name it as security-relevant" \
   "INVALID SENTINEL"
 assert_eq "refactor ALSO surfaces the INVALID-sentinel row (unlike GV-SIGNOFF above)" '["9"]' \
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD_STUB_INV; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
+
+# --------------------------------------------------------------------------
+# fwf-dash-data.sh (issue #266 AC b): the dash consumes ghcache's degraded
+# signal rather than letting it silently vanish -- three ways.
+section "dash data: gv_signoff_state is THREE-way -- 'could not tell' never renders as 'no sign-off' (issue #266)"
+GVS_RC() { FWF_PROFILE=example bash -c "source '$DD'; di_read() { $1; }; gv_signoff_state 9"; }
+assert_eq "signed: found the marker on a validated (rc0) read" "SIGNED" \
+  "$(GVS_RC 'echo GV-SIGNOFF; return 0')"
+assert_eq "none: no marker, and the read WAS validated (rc0) -- confirmed absent" "NONE" \
+  "$(GVS_RC 'echo nothing here; return 0')"
+assert_eq "indeterminate: no marker, but the read was DEGRADED (rc2, issue #266's exit code) -- could not tell, never NONE" "INDETERMINATE" \
+  "$(GVS_RC 'echo nothing here; return 2')"
+assert_eq "indeterminate: the read failed outright (rc1) -- also could not tell" "INDETERMINATE" \
+  "$(GVS_RC 'return 1')"
+assert_eq "signed still wins even on a degraded read -- the marker WAS actually seen" "SIGNED" \
+  "$(GVS_RC 'echo GV-SIGNOFF; return 2')"
+
+section "dash data: decisions_json surfaces the two 'could not tell' summaries (issue #266 AC b2/b3)"
+# (b2): a ticket whose sign-off state is INDETERMINATE is not silently
+# dropped (the old `has_gv_signoff "$num" || continue` shape) -- it's
+# counted and surfaced as its own summary row, naming the ticket.
+DD_STUB_INDET='di_read() { case "$*" in *"view 9"*) echo x; return 2;; esac; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+DD_INDET_OUT="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_INDET; decisions_json '$DD_FIX'")"
+assert_eq "(b2) the ticket itself is NOT rendered as a normal decision row" "[]" \
+  "$(printf '%s' "$DD_INDET_OUT" | jq -c '[.[] | select(.id=="9")]')"
+assert_eq "(b2) exactly one INDET summary row is added" '["INDET"]' \
+  "$(printf '%s' "$DD_INDET_OUT" | jq -c '[.[].id]')"
+assert_contains "(b2) the summary uses the ticket's own wording: 'N tickets whose sign-off state could not be verified'" \
+  "$(printf '%s' "$DD_INDET_OUT" | jq -r '.[0].title')" "1 tickets whose sign-off state could not be verified"
+assert_contains "(b2) the summary names which ticket" "$(printf '%s' "$DD_INDET_OUT" | jq -r '.[0].body')" "9"
+
+# (b3): the LIST read itself degraded -- signalled via LIST_DEGRADED_FILE
+# (decisions_json reads it back; open_issues_json is what writes it, but
+# these tests drive decisions_json directly, so the file is written here to
+# isolate the ASSERTION from the plumbing, which is tested separately below).
+DD_STUB_PLAIN='di_read() { echo ""; return 0; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+DD_LISTDEG_OUT="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_PLAIN; echo 1 > \"\$LIST_DEGRADED_FILE\"; decisions_json '$DD_FIX'")"
+assert_contains "(b3) the issue-list-degraded row is present" "$(printf '%s' "$DD_LISTDEG_OUT" | jq -c '[.[].id]')" "LISTDEG"
+assert_contains "(b3) it warns tickets may be missing or stale" "$(printf '%s' "$DD_LISTDEG_OUT" | jq -r '.[] | select(.id=="LISTDEG") | .title')" "missing or stale"
+DD_NODEG_OUT="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_PLAIN; decisions_json '$DD_FIX'")"
+assert_not_contains "(b3) no LISTDEG row when the list was never marked degraded (no file written)" \
+  "$(printf '%s' "$DD_NODEG_OUT" | jq -c '[.[].id]')" "LISTDEG"
+
+# The plumbing: open_issues_json itself writes LIST_DEGRADED_FILE=1 when
+# di_read's exit code is 2 (ghcache's degraded signal), 0 otherwise -- proven
+# via the PID-scoped file directly, since open_issues_json runs in a
+# command-substitution subshell and can't hand the flag back any other way.
+OIJ_DEG="$(FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null; cat \"\$LIST_DEGRADED_FILE\"")"
+assert_eq "open_issues_json writes 1 to LIST_DEGRADED_FILE on a degraded (rc2) list read" "1" "$OIJ_DEG"
+OIJ_OK="$(FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 0; }; open_issues_json >/dev/null; cat \"\$LIST_DEGRADED_FILE\"")"
+assert_eq "open_issues_json writes 0 to LIST_DEGRADED_FILE on a validated (rc0) list read" "0" "$OIJ_OK"
 
 section "dash data: activity_json buckets PRs + parses role/issue from the branch"
 printf '%s' '[{"number":7,"title":"wip","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-42-foo","statusCheckRollup":[]}]' > "$TMP/dd-open.json"

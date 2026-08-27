@@ -29,12 +29,57 @@
 #        fwf-ghcache.sh invalidate <issue|pr> <n>   (write-through cache-bust, #167)
 # Env  : FWF_REAL_GH (real gh path), FWF_GHCACHE_DIR (cache root),
 #        FWF_GHCACHE_REPO (owner/name) or FWF_REPO (git dir to derive it),
-#        FWF_GHCACHE_TTL (seconds, default 60), FWF_GHCACHE_OFF=1 to bypass.
+#        FWF_GHCACHE_TTL (seconds, default 60), FWF_GHCACHE_OFF=1 to bypass,
+#        FWF_GHCACHE_LOCK_WAIT / FWF_GHCACHE_WAITER_ITERS (issue #266 AC f —
+#        test-only: drive the degraded-fallback branch below without its
+#        default ~20s wait).
+#
+# EXIT CODES on `serve issue|pr list|view` (issue #266 AC a): 0 = the data was
+# validated against upstream (a fresh fetch, or a 304 confirming no change).
+# 2 = DEGRADED — data WAS served (still the right call: stale beats none),
+# but its freshness was never confirmed — another pane's in-flight refresh
+# hadn't finished when this call's wait timed out, so a possibly-stale
+# snapshot was reused as-is. Any other/nonzero code is `real_gh`'s own exit
+# from the safe stdout-cache fallback (tier1) or a direct passthrough — this
+# script's own failure paths never fabricate a result, they fall through to
+# a real `gh` call. A caller that only checks "did this print JSON" cannot
+# tell 0 from 2 apart — check the exit code, not just stdout, to act on (a).
+#
+# CALLERS OF `serve`, ENUMERATED (issue #266 AC e) — a recorded decision per
+# consumer, not a blanket tightening, because the rate-limit relief this
+# cache exists for is worth keeping wherever staleness genuinely doesn't
+# matter:
+#   - fwf-dash-data.sh (di_read -> issue/pr list|view) — INTOLERABLE, and
+#     handled: (b1) a degraded per-resource view is marked; (b2)
+#     gv_signoff_state distinguishes INDETERMINATE from NONE and
+#     decisions_json surfaces a count; (b3) a degraded LIST read gets its own
+#     summary row. This is the operator's decision queue — the whole point
+#     of this ticket.
+#   - fwf-authz.sh (the operator un-gate sentinel oracle) — INTOLERABLE, and
+#     already fail-closed for free: its read is `... || read_ok=0`, which
+#     catches ANY nonzero exit (this ticket's new 2 included) and reports
+#     INDETERMINATE. #265 is the ticket that eventually takes authz off this
+#     cache entirely, per this ticket's own explicit out-of-scope note — this
+#     is a defense-in-depth improvement in the meantime, not a fix that
+#     substitutes for #265.
+#   - Every OTHER `gh issue|pr list|view` call on this floor — routed through
+#     here transparently via the `gh` shim `fwf_install_ghguard` installs
+#     (lib.sh), which `exec`s this script so its exit code becomes the
+#     shim's own. TOLERABLE by default: a caller that doesn't check the exit
+#     code sees no behaviour change (stdout is identical to before this
+#     ticket); a caller that already treats "gh exited nonzero" as "don't
+#     trust this" becomes STRICTLY safer, not more fragile, the moment it
+#     starts occasionally seeing 2 where it used to always see 0. No caller
+#     in this class is known to branch specifically on gh's exit code today.
 set -u
 
 TTL="${FWF_GHCACHE_TTL:-60}"
-LOCK_STALE=45           # break a lock held longer than this (a crashed refresher)
-LOCK_WAIT=8             # seconds to wait for another pane's in-flight refresh
+LOCK_STALE=45                                # break a lock held longer than this (a crashed refresher)
+LOCK_WAIT="${FWF_GHCACHE_LOCK_WAIT:-8}"      # seconds to wait for another pane's in-flight refresh
+# issue #266 (f): overridable (like TTL already was) so a test can drive the
+# degraded-fallback branch to ~0 and assert the BRANCH, not the ~20s DURATION
+# (LOCK_WAIT + this many 1s waiter-loop iterations) that path costs by default.
+WAITER_ITERS="${FWF_GHCACHE_WAITER_ITERS:-12}"
 
 # --- real gh (never the shim) ----------------------------------------------
 real_gh() {
@@ -50,6 +95,18 @@ file_age() { # seconds since $1 was modified; 999999 (==stale) if unknowable.
   case "$m" in ''|*[!0-9]*) echo 999999;; *) echo $(( $(now) - m ));; esac
 }
 fresh() { [ -f "$1" ] && [ "$(file_age "$1")" -lt "${2:-$TTL}" ]; }
+
+# --- degraded-read marker (issue #266 AC a) ----------------------------------
+# "Success" today means the same thing whether a snapshot was just validated
+# against upstream OR merely found to exist after another pane's refresh timed
+# out — a read that cannot complete must not collapse into a confident value
+# (#211's thesis, inside the cache itself). A `<file>.degraded` sentinel next
+# to a served snapshot marks the second case; a real refresh (200 or a 304
+# that DOES confirm freshness) clears it. Content-free (existence is the
+# signal) so a stale-marker-cleanup pass never has anything to parse wrong.
+degraded_mark()  { touch "$1.degraded" 2>/dev/null; }
+degraded_clear() { rm -f "$1.degraded" 2>/dev/null; }
+is_degraded()    { [ -f "$1.degraded" ]; }
 
 # owner/name — from env, else parsed from the repo's origin remote (no API call).
 repo_slug() {
@@ -89,15 +146,20 @@ refresh_canonical() { # $1=issue|pr  -> populates $ROOT/<topic>s.json
     pr)    path="pulls";  json="$ROOT/prs.json";    etag="$ROOT/prs.etag";    tsf="$ROOT/prs.ts";;
     *) return 1;;
   esac
-  fresh "$tsf" "$TTL" && [ -f "$json" ] && return 0
+  fresh "$tsf" "$TTL" && [ -f "$json" ] && { degraded_clear "$json"; return 0; }
   if ! lock "canon-$topic"; then
     # Another pane is already fetching. Wait for ITS fresh REST snapshot rather
     # than firing our own (GraphQL) fallback — this is what kills the cold-start
     # thundering herd so N concurrent first-polls collapse to ONE upstream fetch.
-    local w=0; while [ "$w" -lt 12 ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && return 0; sleep 1; w=$((w+1)); done
-    [ -f "$json" ] && return 0 || return 1
+    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
+    # issue #266 AC (a): the wait timed out — this snapshot's freshness was
+    # NEVER confirmed against upstream. Serving it is still the right call
+    # (a stale row beats none), but it must be MARKED, not reported as plain
+    # success identical to a validated read.
+    if [ -f "$json" ]; then degraded_mark "$json"; return 0; fi
+    return 1
   fi
-  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "canon-$topic"; return 0; fi
+  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "canon-$topic"; degraded_clear "$json"; return 0; fi
 
   # Page 1 with a conditional ETag — the OPEN set only (the hot path). A change
   # to the open set (new/closed issue) shifts page 1, so its ETag is a faithful
@@ -106,7 +168,7 @@ refresh_canonical() { # $1=issue|pr  -> populates $ROOT/<topic>s.json
   hdr="$(real_gh api -i "/repos/$SLUG/$path?state=open&per_page=100&page=1" \
           ${et:+-H "If-None-Match: $et"} 2>/dev/null)" || { unlock "canon-$topic"; return 1; }
   status="$(printf '%s' "$hdr" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')"
-  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; unlock "canon-$topic"; return 0; fi
+  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; degraded_clear "$json"; unlock "canon-$topic"; return 0; fi
   if [ "$status" != "200" ]; then unlock "canon-$topic"; return 1; fi
   newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
   local acc body page=2
@@ -121,7 +183,7 @@ refresh_canonical() { # $1=issue|pr  -> populates $ROOT/<topic>s.json
   # Drop PRs from the issues endpoint; order created-desc to match gh's default.
   local filt='.'; [ "$topic" = "issue" ] && filt='[.[] | select(has("pull_request")|not)]'
   printf '%s' "$acc" | jq -c "$filt | sort_by(.created_at) | reverse" > "$json.tmp" 2>/dev/null || { unlock "canon-$topic"; return 1; }
-  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"
+  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; degraded_clear "$json"
   unlock "canon-$topic"; return 0
 }
 
@@ -240,6 +302,7 @@ parse_list() { # $@=args
 
 reshape_list() { # $1=topic ; rest=args  -> stdout (gh-equivalent) or return 1 to fall back
   local topic="$1"; shift
+  DEGRADED=0   # issue #266: set by the ensure_*/refresh_canonical calls below; read by the dispatcher on success
   parse_list "$@" || return 1
   local st="$P_STATE" lbl="$P_LABEL" base="$P_BASE" lim="$P_LIMIT" json="$P_JSON" jq="$P_JQ" search="$P_SEARCH" shape fields
   SR_LABELS=""; SR_NOTLABELS=""
@@ -265,6 +328,11 @@ reshape_list() { # $1=topic ; rest=args  -> stdout (gh-equivalent) or return 1 t
   refresh_canonical "$topic" || return 1
   local src; case "$topic" in issue) src="$ROOT/issues.json";; pr) src="$ROOT/prs.json";; esac
   [ -f "$src" ] || return 1
+  # issue #266 AC (b3): the LIST read degraded is the sharpest case — a row
+  # that never made it into this snapshot has no per-row check to mark it
+  # (has_gv_signoff is never even reached for a row that isn't in the list),
+  # so the degradation has to be signalled at the list level itself.
+  is_degraded "$src" && DEGRADED=1
 
   # The canonical store IS the open set; only open queries are served from it
   # (closed/merged/all fall back to the safe stdout cache).
@@ -314,44 +382,68 @@ ensure_view_resource() { # $1=topic(issue|pr) $2=number -> $ROOT/views/$1-$2.jso
   local topic="$1" n="$2" path json etag tsf hdr status newetag body
   case "$topic" in issue) path="issues";; pr) path="pulls";; *) return 1;; esac
   json="$ROOT/views/$topic-$n.json"; etag="$ROOT/views/$topic-$n.etag"; tsf="$ROOT/views/$topic-$n.ts"
-  fresh "$tsf" "$TTL" && [ -f "$json" ] && return 0
+  fresh "$tsf" "$TTL" && [ -f "$json" ] && { degraded_clear "$json"; return 0; }
   if ! lock "view-$topic-$n"; then
-    local w=0; while [ "$w" -lt 12 ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && return 0; sleep 1; w=$((w+1)); done
-    [ -f "$json" ] && return 0 || return 1
+    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
+    if [ -f "$json" ]; then degraded_mark "$json"; return 0; fi   # issue #266 AC (a)
+    return 1
   fi
-  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "view-$topic-$n"; return 0; fi
+  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "view-$topic-$n"; degraded_clear "$json"; return 0; fi
   local et=""; [ -f "$etag" ] && et="$(cat "$etag")"
   hdr="$(real_gh api -i "/repos/$SLUG/$path/$n" ${et:+-H "If-None-Match: $et"} 2>/dev/null)" || { unlock "view-$topic-$n"; return 1; }
   status="$(printf '%s' "$hdr" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')"
   # 404 (or any non-200/304): don't crash, don't guess — fall through to real
   # gh so the caller sees gh's own error, never a wrong-but-well-formed result.
-  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; unlock "view-$topic-$n"; return 0; fi
+  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; degraded_clear "$json"; unlock "view-$topic-$n"; return 0; fi
   if [ "$status" != "200" ]; then unlock "view-$topic-$n"; return 1; fi
   newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
   body="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
   printf '%s' "$body" | jq -c '.' > "$json.tmp" 2>/dev/null && [ -s "$json.tmp" ] || { rm -f "$json.tmp"; unlock "view-$topic-$n"; return 1; }
-  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"
+  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; degraded_clear "$json"
   unlock "view-$topic-$n"; return 0
 }
 
 # Issue AND PR comments both live at /issues/$n/comments (a PR is an issue in
 # GitHub's data model) — keyed by number alone, not topic, matching that.
 ensure_view_comments() { # $1=number -> $ROOT/views/$1-comments.json
-  local n="$1" json etag tsf hdr status newetag acc page body cnt
+  local n="$1" json etag tsf hdr status newetag acc page body cnt old_count
   json="$ROOT/views/$n-comments.json"; etag="$ROOT/views/$n-comments.etag"; tsf="$ROOT/views/$n-comments.ts"
-  fresh "$tsf" "$TTL" && [ -f "$json" ] && return 0
+  fresh "$tsf" "$TTL" && [ -f "$json" ] && { degraded_clear "$json"; return 0; }
   if ! lock "view-comments-$n"; then
-    local w=0; while [ "$w" -lt 12 ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && return 0; sleep 1; w=$((w+1)); done
-    [ -f "$json" ] && return 0 || return 1
+    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
+    if [ -f "$json" ]; then degraded_mark "$json"; return 0; fi   # issue #266 AC (a)
+    return 1
   fi
-  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "view-comments-$n"; return 0; fi
+  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "view-comments-$n"; degraded_clear "$json"; return 0; fi
+  # issue #266 mechanism 2: page 1's ETag only proves PAGE 1 is unchanged. A
+  # thread already >=100 comments long has a page 2+ that a NEW comment lands
+  # on, invisible to page 1's conditional request — so a page-1 304 must NOT
+  # be trusted as "whole thread unchanged" once there's a second page to miss.
+  # Under 100 (single page), page 1 unchanged genuinely IS the whole thread
+  # unchanged (AC d) — the fast path stays exactly as before for that case.
+  old_count=0; [ -f "$json" ] && old_count="$(jq 'length' "$json" 2>/dev/null || echo 0)"
   local et=""; [ -f "$etag" ] && et="$(cat "$etag")"
   hdr="$(real_gh api -i "/repos/$SLUG/issues/$n/comments?per_page=100&page=1" ${et:+-H "If-None-Match: $et"} 2>/dev/null)" || { unlock "view-comments-$n"; return 1; }
   status="$(printf '%s' "$hdr" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')"
-  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; unlock "view-comments-$n"; return 0; fi
-  if [ "$status" != "200" ]; then unlock "view-comments-$n"; return 1; fi
-  newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
-  acc="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
+  if [ "$status" = "304" ] && [ -f "$json" ] && [ "$old_count" -lt 100 ]; then
+    touch "$tsf"; degraded_clear "$json"; unlock "view-comments-$n"; return 0
+  fi
+  if [ "$status" = "304" ] && [ -f "$json" ]; then
+    # >=100 cached: page 1 is CONFIRMED unchanged by the 304 (reuse its
+    # records straight from cache — no need to re-fetch page 1 itself), but
+    # pages 2+ are unvalidated and must be re-checked below, same as a 200.
+    # newetag stays empty (declared-but-unassigned is unbound under `set -u`
+    # once execution reaches it via THIS branch, unlike the 200 branch which
+    # always assigns it) -- page 1 wasn't refetched, so the existing .etag
+    # file is correctly left untouched below.
+    newetag=""
+    acc="$(jq -c '.[0:100]' "$json" 2>/dev/null)"
+  elif [ "$status" != "200" ]; then
+    unlock "view-comments-$n"; return 1
+  else
+    newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
+    acc="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
+  fi
   page=2
   while [ "$(printf '%s' "$acc" | jq 'length' 2>/dev/null || echo 0)" -ge $((100*(page-1))) ] && [ "$page" -le 10 ]; do
     body="$(real_gh api "/repos/$SLUG/issues/$n/comments?per_page=100&page=$page" 2>/dev/null)" || break
@@ -361,7 +453,7 @@ ensure_view_comments() { # $1=number -> $ROOT/views/$1-comments.json
     page=$((page+1))
   done
   printf '%s' "$acc" | jq -c '.' > "$json.tmp" 2>/dev/null || { unlock "view-comments-$n"; return 1; }
-  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"
+  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; degraded_clear "$json"
   unlock "view-comments-$n"; return 0
 }
 
@@ -374,6 +466,7 @@ ensure_view_comments() { # $1=number -> $ROOT/views/$1-comments.json
 # left over from an earlier comment-less call of the same #N.
 reshape_view() { # $1=topic ; rest=args -> stdout (gh-equivalent) or return 1 to fall back
   local topic="$1"; shift
+  DEGRADED=0   # issue #266: set by the ensure_* calls below; read by the dispatcher on success
   local num="" jsonf="" jqf="" a
   while [ "$#" -gt 0 ]; do
     a="$1"
@@ -406,6 +499,7 @@ reshape_view() { # $1=topic ; rest=args -> stdout (gh-equivalent) or return 1 to
   ensure_view_resource "$topic" "$num" || return 1
   local rf="$ROOT/views/$topic-$num.json"
   [ -f "$rf" ] || return 1
+  is_degraded "$rf" && DEGRADED=1   # issue #266 AC (a)/(b1)
   local obj; obj="$(jq -c "$shape" "$rf" 2>/dev/null)" || return 1
 
   if [ "$need_reviews" = 1 ]; then
@@ -416,6 +510,7 @@ reshape_view() { # $1=topic ; rest=args -> stdout (gh-equivalent) or return 1 to
     ensure_view_comments "$num" || return 1
     local cf="$ROOT/views/$num-comments.json"
     [ -f "$cf" ] || return 1
+    is_degraded "$cf" && DEGRADED=1   # issue #266 AC (a)/(b2): feeds has_gv_signoff's 3rd state
     local carr; carr="$(jq -c "[ .[] | $COMMENT_SHAPE ]" "$cf" 2>/dev/null)" || return 1
     obj="$(printf '%s' "$obj" | jq -c --argjson c "$carr" '. + {comments: $c}' 2>/dev/null)" || return 1
   fi
@@ -522,15 +617,22 @@ case "${1:-} ${2:-}" in
 esac
 [ "${1:-}" = serve ] && shift     # drop the 'serve' subcommand verb
 [ "${FWF_GHCACHE_OFF:-0}" = 1 ] && { real_gh "$@"; exit $?; }
+# issue #266 AC (a): exit 2 means "served, but at least one snapshot behind
+# this read was never confirmed fresh against upstream (the lock-wait
+# fallback)" — distinct from 0 (validated) and 1/real_gh's own code (this
+# script couldn't serve it at all). Same three-way shape as fwf authz's
+# INDETERMINATE (#219) / #211's convention: a degraded reader must not
+# collapse into looking identical to a confirmed one.
+EX_DEGRADED=2
 case "${1:-} ${2:-}" in
   "issue list"|"pr list")
     topic="$1"; shift 2
-    reshape_list "$topic" "$@" && exit 0
+    reshape_list "$topic" "$@" && { [ "$DEGRADED" = 1 ] && exit "$EX_DEGRADED"; exit 0; }
     tier1 "$topic" list "$@"; exit $?
     ;;
   "issue view"|"pr view")
     topic="$1"; shift 2
-    reshape_view "$topic" "$@" && exit 0
+    reshape_view "$topic" "$@" && { [ "$DEGRADED" = 1 ] && exit "$EX_DEGRADED"; exit 0; }
     tier1 "$topic" view "$@"; exit $?
     ;;
   "pr diff")
