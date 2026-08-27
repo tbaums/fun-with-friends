@@ -287,6 +287,31 @@ instead of stalling silently (issue #99).
   role being watched. `impl`/`qa` worktrees are explicitly out of scope
   (their staleness needs rebase-on-claim, a distinct problem).
 
+- **A role's already-rendered prompt drifting from fwf's current repo state
+  is detected, not just a stale binary** (issue #174, generalizing #153's
+  dash-specific check) — role prompts are rendered once at spawn
+  (`fwf_arm_pane`/`fwf_write_role_prompt`, `lib.sh`) and held in the role's
+  Claude Code session from then on, so a `templates/*.tmpl` change (or the
+  hardcoded `AUTHORIZATION GROUND RULES` block, which lives in `lib.sh`, not
+  any template, and is itself role-conditional) only reaches a running role
+  on its next respawn. Each render is stamped with the commit fwf's own repo
+  was at (`fwf_prompt_commit_stamp`) — deliberately not a `.tmpl` mtime
+  comparison, which would miss a `lib.sh`-only change entirely and would
+  also be fooled by a fresh checkout's uniform mtimes. `fwf supervise`
+  compares every role's stamp against the current commit every pass and
+  logs a single combined `CONFIG_DRIFT` finding — naming BOTH halves of the
+  mixed state together (the scripts/tools a role invokes are always current,
+  since bash re-reads them fresh; only the already-loaded prompt can't
+  reload itself) rather than two independent facts, through the same routed
+  channel as `WEDGED`/`LANE_STALE`/`WORKTREE_STALE` above. Detection only —
+  it never respawns a role; the remedy belongs to `fwf respawn` (issue
+  #217's own open gap there is unaffected). `fwf supervise`'s own run also
+  names it if the fwf **install** itself is behind the latest release
+  (reusing the existing `fwf doctor`/upgrade-check machinery), since a
+  one-shot bash script re-read fresh on every invocation has no other way
+  to be "stale" — that's the answer to "who watches the watcher" for a
+  process that, unlike the dash, never holds compiled state across calls.
+
   **Per-plane `up`/`down` flag matrix** (issue #155 — `--coord-only` is the
   non-destructive mirror of `--build-only`, for standing up just coordination
   from a cold/fully-down state, e.g. to groom the `product-wip` backlog

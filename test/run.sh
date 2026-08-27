@@ -2908,6 +2908,82 @@ assert_contains "prompt file is per-profile+role" "$RPF" "prompts/example-impl2.
 assert_contains "file holds the rendered role"    "$(cat "$RPF")" "You are implementer impl2"
 RPF_IDE="$(FWF_RUN_DIR="$TMP/armrun" FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_write_role_prompt impl1 implementer 1")"
 assert_contains "template-aware render persisted" "$(cat "$RPF_IDE")" "IDEA GENERATOR"
+assert_eq "issue #174 (p1): fwf_write_role_prompt ALSO stamps the commit it rendered from" "yes" \
+  "$([ -s "$RPF.commit" ] && echo yes || echo no)"
+
+# --------------------------------------------------------------------------
+# fwf_prompt_drift_verdict (issue #174 p1/p2/p3): a rendered prompt's commit
+# stamp vs. fwf's CURRENT repo state. Isolated so this NEVER commits into the
+# real fwf-impl2 worktree's own git history -- copies the sourcing chain into
+# a throwaway dir and `git init`s THAT, mirroring the FWF_HOME isolation
+# pattern above (the dash-data VERSION tests): the only reliable way to
+# relocate FWF_LIB_DIR is to relocate the script files themselves, so
+# FWF_LIB_DIR's own BASH_SOURCE resolves inside the isolated repo instead.
+section "fwf_prompt_drift_verdict: CURRENT / STALE / UNKNOWN against fwf's OWN repo state (issue #174)"
+PDISO="$TMP/prompt-drift-iso"; mkdir -p "$PDISO/lib" "$PDISO/profiles"
+cp "$ROOT/config.sh" "$ROOT/lib.sh" "$PDISO/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$PDISO/lib/"
+cp "$ROOT/profiles/example.sh" "$PDISO/profiles/"
+ln -s "$ROOT/templates" "$PDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
+printf '%s' "$REALV" > "$PDISO/VERSION"
+git -C "$PDISO" init -q
+git -C "$PDISO" -c user.email=t@t -c user.name=t add -A
+git -C "$PDISO" -c user.email=t@t -c user.name=t commit -q -m "iso-init"
+PDISO_LIB="$PDISO/lib.sh"
+PDRUN="$TMP/prompt-drift-run"
+
+# (UNKNOWN) a prompt written before this ticket -- no .commit file at all.
+mkdir -p "$PDRUN/prompts"
+printf 'old prompt, no stamp' > "$PDRUN/prompts/example-implX.prompt"
+assert_eq "no .commit file at all -> UNKNOWN, never CURRENT" "UNKNOWN" \
+  "$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example bash -c "source '$PDISO_LIB'; fwf_prompt_drift_verdict implX")"
+
+# (CURRENT) rendered, then checked immediately -- no commits landed since.
+FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example bash -c "source '$PDISO_LIB'; fwf_write_role_prompt impl2 implementer 2" >/dev/null
+assert_eq "just rendered, fwf unchanged since -> CURRENT" "CURRENT" \
+  "$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example bash -c "source '$PDISO_LIB'; fwf_prompt_drift_verdict impl2")"
+
+# (STALE) a commit lands in the ISOLATED repo (never the real one) after the
+# render -- the discriminating case, and the one #248/#254's own incident was.
+git -C "$PDISO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "iso-drift-commit"
+PD_STALE="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example bash -c "source '$PDISO_LIB'; fwf_prompt_drift_verdict impl2")"
+assert_contains "a commit landed after the render -> STALE" "$PD_STALE" "STALE"
+PD_OLD="$(printf '%s' "$PD_STALE" | awk '{print $2}')"
+PD_NEW="$(printf '%s' "$PD_STALE" | awk '{print $3}')"
+assert_eq "STALE names the OLD (rendered-at) sha correctly" "$(git -C "$PDISO" rev-parse HEAD~1)" "$PD_OLD"
+assert_eq "STALE names the NEW (current HEAD) sha correctly" "$(git -C "$PDISO" rev-parse HEAD)" "$PD_NEW"
+
+# --------------------------------------------------------------------------
+# fwf-supervise.sh (issue #174): CONFIG_DRIFT is ONE combined finding (p2),
+# never fires while current, never respawns (p3 — no FWF_SUPERVISE_AUTORESPAWN
+# check anywhere near it), and the whole-factory install-freshness line names
+# itself distinctly from the per-role line.
+section "fwf-supervise.sh: CONFIG_DRIFT surfaces prompt drift as one combined finding (issue #174)"
+# `dirname "${BASH_SOURCE[0]}"` resolves off the PATH USED TO SOURCE a file,
+# not through symlinks -- so the entry point (fwf-supervise.sh) must live
+# PHYSICALLY inside PDISO for its own $DIR (and everything it sources
+# transitively) to resolve back into PDISO, the isolated git repo the drift
+# test above already set up. Everything ELSE it needs can be a symlink INTO
+# PDISO; only the entry point itself needs to be a real file there.
+cp "$ROOT/fwf-supervise.sh" "$PDISO/"
+cat > "$PDISO/fwf-pane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+echo HEALTHY
+EOF
+chmod +x "$PDISO/fwf-pane-liveness.sh"
+ln -sf "$ROOT/fwf-usage-data.sh" "$PDISO/fwf-usage-data.sh"
+SV_OUT_STALE="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example FWF_SKIP_VERSION_CHECK=1 bash "$PDISO/fwf-supervise.sh" impl2 2>&1)"
+assert_contains "CONFIG_DRIFT line fires for the role with a stale prompt" "$SV_OUT_STALE" "CONFIG_DRIFT"
+assert_contains "it names BOTH halves of the mixed state in ONE line, not two" "$SV_OUT_STALE" "scripts/tools this role invokes are current"
+assert_contains "it never proposes auto-respawn (p3)" "$SV_OUT_STALE" "only a respawn"
+case "$SV_OUT_STALE" in *FWF_SUPERVISE_AUTORESPAWN*) bad "(p3) CONFIG_DRIFT must never mention the auto-respawn switch" ;; *) ok "(p3) CONFIG_DRIFT never mentions the auto-respawn switch" ;; esac
+# A role with NO recorded prompt at all (never armed in this run) is UNKNOWN, not a false CONFIG_DRIFT.
+SV_OUT_UNARMED="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example FWF_SKIP_VERSION_CHECK=1 bash "$PDISO/fwf-supervise.sh" impl9 2>&1)"
+assert_not_contains "an unarmed role is never falsely reported as CONFIG_DRIFT" "$SV_OUT_UNARMED" "CONFIG_DRIFT"
+# The whole-factory install-freshness line (the "who watches the watcher"
+# half) is DISTINCT from the per-role CONFIG_DRIFT line -- asserted by its
+# own wording, and that it's absent when FWF_SKIP_VERSION_CHECK=1 (as above).
+case "$SV_OUT_STALE" in *"fwf install itself"*) bad "the install-freshness line must not fire when FWF_SKIP_VERSION_CHECK=1";; *) ok "install-freshness line correctly silent when the check is skipped";; esac
 
 section "dispatcher: bad input is rejected"
 "$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
