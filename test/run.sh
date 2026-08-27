@@ -3825,8 +3825,18 @@ sleep "$hold"
 rm -f "$me"
 echo DONE
 EOSCRIPT
+# issue #286 AC (c): pinned OFF, explicitly, with the reason stated — this
+# section asserts SEMAPHORE behaviour (FWF_CARGO_BUILD_CONCURRENCY), and with
+# admission ON it measures semaphore-AND-admission at once and can never pass:
+# the shipped FWF_MEM_RESERVE_BUILD_GB=6 + FWF_MEM_ADMIT_FLOOR_GB=8 make a
+# second holder's admission need >=20 GiB free, which most boxes (CI runners
+# included) never have — not a flake, a fixed inequality no re-run satisfies
+# (measured on both release platforms, issue #286). This pin is step 2, not
+# step 1 — the shipped DEFAULT is reverted separately in config.sh (AC a);
+# admission at the shipped default gets its own dedicated coverage below
+# (the "fwf-mem-admit" section, AC d), which is what would have caught this.
 run_cargo_gated() { # $1=role $2=holdsecs
-  FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=2 \
+  FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=2 FWF_MEM_ADMIT_ENABLE=0 \
     FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=15 \
     "$ROOT/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2"
 }
@@ -3837,10 +3847,28 @@ run_cargo_gated cbe2e-c 1 > "$CBGRUN/c.out" 2>&1 & CBC_PID=$!
 wait "$CBA_PID"; CBA_RC=$?
 wait "$CBB_PID"; CBB_RC=$?
 wait "$CBC_PID"; CBC_RC=$?
+CB_PEAK_MAX="$(sort -n "$CB_PEAKS" | tail -1)"
+CB_PEAK_MAX="${CB_PEAK_MAX:-0}"
+CB_PEAK_REACHED_2="$(grep -c '^2$' "$CB_PEAKS" || true)"
+# issue #286 AC (j)/(j1)/(j2): a failure ANYWHERE in this section dumps the
+# three holders' captured output — this is the diagnosability defect that
+# turned a one-line config regression into a two-day outage (~90 lines
+# naming the root cause sat in files the suite captured and never printed).
+# (j2): report MEASURED runtime state, not a hardcoded ticket claim — a
+# message built from the actual env self-retires when that env changes,
+# where "expected until #286 lands" would keep asserting itself long after.
+if [ "$CBA_RC" != 0 ] || [ "$CBB_RC" != 0 ] || [ "$CBC_RC" != 0 ] \
+   || [ "$CB_PEAK_MAX" -gt 2 ] || [ "$CB_PEAK_REACHED_2" -lt 1 ]; then
+  echo "# #138 e2e failure -- captured holder output (issue #286 AC j):" >&2
+  for _cbf in a b c; do
+    echo "## cbe2e-$_cbf ($CBGRUN/$_cbf.out):" >&2
+    cat "$CBGRUN/$_cbf.out" >&2 2>/dev/null
+  done
+  echo "## measured runtime state: FWF_MEM_ADMIT_ENABLE=0 (pinned, AC c) FWF_CARGO_BUILD_CONCURRENCY=2 CB_PEAK_MAX=$CB_PEAK_MAX CB_PEAK_REACHED_2=$CB_PEAK_REACHED_2 peaks=[$(tr '\n' ' ' < "$CB_PEAKS")]" >&2
+fi
 assert_eq "e2e: holder a completes" "0" "$CBA_RC"
 assert_eq "e2e: holder b completes" "0" "$CBB_RC"
 assert_eq "e2e: holder c completes (waited for a slot, not lost)" "0" "$CBC_RC"
-CB_PEAK_MAX="$(sort -n "$CB_PEAKS" | tail -1)"
 [ "$CB_PEAK_MAX" -le 2 ] && ok "e2e: peak concurrent holders never exceeds FWF_CARGO_BUILD_CONCURRENCY=2 (saw $CB_PEAK_MAX)" \
   || bad "e2e: peak concurrent holders never exceeds FWF_CARGO_BUILD_CONCURRENCY=2" "saw $CB_PEAK_MAX"
 CB_PEAK_REACHED_2="$(grep -c '^2$' "$CB_PEAKS" || true)"
@@ -6211,6 +6239,37 @@ rc=0
   "$ROOT/fwf-gate.sh" f202yrole --tip-cmd "cat tipfile" -- \
   bash -c 'rm tipfile; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "tip-cmd unreadable on exit fails closed (EX_STALE), never a silent promotable verdict" "76" "$rc"
+
+# --------------------------------------------------------------------------
+section "fwf-mem-admit: issue #156's own test suite is wired into the gating path (issue #286 AC d/e)"
+# test/mem-admit-test.sh existed and was invoked by NOTHING before #286 — not
+# this file, not ci.yml, not release.yml (which ran only `bash test/run.sh`)
+# — so the release-gating pipeline had never executed one line of #156's
+# admission path, and every admission test inside that file overrides the
+# very thresholds (FLOOR_GB, RESERVE_BUILD_GB) it would need to catch a bad
+# SHIPPED default — which is exactly how #286's one-character regression
+# (FWF_MEM_ADMIT_ENABLE default 0 -> 1) shipped through two releases
+# undetected.
+#
+# Wired as its OWN CI step (ci.yml, release.yml) rather than nested inside
+# THIS run — deliberately. test/mem-admit-test.sh forks real process groups
+# and includes several bounded-but-real sleeps (orphan-tree reap, gate-lock
+# hand-off), and nesting its ~36 assertions inside a `fwf gate --cargo-build`-
+# wrapped run risks pushing that WRAPPED gate's own max-run reaper ceiling
+# past its limit on a slow box — reproduced locally: nesting it here got the
+# whole outer gate SIGKILLed mid-suite as "wedged", the exact #123 anomaly
+# path it was never meant to trip. A dedicated CI step runs the real suite
+# without that risk; this section only asserts the WIRING exists, statically.
+assert_contains "ci.yml runs test/mem-admit-test.sh (issue #156's own suite)" \
+  "$(cat "$ROOT/.github/workflows/ci.yml")" "bash test/mem-admit-test.sh"
+assert_contains "release.yml runs test/mem-admit-test.sh where releases are decided" \
+  "$(cat "$ROOT/.github/workflows/release.yml")" "bash test/mem-admit-test.sh"
+# (e): a workflow step that only LINTS the file (shellcheck/bash -n) does not
+# satisfy this — it must actually EXECUTE the suite's assertions.
+case "$(cat "$ROOT/.github/workflows/ci.yml")" in
+  *"run: bash test/mem-admit-test.sh"*) ok "ci.yml step actually RUNS the suite, not just lints it";;
+  *) bad "ci.yml step actually runs the suite, not just lints it";;
+esac
 
 # --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"

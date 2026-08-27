@@ -39,6 +39,18 @@ jobs:
         run: bash --version | head -1
       - name: Run functional tests
         run: bash test/run.sh
+      - name: Run #156 memory-admission suite (issue #286 AC d)
+        # A SEPARATE step, not folded into test/run.sh: this suite forks real
+        # process groups and includes several bounded but real sleeps (orphan
+        # reap, gate-lock hand-off), so nesting its ~36 assertions inside
+        # test/run.sh's own gate-wrapped runtime risks pushing a WRAPPED gate
+        # invocation (fwf gate --cargo-build, which has its own max-run
+        # reaper ceiling) past that ceiling on a slow runner -- observed
+        # locally: nesting it caused the outer gate to be reaped as "wedged"
+        # mid-suite. A dedicated CI step avoids that entirely while still
+        # running on every push/PR, on both platforms (issue #286's Open
+        # Question: this is what reads the real macOS free-RAM figure).
+        run: bash test/mem-admit-test.sh
 
   dash:
     name: dash crate (rust)

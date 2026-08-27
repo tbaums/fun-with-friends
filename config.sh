@@ -132,11 +132,21 @@ CARGO_BUILD_LOCK="$FWF_RUN/cargo-build.lock"
 # #123 gate for 25min while it holds its per-role lock. See lib.sh's
 # fwf_mem_admit and docs/proposals/156-build-serialization.md.
 #
-# OPT-IN: default OFF, so the existing cargo-build SEMAPHORE stays in force and
-# nothing changes until a real-box profiling run (criterion 3) calibrates the
-# reserve sizes below are CONSERVATIVE PLACEHOLDERS (bias: prevent OOM over throughput);
-# admission is ON by default (v0.32.1) — measure per-op peaks on the box and tune the reserves.
-FWF_MEM_ADMIT_ENABLE="${FWF_MEM_ADMIT_ENABLE:-1}"
+# OPT-IN: default OFF (issue #286 — v0.32.1 flipped this to 1 without the
+# criterion-3 calibration the reserves below still need, and the fixed
+# inequality it enforces is UNSATISFIABLE on a CI runner / small box: with the
+# shipped FWF_MEM_RESERVE_BUILD_GB=6 and FWF_MEM_ADMIT_FLOOR_GB=8 below, a
+# second --cargo-build holder needs >=20 GiB free, which no small box has —
+# every gate then waits the full FWF_MEM_ADMIT_TIMEOUT and exits EX_SKIPPED,
+# not flakily but every time. Reverted to 0, restoring the exact configuration
+# measured green on both CI platforms at v0.32.0). With admission OFF, the
+# existing cargo-build SEMAPHORE (FWF_CARGO_BUILD_CONCURRENCY, fwf-gate.sh)
+# stays the sole throttle, unchanged. The route back to ON is shadow-log (log
+# the admission decision, admit unconditionally) on real boxes under real
+# load, THEN a single-runner canary, THEN fleet-wide — never a second blind
+# flip of this default. See docs/proposals/156-build-serialization.md and
+# issue #286.
+FWF_MEM_ADMIT_ENABLE="${FWF_MEM_ADMIT_ENABLE:-0}"
 MEM_ADMIT="$FWF_RUN/mem-admit.lock"
 FWF_MEM_ADMIT_TIMEOUT="${FWF_MEM_ADMIT_TIMEOUT:-900}"        # bounded wait; < the 1800s gate max-run ceiling (hole #2/#3)
 FWF_MEM_ADMIT_POLL="${FWF_MEM_ADMIT_POLL:-5}"                # seconds between admission attempts

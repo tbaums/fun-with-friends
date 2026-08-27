@@ -41,6 +41,68 @@ esac
 [ "${FREE:-0}" -gt 0 ] && ok "fwf_free_ram_gb sees some free RAM on this box" \
   || bad "fwf_free_ram_gb sees some free RAM on this box" "got [$FREE]"
 
+echo "== admission at the SHIPPED (unmodified) defaults — issue #286 AC (d) =="
+# No threshold overrides above this point: FWF_MEM_ADMIT_FLOOR_GB and
+# FWF_MEM_RESERVE_BUILD_GB are still exactly what config.sh ships. Every
+# OTHER admission test in this file deliberately substitutes its own
+# thresholds (FLOOR_GB=0, RESERVE_BUILD_GB=999999, etc.) to force a
+# deterministic result regardless of box size — which is EXACTLY why a bad
+# shipped default (issue #286: FWF_MEM_ADMIT_ENABLE flipped to 1 with no
+# real-box calibration) was invisible to every one of them. This is the one
+# assertion in this file that isn't: it reads the real config.sh values and
+# states the box size the verdict depends on, so a wrong default shows up
+# here even when every synthetic-threshold test above stays green.
+#
+# Bounded wait/poll cadence only (NOT floor/reserve — those stay shipped),
+# so this test is fast on either branch rather than reproducing #286's own
+# 900s stall if this box happens to refuse.
+SHIPPED_NEED=$(( FWF_MEM_RESERVE_BUILD_GB + FWF_MEM_ADMIT_FLOOR_GB ))
+echo "   shipped: floor=${FWF_MEM_ADMIT_FLOOR_GB}GiB reserve=${FWF_MEM_RESERVE_BUILD_GB}GiB -> a single --cargo-build holder needs >= ${SHIPPED_NEED}GiB free; this box measured ${FREE}GiB"
+T_SHIPPED="$(FWF_MEM_ADMIT_TIMEOUT=5 FWF_MEM_ADMIT_POLL=1 fwf_mem_admit implshipped "$FWF_MEM_RESERVE_BUILD_GB" 2>/dev/null)"; R_SHIPPED=$?
+case "$FREE" in
+  ''|*[!0-9]*) bad "SHIPPED-defaults admission decision is checkable on this box" "fwf_free_ram_gb returned [$FREE], cannot state a box size";;
+  *)
+    if [ "$FREE" -ge "$SHIPPED_NEED" ]; then
+      [ "$R_SHIPPED" = 0 ] && [ -n "$T_SHIPPED" ] \
+        && ok "a --cargo-build holder IS admitted at the SHIPPED defaults on this ${FREE}GiB box (needs ${SHIPPED_NEED}GiB)" \
+        || bad "a --cargo-build holder is admitted at the SHIPPED defaults on this ${FREE}GiB box (needs ${SHIPPED_NEED}GiB)" "rc=$R_SHIPPED token=[$T_SHIPPED]"
+      fwf_mem_admit_release "$T_SHIPPED"
+    else
+      [ "$R_SHIPPED" = 1 ] && [ -z "$T_SHIPPED" ] \
+        && ok "this ${FREE}GiB box correctly REFUSES a --cargo-build holder at the SHIPPED defaults (needs ${SHIPPED_NEED}GiB) -- not silently granted" \
+        || bad "this ${FREE}GiB box correctly refuses admission at the SHIPPED defaults (needs ${SHIPPED_NEED}GiB)" "rc=$R_SHIPPED token=[$T_SHIPPED]"
+    fi
+    ;;
+esac
+
+echo "== fwf_free_ram_gb / fwf_mem_admit: an UNREADABLE probe reports UNKNOWN, never a fabricated 0GiB — issue #286 AC (f) =="
+# Shadow the probe to simulate every unreadable-probe path at once (Darwin
+# hw.pagesize, Darwin vm_stat, Linux /proc/meminfo all collapse to this same
+# UNKNOWN contract from fwf_mem_admit's side). (f3): this must go RED if the
+# UNKNOWN/measured-zero distinction is removed -- both direct assertions
+# below fail if fwf_mem_admit's messages go back to reporting "free 0GiB"
+# for an unreadable probe.
+fwf_free_ram_gb() { echo UNKNOWN; }
+UNKNOWN_OUT="$(FWF_MEM_ADMIT_TIMEOUT=2 FWF_MEM_ADMIT_POLL=1 FWF_MEM_ADMIT_FLOOR_GB=8 FWF_MEM_RESERVE_BUILD_GB=6 fwf_mem_admit implunknown 6 2>&1 >/dev/null)"
+UNKNOWN_RC=$?
+# (f) edge case, stated: UNKNOWN is not "admit unconditionally" -- a
+# genuinely empty box must still be refused, and an unmeasurable one is
+# refused the same way (distinguishable in the MESSAGE, not the decision).
+[ "$UNKNOWN_RC" = 1 ] && ok "an unreadable free-RAM probe REFUSES admission (rc=1), never admits unconditionally" \
+  || bad "an unreadable free-RAM probe refuses admission" "rc=$UNKNOWN_RC"
+case "$UNKNOWN_OUT" in
+  *"free UNKNOWN"*) ok "the refusal message says UNKNOWN, not a fabricated '0GiB' reading" ;;
+  *) bad "the refusal message says UNKNOWN, not a fabricated 0GiB reading" "got: $UNKNOWN_OUT" ;;
+esac
+case "$UNKNOWN_OUT" in
+  *"free 0GiB"*) bad "(f3) the message must NOT claim a measured '0GiB' for an unreadable probe" "got: $UNKNOWN_OUT" ;;
+  *) ok "(f3) the message never claims a measured 0GiB for an unreadable probe" ;;
+esac
+# Restore the real platform probe for every test below.
+unset -f fwf_free_ram_gb
+# shellcheck source=../lib.sh
+source "$ROOT/lib.sh"
+
 echo "== admission: grant, reserve-sum, release =="
 # Floor 0 and a tiny reserve so admission always succeeds regardless of the box.
 export FWF_MEM_ADMIT_FLOOR_GB=0

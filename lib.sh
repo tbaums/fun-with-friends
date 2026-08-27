@@ -1537,16 +1537,26 @@ fwf_cargo_build_slot_release() {
 # beside E2E_LOCK/CARGO_BUILD_LOCK. OPT-IN via FWF_MEM_ADMIT_ENABLE (default 0)
 # until criterion (3)'s real-box profiling calibrates the reserve sizes.
 
-# Free RAM in whole GiB (conservative — rounds DOWN). macOS sums the reclaimable
-# vm_stat page classes (free+inactive+speculative+purgeable); Linux reads
-# MemAvailable. An unreadable probe returns 0 so admission FAILS CLOSED — a
-# build that cannot measure defers, never barges onto a box it can't size.
+# Free RAM in whole GiB (conservative — rounds DOWN), or the literal string
+# UNKNOWN when the probe itself could not be read (issue #286 AC (f) —
+# distinguishing this from a MEASURED zero is the whole point). macOS sums the
+# reclaimable vm_stat page classes (free+inactive+speculative+purgeable);
+# Linux reads MemAvailable.
+#
+# UNKNOWN is NOT "admit unconditionally" (a genuinely empty box must still be
+# refused — that's #286's own edge case), and it is NOT "silently treat as
+# zero" either (that was the bug: an unreadable psize/vm_stat/meminfo parse
+# and a real "0 GiB free" reading produced the byte-identical "0", so a
+# refusal that should have said "I can't see this box" instead claimed a
+# confident measurement it never took — #211's thesis, reached here). The
+# caller (fwf_mem_admit) still refuses on UNKNOWN, same outcome as before —
+# but reports it AS unknown, not as a fabricated 0GiB reading.
 fwf_free_ram_gb() {
   local os psize pages
   os="$(uname -s 2>/dev/null)"
   if [ "$os" = "Darwin" ]; then
     psize="$(sysctl -n hw.pagesize 2>/dev/null)"
-    case "$psize" in ''|*[!0-9]*) echo 0; return 0;; esac
+    case "$psize" in ''|*[!0-9]*) echo UNKNOWN; return 0;; esac
     pages="$(vm_stat 2>/dev/null | awk '
       /Pages free/        {f=$NF}
       /Pages inactive/    {i=$NF}
@@ -1554,11 +1564,11 @@ fwf_free_ram_gb() {
       /Pages purgeable/   {p=$NF}
       END { gsub(/[^0-9]/,"",f); gsub(/[^0-9]/,"",i); gsub(/[^0-9]/,"",s); gsub(/[^0-9]/,"",p);
             print (f+0)+(i+0)+(s+0)+(p+0) }')"
-    case "$pages" in ''|*[!0-9]*) echo 0; return 0;; esac
+    case "$pages" in ''|*[!0-9]*) echo UNKNOWN; return 0;; esac
     echo $(( pages * psize / 1073741824 ))
     return 0
   fi
-  awk '/^MemAvailable:/{print int($2/1024/1024); ok=1} END{if(!ok)print 0}' /proc/meminfo 2>/dev/null || echo 0
+  awk '/^MemAvailable:/{print int($2/1024/1024); ok=1} END{if(!ok)print "UNKNOWN"}' /proc/meminfo 2>/dev/null || echo UNKNOWN
 }
 
 # Sum of reserved_gb across all LIVE reservation entries. Called ONLY inside the
@@ -1660,13 +1670,14 @@ _fwf_mem_admit_reap_mutex() {
 fwf_mem_admit() {
   local label="${1:?fwf_mem_admit needs a label}" reserve="${2:?fwf_mem_admit needs a reserve GiB}"
   local mutex="$MEM_ADMIT/decision" waited=0 qstart now last_report free reserved token acquired pgid pgleader
+  local free_display
   case "$reserve" in ''|*[!0-9]*) reserve=0;; esac
   mkdir -p "$MEM_ADMIT" 2>/dev/null
   qstart="$(date +%s)"; last_report=$(( qstart - FWF_MEM_ADMIT_REPORT_SECS - 1 ))
   pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
   pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
   case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
-  free=""; reserved=""
+  free=""; reserved=""; free_display="?"
   while true; do
     if mkdir "$mutex" 2>/dev/null; then
       # sub-second decision mutex: atomic measure+reserve. This is the TOCTOU
@@ -1675,7 +1686,20 @@ fwf_mem_admit() {
       _fwf_mem_admit_reap                        # drop dead entries (+ kill their orphaned trees)
       free="$(fwf_free_ram_gb)"                  # ground truth — covers orphans/RA/hand-run cargo
       reserved="$(_fwf_mem_admit_reserved_sum)"  # summed live reservations
-      case "$free" in ''|*[!0-9]*) free=0;; esac
+      # issue #286 AC (f2): the asymmetry is DELIBERATE, not accidental, and
+      # stated here rather than left implicit. `reserved` fails OPEN to 0 on
+      # any read trouble — a lost/corrupt reservation file must not deadlock
+      # the floor (this file's own edge-case note). `free` ALSO computes as 0
+      # for the ADMISSION ARITHMETIC below (an unmeasurable box must still be
+      # refused, never admitted unconditionally — #286's own edge case says
+      # so explicitly), but `free_display` keeps the honest "UNKNOWN" for
+      # every message this function prints, so a refusal caused by "I can't
+      # see this box" is never reported as if it were a real "0 GiB free"
+      # measurement (that conflation is the defect #286 (f) exists to close).
+      case "$free" in
+        UNKNOWN|''|*[!0-9]*) free_display="UNKNOWN (could not measure)"; free=0 ;;
+        *) free_display="${free}GiB" ;;
+      esac
       case "$reserved" in ''|*[!0-9]*) reserved=0;; esac
       if [ "$(( free - reserved ))" -ge "$(( reserve + FWF_MEM_ADMIT_FLOOR_GB ))" ]; then
         acquired="$(date +%s)"
@@ -1692,13 +1716,13 @@ fwf_mem_admit() {
     fi
     now="$(date +%s)"
     if [ "$waited" -ge "$FWF_MEM_ADMIT_TIMEOUT" ]; then
-      printf 'fwf#156: %s timed out after %ss on RAM admission (free %sGiB - reserved %sGiB < need %sGiB + %sGiB floor) — deferring this tick\n' \
-        "$label" "$FWF_MEM_ADMIT_TIMEOUT" "${free:-?}" "${reserved:-?}" "$reserve" "$FWF_MEM_ADMIT_FLOOR_GB" >&2
+      printf 'fwf#156: %s timed out after %ss on RAM admission (free %s - reserved %sGiB < need %sGiB + %sGiB floor) — deferring this tick\n' \
+        "$label" "$FWF_MEM_ADMIT_TIMEOUT" "$free_display" "${reserved:-?}" "$reserve" "$FWF_MEM_ADMIT_FLOOR_GB" >&2
       return 1
     fi
     if [ $(( now - last_report )) -ge "$FWF_MEM_ADMIT_REPORT_SECS" ]; then
-      printf 'fwf#156: %s queued on RAM admission — free %sGiB, reserved %sGiB, need %sGiB + %sGiB floor\n' \
-        "$label" "${free:-?}" "${reserved:-?}" "$reserve" "$FWF_MEM_ADMIT_FLOOR_GB" >&2
+      printf 'fwf#156: %s queued on RAM admission — free %s, reserved %sGiB, need %sGiB + %sGiB floor\n' \
+        "$label" "$free_display" "${reserved:-?}" "$reserve" "$FWF_MEM_ADMIT_FLOOR_GB" >&2
       last_report="$now"
     fi
     sleep "$FWF_MEM_ADMIT_POLL"
