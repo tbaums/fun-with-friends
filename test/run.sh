@@ -2957,6 +2957,18 @@ assert_eq "(e) 4-space indented code block -> HELD, not AUTHORIZED" "10" "$(az2r
 N_MAL="$(mkfx fx-malformed)"
 AZ2I comment "$N_MAL" --body "$(cat "$FXDIR/malformed-wrong-issue.txt")" >/dev/null
 assert_eq "(e) column-0 but wrong-issue reference -> INVALID (11)" "11" "$(az2rc "$N_MAL")"
+
+# QA adversarial (#218 c2): a fence opened with one delimiter type and
+# "closed" by the OTHER (``` opened, ~~~ closes it) is still, per CommonMark,
+# an OPEN fence -- the closing delimiter must match the opener's character.
+# The awk stripper's close-pattern accepts EITHER delimiter type regardless of
+# which one opened, so it exits `infence` one line early and the sentinel
+# line below is scored as ordinary column-0 text. Same failure mode AC (e)
+# exists to close, just one fence-parsing subtlety deeper.
+N_FENCEMIX="$(mkfx fx-fence-mismatch)"
+printf -v fmbody '```\n~~~\nOPERATOR-UNGATE #%s -- inside what looks like a still-open fence\n```\n' "$N_FENCEMIX"
+AZ2I comment "$N_FENCEMIX" --body "$fmbody" >/dev/null
+assert_eq "(e) mismatched fence delimiters (\`\`\` opened, ~~~ 'closes') -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_FENCEMIX")"
 assert_contains "(e) INVALID verdict is explicit" "$(AZ2 "$N_MAL" 2>&1)" "INVALID #$N_MAL"
 
 N_NOREF="$(mkfx fx-noref)"
