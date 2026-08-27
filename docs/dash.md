@@ -88,6 +88,11 @@ a running swarm:
 | ⛔ CAPTAIN NEEDS YOU | a full-width banner when the captain pane is blocked on you (read from the captain pane) |
 | ◇ FLOOR IDLE (header badge) | shown whenever the **build** floor was deliberately idled via `fwf-down.sh --build-only`/`--floor-only` — distinct from the whole-factory `⏸ PARKED` badge |
 | ⬆ upgrade available | a full-width banner (visually distinct — yellow, not red) when a newer fwf release exists; both this and the needs-you banner can show at once, stacked. See "Upgrade staleness check" in the main README's Notes & caveats. |
+| ⟲ STALE DASH | a full-width banner (magenta/white) when THIS running dash process is older than what's currently installed on disk — distinct from "upgrade available" above (installed vs. latest GitHub release); this fires even when the install is already current, since that's exactly the state right after `fwf upgrade`. Restart (`q`, then `fwf dash`) to pick up the change. All three banners can stack at once. |
+
+The header also always shows the **running binary's own version + build date**
+(e.g. `fwf v0.31.0 (built 2026-08-20)`), embedded at compile time — so drift is
+visible at a glance even before the STALE DASH banner fires. See issue #153.
 
 A role with no live tmux pane reads as a real crash (`down`) UNLESS the last
 entry in `$FWF_STATE_DIR/floor-events.log` is a `floor-down` with no later

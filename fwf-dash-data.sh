@@ -223,6 +223,20 @@ upgrade_json() {
   jq -n --arg cur "$cur" --arg latest "$latest" '{available:true, current:$cur, latest:$latest}'
 }
 
+# --- installed-version (issue #153, running-vs-installed drift) -------------
+# The INSTALLED version on disk, re-read fresh EVERY tick via a cheap `cat` —
+# never a `fwf --version` subprocess, never cached. Deliberately separate from
+# upgrade_json() above: that only reports anything when the INSTALL itself is
+# behind the latest GitHub release, so it's routinely EMPTY exactly when a
+# running dash is most likely to have just gone stale (right after a fresh
+# `fwf upgrade`, the install is current -> upgrade_json() has nothing to say,
+# but an already-running dash process is now behind it).
+installed_version_json() {
+  local cur
+  cur="$(cat "$FWF_HOME/VERSION" 2>/dev/null || true)"
+  jq -n --arg v "$cur" '{version: $v}'
+}
+
 # --- issues + decisions -----------------------------------------------------
 # All open issues, with bodies + labels, in one backend call (gh and the local
 # store share the --json field names even though their plain columns differ).
@@ -344,6 +358,7 @@ main() {
   activity="$(activity_json)"
   needs_you="$(needs_you_json)"
   upgrade="$(upgrade_json)"
+  installed="$(installed_version_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
@@ -351,10 +366,11 @@ main() {
     --arg prod "$prod" --arg pipeline "$pipeline" --arg stamp "$stamp" --arg gen "$gen" \
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
     --argjson activity "$activity" --argjson needs_you "$needs_you" \
-    --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" \
+    --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
-      activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade}'
+      activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
+      installed:$installed}'
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------

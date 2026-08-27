@@ -711,7 +711,11 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   for that specific release only — a newer release re-arms it even if you
   acknowledged an earlier one. `FWF_SKIP_VERSION_CHECK=1` is the full kill
   switch for offline/air-gapped use — it disables the check entirely (no cache
-  read, no network, ever), not just the banner.
+  read, no network, ever), not just the banner. Separately, a long-lived `fwf
+  dash` also detects when the RUNNING process itself has fallen behind what's
+  installed on disk (e.g. right after `fwf upgrade`, before you've restarted
+  the dash) — its header always shows the running binary's version + build
+  date, with a loud restart banner on detected drift. See `docs/dash.md`.
 - **Token budget enforcement** (`--budget-usd N` recommended, or `--token-budget
   N` for a raw-token ceiling; opt-in, unset = unlimited): caps spend across
   every role. Any `fwf up` invocation (full, `--build-only`, `--pm-only`, or

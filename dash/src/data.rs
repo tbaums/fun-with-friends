@@ -31,6 +31,8 @@ pub struct Dashboard {
     pub floor_idle: FloorIdle,
     #[serde(default)]
     pub upgrade: UpgradeAvailable,
+    #[serde(default)]
+    pub installed: InstalledVersion,
 }
 
 /// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
@@ -73,6 +75,85 @@ pub struct UpgradeAvailable {
     pub current: String,
     #[serde(default)]
     pub latest: String,
+}
+
+/// The INSTALLED version on disk (issue #153), re-read fresh on EVERY tick by
+/// `installed_version_json()` in fwf-dash-data.sh — a cheap `cat`, never a
+/// `fwf --version` subprocess, and never cached at launch (caching it would
+/// make the drift this exists to catch invisible for the process's whole
+/// life). Deliberately separate from `UpgradeAvailable`: that field is EMPTY
+/// whenever the install is already current with the latest GitHub release
+/// (`fwf_version_skew_check` returns nothing in that case) — exactly the
+/// state right after a fresh `fwf upgrade`, which is precisely when a
+/// long-lived dash is most likely to have just gone stale.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InstalledVersion {
+    #[serde(default)]
+    pub version: String,
+}
+
+/// This RUNNING process's own version + build date, embedded at compile time
+/// by `build.rs` from the top-level `VERSION` file (issue #153) — fixed for
+/// the life of the process, unlike `InstalledVersion.version` above (which is
+/// re-read from disk every refresh and reflects whatever `fwf upgrade` may
+/// have installed SINCE this process started).
+pub const RUNNING_VERSION: &str = env!("FWF_DASH_VERSION");
+pub const RUNNING_BUILD_DATE: &str = env!("FWF_DASH_BUILD_DATE");
+
+/// rc true if semver `a` < semver `b` ("vX.Y.Z" or "X.Y.Z"; missing/non-numeric
+/// segments treat as 0) — a numeric field-by-field compare, NOT a string
+/// inequality, mirroring `lib/version_check.sh`'s `_fwf_semver_lt` exactly so
+/// the two never disagree about what counts as "behind".
+pub fn semver_lt(a: &str, b: &str) -> bool {
+    fn parts(v: &str) -> (u64, u64, u64) {
+        let v = v.strip_prefix('v').unwrap_or(v);
+        let mut it = v.split('.');
+        let seg = |s: Option<&str>| -> u64 {
+            s.unwrap_or("0")
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        };
+        (seg(it.next()), seg(it.next()), seg(it.next()))
+    }
+    parts(a) < parts(b)
+}
+
+/// True when this RUNNING dash is older than the version currently
+/// INSTALLED on disk — this process needs a restart to pick up what `fwf
+/// upgrade` already installed. `installed_current` empty (no successful read
+/// yet, e.g. `$FWF_HOME/VERSION` unreadable) means UNKNOWN, never drift —
+/// only ever compare two values that were both actually read.
+pub fn running_binary_stale(installed_current: &str) -> bool {
+    !installed_current.is_empty() && semver_lt(RUNNING_VERSION, installed_current)
+}
+
+#[cfg(test)]
+mod running_stale_tests {
+    use super::*;
+
+    #[test]
+    fn semver_lt_basic_ordering() {
+        assert!(semver_lt("0.30.0", "0.31.0"));
+        assert!(semver_lt("0.31.0", "0.31.1"));
+        assert!(semver_lt("0.9.9", "0.10.0"));
+        assert!(!semver_lt("0.31.0", "0.31.0"));
+        assert!(!semver_lt("0.32.0", "0.31.0"));
+    }
+
+    #[test]
+    fn semver_lt_v_prefix_and_missing_segments_are_tolerated() {
+        assert!(semver_lt("v0.30.0", "v0.31.0"));
+        assert!(semver_lt("0.30", "0.30.1")); // missing patch treated as 0
+        assert!(!semver_lt("garbage", "also-garbage")); // both parse as 0.0.0
+    }
+
+    #[test]
+    fn running_binary_stale_empty_installed_is_unknown_not_drift() {
+        assert!(!running_binary_stale(""));
+    }
 }
 
 /// Factory motion, derived from PRs against the integration targets: drafts are

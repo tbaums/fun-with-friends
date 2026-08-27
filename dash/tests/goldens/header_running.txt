@@ -1,4 +1,4 @@
 ┌ fwf dash ──────────────────────────────────────────────────────────────────────────────┐
-│profile fwf-self  ·  dev  ● running                                                     │
+│profile fwf-self  ·  dev  ● running  · fwf vX.Y.Z (built YYYY-MM-DD)                   │
 │prod https://example.test/prod   pipeline staging → integration → main   [status.json]  │
 └────────────────────────────────────────────────────────────────────────────────────────┘

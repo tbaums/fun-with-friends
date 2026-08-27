@@ -807,6 +807,15 @@ fn ui(f: &mut Frame, app: &mut App) {
         .dashboard()
         .map(|d| d.upgrade.available)
         .unwrap_or(false);
+    // Issue #153: THIS running dash is older than what's installed on disk —
+    // distinct from `upgrade` above (installed vs. latest GitHub release).
+    // Loudest of the three banners (magenta/white) since it means the screen
+    // you are looking at right now may already be lying about what shipped.
+    let stale_dash = app
+        .feed
+        .dashboard()
+        .map(|d| data::running_binary_stale(&d.installed.version))
+        .unwrap_or(false);
 
     let mut constraints = vec![
         Constraint::Length(4), // header
@@ -814,6 +823,9 @@ fn ui(f: &mut Frame, app: &mut App) {
     ];
     if needs {
         constraints.push(Constraint::Length(1)); // needs-you banner
+    }
+    if stale_dash {
+        constraints.push(Constraint::Length(1)); // stale-dash restart banner
     }
     if upgrade {
         constraints.push(Constraint::Length(1)); // upgrade-available banner
@@ -832,6 +844,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     i += 1;
     if needs {
         render_needs_banner(f, chunks[i], app);
+        i += 1;
+    }
+    if stale_dash {
+        render_stale_dash_banner(f, chunks[i], app);
         i += 1;
     }
     if upgrade {
@@ -888,6 +904,36 @@ fn render_upgrade_banner(f: &mut Frame, area: Rect, app: &App) {
         Style::default()
             .bg(Color::Yellow)
             .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(para, area);
+}
+
+/// The stale-dash restart banner (issue #153) — shown only when THIS running
+/// process is older than the version currently installed on disk. Distinct
+/// from `render_upgrade_banner` above (installed vs. latest GitHub release):
+/// this is "the window you are looking at right now needs a restart to match
+/// what's already installed", which can be true even when `upgrade_banner`
+/// has nothing to say (install already current with GitHub, but THIS process
+/// predates that install). Magenta/white — deliberately distinct from both
+/// the red needs-you banner and the yellow upgrade-available banner, so a
+/// glance tells the three apart.
+fn render_stale_dash_banner(f: &mut Frame, area: Rect, app: &App) {
+    let installed = app
+        .feed
+        .dashboard()
+        .map(|d| d.installed.version.clone())
+        .unwrap_or_default();
+    // Kept deliberately short and names only ONE version (the running one is
+    // already always visible in the header just above, so repeating it here
+    // is pure redundancy that costs width). A golden test caught two drafts
+    // in a row silently clipping the restart instruction on a narrow
+    // terminal before landing on this wording.
+    let text = format!(" ⟲ STALE DASH — v{installed} now installed. Restart: q, then 'fwf dash' ");
+    let para = Paragraph::new(text).style(
+        Style::default()
+            .bg(Color::Magenta)
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     );
     f.render_widget(para, area);
@@ -982,6 +1028,17 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Red),
         ));
     }
+
+    // Issue #153: the RUNNING binary's own version + build date, ALWAYS shown
+    // regardless of Feed state — this is a compile-time property of the
+    // process itself (build.rs), not fetched data, so it renders even while
+    // loading or erred. Distinct from `render_stale_dash_banner` below (that
+    // only fires on detected drift); this line is unconditional so drift is
+    // visible at a glance at all times, per issue #153.
+    l1.push(Span::styled(
+        format!(" · fwf v{} (built {})", data::RUNNING_VERSION, data::RUNNING_BUILD_DATE),
+        dim,
+    ));
 
     let para = Paragraph::new(vec![Line::from(l1), Line::from(l2)]);
     f.render_widget(para, inner);
@@ -2500,6 +2557,24 @@ mod tests {
             .join("\n")
     }
 
+    /// Issue #153: the header's running-version line embeds THIS BUILD's
+    /// actual version + date (via build.rs from the top-level VERSION file
+    /// and the build machine's clock), which legitimately differs across
+    /// machines and days. A golden snapshot containing it verbatim would go
+    /// stale on the next rebuild for no reason related to a real render
+    /// change. Replace it with a fixed placeholder before comparing — every
+    /// OTHER pixel of the frame is still caught by the exact-match golden.
+    fn normalize_running_version(rendered: &str) -> String {
+        rendered.replace(
+            &format!(
+                "fwf v{} (built {})",
+                data::RUNNING_VERSION,
+                data::RUNNING_BUILD_DATE
+            ),
+            "fwf vX.Y.Z (built YYYY-MM-DD)",
+        )
+    }
+
     fn assert_golden(name: &str, rendered: &str) {
         let path = golden_path(name);
         if std::env::var_os("UPDATE_GOLDEN").is_some() {
@@ -2631,6 +2706,7 @@ mod tests {
             },
             floor_idle: data::FloorIdle::default(),
             upgrade: data::UpgradeAvailable::default(),
+            installed: data::InstalledVersion::default(),
         }
     }
 
@@ -2713,7 +2789,7 @@ mod tests {
         let app = golden_app(Tab::Activity);
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
-        assert_golden("header_running", &buffer_to_text(&buf));
+        assert_golden("header_running", &normalize_running_version(&buffer_to_text(&buf)));
     }
 
     // #51 pin: at the render level (through the real widget pipeline, not just
@@ -2740,7 +2816,7 @@ mod tests {
         }
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
-        assert_golden("header_parked_stale", &buffer_to_text(&buf));
+        assert_golden("header_parked_stale", &normalize_running_version(&buffer_to_text(&buf)));
     }
 
     // issue #85: the header's calm FLOOR IDLE badge — running (not parked),
@@ -2758,7 +2834,7 @@ mod tests {
         }
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
-        assert_golden("header_floor_idle", &buffer_to_text(&buf));
+        assert_golden("header_floor_idle", &normalize_running_version(&buffer_to_text(&buf)));
     }
 
     #[test]
@@ -2797,6 +2873,76 @@ mod tests {
         assert_golden("upgrade_banner", &buffer_to_text(&buf));
     }
 
+    // issue #153: the stale-dash restart banner — running-vs-installed drift,
+    // distinct from the upgrade-available banner above (installed-vs-latest).
+    #[test]
+    fn golden_stale_dash_banner() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            // A version strictly ahead of RUNNING_VERSION so the banner fires
+            // regardless of what this build's actual VERSION happens to be.
+            let (maj, min, patch) = {
+                let v = data::RUNNING_VERSION;
+                let mut it = v.split('.');
+                let n = |s: Option<&str>| -> u64 { s.unwrap_or("0").parse().unwrap_or(0) };
+                (n(it.next()), n(it.next()), n(it.next()))
+            };
+            d.installed = data::InstalledVersion {
+                version: format!("{maj}.{min}.{}", patch + 1),
+            };
+        }
+        assert!(
+            data::running_binary_stale(&app.feed.dashboard().unwrap().installed.version),
+            "fixture must actually trigger the drift this test renders"
+        );
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_stale_dash_banner(f, area, &app)
+        });
+        assert_golden(
+            "stale_dash_banner",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
+    }
+
+    // issue #153: an up-to-date running binary must NOT show the drift banner
+    // -- the mirror of `golden_full_frame_no_upgrade_banner_when_up_to_date`.
+    #[test]
+    fn stale_dash_banner_does_not_render_when_running_matches_installed() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.installed = data::InstalledVersion {
+                version: data::RUNNING_VERSION.to_string(),
+            };
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        let buf = render_buffer(area.width, area.height, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            !text.contains("STALE DASH"),
+            "no stale-dash banner should render when the running version matches installed"
+        );
+    }
+
+    // issue #153: an EMPTY installed-version read (unreadable $FWF_HOME/VERSION)
+    // must be UNKNOWN, never misread as drift -- the fail-safe direction.
+    #[test]
+    fn stale_dash_banner_does_not_render_when_installed_version_is_unreadable() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.installed = data::InstalledVersion {
+                version: String::new(),
+            };
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        let buf = render_buffer(area.width, area.height, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            !text.contains("STALE DASH"),
+            "an unreadable installed version must not be misread as drift"
+        );
+    }
+
     // Real-content check (this repo's own hard lesson: a test that seeds short
     // stub data can't catch overflow that only appears with realistic content).
     // A long version string must not wrap or overflow the header row width.
@@ -2819,7 +2965,39 @@ mod tests {
                 "row {i} overflows the 100-col terminal width: {row:?}"
             );
         }
-        assert_golden("full_frame_activity_upgrade_long_version", &text);
+        assert_golden("full_frame_activity_upgrade_long_version", &normalize_running_version(&text));
+    }
+
+    // issue #153: same overflow lesson, for the stale-dash banner — an early
+    // draft's wording silently clipped the restart instruction at 90 columns
+    // (caught by this exact assertion). A long installed-version string must
+    // not repeat that.
+    #[test]
+    fn golden_stale_dash_banner_long_version_does_not_overflow() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.needs_you.active = false;
+            // Realistic-contract stress value: `installed.version` always comes
+            // from `cat $FWF_HOME/VERSION`, a plain dot-separated numeric
+            // semver per RELEASING.md -- unlike the upgrade banner's `latest`
+            // (a raw GH release tag, which realistically could carry
+            // pre-release/build metadata). Stress the numeric width instead.
+            d.installed = data::InstalledVersion {
+                version: "999999.999999.999999".into(),
+            };
+        }
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        for (i, row) in text.lines().enumerate() {
+            assert!(
+                row.chars().count() <= 100,
+                "row {i} overflows the 100-col terminal width: {row:?}"
+            );
+        }
+        assert!(
+            text.contains("then 'fwf dash'"),
+            "the restart instruction must survive intact, not be clipped: {text:?}"
+        );
     }
 
     // Both banners can be active at once (a blocked decision AND a stale
@@ -2836,7 +3014,31 @@ mod tests {
             };
         }
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
-        assert_golden("full_frame_both_banners", &buffer_to_text(&buf));
+        assert_golden("full_frame_both_banners", &normalize_running_version(&buffer_to_text(&buf)));
+    }
+
+    // issue #153: all THREE banners at once (needs-you + stale-dash +
+    // upgrade-available) must stack without overlapping or crashing — the
+    // three-banner extension of the both-banners test above.
+    #[test]
+    fn golden_full_frame_all_three_banners_active() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.upgrade = data::UpgradeAvailable {
+                available: true,
+                current: "0.21.3".into(),
+                latest: "v0.22.0".into(),
+            };
+            d.installed = data::InstalledVersion {
+                version: "99.99.99".into(),
+            };
+        }
+        assert!(data::running_binary_stale(&app.feed.dashboard().unwrap().installed.version));
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        assert_golden(
+            "full_frame_all_three_banners",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     // The banner must NOT render when up to date — the golden fixture's default
@@ -3218,7 +3420,7 @@ mod tests {
     fn golden_full_frame_activity_tab_with_needs_you_banner() {
         let mut app = golden_app(Tab::Activity);
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
-        assert_golden("full_frame_activity_needs_you", &buffer_to_text(&buf));
+        assert_golden("full_frame_activity_needs_you", &normalize_running_version(&buffer_to_text(&buf)));
     }
 
     #[test]
@@ -3230,7 +3432,7 @@ mod tests {
             d.needs_you.active = false;
         }
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
-        assert_golden("full_frame_decisions_parked", &buffer_to_text(&buf));
+        assert_golden("full_frame_decisions_parked", &normalize_running_version(&buffer_to_text(&buf)));
     }
 
     // issue #85 (a-appearance): a role with no live pane must render DISTINCTLY
@@ -3250,7 +3452,7 @@ mod tests {
         }
         let idle_buf = render_buffer(100, 30, |f| ui(f, &mut idle_app));
         let idle_text = buffer_to_text(&idle_buf);
-        assert_golden("full_frame_roles_floor_idle", &idle_text);
+        assert_golden("full_frame_roles_floor_idle", &normalize_running_version(&idle_text));
 
         let mut crash_app = golden_app(Tab::Roles);
         if let Feed::Ok(d) = &mut crash_app.feed {
@@ -3262,7 +3464,7 @@ mod tests {
         }
         let crash_buf = render_buffer(100, 30, |f| ui(f, &mut crash_app));
         let crash_text = buffer_to_text(&crash_buf);
-        assert_golden("full_frame_roles_down_crash", &crash_text);
+        assert_golden("full_frame_roles_down_crash", &normalize_running_version(&crash_text));
 
         assert_ne!(
             idle_text, crash_text,

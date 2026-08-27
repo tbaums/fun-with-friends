@@ -1,4 +1,4 @@
 ┌ fwf dash ──────────────────────────────────────────────────────────────────────────────┐
-│profile fwf-self  ·  dev  ⏸ PARKED                                                      │
+│profile fwf-self  ·  dev  ⏸ PARKED  · fwf vX.Y.Z (built YYYY-MM-DD)                    │
 │prod https://example.test/prod   pipeline staging → integration → main   [stale]   ⟳ 202│
 └────────────────────────────────────────────────────────────────────────────────────────┘
