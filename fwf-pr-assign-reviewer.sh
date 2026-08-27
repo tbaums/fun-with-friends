@@ -46,6 +46,26 @@ gh_pr_list() {
   fi 2>/dev/null
 }
 
+# $1=open-prs-json (array, gh_pr_list's shape) -> same shape, with every
+# body/comment-body fence-stripped first (QA-caught, repro qa1/repro-281:
+# a `fwf-Reviewer:` marker quoted inside a ``` fence purely for discussion
+# is column-0 on its own line and must not count toward that seat's load —
+# same bypass fwf-pr-reviewer.sh closes, same shared fwf_strip_fences, lib.sh).
+_strip_fences_in_prs_json() {
+  printf '%s' "$1" | jq -c '.[]' | while IFS= read -r pr; do
+    local body_stripped comments_stripped
+    body_stripped="$(printf '%s' "$pr" | jq -r '.body' | fwf_strip_fences)"
+    comments_stripped="$(
+      printf '%s' "$pr" | jq -c '.comments[]' | while IFS= read -r c; do
+        local cb_stripped
+        cb_stripped="$(printf '%s' "$c" | jq -r '.body' | fwf_strip_fences)"
+        printf '%s' "$c" | jq -c --arg b "$cb_stripped" '.body = $b'
+      done | jq -sc '.'
+    )"
+    printf '%s' "$pr" | jq -c --arg b "$body_stripped" --argjson c "$comments_stripped" '.body = $b | .comments = $c'
+  done | jq -sc '.'
+}
+
 # --- pure logic ---------------------------------------------------------
 # $1=roster-json(array of seat names, index order)  $2=open-prs-json
 # -> the least-loaded seat, tie-broken by roster index.
@@ -90,6 +110,7 @@ main() {
     printf '%s\n' "$roster" | head -1
     return 0
   fi
+  prs_json="$(_strip_fences_in_prs_json "$prs_json")"
   _assign_least_loaded "$roster_json" "$prs_json"
 }
 

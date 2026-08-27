@@ -683,6 +683,52 @@ fwf_qa_roster() {
   for id in "${PAIRS[@]}"; do fwf_role_suppressed "qa$id" || echo "qa$id"; done
 }
 
+# Strip fenced code regions (``` or ~~~, either delimiter/length) from stdin
+# before any column-0 sentinel/marker regex runs against it -- shared by
+# fwf-authz.sh (issue #150/#218's un-gate sentinel) and fwf-pr-reviewer.sh /
+# fwf-pr-assign-reviewer.sh (issue #194's `fwf-Reviewer:` marker, QA-caught
+# repro qa1/repro-281: a marker quoted inside a fence purely for discussion
+# was column-0 on its own line and so resolved as a real re-assignment). The
+# defect family is named explicitly in #194's own ticket body as the same
+# shape as #218 -- one stripper, reused, rather than a second hand-rolled
+# copy that can silently diverge from the first.
+#
+# Tracked-delimiter logic (qa2/repro-288, #218): a fence's closer must repeat
+# the SAME character as its opener, at least as many times -- accepting
+# EITHER ``` or ~~~ as a closer regardless of what opened let a
+# "```\n~~~\nSENTINEL\n```" body exit the fence one line early and score the
+# quoted content as unfenced text, the exact bypass this stripping exists to
+# close.
+fwf_strip_fences() {
+  awk '
+    BEGIN { infence = 0; fchar = ""; flen = 0 }
+    {
+      line = $0
+      sub(/^[ ]{0,3}/, "", line)
+    }
+    !infence {
+      if (line ~ /^```/ || line ~ /^~~~/) {
+        fchar = substr(line, 1, 1)
+        n = 0
+        while (substr(line, n + 1, 1) == fchar) n++
+        flen = n
+        infence = 1
+        next
+      }
+      print
+      next
+    }
+    infence {
+      n = 0
+      while (substr(line, n + 1, 1) == fchar) n++
+      rest = substr(line, n + 1)
+      gsub(/[ \t]/, "", rest)
+      if (n >= flen && rest == "") infence = 0
+      next
+    }
+  '
+}
+
 # The canonical role tag for a template file + id — "implementer"+"2" ->
 # "impl2", "qa"+"1" -> "qa1", anything else (pm/gv/captain/conductor, or an
 # extra-role template like sre.tmpl) -> its own basename, which IS the role

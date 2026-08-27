@@ -4213,6 +4213,26 @@ assert_eq "empty body, no comments -> NO_MARKER" "NO_MARKER" "$(prv '')"
 assert_eq "a marker not at column 0 (mid-line, quoted) never counts -- the #82 self-trigger-style guard" \
   "NO_MARKER" "$(prv 'saw your fwf-Reviewer: qa1 note')"
 
+# QA adversarial (issue #194 review, repro qa1/repro-281): a marker QUOTED
+# inside a fenced code block, or blockquoted, is still at column 0 of ITS
+# line, so a naive `(?m)^fwf-Reviewer:` check (what resolve_reviewer() does)
+# would treat it as a real assignment -- the same defect family #218 fixed
+# for the authz sentinel (unanchored-by-quotation). Fixed by fence-stripping
+# via the shared fwf_strip_fences (lib.sh) before resolve_reviewer's jq ever
+# sees the text.
+prv_raw() { # $1=raw-json (already-valid JSON, passed via env to dodge shell-quoting of its content) -> resolve_reviewer's answer
+  FWF_PROFILE=example RAWJSON="$1" bash -c '
+    source '"'$PRV'"'
+    pr_raw() { printf '"'"'%s'"'"' "$RAWJSON"; }
+    main 84'
+}
+FENCED_JSON="$(jq -nc --arg b $'Quoting what someone posted earlier, for context only:\n```\nfwf-Reviewer: qa3\n```\nThat assignment was a mistake, ignore it.' '{body:$b, comments:[]}')"
+assert_eq "QA adversarial: a marker fenced inside \`\`\` (quoted for discussion) must resolve NO_MARKER, not the quoted seat" \
+  "NO_MARKER" "$(prv_raw "$FENCED_JSON")"
+BLOCKQUOTE_JSON="$(jq -nc --arg b $'> fwf-Reviewer: qa2\nThat was a draft someone else wrote, not a real assignment.' '{body:$b, comments:[]}')"
+assert_eq "QA adversarial: a blockquoted marker (> fwf-Reviewer: qaN) must resolve NO_MARKER, not the quoted seat" \
+  "NO_MARKER" "$(prv_raw "$BLOCKQUOTE_JSON")"
+
 section "pr-reviewer (#194): the degenerate zero-configured-QA-seats case is reachable and distinguishable"
 assert_eq "an explicit 'fwf-Reviewer: none' resolves to the literal none, not NO_MARKER" \
   "none" "$(prv 'fwf-Reviewer: none')"
@@ -4255,6 +4275,21 @@ assert_eq "a re-assignment comment overrides the body marker for load-counting t
   "$(far 2 'captain/w' '[{"number":4,"headRefName":"impl1/a","body":"fwf-Reviewer: qa2","comments":[{"body":"fwf-Reviewer: qa1","createdAt":"2026-08-25T00:01:00Z"}]}]')"
 assert_eq "a PR with no marker and no matching implN prefix (already unroutable) does not count toward anyone's load" "qa1" \
   "$(far 2 'captain/v' '[{"number":5,"headRefName":"captain/some-other-pr","body":"","comments":[]}]')"
+
+# QA adversarial (issue #194 review, same repro qa1/repro-281 as pr-reviewer's
+# fence bypass): a `fwf-Reviewer:` marker quoted inside a fenced code block
+# on an open PR must not count toward that seat's load either -- passed via
+# env var (not far()'s $3 interpolation) since a JSON string containing
+# literal backticks would break far()'s nested double-quoted shell embedding.
+far_env() { # $1=pairs  $2=head-branch  $3=open-prs-json(raw JSON, via env)
+  FWF_PROFILE=example FWF_PAIRS="$1" PRSJSON="$3" bash -c "
+    source '$FAR'
+    gh_pr_list() { printf '%s' \"\$PRSJSON\"; }
+    main '$2'"
+}
+FENCED_LOAD_JSON="$(jq -nc --arg b $'```\nfwf-Reviewer: qa2\n```' '[{number:1,headRefName:"captain/a",body:$b,comments:[]}]')"
+assert_eq "a fwf-Reviewer marker fenced inside \`\`\` on an open PR does NOT count toward that seat's load" "qa1" \
+  "$(far_env 2 'captain/z2' "$FENCED_LOAD_JSON")"
 
 section "pr-assign-reviewer (#194) AC (h): the degenerate zero-configured-QA-seats case"
 assert_eq "no QA seats configured at all -> none, a real confident answer" "none" \

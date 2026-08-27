@@ -50,9 +50,30 @@ pr_raw() {
   gh_pr view "$1" --json body,comments --jq '{body: (.body // ""), comments: [.comments[] | {body: (.body // ""), createdAt}]}' 2>/dev/null
 }
 
+# $1=raw-json (pr_raw's shape) -> same shape, with body/every comment-body
+# fence-stripped first (QA-caught, repro qa1/repro-281): a `fwf-Reviewer:`
+# marker quoted inside a ``` fence purely for discussion is column-0 on its
+# own line and must NOT resolve as a real re-assignment -- the same bypass
+# fwf-authz.sh's sentinel matcher already closes (#218), reused here via the
+# shared fwf_strip_fences (lib.sh) rather than a second hand-rolled copy.
+_strip_fences_json() {
+  local raw="$1" body_stripped comments_stripped
+  body_stripped="$(printf '%s' "$raw" | jq -r '.body' | fwf_strip_fences)"
+  comments_stripped="$(
+    printf '%s' "$raw" | jq -c '.comments[]' | while IFS= read -r c; do
+      local cb_stripped
+      cb_stripped="$(printf '%s' "$c" | jq -r '.body' | fwf_strip_fences)"
+      printf '%s' "$c" | jq -c --arg b "$cb_stripped" '.body = $b'
+    done | jq -sc '.'
+  )"
+  jq -nc --arg body "$body_stripped" --argjson comments "$comments_stripped" '{body: $body, comments: $comments}'
+}
+
 # --- pure logic (given the raw JSON above) -----------------------------------
 resolve_reviewer() { # $1=raw-json -> <seat>|none|NO_MARKER
-  jq -nr --argjson raw "$1" '
+  local stripped
+  stripped="$(_strip_fences_json "$1")"
+  jq -nr --argjson raw "$stripped" '
     def marker_of($body):
       ($body | capture("(?m)^fwf-Reviewer:[ \t]*(?<v>[A-Za-z0-9_-]+)"; "").v) // null;
 
