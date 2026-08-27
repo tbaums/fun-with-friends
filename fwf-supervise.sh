@@ -58,8 +58,42 @@ if [ "$#" -gt 0 ]; then roles="$*"; else roles="$(fwf_all_roles)"; fi
 autorespawn="${FWF_SUPERVISE_AUTORESPAWN:-0}"
 now="$(date -u +%s)"   # issue #140's lane-stale check ages a PR's updatedAt against this
 
+# issue #174 — "who watches the watcher": this script itself is bash,
+# re-read fresh from disk on every invocation, so it can never be stale in
+# the way a long-running compiled process can (#153's dash). The one real
+# way an operator ends up watching with stale logic is not having upgraded
+# the fwf INSTALL itself — already-tracked machinery (fwf doctor / fwf up's
+# warning), reused here rather than re-invented, so this run's own output
+# names it up front instead of silently assuming the install is current.
+_fwf174_skew="$(fwf_version_skew_check 2>/dev/null || true)"
+if [ -n "$_fwf174_skew" ]; then
+  printf 'supervise: fwf install itself is OUT OF DATE (v%s here, v%s released) — every check below runs OLD logic; run '"'"'fwf upgrade'"'"' first\n' \
+    "${_fwf174_skew%%|*}" "${_fwf174_skew##*|}"
+fi
+
 for role in $roles; do
   [ -n "$role" ] || continue
+
+  # issue #174 (p1)/(p2)/(p3): prompt drift, checked FIRST and independent of
+  # liveness — a role can be perfectly HEALTHY and still be running a
+  # superseded prompt. Reported as ONE finding naming BOTH halves of the
+  # mixed state (p2), never split into an independent "binary" line and a
+  # "prompt" line: for a bash-invoked role loop, every tool call it makes
+  # (fwf tick, fwf gate, …) re-reads fwf's CURRENT install fresh — there is
+  # no separate "binary" to go stale — so the honest combined finding is
+  # "scripts current, prompt stale", not two unrelated facts. Log-only, never
+  # respawns (p3) — the remedy is #217's territory, not this script's.
+  _fwf174_pd="$(fwf_prompt_drift_verdict "$role")"
+  case "$_fwf174_pd" in
+    STALE\ *)
+      _fwf174_old="$(printf '%s' "$_fwf174_pd" | awk '{print $2}')"
+      _fwf174_new="$(printf '%s' "$_fwf174_pd" | awk '{print $3}')"
+      _fwf174_behind="$(git -C "$FWF_LIB_DIR" rev-list --count "$_fwf174_old..$_fwf174_new" 2>/dev/null || echo '?')"
+      printf 'supervise: %-10s CONFIG_DRIFT scripts/tools this role invokes are current (bash re-reads fresh) but its ALREADY-RENDERED prompt was rendered at %s and fwf is now %s commit(s) ahead at %s — mixed state no commit ever represented; only a respawn (#217) reloads it\n' \
+        "$role" "${_fwf174_old:0:12}" "$_fwf174_behind" "${_fwf174_new:0:12}"
+      ;;
+  esac
+
   verdict="$("$DIR/fwf-pane-liveness.sh" "$role")"
 
   if [ "$verdict" = "UNKNOWN" ]; then

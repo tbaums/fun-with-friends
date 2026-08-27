@@ -2498,13 +2498,62 @@ fwf_send_prompt() { # $1=pane  $2=text
   sleep 1; tmux send-keys -t "$p" Enter; sleep 1; tmux send-keys -t "$p" Enter
 }
 
+# issue #174 (p1): the commit fwf's OWN repo (FWF_LIB_DIR, where lib.sh/
+# templates/config.sh live) is at RIGHT NOW. This is the stamp a rendered
+# prompt is keyed against, deliberately NOT a `.tmpl` comparison: a rendered
+# prompt is composed from far more than its template (fwf_render also folds
+# in an addendum, config/profile placeholder values, and — most
+# consequentially — a hardcoded AUTHORIZATION GROUND RULES block that lives
+# in lib.sh, not any .tmpl, and is itself role-conditional). A commit-keyed
+# stamp covers every one of those inputs uniformly, with no enumerated list
+# to itself go stale. A `.tmpl` mtime would also be wrong for a different
+# reason: a fresh checkout stamps every file with the checkout time, not its
+# last real change.
+fwf_prompt_commit_stamp() {
+  git -C "$FWF_LIB_DIR" rev-parse HEAD 2>/dev/null || echo UNKNOWN
+}
+
 # Render a role's prompt and persist it for post-compaction re-hydration
 # (issue #38). Echoes the file path. Per-profile so factories never collide.
+# Also stamps the commit it was rendered from (issue #174 p1), alongside the
+# prompt file — fwf_prompt_drift_verdict below reads it back.
 fwf_write_role_prompt() { # $1=role-tag  $2=tmpl-base  $3=id
   local pf="$FWF_RUN/prompts/$PROFILE-$1.prompt"
   mkdir -p "$FWF_RUN/prompts"
   fwf_render "$(fwf_tmpl_path "$2")" "$3" > "$pf"
+  fwf_prompt_commit_stamp > "$pf.commit"
   printf '%s\n' "$pf"
+}
+
+# issue #174 (p1)/(p2): has this role's ALREADY-RENDERED, already-spawned
+# prompt drifted from fwf's current repo state? Prints one of:
+#   CURRENT              stamped commit == current HEAD.
+#   STALE <old> <new>    the prompt was rendered at <old>; fwf is now at
+#                        <new>. The only remedy is a respawn (#217) — this
+#                        function only reports, per (p3)'s NO AUTO-RESPAWN.
+#   UNKNOWN              no stamp yet (a prompt written before this ticket),
+#                        or fwf's own repo state couldn't be read. Never
+#                        collapses into CURRENT — an unreadable check must
+#                        not masquerade as "you're fine" (#211's convention).
+# Deliberately reports the RUNNING SIDE too (p2: "a mixed state must be
+# reported as such, not as two independent facts") — for any bash-invoked
+# tool (fwf tick, fwf gate, fwf supervise itself), every invocation reads
+# fwf's CURRENT installed files fresh off disk; there is no persisted
+# "compiled" state to go stale the way the dash's long-running binary can
+# (#153). So the honest per-role finding is: scripts are structurally always
+# current, but the ALREADY-RENDERED PROMPT held in the role's Claude Code
+# session is the one thing that cannot reload itself — exactly the asymmetry
+# (p2) exists to make visible, not two unrelated lines.
+fwf_prompt_drift_verdict() { # $1=role-tag -> stdout, one line
+  local role="$1" pf stamped current
+  pf="$FWF_RUN/prompts/$PROFILE-$role.prompt"
+  if [ ! -f "$pf.commit" ]; then echo UNKNOWN; return; fi
+  stamped="$(cat "$pf.commit" 2>/dev/null)"
+  current="$(fwf_prompt_commit_stamp)"
+  if [ -z "$stamped" ] || [ "$stamped" = UNKNOWN ] || [ -z "$current" ] || [ "$current" = UNKNOWN ]; then
+    echo UNKNOWN; return
+  fi
+  if [ "$stamped" = "$current" ]; then echo CURRENT; else printf 'STALE %s %s\n' "$stamped" "$current"; fi
 }
 
 # Convert a /loop-style interval ("3m", "2h", "45s", "1d", or a bare integer
