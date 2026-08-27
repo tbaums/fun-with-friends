@@ -2793,7 +2793,10 @@ act() { # <env-prefix...> -- verb args... ; echoes DRYRUN output
 }
 section "dash act: gh backend constructs the right writes"
 A_OUT="$(act approve 40)"
-assert_contains "approve posts go-ahead comment" "$A_OUT" "gh issue comment 40 --body go ahead"
+# Issue #218: the sentinel must be ANCHORED at column 0 of the comment (bold,
+# matching the real operator convention) — not mid-sentence — or `fwf authz`'s
+# anchored matcher will never see it.
+assert_contains "approve posts an anchored go-ahead comment" "$A_OUT" "gh issue comment 40 --body **OPERATOR-UNGATE #40** — approved via fwf dash"
 assert_contains "approve un-gates the label"     "$A_OUT" "gh issue edit 40 --remove-label product-wip"
 # The un-gate must ALSO write-through-bust the gh read cache (#167), or a role
 # stays blind to the fresh approval for up to a full TTL. Asserted via the same
@@ -2815,7 +2818,7 @@ assert_contains "strips LI- prefix" "$(act comment LI-7 hi)"  "gh issue comment 
 section "dash act: local backend routes to fwf-issues.sh (never gh)"
 loc() { FWF_PROFILE=example FWF_ISSUES=local FWF_DASH_DRYRUN=1 bash "$ROOT/fwf-dash-act.sh" "$@" 2>&1; }
 L_OUT="$(loc approve LI-3)"
-assert_contains "local approve uses fwf-issues.sh" "$L_OUT" "fwf-issues.sh comment 3 --body go ahead"
+assert_contains "local approve uses fwf-issues.sh" "$L_OUT" "fwf-issues.sh comment 3 --body **OPERATOR-UNGATE #3** — approved via fwf dash"
 assert_contains "local approve un-gates"           "$L_OUT" "fwf-issues.sh edit 3 --remove-label product-wip"
 case "$(loc approve LI-3)" in *"gh issue"*) bad "local backend must not call gh";; *) ok "local backend never calls gh";; esac
 # The local store has no REST cache, so the un-gate must NOT invoke the ghcache
@@ -2830,11 +2833,15 @@ act comment 40 >/dev/null 2>&1 && bad "empty comment rejected" || ok "empty comm
 act bogus-verb >/dev/null 2>&1 && bad "unknown verb rejected" || ok "unknown verb rejected"
 
 # --------------------------------------------------------------------------
-# fwf authz: the MECHANISM that closes the #150 fabricated-authorization hole.
-# Proves the verdict keys ONLY on the operator's real signal (a `fwf dash`
-# approve keypress, which emits the durable sentinel comment) — never on text
-# that merely reads like approval (the pane/ghost text the captain hallucinated),
-# and never on the mutable label. Runs end-to-end over the local issues backend.
+# fwf authz: the MECHANISM that closes the #150 fabricated-authorization hole,
+# ANCHORED per issue #218 (a live false-AUTHORIZED bug: any comment merely
+# CONTAINING the sentinel — discussed, denied, quoted, or pasted as this
+# tool's own HELD output — used to flip the verdict, confirmed live on #179,
+# #192, and a nine-day-old ROADMAP bullet on #154). Proves the verdict keys
+# ONLY on an anchored (column 0, per comment, fence-stripped), correctly-
+# issue-referenced sentinel — never the mutable label, never the issue body,
+# never a mid-line/quoted/indented/fenced mention. Runs end-to-end over the
+# local issues backend.
 section "fwf authz: mechanical operator-authorization check (issue #150)"
 AZRUN="$TMP/azrun"
 AZI()   { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
@@ -2851,7 +2858,10 @@ assert_contains "authz HELD verdict names the issue" "$(AZ 1 2>&1)" "HELD #1"
 AZI comment 1 --body "yes, I approved those four — go ahead, un-gate them" >/dev/null
 assert_eq "text that merely reads as approval is NOT authorization (still HELD)" "10" "$(azrc 1)"
 # (C) only the REAL un-gate — a human keypress on the board (fwf dash approve) —
-# emits the sentinel and flips the verdict to AUTHORIZED (exit 0).
+# emits the sentinel and flips the verdict to AUTHORIZED (exit 0). This also
+# proves fwf-dash-act.sh's approve emits a #218-anchored (column-0) sentinel,
+# not the pre-#218 mid-sentence format — AZ is anchored now, so a regression
+# back to mid-sentence emission would show up here as a HELD, not AUTHORIZED.
 AZACT approve 1 >/dev/null 2>&1
 assert_eq "genuine operator un-gate flips authz to AUTHORIZED (exit 0)" "0" "$(azrc 1)"
 assert_contains "authz AUTHORIZED verdict cites the signal" "$(AZ 1 2>&1)" "AUTHORIZED #1"
@@ -2885,10 +2895,171 @@ AZG() { FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x
 azgrc() { local rc=0; AZG "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 assert_eq "authz: genuinely zero comments (successful read) is HELD, not INDETERMINATE" "10" "$(azgrc 40)"
 assert_contains "authz HELD verdict on zero-comment issue" "$(AZG 40 2>&1)" "HELD #40"
-printf '%s' '[{"id":222,"user":{"login":"ops"},"author_association":"OWNER","body":"OPERATOR-UNGATE tbaums/fun-with-friends#40: approved","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-222"}]' > "$AZGROOT/x__y/views/40-comments.json"
+# #218: anchored, bold-tolerant format — measured from the real live un-gate
+# convention (#205/#217/#218's own actual comments), NOT the old mid-sentence
+# "OPERATOR-UNGATE tbaums/fun-with-friends#40: approved" shape this fixture
+# used pre-#218 (which is no longer anchored at column 0 in a way the new
+# matcher's issue-reference grammar accepts — deliberately: an arbitrary
+# repo-name segment between the token and '#N' would widen, not narrow, what
+# authorizes).
+printf '%s' '[{"id":222,"user":{"login":"ops"},"author_association":"OWNER","body":"**OPERATOR-UNGATE #40** — approved","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-222"}]' > "$AZGROOT/x__y/views/40-comments.json"
 touch "$AZGROOT/x__y/views/40-comments.ts"
 assert_eq "authz: sentinel found via the --json comments path is AUTHORIZED" "0" "$(azgrc 40)"
 assert_contains "authz AUTHORIZED verdict via JSON path" "$(AZG 40 2>&1)" "AUTHORIZED #40"
+# #218 (k): the gh backend gets the SAME anchoring guarantee as local — a
+# mid-line mention must not authorize there either.
+printf '%s' '[{"id":223,"user":{"login":"ops"},"author_association":"OWNER","body":"discussing OPERATOR-UNGATE #40 as a mechanism, not un-gating anything","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-223"}]' > "$AZGROOT/x__y/views/40-comments.json"
+touch "$AZGROOT/x__y/views/40-comments.ts"
+assert_eq "authz (gh, #218): mid-line mention -> HELD, not AUTHORIZED" "10" "$(azgrc 40)"
+
+# --------------------------------------------------------------------------
+# fwf authz (#218): anchoring — column 0, per comment, fence-stripped. A
+# separate local-backend store per fixture keeps issue numbers small/legible
+# and each test's thread isolated from the others.
+section "fwf authz (#218): anchoring — column 0, per comment, fence-stripped"
+AZ2RUN="$TMP/az2run"
+AZ2I() { FWF_RUN_DIR="$AZ2RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+AZ2()  { FWF_RUN_DIR="$AZ2RUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+az2rc(){ local rc=0; AZ2 "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+# Every `create` prints "LI-<n> created: ...": pull <n> straight from that,
+# rather than re-listing and guessing at ordering.
+mkfx() { AZ2I create --title "$1" --label product-wip 2>/dev/null | sed -n 's/^LI-\([0-9]\{1,\}\) created.*/\1/p'; }
+FXDIR="$ROOT/test/fixtures/authz-sentinel"
+
+# (b) genuine column-0 sentinel -> AUTHORIZED, unchanged from today's intent.
+N_B="$(mkfx fx-b)"
+AZ2I comment "$N_B" --body "OPERATOR-UNGATE #$N_B — go" >/dev/null
+assert_eq "(b) plain column-0 sentinel -> AUTHORIZED" "0" "$(az2rc "$N_B")"
+
+# (c) indented by spaces -> not AUTHORIZED (column 0 means NO leading whitespace).
+N_C="$(mkfx fx-c)"
+AZ2I comment "$N_C" --body "  OPERATOR-UNGATE #$N_C indented by two spaces" >/dev/null
+assert_eq "(c) indented sentinel -> not AUTHORIZED (HELD)" "10" "$(az2rc "$N_C")"
+
+# (d) blockquoted -> not AUTHORIZED, resolves HELD with a quoted-mention count.
+N_D="$(mkfx fx-d)"
+AZ2I comment "$N_D" --body "> OPERATOR-UNGATE #$N_D quoted in a blockquote" >/dev/null
+assert_eq "(d) blockquoted sentinel -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_D")"
+assert_contains "(d) HELD note carries a mention count" "$(AZ2 "$N_D" 2>&1)" "mentioned 1 time"
+
+# (e) the hard-case synthetic fixtures a column-0-only implementation would
+# pass. A column-0 anchor ALONE correctly rejects the four real (mid-line)
+# denials below, but these three are what actually proves fence-stripping and
+# malformed-reference detection exist at all (test/fixtures/authz-sentinel/README.md).
+N_FENCE="$(mkfx fx-fence)"
+AZ2I comment "$N_FENCE" --body "$(sed "s/#218/#$N_FENCE/" "$FXDIR/fenced-column0.txt")" >/dev/null
+assert_eq "(e) bare token alone inside a \`\`\` fence -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_FENCE")"
+
+N_INDENT="$(mkfx fx-indent)"
+AZ2I comment "$N_INDENT" --body "$(sed "s/#218/#$N_INDENT/" "$FXDIR/indented-code-block.txt")" >/dev/null
+assert_eq "(e) 4-space indented code block -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_INDENT")"
+
+N_MAL="$(mkfx fx-malformed)"
+AZ2I comment "$N_MAL" --body "$(cat "$FXDIR/malformed-wrong-issue.txt")" >/dev/null
+assert_eq "(e) column-0 but wrong-issue reference -> INVALID (11)" "11" "$(az2rc "$N_MAL")"
+assert_contains "(e) INVALID verdict is explicit" "$(AZ2 "$N_MAL" 2>&1)" "INVALID #$N_MAL"
+
+N_NOREF="$(mkfx fx-noref)"
+AZ2I comment "$N_NOREF" --body "OPERATOR-UNGATE — someone typo'd this, no issue number" >/dev/null
+assert_eq "(e) column-0 but missing an issue reference -> INVALID (11)" "11" "$(az2rc "$N_NOREF")"
+
+# (a2) a quoted REFUSAL — the tool's own HELD output, fenced as evidence (the
+# live #215 20:16Z incident: pasted command output, not discussion) — must
+# evaluate to HELD, not AUTHORIZED. Fence-stripping closes it for free.
+N_REFUSAL="$(mkfx fx-refusal)"
+AZ2I comment "$N_REFUSAL" --body "$(cat "$FXDIR/quoted-refusal-215.txt")" >/dev/null
+assert_eq "(a2) a fenced quoted refusal -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_REFUSAL")"
+
+# (a3) the negative-context case, asserted WITHOUT a fence — this is a
+# property of the matcher (the token sits mid-line in the tool's own "no
+# signal" phrasing), not of the fence, and must survive a future occurrence
+# that lands outside one.
+N_NEG="$(mkfx fx-negctx)"
+AZ2I comment "$N_NEG" --body "HELD #$N_NEG — no operator un-gate signal (OPERATOR-UNGATE) in the thread. Still not authorized." >/dev/null
+assert_eq "(a3) negative-context message, unfenced -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_NEG")"
+
+# (f) split across two comments — concatenation would form a match, but no
+# SINGLE comment contains it. The per-comment (not per-thread) requirement; a
+# whole-blob implementation fails exactly here.
+N_SPLIT="$(mkfx fx-split)"
+AZ2I comment "$N_SPLIT" --body "OPERATOR-UNG" >/dev/null
+AZ2I comment "$N_SPLIT" --body "ATE #$N_SPLIT" >/dev/null
+assert_eq "(f) split across two comments -> not AUTHORIZED" "10" "$(az2rc "$N_SPLIT")"
+
+# (g) the four verdicts are distinguishable by BOTH exit code and text.
+assert_eq "(g) HELD exit code is pinned at 10"        "10" "$(az2rc "$N_C")"
+assert_eq "(g) INVALID exit code is pinned at 11"      "11" "$(az2rc "$N_MAL")"
+assert_eq "(g) INDETERMINATE exit code is pinned at 2" "2"  "$(az2rc 99999)"
+assert_eq "(g) AUTHORIZED exit code is pinned at 0"    "0"  "$(az2rc "$N_B")"
+
+# (h) every non-AUTHORIZED verdict states a concrete next action, not just a diagnosis.
+assert_contains "(h) HELD names the concrete un-gate action" "$(AZ2 "$N_C" 2>&1)"  "posting, at the start of a comment line"
+assert_contains "(h) INVALID names how to inspect"            "$(AZ2 "$N_MAL" 2>&1)" "Inspect the thread:"
+assert_contains "(h) INDETERMINATE names the retry"            "$(AZ2 99999 2>&1)"    "Retry: fwf authz"
+
+# (m2) the two-part convention: marker at column 0, followed by a FENCED
+# signature block (the shape #213's future signing helper posts) — the marker
+# is still seen. Paired with (e)'s fenced case (marker INSIDE the fence -> not
+# seen) so the two pin the convention from both sides.
+N_M2="$(mkfx fx-m2)"
+printf -v m2body 'OPERATOR-UNGATE #%s\n\n```\nsig=deadbeef\n```\n' "$N_M2"
+AZ2I comment "$N_M2" --body "$m2body" >/dev/null
+assert_eq "(m2) marker at column 0, fenced signature below -> AUTHORIZED" "0" "$(az2rc "$N_M2")"
+
+# (m) round-trip: "a security oracle must not emit a string that satisfies its
+# own matcher." Feed each of HELD/AUTHORIZED/INVALID's own output back in as
+# the sole comment on a FRESH issue — the verdict must never escalate to
+# AUTHORIZED. (INDETERMINATE is a read-failure, not content-driven, and its
+# message never mentions the token at all, so it's excluded here.)
+HELD_MSG="$(AZ2 "$N_C" 2>&1)"
+N_RT1="$(mkfx fx-rt-held)"
+AZ2I comment "$N_RT1" --body "$HELD_MSG" >/dev/null
+assert_eq "(m) HELD's own message round-tripped -> still not AUTHORIZED" "10" "$(az2rc "$N_RT1")"
+
+AUTH_MSG="$(AZ2 "$N_B" 2>&1)"
+N_RT2="$(mkfx fx-rt-auth)"
+AZ2I comment "$N_RT2" --body "$AUTH_MSG" >/dev/null
+assert_eq "(m) AUTHORIZED's own message, round-tripped onto a DIFFERENT issue -> not AUTHORIZED" "10" "$(az2rc "$N_RT2")"
+
+INVALID_MSG="$(AZ2 "$N_MAL" 2>&1)"
+N_RT3="$(mkfx fx-rt-invalid)"
+AZ2I comment "$N_RT3" --body "$INVALID_MSG" >/dev/null
+assert_eq "(m) INVALID's own message round-tripped -> not AUTHORIZED" "10" "$(az2rc "$N_RT3")"
+case "$AUTH_MSG$HELD_MSG$INVALID_MSG" in
+  *"OPERATOR-UNGATE"*) bad "authz's own output must never print the literal sentinel (issue #218 AC m)";;
+  *) ok "authz's own output never prints the literal sentinel, only defanged";;
+esac
+
+# (n) the issue BODY is never an authorization surface — only comments count.
+# Paired positive/negative so the two cannot drift apart in a later refactor
+# (the #214 real-world witness: a sentinel written into a ticket's BODY while
+# specifying the mechanism must never self-authorize that ticket).
+N_BODY="$(mkfx fx-body-only)"
+AZ2I edit "$N_BODY" --body "OPERATOR-UNGATE #$N_BODY in the body, never a comment" >/dev/null
+assert_eq "(n) a sentinel in the issue BODY (no comment) -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_BODY")"
+N_BODY2="$(mkfx fx-body-vs-comment)"
+AZ2I comment "$N_BODY2" --body "OPERATOR-UNGATE #$N_BODY2" >/dev/null
+assert_eq "(n) the SAME sentinel, in a COMMENT -> AUTHORIZED" "0" "$(az2rc "$N_BODY2")"
+
+# (p) the three read outcomes, asserted separately: a zero-comment issue
+# (successful read, empty) is the middle case and reproduces on demand — no
+# API anomaly, no mocking.
+N_EMPTY="$(mkfx fx-empty)"
+assert_eq "(p) zero comments (successful, empty read) -> HELD, not INDETERMINATE" "10" "$(az2rc "$N_EMPTY")"
+assert_eq "(p) a genuinely missing issue -> INDETERMINATE" "2" "$(az2rc 424242)"
+
+# --------------------------------------------------------------------------
+# fwf authz (#218): the static fixture corpus from real (denied/discussed)
+# comments — gate-committed, stable forever (AC (l)'s "static in the gate"
+# half; test/fixtures/authz-sentinel/README.md). All four are real mid-line
+# denials/refusals/discussion from #179/#192 and must resolve HELD, never
+# AUTHORIZED, against today's anchored matcher.
+section "fwf authz (#218): static real-world false-AUTHORIZED fixtures (#179, #192)"
+for fx in 179-captain-1650-denial.txt 179-captain-1655-denial.txt 179-pm-1720-refusal.txt 192-comment-1630.txt; do
+  N_FX="$(mkfx "static-$fx")"
+  AZ2I comment "$N_FX" --body "$(cat "$FXDIR/$fx")" >/dev/null
+  assert_eq "static fixture $fx -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_FX")"
+done
 
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
@@ -2968,11 +3139,26 @@ assert_eq "dev → human-decided" "no" \
 
 section "dash data: decisions_json surfaces gated+GV-SIGNOFF in dev, not refactor (#51)"
 DD_FIX='[{"number":9,"title":"x","gated":true,"body":"b"}]'
-DD_STUB='di_read() { case "$*" in *"view 9"*) echo "GV-SIGNOFF ok";; esac; }; status_fresh() { return 1; }'
+# has_invalid_sentinel stubbed false: it shells out to the REAL fwf-authz.sh
+# (a separate process, so it can't see this shell's stubbed di_read), and
+# these tests aren't exercising that path.
+DD_STUB='di_read() { case "$*" in *"view 9"*) echo "GV-SIGNOFF ok";; esac; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
 assert_eq "dev surfaces the decision" '["9"]' \
   "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
 assert_eq "refactor surfaces none" "[]" \
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '.')"
+
+# #218 AC (i): an INVALID sentinel gets its own decision row, in BOTH template
+# modes (unlike the GV-SIGNOFF row above, this is not release-sequencing —
+# it's a security signal, so captain_sequences_releases must not suppress it).
+DD_STUB_INV='di_read() { echo ""; }; status_fresh() { return 1; }; has_invalid_sentinel() { [ "$1" = "9" ]; }'
+assert_eq "dev surfaces the INVALID-sentinel row" '["9"]' \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_INV; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
+assert_contains "the row's flags name it as security-relevant" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_INV; decisions_json '$DD_FIX'" | jq -r '.[0].flags')" \
+  "INVALID SENTINEL"
+assert_eq "refactor ALSO surfaces the INVALID-sentinel row (unlike GV-SIGNOFF above)" '["9"]' \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD_STUB_INV; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
 
 section "dash data: activity_json buckets PRs + parses role/issue from the branch"
 printf '%s' '[{"number":7,"title":"wip","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-42-foo","statusCheckRollup":[]}]' > "$TMP/dd-open.json"

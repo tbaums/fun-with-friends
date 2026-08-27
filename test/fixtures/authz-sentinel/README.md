@@ -65,3 +65,19 @@ An earlier version of this README claimed the token in `179-pm-1720-refusal.txt`
 indented block. That was wrong — it is at column 136, inside inline backticks in prose. The
 claim was corrected by measurement before review. Recorded here because the wrong version
 would have led #218 to believe its fixtures covered a case they do not.
+
+## Synthetic fixtures for the hard case (AC (e), (a2))
+
+The four files above are all mid-line, so none of them exercise fence-stripping,
+column-0-but-malformed detection, or the "quoted refusal" shape. These four are
+purpose-built, not recovered from a live thread:
+
+| file | shape | must resolve |
+|---|---|---|
+| `fenced-column0.txt` | the bare token alone on its own line inside a ` ``` ` fence — the ordinary way a doc shows the payload | HELD (fence-stripped before column 0 is evaluated) |
+| `indented-code-block.txt` | the token in a 4-space indented code block | HELD (fails the column-0 anchor — no leading whitespace allowed) |
+| `malformed-wrong-issue.txt` | the token at column 0, but naming a different issue than the thread it's posted in | INVALID (sentinel-shaped, anchored, wrong reference — security-relevant, not routine HELD) |
+| `quoted-refusal-215.txt` | `fwf authz`'s own HELD output, pasted into a fence as evidence (the live #215 20:16Z incident) | HELD (fence-stripped; this is AC (a2) — pasted command output, not discussion) |
+
+Feed each as the sole/added comment on a fresh issue and check the verdict + exit code
+match the table above.
