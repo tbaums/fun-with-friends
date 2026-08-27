@@ -11,6 +11,9 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Fixed
+- **Memory-admission control reverted to opt-in (OFF by default)** (#286, code 5fd17af5, docs 5fd17af5) — v0.32.1's flip of `FWF_MEM_ADMIT_ENABLE`'s default to `1` shipped without the real-box calibration criterion (3) of #156 requires, and the inequality it enforces is unsatisfiable on any box under ~14 GiB free with the shipped reserve/floor — not flaky, deterministic: every `--cargo-build` gate waited the full 900s and exited `EX_SKIPPED`. This blocked every release since 2026-08-25. Reverted to `0`, restoring the exact configuration measured green on both CI platforms at v0.32.0; the mechanism itself is unchanged and stays in the tree for a future calibrated re-enable (shadow-log → canary → fleet). Also fixes the #211 gap this exposed: `fwf_free_ram_gb` now reports `UNKNOWN`, never a fabricated `0`, when its probe can't be read — admission still refuses on `UNKNOWN` (a genuinely empty box must still be refused), but the message no longer claims a measurement it never took.
+
 ## [0.33.0] - 2026-08-27
 
 ### Added

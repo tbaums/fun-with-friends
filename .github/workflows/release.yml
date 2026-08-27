@@ -169,6 +169,12 @@ jobs:
       - name: Functional tests
         run: bash test/run.sh
 
+      - name: Memory-admission suite (issue #286 AC d)
+        # A dedicated step (not nested in test/run.sh -- see ci.yml for why):
+        # this is where releases are actually decided, so it belongs here as
+        # its own gate, not only in ci.yml's PR-time matrix.
+        run: bash test/mem-admit-test.sh
+
       - name: Build tarball
         id: pkg
         run: echo "path=$(scripts/package.sh)" >> "$GITHUB_OUTPUT"
