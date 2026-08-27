@@ -184,6 +184,17 @@ UTILITIES
                          as NO_MARKER, or a transient gh failure would
                          misroute an explicitly-assigned PR). Comment
                          markers beat the body marker; newest comment wins.
+  pr-assign-reviewer <head-branch>
+                         Decide who a NEW PR's reviewer should be (issue
+                         #194): implN/* -> qaN (today's pairing, unchanged);
+                         otherwise the least-loaded CONFIGURED QA seat by
+                         open-assigned-PR count, ties broken by lowest seat
+                         index. Deliberately liveness-blind (a briefly-down
+                         seat still gets routed to — see fwf-pr-
+                         assign-reviewer.sh); zero configured QA seats ->
+                         `none`. Run at PR-creation time; the result is
+                         recorded as an `fwf-Reviewer:` marker, never
+                         recomputed on every survey.
   pr-context <n> [n...]  Print the sanitized "## Context & rationale" fold for
                          the given issue number(s) — an implementer/QA agent
                          runs this for real when composing a PR/squash-merge
@@ -792,6 +803,7 @@ case "$cmd" in
   dash)      engine fwf-dash.sh "$@";;
   pr-review-state) engine fwf-pr-review-state.sh "$@";;
   pr-reviewer) engine fwf-pr-reviewer.sh "$@";;
+  pr-assign-reviewer) engine fwf-pr-assign-reviewer.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
   flag-captain) engine fwf-flag-captain.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;

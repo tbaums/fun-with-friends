@@ -671,6 +671,18 @@ fwf_all_roles() {
   fwf_extra_names
 }
 
+# The CONFIGURED QA roster, one per line, in seat-index order (issue #194's
+# reviewer-assignment rule keys off this, never a live/liveness view -- see
+# fwf-pr-assign-reviewer.sh for why: liveness has no query surface in this
+# codebase, and routing a PR to a briefly-down seat is correct, not a bug).
+# Pure and infallible (PAIRS + suppression are both config-derived), so a
+# genuinely empty roster IS the real "zero QA seats configured" answer, not
+# a collapsed read -- issue #194 AC (h)'s degenerate case.
+fwf_qa_roster() {
+  local id
+  for id in "${PAIRS[@]}"; do fwf_role_suppressed "qa$id" || echo "qa$id"; done
+}
+
 # The canonical role tag for a template file + id — "implementer"+"2" ->
 # "impl2", "qa"+"1" -> "qa1", anything else (pm/gv/captain/conductor, or an
 # extra-role template like sre.tmpl) -> its own basename, which IS the role

@@ -4199,6 +4199,49 @@ section "pr-reviewer (#194): CLI wiring -- 'fwf pr-reviewer' dispatches to fwf-p
 assert_contains "help mentions pr-reviewer" "$("$ROOT/fwf" help)" "pr-reviewer <pr>"
 
 # --------------------------------------------------------------------------
+# fwf pr-assign-reviewer (issue #194): decide who a NEW PR's reviewer should
+# be, from the CONFIGURED roster, deterministically. Real FWF_PAIRS/
+# FWF_SUPPRESS_ROLES config (never mocked -- fwf_qa_roster is pure) + a
+# stubbed gh_pr_list for the open-PR-count half.
+FAR="$ROOT/fwf-pr-assign-reviewer.sh"
+far() { # $1=pairs  $2=head-branch  $3=open-prs-json(optional, default [])
+  FWF_PROFILE=example FWF_PAIRS="$1" bash -c "
+    source '$FAR'
+    gh_pr_list() { printf '%s' '${3:-[]}'; }
+    main '$2'"
+}
+
+section "pr-assign-reviewer (#194): rule 1 -- implN/* -> qaN, deterministic, no read needed"
+assert_eq "impl2/* routes to qa2, preserving today's pairing exactly" "qa2" "$(far 3 'impl2/issue-99-foo')"
+assert_eq "impl1/* routes to qa1" "qa1" "$(far 3 'impl1/issue-1-x')"
+
+section "pr-assign-reviewer (#194): rule 2 -- least-loaded configured seat, ties broken by lowest index"
+assert_eq "all seats tied at 0 open PRs -> lowest index (qa1)" "qa1" "$(far 2 'captain/x' '[]')"
+assert_eq "qa1 has 2 assigned, qa2 has 0 -> picks qa2" "qa2" \
+  "$(far 2 'captain/y' '[{"number":1,"headRefName":"impl1/a","body":"","comments":[]},{"number":2,"headRefName":"impl1/b","body":"","comments":[]}]')"
+assert_eq "an explicit fwf-Reviewer marker on an open PR counts toward that seat's load, not the branch prefix" "qa1" \
+  "$(far 2 'captain/z' '[{"number":3,"headRefName":"impl1/a","body":"fwf-Reviewer: qa2","comments":[]}]')"
+assert_eq "a re-assignment comment overrides the body marker for load-counting too (qa1 now loaded, qa2 is least-loaded)" "qa2" \
+  "$(far 2 'captain/w' '[{"number":4,"headRefName":"impl1/a","body":"fwf-Reviewer: qa2","comments":[{"body":"fwf-Reviewer: qa1","createdAt":"2026-08-25T00:01:00Z"}]}]')"
+assert_eq "a PR with no marker and no matching implN prefix (already unroutable) does not count toward anyone's load" "qa1" \
+  "$(far 2 'captain/v' '[{"number":5,"headRefName":"captain/some-other-pr","body":"","comments":[]}]')"
+
+section "pr-assign-reviewer (#194) AC (h): the degenerate zero-configured-QA-seats case"
+assert_eq "no QA seats configured at all -> none, a real confident answer" "none" \
+  "$(FWF_PROFILE=example FWF_PAIRS=2 FWF_SUPPRESS_ROLES=qa bash -c "source '$FAR'; main 'captain/x'")"
+
+section "pr-assign-reviewer (#194): unreadable != empty -- an open-PR-list failure never fabricates a confident least-loaded count"
+FAILOUT="$(FWF_PROFILE=example FWF_PAIRS=2 bash -c "
+  source '$FAR'
+  gh_pr_list() { return 1; }
+  main 'captain/x'")"
+assert_eq "a failed gh query falls back to the SAME deterministic tie-break an all-tied count would produce (lowest index)" \
+  "qa1" "$FAILOUT"
+
+section "pr-assign-reviewer (#194): CLI wiring"
+assert_contains "help mentions pr-assign-reviewer" "$("$ROOT/fwf" help)" "pr-assign-reviewer <head-branch>"
+
+# --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
 # any role raises on an issue/PR, that the captain's per-tick sweep picks up
 # reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests
