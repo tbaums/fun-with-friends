@@ -2896,6 +2896,70 @@ assert_contains "authz AUTHORIZED verdict via JSON path" "$(AZG 40 2>&1)" "AUTHO
 # captain-sequenced decisions behaviour and activity bucketing/branch parsing.
 DD="$ROOT/fwf-dash-data.sh"
 
+section "dash data: installed_version_json (issue #153) — re-read fresh, distinct from upgrade_json"
+assert_eq "reports the real tracked VERSION file" "$REALV" \
+  "$(FWF_PROFILE=example bash -c "source '$DD'; installed_version_json" | jq -r '.version')"
+
+# $FWF_HOME is NOT an overridable env var -- config.sh recomputes it
+# unconditionally from ITS OWN script location (`dirname "${BASH_SOURCE[0]}"`).
+# Exporting FWF_HOME before sourcing does nothing but get silently clobbered
+# back to the real repo root the instant config.sh runs -- and a naive first
+# draft of this test proved that the hard way, by mutating this very
+# worktree's REAL VERSION file to "9.9.9" instead of an isolated copy. The
+# only reliable way to relocate FWF_HOME is to relocate the SCRIPT FILES
+# themselves: copy the whole sourcing chain into a temp dir and source the
+# copy, so config.sh's own BASH_SOURCE resolves there instead.
+DDISO="$TMP/dd-isolated-home"; mkdir -p "$DDISO/lib" "$DDISO/profiles"
+cp "$ROOT/config.sh" "$ROOT/lib.sh" "$ROOT/fwf-dash-data.sh" "$DDISO/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$DDISO/lib/"
+cp "$ROOT/profiles/example.sh" "$DDISO/profiles/"
+ln -s "$ROOT/templates" "$DDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
+DDISO_DD="$DDISO/fwf-dash-data.sh"
+printf '%s' "$REALV" > "$DDISO/VERSION"
+
+# Re-read fresh EVERY call (never cached at "launch") -- two calls in the
+# same process must both reflect the CURRENT file content, including a
+# change made BETWEEN them (the exact property #153 requires: "do NOT cache
+# the installed version at launch").
+DD_REREAD='
+  first="$(installed_version_json | jq -r ".version")"
+  printf "9.9.9" > "$FWF_HOME/VERSION"
+  second="$(installed_version_json | jq -r ".version")"
+  printf "%s|%s" "$first" "$second"
+'
+DDRR="$(FWF_PROFILE=example bash -c "source '$DDISO_DD'; $DD_REREAD")"
+assert_eq "installed_version_json re-reads the file fresh on the SECOND call within the same process, not the cached first value" \
+  "$REALV|9.9.9" "$DDRR"
+assert_eq "the isolated fixture's own VERSION file changed, NOT the real worktree's" "$REALV" "$(cat "$ROOT/VERSION")"
+printf '%s' "$REALV" > "$DDISO/VERSION"   # reset for the tests below
+
+# Never a `fwf --version` subprocess -- a stub in PATH that would fail loudly
+# if invoked proves the reader never shells out to it.
+DDNOEXEC="$TMP/dd-noexec-fwf"; mkdir -p "$DDNOEXEC"
+cat > "$DDNOEXEC/fwf" <<'EOS'
+#!/usr/bin/env bash
+echo "installed_version_json must never invoke fwf --version" >&2
+exit 1
+EOS
+chmod +x "$DDNOEXEC/fwf"
+DDNOEXECOUT="$(PATH="$DDNOEXEC:$PATH" FWF_PROFILE=example bash -c "source '$DDISO_DD'; installed_version_json" 2>&1)"
+assert_eq "installed_version_json never shells out to 'fwf --version'" "{\"version\":\"$REALV\"}" \
+  "$(printf '%s' "$DDNOEXECOUT" | jq -c '.')"
+
+# Unreadable VERSION -> empty string (UNKNOWN to the Rust side), never a
+# fabricated value -- the fail-safe direction (running_binary_stale treats
+# empty as "cannot compare", not "drift"). Isolated fixture again: this
+# removes the fixture's OWN VERSION file, never the real one.
+rm -f "$DDISO/VERSION"
+assert_eq "unreadable VERSION -> empty version field, not fabricated" '{"version":""}' \
+  "$(FWF_PROFILE=example bash -c "source '$DDISO_DD'; installed_version_json" | jq -c '.')"
+assert_eq "the real worktree's VERSION file is untouched by the unreadable-fixture test" "$REALV" "$(cat "$ROOT/VERSION")"
+
+# Assembled into the top-level dashboard_json() payload alongside upgrade,
+# never replacing or being clobbered by it.
+assert_contains "dashboard_json includes the top-level 'installed' key" \
+  "$(grep -n 'installed:\$installed' "$DD")" "installed:\$installed"
+
 section "dash data: captain_sequences_releases keys off the template (#51)"
 assert_eq "refactor → captain-sequenced" "yes" \
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; captain_sequences_releases && echo yes || echo no")"

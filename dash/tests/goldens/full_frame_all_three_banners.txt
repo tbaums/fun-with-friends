@@ -3,7 +3,9 @@
 │prod https://example.test/prod   pipeline staging → integration → main   [status.json]   ⟳ 2026-01│
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
   1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)    5 Usage (0)
- ⬆ fwf v0.22.0-rc.1+cafef00d available (running 0.21.3-dev.20260710+deadbeef) — run 'fwf upgrade'
+ ⛔  CAPTAIN NEEDS YOU — decision #101 awaiting you  · attach: tmux attach -t friends-coord
+ ⟲ STALE DASH — v99.99.99 now installed. Restart: q, then 'fwf dash'
+ ⬆ fwf v0.22.0 available (running 0.21.3) — run 'fwf upgrade'
 ┌ Activity — factory motion ─────────────┐┌ Detail · loading PR… ──────────────────────────────────┐
 │▌BUILDING                               ││PR #101  → staging                                      │
 │   #54 ● dash render golden snapshot tes││dash render golden snapshot tests via ratatui           │
@@ -14,8 +16,6 @@
 │ MERGED (recent)                        ││checks: run                                             │
 │   #40 →staging 07-01 09:00 fwf dash mil││                                                        │
 │                                        ││(loading PR detail…)                                    │
-│                                        ││                                                        │
-│                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
