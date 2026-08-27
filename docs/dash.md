@@ -82,7 +82,7 @@ a running swarm:
 | activity | open/merged PRs against the integration targets: BUILDING / IN TEST·REVIEW / MERGED (the landing tab) |
 | roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`/`--build-only`, never conflated with a crash (see below) |
 | pipeline | git branch deltas in the target repo (`staging +N ahead · …`) |
-| decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you; also any gated issue carrying an `⚠ INVALID SENTINEL` row (issue #218) — a column-0-anchored but malformed or wrong-issue un-gate attempt, security-relevant regardless of GV sign-off state. See "The operator un-gate authorization signal" in `docs/shared-account.md`. |
+| decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you; also any gated issue carrying an `⚠ INVALID SENTINEL` row (issue #218) — a column-0-anchored but malformed or wrong-issue un-gate attempt, security-relevant regardless of GV sign-off state. See "The operator un-gate authorization signal" in `docs/shared-account.md`. Also two "could not tell" summary rows when the underlying gh read cache served degraded (unconfirmed-fresh) data (issue #266): `⚠ SIGN-OFF UNVERIFIED` names tickets whose sign-off state couldn't be confirmed absent vs. just-unseen, and `⚠ ISSUE LIST UNCONFIRMED` warns the queue itself may be missing a just-filed/just-gated ticket. See `docs/gh-read-cache.md`. |
 | issues | every open issue (gated ones marked 🔒) |
 | prod | the captain's `status.json` overlay when fresh, else `—` |
 | ⛔ CAPTAIN NEEDS YOU | a full-width banner when the captain pane is blocked on you (read from the captain pane) |

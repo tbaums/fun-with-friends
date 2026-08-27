@@ -53,6 +53,61 @@ Net effect: the per-cycle list, view, search, and diff-file-name polls that
 drained thousands of GraphQL points/hr drop to **~zero** (REST + 304s), and the
 dash reads the same snapshot instead of re-draining the budget.
 
+## Degraded reads (issue #266)
+
+"Correct" above means *the cache never invents data* — but until #266, a
+read could return **stale data with exit 0**, indistinguishable from a
+validated one. Two mechanisms:
+
+- **The lock-wait fallback.** When another pane's refresh is already in
+  flight, a contended read waits up to `FWF_GHCACHE_LOCK_WAIT` (default 8s)
+  plus a short poll loop for it to finish. If it doesn't finish in time, the
+  existing (possibly stale) snapshot is served anyway — the right call
+  (stale beats none) — but it was never re-validated against upstream.
+- **A comment thread past the 100-comment page boundary.** Only page 1 of a
+  paginated read carries a conditional ETag; a `304` on page 1 alone used to
+  be trusted as "the whole thread is unchanged," which is wrong once there's
+  a page 2+ a new comment can land on invisibly to that check. Fixed:
+  a page-1 `304` on a thread already ≥100 comments long reuses page 1's
+  confirmed-unchanged records from cache but still re-checks pages 2+
+  unconditionally. Under 100 comments (a single page), the fast `304` path
+  is unchanged — page 1 unchanged genuinely is the whole thread unchanged.
+
+**The exit code, not just stdout, is where this surfaces.** `serve issue|pr
+list|view` returns `0` when the served data was validated against upstream
+(a fresh fetch, or a confirming `304`), or `2` when data was served but its
+freshness was never confirmed (the lock-wait fallback above) — same
+JSON-on-stdout either way, so a caller that only checks "did this print
+something" cannot tell them apart. A caller that wants to know must check
+the exit code. Any other/nonzero code is `real_gh`'s own exit from the
+safe-fallback path or a direct passthrough, unrelated to degradation.
+
+Consumers, and whether a degraded (unconfirmed) read is tolerable for each:
+
+- **`fwf-dash-data.sh`** (the operator's decision queue) — intolerable, and
+  handled: a degraded per-resource view is marked on its row; a gated
+  ticket's GV sign-off state is **three-way** (`SIGNED` / `NONE` /
+  `INDETERMINATE` — "could not tell" never renders as "no sign-off," the
+  same shape as `fwf authz`'s `INDETERMINATE`), with indeterminate tickets
+  counted and surfaced as their own summary row rather than silently
+  dropped from the queue; a degraded **list** read (which can mean an
+  entire just-filed or just-gated ticket is absent, not just stale) gets
+  its own summary row too, since no per-row check is ever reached for a row
+  that isn't in the list at all.
+- **`fwf-authz.sh`** (the operator un-gate sentinel oracle) — intolerable,
+  and already fail-closed for free: its read is `... || read_ok=0`, which
+  catches any nonzero exit (including the new `2`) and reports
+  `INDETERMINATE`. `#265` is the ticket that eventually takes authz off
+  this cache entirely; this is defense-in-depth in the meantime, not a
+  substitute for it.
+- **Every other `gh issue|pr list|view` call** — routed here transparently
+  via the `gh` shim, so its exit code becomes the shim's own. Tolerable by
+  default: a caller that ignores the exit code sees no behaviour change
+  (stdout is identical to before); a caller that already treats a nonzero
+  `gh` exit as "don't trust this" gets strictly safer, not more fragile,
+  the moment it starts occasionally seeing `2` where it used to always see
+  `0`.
+
 ## Tuning
 
 - `FWF_GHCACHE_TTL` — cache freshness window in seconds (default `60`). Lower = fresher,
@@ -60,6 +115,11 @@ dash reads the same snapshot instead of re-draining the budget.
   tolerate 60s well.
 - `FWF_GHCACHE_DIR` — cache location (default `$FWF_RUN/ghcache/<owner>__<repo>/`).
 - `FWF_GHCACHE_OFF=1` — bypass the cache entirely (straight passthrough to real `gh`).
+- `FWF_GHCACHE_LOCK_WAIT` (default `8`) / `FWF_GHCACHE_WAITER_ITERS` (default
+  `12`, one per second) — how long a contended read waits for another pane's
+  in-flight refresh before serving the existing snapshot degraded (above).
+  Test-only in practice; lowering them in production just serves degraded
+  reads sooner under contention.
 
 ## Notes
 
