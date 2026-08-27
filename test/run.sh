@@ -4514,6 +4514,85 @@ assert_not_contains "the old unconditional branch-prefix survey line is gone" "$
   'Keep only PRs whose headRefName starts with "impl1/" AND isDraft is false.'
 
 # --------------------------------------------------------------------------
+# fwf-branch-policy.sh (issue #220): is the committed .github/branch-policy.json
+# actually LIVE on GitHub? Read-only diff checker -- never mutates. Real
+# policy-diff logic driven with stubbed gh_branch_protection fixtures (never
+# a decoy grep), covering compliant/drifted/unprotected/unreadable, plus a
+# real fixture proving today's live repo is genuinely unprotected (AC a).
+BP="$ROOT/fwf-branch-policy.sh"
+BP_POLICY='{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"],"strict":false,"enforce_admins":true,"branches":["staging","integration","main"]}'
+
+section "branch-policy (#220): diff_branch -- pure policy-vs-live comparison"
+bp_diff() { # $1=branch $2=live-json("" = unprotected)
+  FWF_PROFILE=example bash -c "
+    source '$BP'
+    diff_branch '$BP_POLICY' '$1' '$2'"
+}
+assert_eq "unprotected branch is itself a violation" \
+  "staging: NOT PROTECTED (no branch protection configured at all)" \
+  "$(bp_diff staging '')"
+BP_LIVE_OK='{"required_status_checks":{"strict":false,"contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"]},"enforce_admins":{"enabled":true}}'
+assert_eq "fully compliant live settings produce no violation" "" "$(bp_diff staging "$BP_LIVE_OK")"
+BP_LIVE_DRIFTED_CTX='{"required_status_checks":{"strict":false,"contexts":["shellcheck + syntax"]},"enforce_admins":{"enabled":true}}'
+assert_contains "a missing required context is reported as drift" "$(bp_diff staging "$BP_LIVE_DRIFTED_CTX")" \
+  "required_contexts drifted"
+BP_LIVE_DRIFTED_ADMIN='{"required_status_checks":{"strict":false,"contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"]},"enforce_admins":{"enabled":false}}'
+assert_contains "enforce_admins turned off is reported as drift (issue #220: without it protection is decorative -- every seat has admin creds)" \
+  "$(bp_diff staging "$BP_LIVE_DRIFTED_ADMIN")" "enforce_admins drifted"
+BP_LIVE_DRIFTED_STRICT='{"required_status_checks":{"strict":true,"contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"]},"enforce_admins":{"enabled":true}}'
+assert_contains "strict turned on (against A2's decision) is reported as drift" "$(bp_diff staging "$BP_LIVE_DRIFTED_STRICT")" "strict drifted"
+
+section "branch-policy (#220): cmd_check -- 404 (unprotected) vs a real read failure must never collapse together"
+# The bug this test exists to catch: an earlier version signaled 404-vs-error
+# via a global variable SET INSIDE a \$(...) command substitution -- which
+# runs in a subshell, so the assignment never reached the caller and every
+# 404 (a NORMAL, expected "not protected yet" answer) misread as UNKNOWN
+# (issue #211's own lesson: unreadable != empty, applied in the other
+# direction too -- a readable-and-empty answer must not misread as unreadable).
+bp_check_stub() { # $1=policy-file-content $2=gh_branch_protection-stub-body
+  local pf; pf="$(mktemp)"; printf '%s' "$1" > "$pf"
+  FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$pf" bash -c "
+    source '$BP'
+    gh_branch_protection() { $2; }
+    cmd_check"
+}
+assert_eq "a clean 404 (unprotected) is reported by NAME, not misread as UNKNOWN" \
+  "staging: NOT PROTECTED (no branch protection configured at all)" \
+  "$(bp_check_stub "$BP_POLICY" 'echo "gh: Branch not protected (HTTP 404)" >&2; return 1' 2>/dev/null | grep staging)"
+assert_contains "a genuine read failure (not a 404) is reported as UNKNOWN, never silently 'no violations'" \
+  "$(bp_check_stub "$BP_POLICY" 'echo "gh: connection reset by peer" >&2; return 1' 2>&1)" \
+  "staging: UNKNOWN"
+assert_eq "compliant live settings on every branch -> empty output, exit 0" "" \
+  "$(bp_check_stub "$BP_POLICY" "echo '$BP_LIVE_OK'")"
+
+section "branch-policy (#220) AC (a): against the REAL live repo, today, all three branches are genuinely unprotected"
+# Not a decoy -- this drives the actual gh_branch_protection (real gh api
+# call, no stub) against this repo. Documents the reported bug directly:
+# "if it passes today the checker is wrong."
+REAL_BP_CHECK="$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_REPO="$ROOT" bash -c "source '$BP'; set +e; cmd_check; echo RC=\$?" 2>&1)"
+assert_contains "staging genuinely unprotected today" "$REAL_BP_CHECK" "staging: NOT PROTECTED"
+assert_contains "integration genuinely unprotected today" "$REAL_BP_CHECK" "integration: NOT PROTECTED"
+assert_contains "main genuinely unprotected today" "$REAL_BP_CHECK" "main: NOT PROTECTED"
+assert_contains "checker exits non-zero (RED) against the unprotected repo" "$REAL_BP_CHECK" "RC=1"
+
+section "branch-policy (#220) AC (h): every required context must be producible by a real CI job"
+assert_eq "the real .github/branch-policy.json's contexts are all producible by the real ci.yml" "" \
+  "$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_CI_WORKFLOW_FILE="$ROOT/.github/workflows/ci.yml" bash -c "source '$BP'; cmd_producible")"
+BROKEN_CI="$(mktemp)"
+printf 'jobs:\n  lint:\n    name: shellcheck + syntax\n' > "$BROKEN_CI"
+assert_contains "a required context with no matching job is flagged by name" \
+  "$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_CI_WORKFLOW_FILE="$BROKEN_CI" bash -c "source '$BP'; cmd_producible")" \
+  "dash crate (rust)"
+
+section "branch-policy (#220): policy file is a valid, committed artifact (AC g)"
+assert_eq "committed policy file parses as JSON" "0" \
+  "$(jq empty "$ROOT/.github/branch-policy.json" >/dev/null 2>&1; echo $?)"
+
+section "branch-policy (#220): CLI wiring"
+assert_contains "help mentions branch-policy check" "$("$ROOT/fwf" help)" "branch-policy check"
+assert_contains "help mentions branch-policy producible" "$("$ROOT/fwf" help)" "branch-policy producible"
+
+# --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
 # any role raises on an issue/PR, that the captain's per-tick sweep picks up
 # reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests
