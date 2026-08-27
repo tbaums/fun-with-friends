@@ -3185,6 +3185,36 @@ assert_eq "issue number parsed from branch"         "42"    "$(printf '%s' "$DD_
 assert_eq "merged PR bucketed by base branch"       "8"     "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].pr')"
 assert_eq "merged 'when' formatted from mergedAt"   "06-18 12:34" "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].when')"
 
+section "dash data (#194 AC d): unrouted_prs_json flags a PR nobody can reach"
+DD_ROLES='[{"role":"qa1","state":"live","detail":""},{"role":"qa2","state":"down","detail":""}]'
+DD_UNROUTED_FIX="$TMP/dd-unrouted.json"
+printf '%s' '[
+  {"number":10,"headRefName":"captain/x","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: none","comments":[]},
+  {"number":11,"headRefName":"captain/y","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"","comments":[]},
+  {"number":12,"headRefName":"impl3/issue-1-z","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"","comments":[]},
+  {"number":13,"headRefName":"captain/w","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: qa2","comments":[]},
+  {"number":14,"headRefName":"impl1/issue-2-v","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: qa1","comments":[]},
+  {"number":15,"headRefName":"captain/draft","isDraft":true,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: none","comments":[]}
+]' > "$DD_UNROUTED_FIX"
+DD_UNROUTED="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; gh_pr() { cat '$DD_UNROUTED_FIX'; }; unrouted_prs_json '$DD_ROLES'")"
+assert_eq "an explicit 'none' marker is flagged" "no QA seat configured" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==10) | .reason')"
+assert_eq "no marker + non-implN branch is flagged" "no fwf-Reviewer marker and branch does not match implN/*" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==11) | .reason')"
+assert_eq "no marker + implN branch (migration fallback) is NOT flagged" "" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==12) | .reason // empty')"
+assert_eq "marker names a configured-but-not-live seat is flagged" "assigned to qa2, which is not currently live" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==13) | .reason')"
+assert_eq "marker names a live seat is NOT flagged" "" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==14) | .reason // empty')"
+assert_eq "a draft PR is excluded even with a 'none' marker" "" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==15) | .reason // empty')"
+assert_eq "exactly the three flagged PRs surface, nothing else" "10 11 13" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '[.[].pr] | sort | join(" ")')"
+assert_eq "each flagged row carries all five required fields (author, branch, created_at too)" \
+  "tbaums captain/x 2026-08-24T20:00:00Z" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==10) | "\(.author) \(.branch) \(.created_at)"')"
+
 section "dash data: detail_view renders through the REAL gh cache from outside the repo (#57 regression)"
 # The dash runs outside the target repo; the cache's fallback `gh issue view N`
 # must still resolve the repo (via GH_REPO) or it fails "could not resolve" and
