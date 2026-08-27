@@ -2451,7 +2451,11 @@ assert_contains "impl: claims branch off origin/staging" "$NCIMPL" "git switch -
 case "$NCIMPL" in *"git switch staging &&"*) bad "impl: never checks out local staging";; *) ok "impl: never checks out local staging";; esac
 NCCON="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
 assert_contains "conductor (dev, read-only): detaches for e2e"    "$NCCON" "git switch --detach origin/staging"
-assert_contains "conductor (dev, read-only): promotes from origin/staging" "$NCCON" "git merge --ff-only origin/staging"
+# issue #254: promotes the gate's own RECORDED tip (by literal hash via
+# `fwf gate-tip`), not a re-resolved origin/staging — the ref could have
+# moved again since the gate itself resolved its tip.
+assert_contains "conductor (dev, read-only): promotes the gate's recorded tip, not a re-resolved ref" "$NCCON" 'git merge --ff-only "$(fwf gate-tip conductor)"'
+case "$NCCON" in *'git merge --ff-only origin/staging'*) bad "conductor (dev): must not merge a re-resolved origin/staging (issue #254)";; *) ok "conductor (dev): never re-resolves origin/staging for the promote merge";; esac
 case "$NCCON" in *"git switch staging &&"*) bad "conductor (dev): never checks out local staging";; *) ok "conductor (dev): never checks out local staging";; esac
 # the validate/ideation adjudicators DO legitimately hold local staging (they commit
 # VERDICT.md/PORTFOLIO.md directly to it) — confirm that's still intact, and that
@@ -6081,6 +6085,98 @@ rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FRE
         "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
 
+# --------------------------------------------------------------------------
+# fwf gate --tip-ancestry: ancestry, not movement, is the ruling (issue #254)
+section "fwf gate --tip-ancestry: a confirmed tip move must not discard a valid verdict when it's still an ancestor (#254)"
+F254RUN="$TMP/run254"; mkdir -p "$F254RUN"
+F254REPO="$TMP/f254-repo"; mkdir -p "$F254REPO"
+git -C "$F254REPO" init -q
+git -C "$F254REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+F254SHA1="$(git -C "$F254REPO" rev-parse HEAD)"
+
+# (a) THE DISCRIMINATING CASE: tip moves mid-run, but tip_before is STILL an
+# ancestor of tip_after (the ordinary case -- someone merged on top). Without
+# --tip-ancestry this is (correctly, pre-#254) 76; WITH it, the verdict must
+# be USED -- recorded and returned as the wrapped command's own rc, not
+# discarded. This is the case the merged #202 code got wrong.
+rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+        bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2; true' ) >/dev/null 2>&1 || rc=$?
+assert_eq "(a) tip moved but still an ancestor, --tip-ancestry -> verdict USED (rc 0, not 76)" "0" "$rc"
+F254SHA2="$(git -C "$F254REPO" rev-parse HEAD)"
+[ "$F254SHA2" != "$F254SHA1" ] || bad "the fixture actually moved the tip" "still at $F254SHA1"
+OUT="$(cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+       "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+       bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2b; false' 2>&1)"
+assert_contains "(a) says the verdict stands and names 'literal hash'" "$OUT" "verdict stands"
+# fwf-gate-tip (issue #254 AC d/e): the RECORDED tip is readable back, by
+# LITERAL hash -- this is what a caller promotes, never a re-resolved ref.
+F254RECORDED="$(FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example "$ROOT/fwf-gate-tip.sh" f254role 2>/dev/null)"
+assert_eq "(a) fwf gate-tip reads back the recorded (pre-move) tip, by literal hash" "$F254SHA2" "$F254RECORDED"
+
+# a RED verdict on the ancestor case is ALSO used (not silently upgraded/discarded).
+rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+        bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2c; false' ) >/dev/null 2>&1 || rc=$?
+assert_eq "(a) a RED verdict on the ancestor case is used too (rc 1, not 76)" "1" "$rc"
+
+# (b) NON-ANCESTOR CASE preserved: an ACTUAL rewrite (reset --hard + new
+# commit) makes tip_before no longer an ancestor of tip_after -> still
+# stale/76, even WITH --tip-ancestry. The discriminating test: without this,
+# (a) would pass trivially by removing the check altogether.
+F254SHA_BEFORE_REWRITE="$(git -C "$F254REPO" rev-parse HEAD)"
+rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+        bash -c 'git reset -q --hard HEAD~1; git -c user.email=t@t -c user.name=t commit -q --allow-empty -m rewritten; true' ) >/dev/null 2>&1 || rc=$?
+assert_eq "(b) history rewritten (not an ancestor), --tip-ancestry -> still STALE (76)" "76" "$rc"
+OUT="$(cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+       "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+       bash -c 'git reset -q --hard HEAD~1; git -c user.email=t@t -c user.name=t commit -q --allow-empty -m rewritten2; true' 2>&1)"
+assert_contains "(b) message names it a history rewrite (NOT an ancestor)" "$OUT" "NOT an ancestor"
+[ "$(git -C "$F254REPO" rev-parse HEAD)" != "$F254SHA_BEFORE_REWRITE" ] || bad "the fixture actually rewrote history"
+
+# (h) the two stale causes are DISTINGUISHABLE -- both land on 76, but the
+# message and the recorded reason= differ. not-ancestor case above already
+# asserted its own message; here's the indeterminate-ancestry case: a
+# --tip-cmd whose before/after values are both NOT valid commit-ish (a plain
+# file read, not git) makes `git merge-base --is-ancestor` error (exit >1),
+# which must fail closed to stale too, with its OWN distinct reason -- a
+# real, controlled trigger for #254's edge case ("shallow clone / missing
+# objects"), not a hypothetical.
+F254TIPFILE="$TMP/f254-tipfile"; printf 'not-a-real-commit-1' > "$F254TIPFILE"
+rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f254role --tip-cmd "cat '$F254TIPFILE'" --tip-ancestry -- \
+        bash -c "printf 'not-a-real-commit-2' > '$F254TIPFILE'; true" ) >/dev/null 2>&1 || rc=$?
+assert_eq "ancestry indeterminate (neither value is a real commit) -> also STALE (76), fail-closed" "76" "$rc"
+printf 'not-a-real-commit-1' > "$F254TIPFILE"
+OUT="$(cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+       "$ROOT/fwf-gate.sh" f254role --tip-cmd "cat '$F254TIPFILE'" --tip-ancestry -- \
+       bash -c "printf 'not-a-real-commit-2' > '$F254TIPFILE'; true" 2>&1)"
+assert_contains "(h) indeterminate-ancestry message says so, distinctly from a rewrite" "$OUT" "could not be determined"
+F254MARKER="$F254RUN/state/example/gate-tip/f254role"
+assert_contains "(h) the record's reason= distinguishes indeterminate-ancestry" "$(cat "$F254MARKER")" "reason=indeterminate-ancestry"
+
+# (c) UNREADABLE TIP regression guard: the fail-closed branch this ticket
+# does NOT touch (a --tip-cmd that fails/returns empty on the re-read) must
+# still fail closed to stale, even WITH --tip-ancestry -- the ancestry check
+# must never run on an empty/unreadable value.
+F254FLAG="$TMP/f254-readable-once"; : > "$F254FLAG"
+rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f254unreadable --tip-cmd "[ -f '$F254FLAG' ] && git rev-parse HEAD || true" --tip-ancestry -- \
+        bash -c "rm -f '$F254FLAG'; true" ) >/dev/null 2>&1 || rc=$?
+assert_eq "(c) tip unreadable after the run -> still STALE (76) with --tip-ancestry" "76" "$rc"
+
+# without --tip-ancestry, behaviour is EXACTLY as #202 shipped it: ANY move is
+# stale, ancestor or not -- the deployment-safe default for an old prompt.
+rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+        "$ROOT/fwf-gate.sh" f254plain --tip-cmd "git rev-parse HEAD" -- \
+        bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c3; true' ) >/dev/null 2>&1 || rc=$?
+assert_eq "no --tip-ancestry: an ancestor move is STILL stale (76) -- unchanged #202 default" "76" "$rc"
+
+# fwf gate-tip: no marker yet for a role -> fails loudly, never fabricates a value.
+rc=0; ( FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example "$ROOT/fwf-gate-tip.sh" never-gated-role ) >/dev/null 2>&1 || rc=$?
+assert_eq "fwf gate-tip on an unknown role fails (never fabricates a tip)" "1" "$rc"
+
 # __PROMOTE_GATE__ (the conductor's macro) composes --tip-cmd with --e2e and
 # names the tracked staging branch, without touching the generic __E2E__ macro
 # implementers' own self-verification renders (it has no shared ref to key on)
@@ -6088,9 +6184,14 @@ RENDERED="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROO
 assert_contains "dev conductor template's promote gate takes --e2e"     "$RENDERED" "--e2e"
 assert_contains "dev conductor template's promote gate takes --tip-cmd" "$RENDERED" "--tip-cmd"
 assert_contains "dev conductor template's promote gate watches origin/staging" "$RENDERED" "origin/staging"
+# issue #254: --tip-ancestry rides along with --tip-cmd, ONLY in this one
+# rendered macro -- an old (pre-respawn) prompt never emits it, which is what
+# keeps the script-side relaxation deployment-safe without cross-file coordination.
+assert_contains "dev conductor template's promote gate takes --tip-ancestry" "$RENDERED" "--tip-ancestry"
 assert_not_contains "dev conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED" "__PROMOTE_GATE__"
 RENDERED_REFACTOR="$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/conductor.tmpl' ''" 2>&1)"
 assert_contains "refactor conductor template's promote gate takes --tip-cmd" "$RENDERED_REFACTOR" "--tip-cmd"
+assert_contains "refactor conductor template's promote gate takes --tip-ancestry" "$RENDERED_REFACTOR" "--tip-ancestry"
 assert_not_contains "refactor conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED_REFACTOR" "__PROMOTE_GATE__"
 
 # (qa2 adversarial, issue #202): if --tip-cmd cannot be RE-READ after the
