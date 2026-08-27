@@ -946,8 +946,8 @@ TIR_IMPL="$(prov_env "fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
 # there is no "resume" branch to have, because every tick already re-scans.
 assert_contains "qa: every tick re-derives its queue from GitHub (gh pr list), not memory" \
   "$TIR_QA" "gh pr list --base"
-assert_contains "qa: queue is scoped to open, non-draft PRs in this QA's own lane" \
-  "$TIR_QA" "Keep only PRs whose headRefName starts with"
+assert_contains "qa: queue is scoped to open, non-draft PRs assigned to this QA's own seat (issue #194)" \
+  "$TIR_QA" 'Keep it only if the result is exactly'
 assert_contains "qa: re-review handoff is keyed off headRefOid (a fresh push), not remembered state" \
   "$TIR_QA" "headRefOid changes"
 # Impl side: a claim-only draft with zero progress IS the cycle's work to
@@ -3363,6 +3363,36 @@ assert_eq "issue number parsed from branch"         "42"    "$(printf '%s' "$DD_
 assert_eq "merged PR bucketed by base branch"       "8"     "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].pr')"
 assert_eq "merged 'when' formatted from mergedAt"   "06-18 12:34" "$(printf '%s' "$DD_ACT" | jq -r '.merged[0].when')"
 
+section "dash data (#194 AC d): unrouted_prs_json flags a PR nobody can reach"
+DD_ROLES='[{"role":"qa1","state":"live","detail":""},{"role":"qa2","state":"down","detail":""}]'
+DD_UNROUTED_FIX="$TMP/dd-unrouted.json"
+printf '%s' '[
+  {"number":10,"headRefName":"captain/x","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: none","comments":[]},
+  {"number":11,"headRefName":"captain/y","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"","comments":[]},
+  {"number":12,"headRefName":"impl3/issue-1-z","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"","comments":[]},
+  {"number":13,"headRefName":"captain/w","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: qa2","comments":[]},
+  {"number":14,"headRefName":"impl1/issue-2-v","isDraft":false,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: qa1","comments":[]},
+  {"number":15,"headRefName":"captain/draft","isDraft":true,"author":{"login":"tbaums"},"createdAt":"2026-08-24T20:00:00Z","body":"fwf-Reviewer: none","comments":[]}
+]' > "$DD_UNROUTED_FIX"
+DD_UNROUTED="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; gh_pr() { cat '$DD_UNROUTED_FIX'; }; unrouted_prs_json '$DD_ROLES'")"
+assert_eq "an explicit 'none' marker is flagged" "no QA seat configured" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==10) | .reason')"
+assert_eq "no marker + non-implN branch is flagged" "no fwf-Reviewer marker and branch does not match implN/*" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==11) | .reason')"
+assert_eq "no marker + implN branch (migration fallback) is NOT flagged" "" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==12) | .reason // empty')"
+assert_eq "marker names a configured-but-not-live seat is flagged" "assigned to qa2, which is not currently live" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==13) | .reason')"
+assert_eq "marker names a live seat is NOT flagged" "" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==14) | .reason // empty')"
+assert_eq "a draft PR is excluded even with a 'none' marker" "" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==15) | .reason // empty')"
+assert_eq "exactly the three flagged PRs surface, nothing else" "10 11 13" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '[.[].pr] | sort | join(" ")')"
+assert_eq "each flagged row carries all five required fields (author, branch, created_at too)" \
+  "tbaums captain/x 2026-08-24T20:00:00Z" \
+  "$(printf '%s' "$DD_UNROUTED" | jq -r '.[] | select(.pr==10) | "\(.author) \(.branch) \(.created_at)"')"
+
 section "dash data: detail_view renders through the REAL gh cache from outside the repo (#57 regression)"
 # The dash runs outside the target repo; the cache's fallback `gh issue view N`
 # must still resolve the repo (via GH_REPO) or it fails "could not resolve" and
@@ -4333,6 +4363,155 @@ assert_eq "a merged PR resolves to APPROVED regardless of thread contents" \
 section "pr-review-state (#82): no request / bad input"
 assert_eq "no QA-* sentinel at all -> AWAITING_REVIEW" "AWAITING_REVIEW" "$(prs_state '[]' OPEN 2026-07-10T15:00:00Z)"
 assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "source '$PRS'; main abc")"
+
+# --------------------------------------------------------------------------
+# fwf pr-reviewer (issue #194): resolve a PR's CURRENTLY ASSIGNED reviewer
+# from its recorded `fwf-Reviewer:` marker, never re-derived from a branch
+# prefix. Same stubbed-fixture pattern as pr-review-state above -- drives the
+# REAL helper, never a decoy grep.
+PRV="$ROOT/fwf-pr-reviewer.sh"
+prv() { # $1=body  $2=comments-json (or omit for '[]')
+  FWF_PROFILE=example bash -c "
+    source '$PRV'
+    pr_raw() { printf '%s' '{\"body\":\"$1\",\"comments\":${2:-[]}}'; }
+    main 84"
+}
+
+section "pr-reviewer (#194): precedence -- comment beats body, newest comment wins, body is the default"
+assert_eq "body marker alone -> body wins" "qa1" "$(prv 'fwf-Reviewer: qa1')"
+assert_eq "body marker + one comment marker -> the comment wins (the actual ordering question)" \
+  "qa2" "$(prv 'fwf-Reviewer: qa1' '[{"body":"fwf-Reviewer: qa2","createdAt":"2026-08-25T00:01:00Z"}]')"
+assert_eq "two comment markers -> the newer wins" \
+  "qa3" "$(prv 'fwf-Reviewer: qa1' '[{"body":"fwf-Reviewer: qa2","createdAt":"2026-08-25T00:01:00Z"},{"body":"fwf-Reviewer: qa3","createdAt":"2026-08-25T00:02:00Z"}]')"
+assert_eq "older comment listed AFTER a newer one in thread order still loses (sorted by createdAt, not thread position)" \
+  "qa3" "$(prv 'fwf-Reviewer: qa1' '[{"body":"fwf-Reviewer: qa3","createdAt":"2026-08-25T00:02:00Z"},{"body":"fwf-Reviewer: qa2","createdAt":"2026-08-25T00:01:00Z"}]')"
+
+section "pr-reviewer (#194): no marker at all -> NO_MARKER, the caller applies the branch-prefix fallback"
+assert_eq "empty body, no comments -> NO_MARKER" "NO_MARKER" "$(prv '')"
+assert_eq "a marker not at column 0 (mid-line, quoted) never counts -- the #82 self-trigger-style guard" \
+  "NO_MARKER" "$(prv 'saw your fwf-Reviewer: qa1 note')"
+
+# QA adversarial (issue #194 review, repro qa1/repro-281): a marker QUOTED
+# inside a fenced code block, or blockquoted, is still at column 0 of ITS
+# line, so a naive `(?m)^fwf-Reviewer:` check (what resolve_reviewer() does)
+# would treat it as a real assignment -- the same defect family #218 fixed
+# for the authz sentinel (unanchored-by-quotation). Fixed by fence-stripping
+# via the shared fwf_strip_fences (lib.sh) before resolve_reviewer's jq ever
+# sees the text.
+prv_raw() { # $1=raw-json (already-valid JSON, passed via env to dodge shell-quoting of its content) -> resolve_reviewer's answer
+  FWF_PROFILE=example RAWJSON="$1" bash -c '
+    source '"'$PRV'"'
+    pr_raw() { printf '"'"'%s'"'"' "$RAWJSON"; }
+    main 84'
+}
+FENCED_JSON="$(jq -nc --arg b $'Quoting what someone posted earlier, for context only:\n```\nfwf-Reviewer: qa3\n```\nThat assignment was a mistake, ignore it.' '{body:$b, comments:[]}')"
+assert_eq "QA adversarial: a marker fenced inside \`\`\` (quoted for discussion) must resolve NO_MARKER, not the quoted seat" \
+  "NO_MARKER" "$(prv_raw "$FENCED_JSON")"
+BLOCKQUOTE_JSON="$(jq -nc --arg b $'> fwf-Reviewer: qa2\nThat was a draft someone else wrote, not a real assignment.' '{body:$b, comments:[]}')"
+assert_eq "QA adversarial: a blockquoted marker (> fwf-Reviewer: qaN) must resolve NO_MARKER, not the quoted seat" \
+  "NO_MARKER" "$(prv_raw "$BLOCKQUOTE_JSON")"
+
+section "pr-reviewer (#194): the degenerate zero-configured-QA-seats case is reachable and distinguishable"
+assert_eq "an explicit 'fwf-Reviewer: none' resolves to the literal none, not NO_MARKER" \
+  "none" "$(prv 'fwf-Reviewer: none')"
+
+section "pr-reviewer (#194) AC precursor -- unreadable != empty (issue #211's own lesson, applied here)"
+UNKOUT="$(FWF_PROFILE=example bash -c "
+  source '$PRV'
+  pr_raw() { return 1; }
+  main 84")"
+assert_eq "a PR that could not be read at all -> UNKNOWN, NEVER collapsed into NO_MARKER" "UNKNOWN" "$UNKOUT"
+assert_eq "non-numeric PR arg -> UNKNOWN" "UNKNOWN" "$(FWF_PROFILE=example bash -c "source '$PRV'; main abc")"
+
+section "pr-reviewer (#194): CLI wiring -- 'fwf pr-reviewer' dispatches to fwf-pr-reviewer.sh"
+assert_contains "help mentions pr-reviewer" "$("$ROOT/fwf" help)" "pr-reviewer <pr>"
+
+# --------------------------------------------------------------------------
+# fwf pr-assign-reviewer (issue #194): decide who a NEW PR's reviewer should
+# be, from the CONFIGURED roster, deterministically. Real FWF_PAIRS/
+# FWF_SUPPRESS_ROLES config (never mocked -- fwf_qa_roster is pure) + a
+# stubbed gh_pr_list for the open-PR-count half.
+FAR="$ROOT/fwf-pr-assign-reviewer.sh"
+far() { # $1=pairs  $2=head-branch  $3=open-prs-json(optional, default [])
+  FWF_PROFILE=example FWF_PAIRS="$1" bash -c "
+    source '$FAR'
+    gh_pr_list() { printf '%s' '${3:-[]}'; }
+    main '$2'"
+}
+
+section "pr-assign-reviewer (#194): rule 1 -- implN/* -> qaN, deterministic, no read needed"
+assert_eq "impl2/* routes to qa2, preserving today's pairing exactly" "qa2" "$(far 3 'impl2/issue-99-foo')"
+assert_eq "impl1/* routes to qa1" "qa1" "$(far 3 'impl1/issue-1-x')"
+
+section "pr-assign-reviewer (#194): rule 2 -- least-loaded configured seat, ties broken by lowest index"
+assert_eq "all seats tied at 0 open PRs -> lowest index (qa1)" "qa1" "$(far 2 'captain/x' '[]')"
+assert_eq "qa1 has 2 assigned, qa2 has 0 -> picks qa2" "qa2" \
+  "$(far 2 'captain/y' '[{"number":1,"headRefName":"impl1/a","body":"","comments":[]},{"number":2,"headRefName":"impl1/b","body":"","comments":[]}]')"
+assert_eq "an explicit fwf-Reviewer marker on an open PR counts toward that seat's load, not the branch prefix" "qa1" \
+  "$(far 2 'captain/z' '[{"number":3,"headRefName":"impl1/a","body":"fwf-Reviewer: qa2","comments":[]}]')"
+assert_eq "a re-assignment comment overrides the body marker for load-counting too (qa1 now loaded, qa2 is least-loaded)" "qa2" \
+  "$(far 2 'captain/w' '[{"number":4,"headRefName":"impl1/a","body":"fwf-Reviewer: qa2","comments":[{"body":"fwf-Reviewer: qa1","createdAt":"2026-08-25T00:01:00Z"}]}]')"
+assert_eq "a PR with no marker and no matching implN prefix (already unroutable) does not count toward anyone's load" "qa1" \
+  "$(far 2 'captain/v' '[{"number":5,"headRefName":"captain/some-other-pr","body":"","comments":[]}]')"
+
+# QA adversarial (issue #194 review, same repro qa1/repro-281 as pr-reviewer's
+# fence bypass): a `fwf-Reviewer:` marker quoted inside a fenced code block
+# on an open PR must not count toward that seat's load either -- passed via
+# env var (not far()'s $3 interpolation) since a JSON string containing
+# literal backticks would break far()'s nested double-quoted shell embedding.
+far_env() { # $1=pairs  $2=head-branch  $3=open-prs-json(raw JSON, via env)
+  FWF_PROFILE=example FWF_PAIRS="$1" PRSJSON="$3" bash -c "
+    source '$FAR'
+    gh_pr_list() { printf '%s' \"\$PRSJSON\"; }
+    main '$2'"
+}
+FENCED_LOAD_JSON="$(jq -nc --arg b $'```\nfwf-Reviewer: qa2\n```' '[{number:1,headRefName:"captain/a",body:$b,comments:[]}]')"
+assert_eq "a fwf-Reviewer marker fenced inside \`\`\` on an open PR does NOT count toward that seat's load" "qa1" \
+  "$(far_env 2 'captain/z2' "$FENCED_LOAD_JSON")"
+
+section "pr-assign-reviewer (#194) AC (h): the degenerate zero-configured-QA-seats case"
+assert_eq "no QA seats configured at all -> none, a real confident answer" "none" \
+  "$(FWF_PROFILE=example FWF_PAIRS=2 FWF_SUPPRESS_ROLES=qa bash -c "source '$FAR'; main 'captain/x'")"
+
+section "pr-assign-reviewer (#194): unreadable != empty -- an open-PR-list failure never fabricates a confident least-loaded count"
+FAILOUT="$(FWF_PROFILE=example FWF_PAIRS=2 bash -c "
+  source '$FAR'
+  gh_pr_list() { return 1; }
+  main 'captain/x'")"
+assert_eq "a failed gh query falls back to the SAME deterministic tie-break an all-tied count would produce (lowest index)" \
+  "qa1" "$FAILOUT"
+
+section "pr-assign-reviewer (#194): CLI wiring"
+assert_contains "help mentions pr-assign-reviewer" "$("$ROOT/fwf" help)" "pr-assign-reviewer <head-branch>"
+
+# --------------------------------------------------------------------------
+# fwf-Reviewer: marker wiring into the dev profile's PR-creation and QA-survey
+# templates (issue #194, third increment). This is the piece that actually
+# fixes the observed incidents: a captain/*, gv/*, pm/*, or conductor/* PR now
+# gets a reviewer at creation time, and qaN's survey routes by that recorded
+# marker instead of re-deriving from the branch name on every cycle.
+DEVIMPL_194="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+DEVQA_194="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+
+section "dev implementer template (#194): PR body records an fwf-Reviewer: marker at creation time"
+assert_contains "gh pr create computes the reviewer via fwf pr-assign-reviewer" "$DEVIMPL_194" \
+  'fwf pr-assign-reviewer impl1/issue-<num>-<slug>'
+assert_contains "the marker is folded into the body as a first-column fwf-Reviewer: line" "$DEVIMPL_194" \
+  'fwf-Reviewer: %s'
+assert_not_contains "no leftover __ID__ token in the rendered pr-assign-reviewer call" "$DEVIMPL_194" '__ID__'
+
+section "dev qa template (#194): survey routes by the recorded marker, not the branch prefix alone"
+assert_contains "intro states routing is by explicit assignment (issue #194), not a branch glob" "$DEVQA_194" \
+  "issue #194"
+assert_contains "survey resolves each PR's reviewer via fwf pr-reviewer" "$DEVQA_194" \
+  'fwf pr-reviewer <num>'
+assert_contains "an exact qaN match is kept" "$DEVQA_194" 'exactly "qa1"'
+assert_contains "NO_MARKER + matching branch prefix is the stated migration fallback" "$DEVQA_194" 'NO_MARKER'
+assert_contains "a branch-prefix match with a DIFFERENT marker is explicitly excluded" "$DEVQA_194" \
+  'whose branch starts with "impl1/" but whose marker names a different seat'
+assert_contains "UNKNOWN (unreadable PR) is never collapsed into NO_MARKER" "$DEVQA_194" 'UNKNOWN'
+assert_not_contains "the old unconditional branch-prefix survey line is gone" "$DEVQA_194" \
+  'Keep only PRs whose headRefName starts with "impl1/" AND isDraft is false.'
 
 # --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag

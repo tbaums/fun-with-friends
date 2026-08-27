@@ -256,3 +256,39 @@ Grounded in verified files:
 - **End-to-end throughput.** Whether admission improves *wall-clock gate
   throughput* (vs the #138 semaphore) under the real N-worktree load — the only
   fair comparison is on the contended box.
+
+## Status update — 2026-08-27: default-ON reverted (#286)
+
+`v0.32.1` enabled admission fleet-wide by flipping `FWF_MEM_ADMIT_ENABLE`'s default
+to `1` **without** the real-box calibration this proposal's criterion (3) requires.
+That was reverted in #286; the default is `0` again and the mechanism is unchanged
+and still in the tree.
+
+Why it had to come out, stated as the inequality admission actually enforces:
+
+```
+free - reserved  >=  reserve + FWF_MEM_ADMIT_FLOOR_GB
+```
+
+With the shipped placeholders (`FWF_MEM_ADMIT_FLOOR_GB=8`, `FWF_MEM_RESERVE_BUILD_GB=6`)
+the **first** `--cargo-build` holder needs **>= 14 GiB** free and the **second** needs
+**>= 20 GiB**. On any box that cannot reach those numbers this is not a slow path and
+not a flake — it is unsatisfiable. Every `fwf gate --cargo-build` waited the full
+`FWF_MEM_ADMIT_TIMEOUT` (900 s) and then exited `EX_SKIPPED`. Measured on devbox1 with
+18 GiB free: the first holder was admitted, the second refused, on 3 of 3 runs.
+
+The visible casualty was CI — the #138 semaphore e2e asserts concurrency reaches 2,
+which cannot happen when admission never admits a second holder — and no release
+published between 2026-08-25 and this revert. The larger, quieter casualty was any
+developer machine under ~14 GiB available.
+
+**The re-enable path is staged, not fleet-wide.** Before the default moves again:
+
+1. Complete criterion (3): measure per-op peak RSS for `fast`, `build`, and `e2e` on a
+   real box and replace the placeholder reserves with measured numbers.
+2. Run in shadow-log mode — record what admission *would* have refused, refuse nothing.
+3. Canary on a single box and compare gate throughput and OOM incidents against control.
+4. Only then change the default, and state the assumed box size in the CHANGELOG entry.
+
+The floor value is the bigger lever than the per-op reserves: halving `RESERVE_BUILD_GB`
+alone would still leave the first holder needing 11 GiB.

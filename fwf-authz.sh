@@ -155,33 +155,10 @@ while IFS= read -r c; do
   # character and run length explicitly; a candidate closer only counts when
   # it repeats that same character at least that many times with nothing but
   # trailing whitespace after.
-  stripped="$(printf '%s\n' "$body" | awk '
-    BEGIN { infence = 0; fchar = ""; flen = 0 }
-    {
-      line = $0
-      sub(/^[ ]{0,3}/, "", line)
-    }
-    !infence {
-      if (line ~ /^```/ || line ~ /^~~~/) {
-        fchar = substr(line, 1, 1)
-        n = 0
-        while (substr(line, n + 1, 1) == fchar) n++
-        flen = n
-        infence = 1
-        next
-      }
-      print
-      next
-    }
-    infence {
-      n = 0
-      while (substr(line, n + 1, 1) == fchar) n++
-      rest = substr(line, n + 1)
-      gsub(/[ \t]/, "", rest)
-      if (n >= flen && rest == "") infence = 0
-      next
-    }
-  ')"
+  # (issue #194: this stripper is now shared via lib.sh's fwf_strip_fences,
+  # identical logic, so fwf-pr-reviewer.sh/fwf-pr-assign-reviewer.sh reuse the
+  # exact same proven fence-tracking instead of a second hand-rolled copy.)
+  stripped="$(printf '%s\n' "$body" | fwf_strip_fences)"
 
   while IFS= read -r line; do
     [ -n "$matched_line" ] && break
