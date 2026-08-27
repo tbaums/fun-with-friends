@@ -6550,6 +6550,46 @@ rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FRE
 assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
 
 # --------------------------------------------------------------------------
+section "fwf gate: SHA-keyed, reviewer-readable verdict recording (issue #220 AC r/r0)"
+# The PRIOR clause a promotion-integrity check must satisfy: a gate invoked
+# WITHOUT --tip-cmd must still record its verdict, in a store keyed by SHA
+# and readable by something other than the gate itself (a reviewer, a
+# promotion artifact, fwf dash) -- distinct from #202's role-keyed skip-
+# optimization marker above, which only exists when --tip-cmd was passed.
+F220RUN="$TMP/run220"; mkdir -p "$F220RUN"
+F220REPO="$TMP/f220-repo"; mkdir -p "$F220REPO"
+git -C "$F220REPO" init -q
+git -C "$F220REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+F220SHA="$(git -C "$F220REPO" rev-parse HEAD)"
+
+rc=0; ( cd "$F220REPO" && FWF_RUN_DIR="$F220RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f220plain -- true ) >/dev/null 2>&1 || rc=$?
+assert_eq "AC(r0): a gate run with NO --tip-cmd still exits normally" "0" "$rc"
+F220_VERDICT_FILE="$F220RUN/state/example/gate-verdict/$F220SHA"
+[ -f "$F220_VERDICT_FILE" ] && ok "AC(r0): the SHA-keyed verdict marker exists after a --tip-cmd-less run (costs one ls)" \
+  || bad "AC(r0): the SHA-keyed verdict marker exists after a --tip-cmd-less run" "no file at $F220_VERDICT_FILE"
+assert_contains "the recorded verdict names the role" "$(cat "$F220_VERDICT_FILE" 2>/dev/null)" "role=f220plain"
+assert_contains "the recorded verdict is green (wrapped command succeeded)" "$(cat "$F220_VERDICT_FILE" 2>/dev/null)" "verdict=green"
+
+rc=0; ( cd "$F220REPO" && FWF_RUN_DIR="$F220RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f220plainred -- false ) >/dev/null 2>&1 || rc=$?
+assert_eq "a failing wrapped command still exits non-zero" "1" "$rc"
+assert_contains "a RED wrapped command records verdict=red, not silently green" \
+  "$(cat "$F220RUN/state/example/gate-verdict/$F220SHA" 2>/dev/null)" "verdict=red"
+
+assert_eq "AC(r0)/discriminating: a SHA nobody has gated yet has NO verdict record -- never attempted is not misread as green" "" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$F220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read 0000000000000000000000000000000000dead" 2>/dev/null)"
+
+section "fwf gate: the --tip-cmd path ALSO populates the SHA-keyed store, without touching the role-keyed skip marker"
+FWF_GATE_FORCE=1 f202gate -- true >/dev/null 2>&1
+CUR202TIP="$(git -C "$F202REPO" rev-parse HEAD)"
+assert_contains "a --tip-cmd gate ALSO writes the SHA-keyed store (same tip, same role, same verdict as the role-keyed marker)" \
+  "$(cat "$F202RUN/state/example/gate-verdict/$CUR202TIP" 2>/dev/null)" "role=f202role"
+[ -d "$F202RUN/state/example/gate-tip" ] && [ -d "$F202RUN/state/example/gate-verdict" ] && \
+  ok "the two stores live in genuinely separate directories (gate-tip/ vs gate-verdict/), never one file" || \
+  bad "the two stores live in genuinely separate directories" "one or both missing"
+
+# --------------------------------------------------------------------------
 # fwf gate --tip-ancestry: ancestry, not movement, is the ruling (issue #254)
 section "fwf gate --tip-ancestry: a confirmed tip move must not discard a valid verdict when it's still an ancestor (#254)"
 F254RUN="$TMP/run254"; mkdir -p "$F254RUN"

@@ -1940,6 +1940,60 @@ fwf_gate_tip_record() {
   } > "$f"
 }
 
+# --- gate verdict record, keyed by SHA (issue #220 AC (r)/(r0)) -------------
+# A DELIBERATELY SEPARATE store from fwf_gate_tip_marker_path/fwf_gate_tip_
+# record above -- that one is #202's role-keyed skip-optimization marker,
+# overwritten every run, read only by the gate itself to decide whether ITS
+# next tick can skip re-gating an unchanged tip. THIS store answers a
+# different question a REVIEWER asks -- "which verdict did SHA X get, from
+# which role, at what time" -- from a promotion artifact or `fwf dash`, not
+# just from the gate's own internal state.
+#
+# Recorded on EVERY gate run, WITH OR WITHOUT --tip-cmd (AC (r0): "a gate
+# invoked without --tip-cmd must still record its verdict"). The existing
+# tip-triggered marker above only exists when the CALLER happens to pass
+# --tip-cmd, and issue #174 documents that today no LIVE invocation on this
+# floor does (a stale rendered prompt) -- relying on that marker alone would
+# leave this AC satisfiable only inside a code path nothing exercises.
+#
+# Deliberately does NOT reuse or overwrite fwf_gate_tip_marker_path's file:
+# a role that gates BOTH with and without --tip-cmd at different times (or
+# whose caller adds --tip-cmd later) must never have one write path clobber
+# the other's skip-optimization state.
+fwf_gate_verdict_marker_path() { echo "$FWF_STATE_DIR/gate-verdict/$1"; } # $1=sha
+
+# $1=sha $2=role $3=verdict(green|red|stale|deferred) $4=reason(optional)
+fwf_gate_verdict_record() {
+  local sha="${1:?fwf_gate_verdict_record needs a sha}" role="${2:?fwf_gate_verdict_record needs a role}" verdict="${3:?fwf_gate_verdict_record needs a verdict}" reason="${4:-}" f
+  f="$(fwf_gate_verdict_marker_path "$sha")"
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  {
+    printf 'sha=%s\nrole=%s\nverdict=%s\nrecorded=%s\n' "$sha" "$role" "$verdict" "$(date +%s)"
+    [ -n "$reason" ] && printf 'reason=%s\n' "$reason"
+  } > "$f"
+}
+
+# $1=sha -> "role=<r> verdict=<v> recorded=<epoch> [reason=<x>]" on stdout,
+# rc 0, if a verdict was ever recorded for this SHA. rc 1 (no output) if
+# none was -- the caller must read that as "never attempted", never
+# collapse it into a confident answer (issue #211's own lesson: unreadable/
+# absent must never fall through to a value indistinguishable from a real
+# one -- here specifically, a promotion must not misread "no record" as
+# "green").
+fwf_gate_verdict_read() {
+  local sha="${1:?fwf_gate_verdict_read needs a sha}" f role verdict recorded reason
+  f="$(fwf_gate_verdict_marker_path "$sha")"
+  [ -f "$f" ] || return 1
+  role="$(_fwf_gate_owner_field role "$f")"
+  verdict="$(_fwf_gate_owner_field verdict "$f")"
+  recorded="$(_fwf_gate_owner_field recorded "$f")"
+  reason="$(_fwf_gate_owner_field reason "$f")"
+  [ -n "$verdict" ] || return 1
+  printf 'role=%s verdict=%s recorded=%s' "$role" "$verdict" "$recorded"
+  [ -n "$reason" ] && printf ' reason=%s' "$reason"
+  printf '\n'
+}
+
 # --- token-budget WRITER lifecycle (issue #96) -------------------------------
 # The WRITER (fwf-budget-check.sh --loop) is a plain detached bash background
 # loop, not a Claude Code role — there is no `/loop` skill for a host-side
