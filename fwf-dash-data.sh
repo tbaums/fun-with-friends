@@ -48,31 +48,14 @@ DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"
 # purely for mouse-wheel forwarding), so blindly trusting our OWN $TMUX would
 # be exactly as wrong as blindly unsetting it — either can point role
 # detection at a server the factory was never on, showing every role "down".
-# Learn the socket fwf up/respawn persisted instead (fwf_persist_tmux_socket,
-# lib.sh) — that is the single source of truth.
-_fwf_persisted_socket=""
-[ -f "$FWF_TMUX_SOCKET_FILE" ] && _fwf_persisted_socket="$(cat "$FWF_TMUX_SOCKET_FILE" 2>/dev/null || true)"
-_fwf_ambient_socket="${TMUX-}"      # our OWN socket, if any — used ONLY by the absent-field fallback below
-_fwf_ambient_socket="${_fwf_ambient_socket%%,*}"
-unset TMUX   # never let our own socket leak into a query by accident
-
-_fwf_sock_probe() { # $1 = socket path ("" = default) → rc 0 if $BUILD_SESSION lives there
-  if [ -n "$1" ]; then command tmux -S "$1" has-session -t "$BUILD_SESSION" 2>/dev/null
-  else command tmux has-session -t "$BUILD_SESSION" 2>/dev/null; fi
-}
-FWF_TMUX_SOCK=""
-case "$_fwf_persisted_socket" in
-  "")   # Absent-field fallback (migration — a factory started before this
-        # change has no persisted socket yet): probe our own ambient socket
-        # first, then the default socket; use whichever actually has the
-        # sessions, so an already-running factory recovers with NO restart.
-        if [ -n "$_fwf_ambient_socket" ] && _fwf_sock_probe "$_fwf_ambient_socket"; then
-          FWF_TMUX_SOCK="$_fwf_ambient_socket"
-        fi ;;
-  default) FWF_TMUX_SOCK="" ;;
-  *) FWF_TMUX_SOCK="$_fwf_persisted_socket" ;;
-esac
-unset _fwf_persisted_socket _fwf_ambient_socket
+# Learn the socket fwf up/respawn persisted instead — shared with
+# fwf-supervise.sh (issue #193 AC g) as fwf_resolve_tmux_socket (lib.sh), so
+# the two readers can never independently mis-resolve and disagree about
+# whether the factory is even visible. Probing BOTH sessions (not just
+# BUILD_SESSION, the pre-#193 bug) means a coord-only factory (mid `fwf down
+# --floor-only`) still resolves correctly on the absent-field migration path.
+FWF_TMUX_SOCK="$(fwf_resolve_tmux_socket "$BUILD_SESSION" "$COORD_SESSION")"
+unset TMUX   # never let our own socket leak into a query by accident (must run AFTER the resolve above, which needs it)
 
 # Every tmux call below — including lib.sh's fwf_find_pane — goes through this
 # shadow, so pane queries transparently target the resolved factory socket.
@@ -137,6 +120,44 @@ floor_idle_json() {
     '{active:$active, since:$since, reason:$reason, actor:$actor}'
 }
 
+# issue #193 (AC a/b/i0): seconds since $1's heartbeat last touched, or empty
+# on a missing/unreadable/future (clock-skew) mtime — NEVER a negative age,
+# never fabricated. Shared by the per-role STALE annotation and (via
+# visibility_json below) the header's always-shown newest-heartbeat line.
+_fwf193_heartbeat_age() { # $1=role -> stdout: age in seconds, or empty
+  local hb m now age
+  hb="$(fwf_heartbeat_path "$1")"
+  [ -f "$hb" ] || return 0
+  m="$(file_mtime "$hb")"
+  [ -n "$m" ] || return 0
+  now="$(date +%s)"
+  age=$(( now - m ))
+  [ "$age" -lt 0 ] && return 0   # clock skew -> UNKNOWN-shaped, never a false-fresh negative
+  printf '%s' "$age"
+}
+
+# issue #193 (AC b/e): whole-factory visibility, always emitted — the
+# header's newest-heartbeat age (shown whether fresh or stale, per (b): an
+# operator who only ever sees this during an incident has never calibrated
+# what "normal" looks like), plus what a "no factory here" banner needs to
+# name (AC e's edge case: this must be diagnosable as MY mistake, e.g. the
+# wrong FWF_PROFILE, not just reported as a mystery).
+visibility_json() {
+  local visible=false newest="" role age
+  fwf_factory_visible && visible=true
+  for role in $(fwf_all_roles); do
+    age="$(_fwf193_heartbeat_age "$role")"
+    [ -n "$age" ] || continue
+    if [ -z "$newest" ] || [ "$age" -lt "$newest" ]; then newest="$age"; fi
+  done
+  jq -n --argjson visible "$visible" --arg newest "$newest" \
+        --arg state_dir "$FWF_STATE_DIR" --arg profile "$PROFILE" \
+        --arg host "$(hostname 2>/dev/null || echo unknown)" \
+        '{factory_visible:$visible,
+          newest_heartbeat_age:(if $newest=="" then null else ($newest|tonumber) end),
+          state_dir:$state_dir, profile:$profile, host:$host}'
+}
+
 # --- roles (tmux pane liveness, overlaid with status.json detail) -----------
 # $1 = floor_idle_json (so a pane-less floor role can render a deliberate IDLE
 # instead of "down" — see floor_idle_json above). Optional and defaults to
@@ -150,29 +171,49 @@ roles_json() {
     fi_reason="$(printf '%s' "$fi_json" | jq -r '.reason // ""')"
     fi_actor="$(printf '%s' "$fi_json" | jq -r '.actor // ""')"
   fi
-  local role sess token pane state detail cmd
+  local role sess token pane state detail cmd hb_age
   for role in $(fwf_all_roles); do
-    case "$role" in
-      impl*|qa*|conductor) sess="$BUILD_SESSION";;
-      pm|gv|captain)       sess="$COORD_SESSION";;
-      *) case "$(fwf_extra_session "$role" 2>/dev/null)" in
-           build) sess="$BUILD_SESSION";; *) sess="$COORD_SESSION";;
-         esac;;
-    esac
+    sess="$(fwf_role_session "$role")"
     token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
     case "$role" in impl*|qa*) token="$token ·";; esac
     pane="$(fwf_find_pane "$sess" "$token" 2>/dev/null || true)"
+    hb_age=""
     if [ -n "$pane" ]; then
-      # Live-pane precedence: a role with a live pane is NEVER shown idle off
-      # the log, however stale or racing a floor-up append might be.
+      # Live-pane precedence (issue #193 AC i0): a role with a live pane is
+      # NEVER shown idle/stale/unknown off any other signal — heartbeat age,
+      # session-visibility, gate-lock, however they read — the pane itself is
+      # the strongest positive evidence there is. Still surface the heartbeat
+      # age alongside the real state word (i0's fixture), not instead of it.
       cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
       case "$cmd" in bash|zsh|sh|fish|"") state="idle";; *) state="live";; esac
+      hb_age="$(_fwf193_heartbeat_age "$role")"
     elif [ "$role" != "captain" ] && [ "$fi_active" = "true" ]; then
       # No pane + a logged floor-down with no later floor-up = deliberately
       # idled by --floor-only, not crashed. The captain is the one role
       # --floor-only never tears down, so it's excluded from this state —
       # a captain with no pane is always a real "down".
       state="floor_idle"
+    elif ! fwf_role_session_visible "$role" 2>/dev/null; then
+      # issue #193 (AC c/e): we cannot even confirm the SESSION this role's
+      # pane would live in is visible from this host (wrong socket, wrong
+      # host, wrong profile) — "no pane found" here proves nothing. Never
+      # collapse "I cannot tell" into "down".
+      state="unknown"
+    elif [ -d "$(fwf_gate_lock_dir "$role")" ]; then
+      # issue #193 (AC i): holding the gate lock is a POSITIVE liveness fact
+      # strictly stronger than pane presence or tick age — a role deep in a
+      # long gate run has no pane visible here in some fixtures, but IS
+      # working. Checked before heartbeat staleness so a frozen tick during a
+      # long gate never reads as STALE, let alone DOWN.
+      state="busy"
+    elif [ -f "$(fwf_heartbeat_path "$role")" ]; then
+      # issue #193 (AC a/d): the session IS visible and this role has a
+      # heartbeat file (evidence it ran here at some point), but no pane and
+      # no gate lock right now. STALE, not DOWN — DOWN is reserved for a role
+      # with NO heartbeat trace at all (the genuinely-never-seen case AC (d)
+      # requires this fix not to weaken).
+      state="stale"
+      hb_age="$(_fwf193_heartbeat_age "$role")"
     else
       state="down"
     fi
@@ -181,8 +222,8 @@ roles_json() {
     if [ "$state" = "floor_idle" ]; then
       detail="floor idled by $fi_actor since ${fi_since} — ${fi_reason}"
     fi
-    jq -n --arg role "$role" --arg state "$state" --arg detail "$detail" \
-      '{role:$role, state:$state, detail:$detail}'
+    jq -n --arg role "$role" --arg state "$state" --arg detail "$detail" --arg hb "$hb_age" \
+      '{role:$role, state:$state, detail:$detail, heartbeat_age:(if $hb=="" then null else ($hb|tonumber) end)}'
   done | jq -s '.'
 }
 
@@ -469,7 +510,7 @@ unrouted_prs_json() {
 
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade unrouted_prs
+  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade unrouted_prs visibility
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -489,6 +530,7 @@ main() {
   upgrade="$(upgrade_json)"
   installed="$(installed_version_json)"
   unrouted_prs="$(unrouted_prs_json "$roles")"
+  visibility="$(visibility_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
@@ -497,11 +539,11 @@ main() {
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
     --argjson activity "$activity" --argjson needs_you "$needs_you" \
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
-    --argjson unrouted_prs "$unrouted_prs" \
+    --argjson unrouted_prs "$unrouted_prs" --argjson visibility "$visibility" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
       activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
-      installed:$installed, unrouted_prs:$unrouted_prs}'
+      installed:$installed, unrouted_prs:$unrouted_prs, visibility:$visibility}'
   rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
 

@@ -1024,6 +1024,12 @@ fwf_resolve_tmux_socket() {
     default) : ;;   # explicit default socket -> echo nothing, callers use plain `tmux`
     *) printf '%s' "$persisted" ;;
   esac
+  # No match found is a valid, non-error result (empty -> default socket),
+  # NOT a failure -- the loop/probe above legitimately ends on a failing
+  # `has-session` when nothing matched. Without this explicit return, THIS
+  # function's own exit status is that last failing probe's, which trips
+  # `set -e` on every plain-assignment caller (`sock="$(fwf_resolve_tmux_socket …)"`).
+  return 0
 }
 
 # issue #193 (AC g): which SESSION a role's pane lives in -- mirrors
