@@ -946,8 +946,8 @@ TIR_IMPL="$(prov_env "fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
 # there is no "resume" branch to have, because every tick already re-scans.
 assert_contains "qa: every tick re-derives its queue from GitHub (gh pr list), not memory" \
   "$TIR_QA" "gh pr list --base"
-assert_contains "qa: queue is scoped to open, non-draft PRs in this QA's own lane" \
-  "$TIR_QA" "Keep only PRs whose headRefName starts with"
+assert_contains "qa: queue is scoped to open, non-draft PRs assigned to this QA's own seat (issue #194)" \
+  "$TIR_QA" 'Keep it only if the result is exactly'
 assert_contains "qa: re-review handoff is keyed off headRefOid (a fresh push), not remembered state" \
   "$TIR_QA" "headRefOid changes"
 # Impl side: a claim-only draft with zero progress IS the cycle's work to
@@ -4240,6 +4240,35 @@ assert_eq "a failed gh query falls back to the SAME deterministic tie-break an a
 
 section "pr-assign-reviewer (#194): CLI wiring"
 assert_contains "help mentions pr-assign-reviewer" "$("$ROOT/fwf" help)" "pr-assign-reviewer <head-branch>"
+
+# --------------------------------------------------------------------------
+# fwf-Reviewer: marker wiring into the dev profile's PR-creation and QA-survey
+# templates (issue #194, third increment). This is the piece that actually
+# fixes the observed incidents: a captain/*, gv/*, pm/*, or conductor/* PR now
+# gets a reviewer at creation time, and qaN's survey routes by that recorded
+# marker instead of re-deriving from the branch name on every cycle.
+DEVIMPL_194="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+DEVQA_194="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+
+section "dev implementer template (#194): PR body records an fwf-Reviewer: marker at creation time"
+assert_contains "gh pr create computes the reviewer via fwf pr-assign-reviewer" "$DEVIMPL_194" \
+  'fwf pr-assign-reviewer impl1/issue-<num>-<slug>'
+assert_contains "the marker is folded into the body as a first-column fwf-Reviewer: line" "$DEVIMPL_194" \
+  'fwf-Reviewer: %s'
+assert_not_contains "no leftover __ID__ token in the rendered pr-assign-reviewer call" "$DEVIMPL_194" '__ID__'
+
+section "dev qa template (#194): survey routes by the recorded marker, not the branch prefix alone"
+assert_contains "intro states routing is by explicit assignment (issue #194), not a branch glob" "$DEVQA_194" \
+  "issue #194"
+assert_contains "survey resolves each PR's reviewer via fwf pr-reviewer" "$DEVQA_194" \
+  'fwf pr-reviewer <num>'
+assert_contains "an exact qaN match is kept" "$DEVQA_194" 'exactly "qa1"'
+assert_contains "NO_MARKER + matching branch prefix is the stated migration fallback" "$DEVQA_194" 'NO_MARKER'
+assert_contains "a branch-prefix match with a DIFFERENT marker is explicitly excluded" "$DEVQA_194" \
+  'whose branch starts with "impl1/" but whose marker names a different seat'
+assert_contains "UNKNOWN (unreadable PR) is never collapsed into NO_MARKER" "$DEVQA_194" 'UNKNOWN'
+assert_not_contains "the old unconditional branch-prefix survey line is gone" "$DEVQA_194" \
+  'Keep only PRs whose headRefName starts with "impl1/" AND isDraft is false.'
 
 # --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
