@@ -779,7 +779,21 @@ $text"
   # __E2E__: __E2E__ is also used for an implementer's own local
   # self-verification (dev/implementer.tmpl), which has no "watched shared
   # ref" to key a skip on.
-  text="${text//__PROMOTE_GATE__/fwf gate $role_tag --e2e$_fwf_e2e_cargo_flag --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") -- bash -c $(printf '%q' "$E2E_CMD")}"
+  #
+  # --tip-ancestry (issue #254): "the ref changed" is the wrong question — a
+  # confirmed move that is STILL an ancestor (the ordinary case, someone
+  # merged on top) must not discard a valid verdict, only a history rewrite
+  # should. This is the ONLY place that flag is emitted, and it is
+  # deliberately paired here with conductor.tmpl step 4 merging by the
+  # recorded tip's LITERAL hash rather than a re-resolved __STAGING__ ref
+  # (issue #254 AC (d)+(e)) — relaxing the gate's stale check without also
+  # pinning the promote would let an untested SHA reach __INTEGRATION__.
+  # Bundling both into this one rendered macro is what makes the pair
+  # deployment-safe: an OLD rendered prompt (pre-respawn) never emits
+  # --tip-ancestry, so `fwf-gate.sh`'s relaxation stays inert for it even
+  # though the script itself is live the moment it merges (templates only
+  # take effect on respawn) — no cross-file coordination required.
+  text="${text//__PROMOTE_GATE__/fwf gate $role_tag --e2e$_fwf_e2e_cargo_flag --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") --tip-ancestry -- bash -c $(printf '%q' "$E2E_CMD")}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)
@@ -1827,13 +1841,21 @@ fwf_gate_tip_unchanged() {
   esac
 }
 
-# $1=role $2=tip $3=verdict(green|red|stale). Records the ONLY state
-# fwf_gate_tip_unchanged reads — overwrites any prior marker for this role.
+# $1=role $2=tip $3=verdict(green|red|stale) $4=reason(optional). Records the
+# ONLY state fwf_gate_tip_unchanged reads — overwrites any prior marker for
+# this role. $4, when given, distinguishes WHY a stale verdict happened
+# (issue #254 AC (h)): a confirmed history rewrite (not-ancestor) and an
+# ancestry check that could not complete (indeterminate — shallow clone,
+# missing objects) both correctly produce "stale", but an operator's next
+# action differs, so the reason is worth recording when it's this cheap to.
 fwf_gate_tip_record() {
-  local role="${1:?fwf_gate_tip_record needs a role}" tip="${2:?fwf_gate_tip_record needs a tip}" verdict="${3:?fwf_gate_tip_record needs a verdict}" f
+  local role="${1:?fwf_gate_tip_record needs a role}" tip="${2:?fwf_gate_tip_record needs a tip}" verdict="${3:?fwf_gate_tip_record needs a verdict}" reason="${4:-}" f
   f="$(fwf_gate_tip_marker_path "$role")"
   mkdir -p "$(dirname "$f")" 2>/dev/null
-  printf 'tip=%s\nverdict=%s\nrecorded=%s\n' "$tip" "$verdict" "$(date +%s)" > "$f"
+  {
+    printf 'tip=%s\nverdict=%s\nrecorded=%s\n' "$tip" "$verdict" "$(date +%s)"
+    [ -n "$reason" ] && printf 'reason=%s\n' "$reason"
+  } > "$f"
 }
 
 # --- token-budget WRITER lifecycle (issue #96) -------------------------------

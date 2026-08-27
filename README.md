@@ -369,14 +369,33 @@ not a per-role copy:
   CMD (e.g. `git rev-parse origin/staging`) is checked BEFORE the lock is
   ever taken, and a tick that finds the watched ref unchanged since the last
   COMPLETED gate for that role never acquires it — `fwf gate` exits `75`
-  exactly like a busy lock. If the ref moves DURING the run, the result is
-  for a superseded tip and must never read as promotable, so the run exits
-  `76` instead, regardless of the wrapped command's own exit code. State is
-  persisted BY THE GATE SCRIPT itself on exit (`~/.fun-with-friends/state/<profile>/gate-tip/<role>`),
-  never by a role's memory — a captain-authored prompt guard with the same
-  intent had silently stopped firing because nothing ever wrote its marker.
+  exactly like a busy lock. State is persisted BY THE GATE SCRIPT itself on
+  exit (`~/.fun-with-friends/state/<profile>/gate-tip/<role>`), never by a
+  role's memory — a captain-authored prompt guard with the same intent had
+  silently stopped firing because nothing ever wrote its marker.
   `FWF_GATE_FORCE=1` forces a re-run of an otherwise-skippable unchanged tip
   (`fwf_gate_tip_unchanged` / `fwf_gate_tip_record` in `lib.sh`).
+
+  **The ruling is ancestry, not movement** (issue #254): if the watched ref
+  moves DURING the run, "did the ref change" is the wrong question — a
+  completed, valid verdict must not be discarded just because someone merged
+  on top. `--tip-ancestry` (composed into `__PROMOTE_GATE__` alongside
+  `--tip-cmd`, so only a respawned/newly-rendered prompt emits it) checks
+  `git merge-base --is-ancestor <tip-before> <tip-after>`: if the gated SHA is
+  STILL an ancestor of the new tip, the verdict stands and is recorded
+  green/red exactly as the wrapped command returned; if it is NOT an ancestor
+  (a force-push or rebase truly rewrote history) or ancestry can't be
+  determined (a shallow clone, missing objects), the run exits `76`
+  (`EX_STALE`) exactly as before — a real result exists but for a superseded
+  or indeterminate tip, and must never read as promotable. Without
+  `--tip-ancestry` (an un-respawned prompt, or any other `--tip-cmd` caller),
+  behaviour is unchanged from #202: ANY tip move is `76`, ancestor or not —
+  the safe default. `fwf gate-tip <role>` prints back the exact SHA the last
+  COMPLETED gate recorded, so a caller promotes that literal hash — never a
+  re-resolved ref, which could have moved again since the gate itself
+  resolved it. Requires `<tip-before>`/`<tip-after>` to be commit-ish; a
+  non-git `--tip-cmd` value makes the ancestry call error, which fails closed
+  to `76` forever, so `--tip-ancestry` is only for a git-ref `--tip-cmd`.
 
 Both locks are released by `fwf gate`'s own `EXIT` trap the moment it exits —
 success, failure, or a kill — so no role has to manage them by hand; see

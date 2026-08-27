@@ -787,6 +787,7 @@ case "$cmd" in
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
+  gate-tip)  engine fwf-gate-tip.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;

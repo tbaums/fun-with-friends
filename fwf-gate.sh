@@ -50,6 +50,30 @@
 #              (the "explicit resume" escape hatch). State lives under
 #              fwf_gate_tip_marker_path (lib.sh) — persisted by this script,
 #              never by a role's memory.
+#   --tip-ancestry  Ruling from issue #202/#254: "the ref changed" is the
+#              wrong question — a completed, valid verdict must not be
+#              discarded just because the tip moved, ONLY because what was
+#              gated is no longer in the promotable history. Requires
+#              --tip-cmd, and the two values MUST be commit-ish (this runs
+#              `git merge-base --is-ancestor`, so a non-git --tip-cmd value —
+#              a content hash, a checksum — makes the ancestry call error,
+#              which (below) fails closed to STALE forever; --tip-ancestry is
+#              only for a git-ref --tip-cmd). When the tip moved during the
+#              run: if the BEFORE value is still an ancestor of the AFTER
+#              value (the ordinary case — someone merged on top), the verdict
+#              stands and is recorded green/red as the wrapped command
+#              returned — newer commits ride the next cycle. If it is NOT an
+#              ancestor (force-push, rebase, history rewritten) or ancestry
+#              could not be determined (shallow clone, missing objects), this
+#              still fails to STALE/76 exactly as without the flag. Without
+#              this flag: ANY tip move is STALE regardless of ancestry — the
+#              pre-#254 behaviour, kept as the default so an OLD rendered
+#              prompt (no flag) degrades to "wasteful but safe", never to
+#              "promotes a SHA the gate never fully verdicted". A caller that
+#              relaxes this MUST ALSO pin its promote step to the recorded
+#              tip's literal hash, never a re-resolved ref (issue #254 AC
+#              (d)+(e)) — the ancestry test only makes a fixed ref usable, the
+#              literal-hash promote is what actually uses it safely.
 #   <command>  exec'd directly via "$@" after the lock(s) are held — no extra
 #              shell re-parsing, so a multi-command GATE_CMD string must be
 #              passed through `bash -c '...'` by the caller (that's exactly
@@ -128,7 +152,7 @@ source "$DIR/lib.sh"
 EX_SKIPPED=75
 EX_STALE=76
 
-usage() { echo "usage: fwf gate <role> [--e2e] [--cargo-build] [--tip-cmd 'CMD'] -- <command> [args...]" >&2; }
+usage() { echo "usage: fwf gate <role> [--e2e] [--cargo-build] [--tip-cmd 'CMD'] [--tip-ancestry] -- <command> [args...]" >&2; }
 
 role="${1:-}"
 [ -n "$role" ] || { usage; exit 1; }
@@ -137,11 +161,13 @@ shift
 want_e2e=0
 want_cargo_build=0
 tip_cmd=""
+want_tip_ancestry=0
 while :; do
   case "${1:-}" in
     --e2e) want_e2e=1; shift ;;
     --cargo-build) want_cargo_build=1; shift ;;
     --tip-cmd) [ $# -ge 2 ] || { usage; exit 1; }; tip_cmd="$2"; shift 2 ;;
+    --tip-ancestry) want_tip_ancestry=1; shift ;;
     *) break ;;
   esac
 done
@@ -315,10 +341,29 @@ if [ -n "$tip_cmd" ]; then
     echo "fwf gate: could not re-read the tip after this run (ref transiently unreadable) — verdict is STALE, not promotable" >&2
     fwf_gate_tip_record "$role" "$tip_before" "stale"
     rc="$EX_STALE"
-  elif [ "$tip_after" != "$tip_before" ]; then
+  elif [ "$tip_after" != "$tip_before" ] && [ "$want_tip_ancestry" != 1 ]; then
     echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) — verdict is STALE, not promotable" >&2
     fwf_gate_tip_record "$role" "$tip_before" "stale"
     rc="$EX_STALE"
+  elif [ "$tip_after" != "$tip_before" ]; then
+    # issue #254: "the ref changed" is the wrong question -- ancestry is.
+    # Distinguish a clean "not an ancestor" (git exit 1) from "could not
+    # determine" (any other non-zero -- shallow clone, missing objects): both
+    # fail closed to STALE, but the operator's next action differs (AC h).
+    git merge-base --is-ancestor "$tip_before" "$tip_after"
+    anc_rc=$?
+    if [ "$anc_rc" -eq 0 ]; then
+      echo "fwf gate: tip moved during this run ($tip_before -> $tip_after), but $tip_before is still an ancestor -- verdict stands, promote it by its literal hash" >&2
+      fwf_gate_tip_record "$role" "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
+    elif [ "$anc_rc" -eq 1 ]; then
+      echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) and $tip_before is NOT an ancestor of $tip_after (history rewritten) — verdict is STALE, not promotable" >&2
+      fwf_gate_tip_record "$role" "$tip_before" "stale" "not-ancestor"
+      rc="$EX_STALE"
+    else
+      echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) and ancestry could not be determined (git merge-base --is-ancestor exit $anc_rc — shallow clone or missing objects?) — verdict is STALE, not promotable" >&2
+      fwf_gate_tip_record "$role" "$tip_before" "stale" "indeterminate-ancestry"
+      rc="$EX_STALE"
+    fi
   else
     fwf_gate_tip_record "$role" "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
   fi
