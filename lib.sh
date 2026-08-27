@@ -999,6 +999,78 @@ fwf_persist_tmux_socket() {   # $1 = value to persist (a socket path, or "defaul
   printf '%s\n' "$1" > "$FWF_TMUX_SOCKET_FILE"
 }
 
+# issue #193: resolve the socket the factory's sessions ACTUALLY live on --
+# shared by every reader (fwf-dash-data.sh, fwf-supervise.sh) so none of them
+# independently mis-resolves and shows a live factory as invisible, or vice
+# versa. Echoes the socket path, or nothing for the plain default socket.
+# $@ = candidate session names to probe when falling back to the AMBIENT
+# socket (no persisted value yet, e.g. a pre-#62 factory) -- probing only
+# BUILD_SESSION here was itself a bug (a coord-only factory, mid `fwf down
+# --floor-only`, would fail resolution entirely): pass every session class a
+# caller cares about, e.g. `fwf_resolve_tmux_socket "$BUILD_SESSION"
+# "$COORD_SESSION"`, and the first one found on the ambient socket wins.
+fwf_resolve_tmux_socket() {
+  local persisted="" ambient="" s
+  [ -f "$FWF_TMUX_SOCKET_FILE" ] && persisted="$(cat "$FWF_TMUX_SOCKET_FILE" 2>/dev/null || true)"
+  case "$persisted" in
+    "")
+      ambient="${TMUX:-}"; ambient="${ambient%%,*}"
+      if [ -n "$ambient" ]; then
+        for s in "$@"; do
+          command tmux -S "$ambient" has-session -t "$s" 2>/dev/null && { printf '%s' "$ambient"; return 0; }
+        done
+      fi
+      ;;
+    default) : ;;   # explicit default socket -> echo nothing, callers use plain `tmux`
+    *) printf '%s' "$persisted" ;;
+  esac
+}
+
+# issue #193 (AC g): which SESSION a role's pane lives in -- mirrors
+# roles_json()'s own routing (fwf-dash-data.sh) exactly, stated ONCE here so
+# fwf-supervise.sh doesn't reinvent it a second, driftable way.
+# impl*/qa*/conductor -> BUILD_SESSION; pm/gv/captain -> COORD_SESSION;
+# anything else defers to fwf_extra_session.
+fwf_role_session() { # $1=role -> stdout: session name
+  local role="$1"
+  case "$role" in
+    impl*|qa*|conductor) printf '%s' "$BUILD_SESSION" ;;
+    pm|gv|captain)       printf '%s' "$COORD_SESSION" ;;
+    *) case "$(fwf_extra_session "$role" 2>/dev/null)" in
+         build) printf '%s' "$BUILD_SESSION" ;; *) printf '%s' "$COORD_SESSION" ;;
+       esac ;;
+  esac
+}
+
+# issue #193 (p1/AC g): "is <role>'s session visible from THIS host, right
+# now?" -- rc0 visible, rc1 not. THE shared predicate: a reader that gets rc1
+# here must never render/classify this role from pane state at all (dash:
+# UNKNOWN, not down; supervise: a terminal non-reap verdict, not WEDGED) --
+# a "not visible" read means "I cannot tell", not "the role is gone".
+fwf_role_session_visible() { # $1=role
+  local role="$1" sess sock
+  sess="$(fwf_role_session "$role")"
+  sock="$(fwf_resolve_tmux_socket "$BUILD_SESSION" "$COORD_SESSION")"
+  if [ -n "$sock" ]; then command tmux -S "$sock" has-session -t "$sess" 2>/dev/null
+  else command tmux has-session -t "$sess" 2>/dev/null; fi
+}
+
+# issue #193 (AC e): "is there a factory on this host AT ALL?" -- rc0 if
+# EITHER session resolves; rc1 only when NEITHER does, which is the reported
+# incident (wrong socket/host/profile rendering a healthy factory as fully
+# down). Distinct from fwf_role_session_visible: a floor-idled factory
+# (--floor-only) correctly fails BUILD_SESSION alone while this still
+# succeeds via COORD_SESSION (AC e2) -- coord roles must stay visible.
+fwf_factory_visible() {
+  local sock
+  sock="$(fwf_resolve_tmux_socket "$BUILD_SESSION" "$COORD_SESSION")"
+  if [ -n "$sock" ]; then
+    command tmux -S "$sock" has-session -t "$BUILD_SESSION" 2>/dev/null || command tmux -S "$sock" has-session -t "$COORD_SESSION" 2>/dev/null
+  else
+    command tmux has-session -t "$BUILD_SESSION" 2>/dev/null || command tmux has-session -t "$COORD_SESSION" 2>/dev/null
+  fi
+}
+
 # --- floor-lifecycle event log (issue #85; generalized per-UNIT by #105) -----
 # Single source of truth for BOTH the dash's live floor state and the
 # after-the-fact audit trail — no second file that can disagree with this one.
