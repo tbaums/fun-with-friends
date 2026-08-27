@@ -153,3 +153,65 @@ behaviour, not a bug to be refactored away.
 
 An operator un-gates via `fwf dash`'s approve action, which posts the
 anchored sentinel and removes the gate label in one step; see `docs/dash.md`.
+
+## Reviewer routing: the `fwf-Reviewer:` marker (issue #194)
+
+`gh pr edit --add-reviewer` is not usable here either, for the same reason
+formal reviews don't work (rule 1 above): every seat authenticates as the
+same account, so GitHub's reviewer-assignment machinery is structurally
+meaningless on this account. Reviewer routing therefore reuses the marker
+pattern rule 2 established, one level up the pipeline: **who reviews a PR is
+an explicit, recorded fact, never re-derived from the PR's branch name.**
+
+Inferring the reviewer from a `headRefName` prefix (qaN reviews only
+`implN/*`) works for the common case but has no answer for a `captain/*`,
+`gv/*`, `pm/*`, or `conductor/*` branch — and those are sanctioned (the
+captain template's direct-build escape hatch, used for meta-property
+verification, deadline-critical fixes, or avoiding an e2e collision). A PR
+on one of those branches was invisible to every QA's branch-prefix survey:
+not lower priority, structurally unreachable. Worse, when it did eventually
+merge, it merged with no reviewer able to see it — an unreviewed merge by
+construction, not by anyone's choice.
+
+**Mechanism:**
+
+- At PR creation, the body carries a first-column line: `fwf-Reviewer:
+  qaN` (or `none`), written by `fwf pr-assign-reviewer <head-branch>`.
+  Assignment is deterministic and keyed off the CONFIGURED seat roster —
+  never a live/liveness view: an `implN/*` branch always routes to `qaN`
+  (today's pairing, unchanged); any other branch routes to the
+  least-loaded configured QA seat, ties broken by lowest seat index; zero
+  QA seats configured routes to `none`. Liveness is deliberately absent
+  from the decision — a seat being briefly down (respawn, budget hold)
+  must not permanently skew where its next PR routes.
+- QA's survey resolves each PR's CURRENT assignment with
+  `fwf pr-reviewer <n>`, which returns `qaN`, `none`, `NO_MARKER` (no
+  marker was ever written — the migration case, see below), or `UNKNOWN`
+  (the PR itself couldn't be read this cycle — never collapsed into
+  `NO_MARKER`, since a transient read failure misreading an explicitly
+  assigned PR as unassigned would silently strip its routing).
+- **Precedence**, when both a body marker and comment markers exist: any
+  comment marker beats the body marker; among comment markers, the newest
+  wins; the body marker is only the creation-time default. Re-routing a
+  PR (e.g. the assigned seat was removed from the profile) is done by
+  posting a fresh `fwf-Reviewer: qaN` comment — never by editing the body.
+- **Migration is permanent, not a transitional shim.** A PR opened before
+  this marker existed, or opened by hand outside `fwf pr-context`/`fwf pr-
+  assign-reviewer` entirely, has no marker (`NO_MARKER`). QA's survey
+  falls back to the branch-prefix rule ONLY in that case, so a human PR on
+  an `implN/*` branch still routes to `qaN` as it always did, and a human
+  PR on any other branch is correctly left unrouted rather than guessed at.
+
+**Commands:**
+
+```
+fwf pr-assign-reviewer <head-branch>   # decide a NEW PR's reviewer (write side)
+fwf pr-reviewer <pr-number>            # resolve a PR's CURRENT reviewer (read side)
+```
+
+Both are pure/tested helpers (`fwf-pr-assign-reviewer.sh`,
+`fwf-pr-reviewer.sh`) — no role should hand-parse a PR body/comment thread
+for a `fwf-Reviewer:` line itself, for the same reason `fwf pr-review-state`
+exists: the parsing rules (precedence, the unreadable-vs-empty distinction)
+are easy to get subtly wrong reimplemented ad hoc, and drift is worse than
+a shared dependency.
