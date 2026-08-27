@@ -11,6 +11,14 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-27
+
+### Added
+- **Fail-closed subscription-usage brake (`--session-pct` / `--weekly-pct`)** (#149, code 93059d6, docs 93059d6) — `--budget-usd`/`--token-budget` derive spend from transcripts and cannot see the Claude subscription's own meters (the rolling 5h session window and the weekly allowance) that actually stop a Max-plan operator. The new brake reads those meters directly and parks the floor when a configured percentage is crossed. It **fails closed** — an unreadable, blind, or stale reading parks rather than permits — which is the specific correction to the earlier OCR-based workaround that failed in five distinct fail-**open** ways (digit misread, upscale-factor drift, stale-image reuse, phase-locked polling, shell fragility). Resume is hysteretic: an unchanged reading across polls never resumes on elapsed time alone.
+
+### Fixed
+- **A read that cannot complete no longer collapses into a confident value** (#211, code f731c5f, docs f731c5f) — writes the convention, provides the idiom, and audits the readers. A failed or incomplete read previously became an ordinary-looking value, so callers could not distinguish "0 / none / idle" from "I could not find out". The audited readers (`fwf-issues.sh`, `fwf-pane-liveness.sh`, `fwf-usage.sh`, `lib.sh`) now propagate indeterminacy instead of substituting a confident answer. See `docs/collapsing-reads.md` for the convention and `docs/collapsing-reads-audit.md` for the per-reader audit.
+
 ## [0.32.1] - 2026-08-25
 
 ### Changed
