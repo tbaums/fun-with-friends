@@ -3988,6 +3988,28 @@ assert_eq "AC4: a freshly-posted sentinel is visible on the VERY NEXT call, no s
 printf '%s' '[{"id":224,"user":{"login":"ops"},"author_association":"OWNER","body":"~~OPERATOR-UNGATE #40~~ retracted, wrong ticket","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:05:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-224"}]' > "$AZGROOT/x__y/views/40-comments.json"
 assert_eq "AC6: a sentinel REMOVED by a comment edit no longer produces AUTHORIZED on the very next call (the #247 direction: false AUTHORIZED, silent and unearned)" "10" "$(azgrc 40)"
 
+# issue #265 AC1, qa2-caught (#338 review): a hand-rolled stub `gh` never had
+# a chance to reproduce the REAL interception -- every pane's PATH puts the
+# ACTUAL ghguard shim (lib.sh's fwf_install_ghguard) ahead of gh, and that
+# shim unconditionally routes "issue view" into fwf-ghcache.sh serve
+# regardless of what fwf-authz.sh intends. Install the REAL shim (not a
+# fake) and assert the oracle's read creates NO comments cache file under
+# it -- the only assertion immune to a fake stub's own honesty, since a
+# regression back to a bare `gh issue view` call would pass every AZG/AZ215
+# test above (they never touch the real shim) while failing this one.
+SHIMRUN="$TMP/authz-shim-fidelity"; mkdir -p "$SHIMRUN"
+# FWF_GHCACHE_DIR explicit, not left to FWF_RUN_DIR's own derivation -- an
+# ambient FWF_GHCACHE_DIR already exported in the CALLER's shell (this is a
+# live, verified failure mode: the exact factory environment this test runs
+# in sets one) silently wins over FWF_RUN_DIR-derived defaults and would
+# point this "isolated" fixture at the real, shared production cache.
+( FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_REPO="$ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_install_ghguard" )
+shim_comments_cache_count() { find "$SHIMRUN/ghcache" -name "*-comments.*" 2>/dev/null | wc -l | tr -d ' '; }
+SHIM_BEFORE="$(shim_comments_cache_count)"
+PATH="$SHIMRUN/ghguard:$PATH" FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_PROFILE=example "$ROOT/fwf-authz.sh" 265 >/dev/null 2>&1
+SHIM_AFTER="$(shim_comments_cache_count)"
+assert_eq "AC1 (#338 review): against the REAL ghguard shim, the oracle's thread read creates NO comments cache file (FWF_GHCACHE_OFF=1 reaches fwf-ghcache.sh's own bypass even via the shim's re-exec)" "$SHIM_BEFORE" "$SHIM_AFTER"
+
 # --------------------------------------------------------------------------
 # fwf authz (#218): anchoring — column 0, per comment, fence-stripped. A
 # separate local-backend store per fixture keeps issue numbers small/legible
