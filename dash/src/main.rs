@@ -790,6 +790,18 @@ fn clamp_cursor(app: &mut App) {
 // --- rendering --------------------------------------------------------------
 
 fn ui(f: &mut Frame, app: &mut App) {
+    // issue #193 AC (e): NO fwf session visible on the resolved socket at
+    // all — every role already renders "unknown" (never a fabricated
+    // "down"), and this is the header-level version of the same fact. The
+    // loudest and FIRST banner: every other signal below (needs-you,
+    // upgrade, stale-dash) risks being read as "the factory is fine, just
+    // X" when the honest situation is "I cannot tell you anything about
+    // this factory right now".
+    let no_view = app
+        .feed
+        .dashboard()
+        .map(|d| !d.visibility.factory_visible)
+        .unwrap_or(false);
     // A red "CAPTAIN NEEDS YOU" banner slots in below the tab bar whenever the
     // captain is blocked on a human decision, so the dash is never calm-looking
     // while something is actually waiting on you.
@@ -821,6 +833,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         Constraint::Length(4), // header
         Constraint::Length(1), // tab bar
     ];
+    if no_view {
+        constraints.push(Constraint::Length(1)); // no-factory-visible banner
+    }
     if needs {
         constraints.push(Constraint::Length(1)); // needs-you banner
     }
@@ -842,6 +857,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     i += 1;
     render_tabs(f, chunks[i], app);
     i += 1;
+    if no_view {
+        render_no_view_banner(f, chunks[i], app);
+        i += 1;
+    }
     if needs {
         render_needs_banner(f, chunks[i], app);
         i += 1;
@@ -864,6 +883,37 @@ fn ui(f: &mut Frame, app: &mut App) {
         Overlay::Input { prompt, buffer, .. } => render_input(f, f.area(), prompt, buffer),
         Overlay::None => {}
     }
+}
+
+/// The "no factory visible" banner (issue #193 AC e) — shown only when
+/// `!visibility.factory_visible`, full-width, above every other banner. Names
+/// the state dir/profile/host being read so a wrong `--profile` or a wrong
+/// host reads as MY mistake, diagnosable on screen, not a mystery (one of
+/// this ticket's own edge cases). Black-on-red: the loudest treatment here,
+/// since every role on the roles pane is ALSO rendering "unknown" right now
+/// and this is the one line that explains why.
+fn render_no_view_banner(f: &mut Frame, area: Rect, app: &App) {
+    let (state_dir, profile, host) = app
+        .feed
+        .dashboard()
+        .map(|d| {
+            (
+                d.visibility.state_dir.clone(),
+                d.visibility.profile.clone(),
+                d.visibility.host.clone(),
+            )
+        })
+        .unwrap_or_default();
+    let text = format!(
+        " ⚠ NO FACTORY VISIBLE — profile '{profile}' on {host}, reading {state_dir} — every role below is UNKNOWN, not down "
+    );
+    let para = Paragraph::new(text).style(
+        Style::default()
+            .bg(Color::Red)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(para, area);
 }
 
 /// The red attention banner — shown only when `needs_you.active`, full-width
@@ -1002,6 +1052,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
                 provenance_style(&d.stamp),
             ));
             l2.push(Span::styled(format!("  ⟳ {}", d.generated_at), dim));
+            // issue #193 AC (b): shown whenever available, whether fresh or
+            // stale — an operator who only ever sees this during an incident
+            // has never calibrated what "normal" looks like.
+            if let Some(age) = d.visibility.newest_heartbeat_age {
+                l2.push(Span::styled(format!("   hb {age}s ago"), dim));
+            }
             if d.floor_idle.active {
                 l2.push(Span::styled(
                     format!("   since {} — {}", d.floor_idle.since, d.floor_idle.reason),
@@ -1288,21 +1344,48 @@ fn activity_summary(it: &&data::ActivityItem) -> String {
     s
 }
 
+/// Glyph + colour for a role's `state` word (issue #193 adds unknown/busy/
+/// stale to the pre-existing live/idle/floor_idle/down set). Factored out of
+/// `render_roles` so the mapping — the exact thing a prior incident showed
+/// gets collapsed by accident — is unit-testable without going through a
+/// full render. "down" and any state this dash doesn't yet know about
+/// deliberately share the same fallback arm: an OLDER dash talking to a
+/// NEWER `fwf-dash-data.sh` must render an unrecognized state calmly, not
+/// crash or claim something more alarming/reassuring than it can back up.
+fn role_glyph(state: &str) -> (&'static str, Color) {
+    match state {
+        "live" => ("●", Color::Green),
+        "idle" => ("◌", Color::Yellow),
+        // Deliberately parked by `fwf-down.sh --floor-only` (#85) — a
+        // calm/dim treatment, visually distinct from both live/idle
+        // AND the dark-gray "down"/crashed circle below.
+        "floor_idle" => ("◇", Color::Cyan),
+        // issue #193: holding the gate lock is a POSITIVE liveness
+        // fact (AC i) — deliberately close to "live" (a solid glyph,
+        // not a dim/uncertain one) but a distinct colour, since it's
+        // inferred rather than a directly-observed pane.
+        "busy" => ("◆", Color::Blue),
+        // A visible session with an aging heartbeat and no pane/lock
+        // (AC a) — never the same dark-gray "down" circle: this role
+        // has real evidence of having run here, down has none.
+        "stale" => ("◐", Color::Rgb(230, 160, 40)),
+        // The session itself couldn't be confirmed visible (AC c/e)
+        // — this is the state the whole ticket exists for, so it
+        // must never share a glyph/colour with "down" (below), which
+        // is exactly the collapse a prior incident made and trusted.
+        "unknown" => ("?", Color::Magenta),
+        _ => ("○", Color::DarkGray),
+    }
+}
+
 fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
     let d = app.feed.dashboard().expect("checked by caller");
     let items: Vec<ListItem> = d
         .roles
         .iter()
         .map(|r| {
-            let (glyph, style) = match r.state.as_str() {
-                "live" => ("●", Style::default().fg(Color::Green)),
-                "idle" => ("◌", Style::default().fg(Color::Yellow)),
-                // Deliberately parked by `fwf-down.sh --floor-only` (#85) — a
-                // calm/dim treatment, visually distinct from both live/idle
-                // AND the dark-gray "down"/crashed circle below.
-                "floor_idle" => ("◇", Style::default().fg(Color::Cyan)),
-                _ => ("○", Style::default().fg(Color::DarkGray)),
-            };
+            let (glyph, color) = role_glyph(&r.state);
+            let style = Style::default().fg(color);
             // "floor_idle" renders as the short "IDLE" label; the detail span
             // (below) carries "floor idled by <actor> since <ts> — <reason>".
             let state_label = if r.state == "floor_idle" {
@@ -1316,8 +1399,17 @@ fn render_roles(f: &mut Frame, area: Rect, app: &mut App) {
                     format!("{:<10}", r.role),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(format!("{:<6}", state_label), style),
+                Span::styled(format!("{:<8}", state_label), style),
             ];
+            // Heartbeat age is shown ALONGSIDE the state word, never instead
+            // of it (issue #193 AC a/b/i0 — a live pane still carries its own
+            // age when known, so "busy off tick alone" never has to guess).
+            if let Some(age) = r.heartbeat_age {
+                spans.push(Span::styled(
+                    format!("hb {age}s ago  "),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             if !r.detail.is_empty() {
                 spans.push(Span::styled(
                     format!("  {}", r.detail),
@@ -2028,6 +2120,7 @@ mod tests {
     fn cursor_clamps_to_rows() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             roles: vec![],
             ..Default::default()
         });
@@ -2039,6 +2132,7 @@ mod tests {
     fn selected_id_tracks_tab_and_cursor() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             decisions: vec![data::Decision {
                 id: "337".into(),
                 title: "t".into(),
@@ -2065,6 +2159,7 @@ mod tests {
     fn approve_opens_a_confirm_not_a_fire() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             decisions: vec![data::Decision {
                 id: "337".into(),
                 title: "t".into(),
@@ -2088,6 +2183,7 @@ mod tests {
     fn comment_opens_an_input_field() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             issues: vec![data::Issue {
                 number: 9,
                 title: "i".into(),
@@ -2132,6 +2228,7 @@ mod tests {
     fn reject_opens_a_confirm_not_a_fire() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             decisions: vec![data::Decision {
                 id: "44".into(),
                 title: "t".into(),
@@ -2259,6 +2356,7 @@ mod tests {
     fn cancel_from_confirm_with_n_or_esc_clears_overlay_without_firing() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             decisions: vec![data::Decision {
                 id: "1".into(),
                 title: "t".into(),
@@ -2284,6 +2382,7 @@ mod tests {
     fn cancel_from_input_with_esc_clears_overlay_without_firing() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             issues: vec![data::Issue {
                 number: 3,
                 title: "i".into(),
@@ -2305,6 +2404,7 @@ mod tests {
     fn input_overlay_types_chars_and_backspaces() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             issues: vec![data::Issue {
                 number: 3,
                 title: "i".into(),
@@ -2328,6 +2428,7 @@ mod tests {
     fn input_overlay_enter_with_empty_buffer_is_skipped_not_fired() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             issues: vec![data::Issue {
                 number: 3,
                 title: "i".into(),
@@ -2371,6 +2472,26 @@ mod tests {
         assert_eq!(checks_glyph("fail"), ("✗", Color::Red));
         assert_eq!(checks_glyph("none"), ("·", Color::DarkGray));
         assert_eq!(checks_glyph(""), ("·", Color::DarkGray));
+    }
+
+    #[test]
+    fn role_glyph_maps_every_state_including_193s_new_ones() {
+        assert_eq!(role_glyph("live"), ("●", Color::Green));
+        assert_eq!(role_glyph("idle"), ("◌", Color::Yellow));
+        assert_eq!(role_glyph("floor_idle"), ("◇", Color::Cyan));
+        assert_eq!(role_glyph("busy"), ("◆", Color::Blue));
+        assert_eq!(role_glyph("stale"), ("◐", Color::Rgb(230, 160, 40)));
+        assert_eq!(role_glyph("unknown"), ("?", Color::Magenta));
+        assert_eq!(role_glyph("down"), ("○", Color::DarkGray));
+        // The exact collapse this ticket exists to prevent: none of the new
+        // states may ever render identically to "down".
+        let down = role_glyph("down");
+        for s in ["unknown", "busy", "stale"] {
+            assert_ne!(role_glyph(s), down, "{s} must not render like down");
+        }
+        // An unrecognized future state falls back calmly, same as "down" —
+        // never a panic, never something MORE alarming than warranted.
+        assert_eq!(role_glyph("some-future-state"), ("○", Color::DarkGray));
     }
 
     #[test]
@@ -2641,6 +2762,7 @@ mod tests {
     /// golden built from it renders identically on every run and machine.
     fn golden_fixture() -> Dashboard {
         Dashboard {
+            visibility: data::Visibility { factory_visible: true, ..Default::default() },
             profile: "fwf-self".into(),
             template: "dev".into(),
             parked: false,
@@ -2650,16 +2772,19 @@ mod tests {
             generated_at: "2026-01-01 00:00:00".into(),
             roles: vec![
                 data::Role {
+                    heartbeat_age: None,
                     role: "impl1".into(),
                     state: "live".into(),
                     detail: "building #62".into(),
                 },
                 data::Role {
+                    heartbeat_age: None,
                     role: "qa1".into(),
                     state: "idle".into(),
                     detail: String::new(),
                 },
                 data::Role {
+                    heartbeat_age: None,
                     role: "impl2".into(),
                     state: "down".into(),
                     detail: "crashed".into(),
@@ -3448,6 +3573,7 @@ mod tests {
                 role: "impl2".into(),
                 state: "floor_idle".into(),
                 detail: "floor idled by captain since 2026-01-01T00:00:00Z — queue empty; nothing in flight".into(),
+                heartbeat_age: None,
             }];
         }
         let idle_buf = render_buffer(100, 30, |f| ui(f, &mut idle_app));
@@ -3460,6 +3586,7 @@ mod tests {
                 role: "impl2".into(),
                 state: "down".into(),
                 detail: "crashed".into(),
+                heartbeat_age: None,
             }];
         }
         let crash_buf = render_buffer(100, 30, |f| ui(f, &mut crash_app));
@@ -3481,6 +3608,93 @@ mod tests {
         assert!(
             !crash_text.contains("IDLE"),
             "a real crash (down, no floor-down logged) must never show IDLE"
+        );
+    }
+
+    #[test]
+    fn roles_pane_shows_heartbeat_age_alongside_the_state_word_193_ac_a_i0() {
+        let mut app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.roles = vec![
+                data::Role {
+                    role: "impl1".into(),
+                    state: "stale".into(),
+                    detail: String::new(),
+                    heartbeat_age: Some(7305),
+                },
+                data::Role {
+                    role: "impl2".into(),
+                    state: "live".into(),
+                    detail: String::new(),
+                    heartbeat_age: None,
+                },
+            ];
+        }
+        let buf = render_buffer(100, 30, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("stale") && text.contains("hb 7305s ago"),
+            "the STALE word and its age must both be visible: {text}"
+        );
+        assert_eq!(
+            text.matches("hb ").count(),
+            1,
+            "a role with no known heartbeat age must show no age at all, not a blank one: {text}"
+        );
+    }
+
+    #[test]
+    fn header_shows_newest_heartbeat_age_whenever_known_193_ac_b() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.visibility.newest_heartbeat_age = Some(42);
+        }
+        let area = Rect::new(0, 0, 140, 4);
+        let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("hb 42s ago"),
+            "newest heartbeat age must be visible even on a fully-healthy header: {text}"
+        );
+    }
+
+    #[test]
+    fn no_view_banner_fires_only_when_factory_not_visible_193_ac_e() {
+        let mut app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.visibility = data::Visibility {
+                factory_visible: false,
+                newest_heartbeat_age: None,
+                state_dir: "/tmp/fwf-state/example".into(),
+                profile: "example".into(),
+                host: "devbox1".into(),
+            };
+            d.roles = vec![data::Role {
+                role: "impl1".into(),
+                state: "unknown".into(),
+                detail: String::new(),
+                heartbeat_age: None,
+            }];
+        }
+        let buf = render_buffer(120, 30, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            text.contains("NO FACTORY VISIBLE"),
+            "an invisible factory must show the banner, not look calm: {text}"
+        );
+        assert!(
+            text.contains("example") && text.contains("devbox1") && text.contains("/tmp/fwf-state/example"),
+            "the banner must name profile/host/state_dir so a wrong --profile is diagnosable: {text}"
+        );
+
+        // The mirror: a visible factory never shows this banner, even with an
+        // otherwise-identical fixture.
+        let mut visible_app = golden_app(Tab::Roles);
+        let visible_buf = render_buffer(120, 30, |f| ui(f, &mut visible_app));
+        let visible_text = buffer_to_text(&visible_buf);
+        assert!(
+            !visible_text.contains("NO FACTORY VISIBLE"),
+            "a visible factory must never show the no-view banner: {visible_text}"
         );
     }
 }

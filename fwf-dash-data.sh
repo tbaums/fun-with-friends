@@ -17,10 +17,11 @@
 #
 # Output schema (consumed by dash/src/data.rs):
 #   { profile, template, parked, prod, pipeline, stamp, generated_at,
-#     roles:[{role,state,detail}],
+#     roles:[{role,state,detail,heartbeat_age}],
 #     decisions:[{id,title,flags,body}],
 #     issues:[{number,title,gated,body}],
 #     floor_idle:{active,since,reason,actor},
+#     visibility:{factory_visible,newest_heartbeat_age,state_dir,profile,host},
 #     unrouted_prs:[{pr,author,branch,created_at,reason}] }
 #   unrouted_prs (issue #194 AC (d)) is data-layer only as of this field's
 #   introduction -- dash/src/data.rs does not yet deserialize or render it;
