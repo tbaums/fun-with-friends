@@ -72,6 +72,8 @@ AC_A5_DEMO_EMPTY="$(assert_not_contains "demo" "" "needle")"
 assert_contains "AC(#247 a5): assert_not_contains itself goes RED on an EMPTY haystack (not vacuously ok)" "$AC_A5_DEMO_EMPTY" "FAIL"
 AC_A5_DEMO_REAL="$(assert_not_contains "demo" "haystack with real content" "absent-needle")"
 assert_contains "AC(#247 a5): ...and stays GREEN on a non-empty haystack that genuinely lacks the needle" "$AC_A5_DEMO_REAL" "ok"
+# issue #247 (B): the CORRECT pattern, not the problem -- bounded, loud on
+# timeout, presence-based. Copy this idiom rather than a fixed sleep+read.
 # assert_log_eventually_contains <label> <logfile> <needle> [timeout-secs]
 # Bounded wait-for-condition, for asserting on an async log append (issue
 # #185) instead of a single fixed-time read that can sample before the append
@@ -1645,6 +1647,8 @@ rm -f "$PE_MARKER"
 
 if command -v tmux >/dev/null 2>&1; then
   section "floor-lifecycle wiring (issue #85): fwf-up.sh / fwf-respawn.sh append floor-up on success (real tmux, stubbed claude)"
+  # issue #247 (B): a long-lived PANE STAND-IN, not an assertion -- exists so
+  # tmux has a real, distinguishable process to report as pane_current_command.
   # A fast, non-shell "claude" stand-in: tmux reports its pane_current_command
   # as soon as the shell execs it, so fwf_ensure_claude's shell-vs-not-shell
   # poll resolves on its first ~1s tick instead of the real 15s×5 retry budget
@@ -3138,6 +3142,10 @@ cat > "$VSSTUB/gh" <<'EOS'
 case "${1:-}" in
   api)
     [ -n "${VS_CALL_LOG:-}" ] && echo x >> "$VS_CALL_LOG"
+    # issue #247 (B): a hang STUB, not an assertion -- simulates a genuinely
+    # hung gh call so the "never blocks" test above (line ~3186) can prove
+    # the caller returns anyway. The sleep only needs to outlast the test's
+    # own bounded wait; it is never itself the thing under test.
     [ "${VS_HANG:-0}" = 1 ] && sleep 300
     [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
     echo "${FAKE_LATEST:-v0.0.0}";;
@@ -3169,6 +3177,11 @@ assert_contains "(c) fwf-up warning fires" "$VSC_WARN" "v99.0.0 is released"
 VSC_DOC="$(vs_run "$VSRUN" 'fwf_doctor_version_line')"
 assert_contains "(c) doctor line fires" "$VSC_DOC" "OUT OF DATE"
 
+# issue #247 (A)-minor: sleep-bounded and could in principle fire before the
+# detached refresh lands -- but a miss here FAILS LOUD (the dir genuinely
+# isn't there yet), never silently passes, which is the safe direction this
+# whole ticket is about preserving. Left as-is rather than converted to a
+# bounded poll: not the load-bearing case.
 # cache location: must be under $FWF_RUN/upgrade-check, never $TMPDIR. The
 # refresh that creates the dir is detached (that's the whole point — see
 # never-block below), so give it a moment to land before asserting on it.
@@ -5412,21 +5425,23 @@ set -uo pipefail
 counter_dir="$1"; peaks_file="$2"; hold="$3"
 me="$counter_dir/$$-$RANDOM"
 : > "$me"
-# issue #247 AC (a9-i): sample THROUGHOUT the hold, not once at entry -- a
-# holder that samples only at registration sees the population at exactly
-# one instant, and misses any overlap that exists at other moments during
-# its own presence. Polling repeatedly for the full hold means overlap with
-# a co-holder is observed at SOME point during THIS holder's own window as
-# long as the two windows genuinely intersect at all, regardless of exactly
-# when either holder registered.
-end_epoch=$(( $(date +%s) + hold ))
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
-while [ "$(date +%s)" -lt "$end_epoch" ]; do
-  n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
-  echo "$n" >> "$peaks_file"
-  sleep 0.05
-done
+# issue #247 AC (a9-i): sample THROUGHOUT the hold via a BACKGROUND poller,
+# decoupled from the actual hold/release timing. An earlier version of this
+# fix looped `sleep 0.05` in the SAME process as the `sleep "$hold"` it was
+# meant to sample -- under real load (many forked subprocesses per
+# iteration: date, ls, wc, tr), the loop's own overhead can make the total
+# elapsed time exceed `hold`, delaying the unlink below and manufacturing a
+# THIRD holder that was never really concurrent, a self-inflicted instance
+# of exactly the defect this ticket is about. Backgrounding the poller and
+# killing it once the fixed `sleep "$hold"` completes keeps the release
+# timing exactly as reliable as the original one-shot version while still
+# sampling many times during the hold.
+( while :; do sleep 0.05; ls "$counter_dir" | wc -l | tr -d ' ' >> "$peaks_file"; done ) &
+POLLER=$!
+sleep "$hold"
+kill "$POLLER" 2>/dev/null; wait "$POLLER" 2>/dev/null
 rm -f "$me"
 echo DONE
 EOSCRIPT
@@ -5502,17 +5517,16 @@ label="$1"; counter_dir="$2"; peaks_file="$3"
 s="$(fwf_cargo_build_slot_acquire "$label")" || { echo "$label TIMEOUT"; exit 0; }
 me="$counter_dir/$$-$RANDOM"
 : > "$me"
-# issue #247 AC (a9-ii): same fix as the cargo-build-harness sampler above --
-# continuous sampling through the hold, not one point sample at entry, so a
-# genuine double-reap overlap is observed regardless of exactly when it lands.
-end_epoch=$(( $(date +%s) + 1 ))
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
-while [ "$(date +%s)" -lt "$end_epoch" ]; do
-  n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
-  echo "$n" >> "$peaks_file"
-  sleep 0.05
-done
+# issue #247 AC (a9-ii): same background-poller fix as cargo-build-harness.sh
+# above -- decoupled from the fixed 1s hold so the poller's own overhead can
+# never delay the unlink/release past the true hold, which would manufacture
+# a false extra-holder reading rather than observe a real one.
+( while :; do sleep 0.05; ls "$counter_dir" | wc -l | tr -d ' ' >> "$peaks_file"; done ) &
+POLLER=$!
+sleep 1
+kill "$POLLER" 2>/dev/null; wait "$POLLER" 2>/dev/null
 rm -f "$me"
 fwf_cargo_build_slot_release "$s"
 echo "$label GOT=$s"
@@ -5635,6 +5649,12 @@ assert_contains "dead-PID holder is named an anomaly and reaped" "$GDEAD_OUT" "A
 assert_contains "dead-PID lock is re-acquired, not permanently wedged" "$GDEAD_OUT" "RC=0"
 assert_contains "the new stamp overwrites the dead one"  "$GDEAD_OUT" "NEWOWNER"
 
+# issue #247 (A), out of scope here: #119's race test was fixed on #245 and
+# is listed in the audit only for completeness, not re-fixed by this ticket.
+# Note for the next sweep: it still shows a small residual timing-window
+# flake rate in this tree (verified: a test-timing gap in lib.sh's
+# fwf_gate_lock_acquire, not a real lock defect) -- worth a dedicated look,
+# but out of scope for #247.
 section "QA adversarial check (#119): a REAL simultaneous race for a never-before-held lock is still atomic (not just the sequential simulated states above)"
 RACERUN="$TMP/gate123-race"
 FWF_RUN_DIR="$RACERUN" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" race-contestant > "$TMP/race-a.out" 2>&1 &
@@ -5935,6 +5955,10 @@ rm -f "$marker"
 echo "DONE"
 EOSCRIPT
 
+# issue #247 (B): timing present but not load-bearing -- the 2s budget vs 4s
+# hold is a fixed, generous margin (~2x), not a race the assertion could
+# silently stop exercising; a slower runner still deterministically times
+# out, it just takes longer to do so.
 # RED (today, unwrapped): both invocations touch the SAME fixed marker
 # directly with no coordination. The second's wait budget (2s) is
 # deliberately shorter than the first's hold (4s), so it deterministically
@@ -5951,6 +5975,7 @@ assert_eq "RED (unwrapped): first invocation completes" "0" "$RED_A_RC"
   || bad "RED (unwrapped): second invocation should have failed on the shared fixed resource"
 assert_contains "RED (unwrapped): second invocation times out on the shared fixed resource" "$(cat "$TMP/red-b.out")" "TIMEOUT"
 
+# issue #247 (B): same margin as the RED case above, same non-fragile reason.
 # GREEN (through fwf gate --e2e): the SAME two invocations (different roles),
 # each routed through the shared guarded launcher — the floor-wide e2e lock
 # (issue #65) serializes them, so the second waits for the first to finish
