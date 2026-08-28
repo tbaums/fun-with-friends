@@ -3209,16 +3209,49 @@ VS_SKIP="$(FWF_SKIP_VERSION_CHECK=1 vs_run "$VSRUN" 'fwf_version_skew_check')"
 [ -z "$VS_SKIP" ] && ok "kill switch: no warning" || bad "kill switch: no warning"
 [ -e "$VSRUN/upgrade-check" ] && bad "kill switch: no cache dir touched at all" || ok "kill switch: no cache dir touched at all"
 
-# single-flight: N concurrent stale-triggered refreshes make AT MOST ONE gh call
+# issue #247 AC (b): the (A) case -- `-le 1` is satisfied by ZERO, and the
+# refresh is deliberately DETACHED (the enclosing subshell's `wait` above
+# does not cover the `gh` call itself), so "nothing ran yet" and
+# "single-flight held" were indistinguishable to the old fixed-`sleep 1`
+# read. Give it a perfect barrier and it is STILL wrong for that reason --
+# this is not primarily a sleep bug. Fix, per the idiom already used four
+# times in this file (assert_log_eventually_contains): wait for the FIRST
+# call to actually land (bounded, loud on timeout -- rules out the null
+# state), then poll until the count stops changing (bounded -- rules out a
+# still-racing duplicate that just hadn't landed yet) before trusting it.
+vs_singleflight_count() { # $1=call-log-file -> prints the stabilized call count; rc 1 + empty if none ever appeared
+  local log="$1" i=0 last=-1 now
+  while [ "$i" -lt 25 ]; do
+    grep -q -F -- "x" "$log" 2>/dev/null && break
+    sleep 0.2; i=$((i + 1))
+  done
+  [ "$i" -lt 25 ] || return 1
+  i=0
+  while [ "$i" -lt 25 ]; do
+    now="$(wc -l < "$log" | tr -d ' ')"
+    [ "$now" = "$last" ] && { printf '%s' "$now"; return 0; }
+    last="$now"; sleep 0.2; i=$((i + 1))
+  done
+  printf '%s' "$last"
+}
+# AC (b) demonstration: the counter must still go RED on a genuinely-broken
+# single-flight (proves the fix isn't a weakened check that always passes),
+# and RED on a refresh that never started at all (the null state this whole
+# fix exists to stop conflating with success).
+VS_SF_BROKEN="$TMP/vs-singleflight-demo-broken"; printf 'x\nx\n' > "$VS_SF_BROKEN"
+assert_eq "AC(#247 b): the single-flight counter still goes RED on a genuinely-broken case (2 calls, not silently accepted)" "2" "$(vs_singleflight_count "$VS_SF_BROKEN")"
+VS_SF_NULL="$TMP/vs-singleflight-demo-null"; : > "$VS_SF_NULL"
+vs_singleflight_count "$VS_SF_NULL" >/dev/null 2>&1
+assert_eq "AC(#247 b): ...and goes RED (times out) on the null state -- a refresh that never ran is not single-flight held" "1" "$?"
+
 VSRUN="$TMP/vs-singleflight"
 VS_CALLS="$TMP/vs-call-log"; : > "$VS_CALLS"
 ( VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   wait )
-sleep 1
-VS_CALL_COUNT="$(wc -l < "$VS_CALLS" | tr -d ' ')"
-[ "$VS_CALL_COUNT" -le 1 ] && ok "single-flight: >=3 concurrent refreshes make <=1 gh call" || bad "single-flight: >=3 concurrent refreshes make <=1 gh call" "made $VS_CALL_COUNT calls"
+VS_CALL_COUNT="$(vs_singleflight_count "$VS_CALLS")" || VS_CALL_COUNT="TIMEOUT-no-call-ever-appeared"
+assert_eq "single-flight: >=3 concurrent refreshes make EXACTLY 1 gh call (proven to have run, then proven not to have run twice)" "1" "$VS_CALL_COUNT"
 
 section "profile persistence of template/issues + per-template identity (issues #30/#31)"
 cat > "$ROOT/profiles/.__persist.sh" <<EOF
