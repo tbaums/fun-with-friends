@@ -626,19 +626,44 @@ main() {
   api_budget="$(api_budget_json)"
   claim_refusals="$(claim_refusals_json)"
 
+  # #291: roles/decisions/issues/activity/needs_you/unrouted_prs/visibility can
+  # each carry full comment-thread bodies (open_issues_json, unrouted_prs_json
+  # etc. pull .body/.comments straight off gh), so on a repo with verbose
+  # threads their combined size blows ARG_MAX when passed as --argjson on the
+  # command line -- jq then exits 126 with "Argument list too long" and takes
+  # the WHOLE data provider down with it (every dash tab reads a confident,
+  # wrong 0 -- see dash/src/main.rs render_tabs). Route them through files on
+  # stdin (--slurpfile) instead, so argv only ever carries short scalars; the
+  # rest (parked/prod/floor_idle/upgrade/installed/api_budget/claim_refusals)
+  # are small fixed-shape values with no comment-body content and stay as
+  # --argjson. mktemp -d + trap RETURN keeps this self-cleaning even on error.
+  local _ddir
+  _ddir="$(mktemp -d)" || { echo '{"error":"mktemp failed"}'; return 1; }
+  trap 'rm -rf "$_ddir"' RETURN
+  printf '%s' "$roles"        > "$_ddir/roles.json"
+  printf '%s' "$decisions"    > "$_ddir/decisions.json"
+  printf '%s' "$issues"       > "$_ddir/issues.json"
+  printf '%s' "$activity"     > "$_ddir/activity.json"
+  printf '%s' "$needs_you"    > "$_ddir/needs_you.json"
+  printf '%s' "$unrouted_prs" > "$_ddir/unrouted_prs.json"
+  printf '%s' "$visibility"   > "$_ddir/visibility.json"
+
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
     --argjson parked "$parked" \
     --arg prod "$prod" --arg pipeline "$pipeline" --arg stamp "$stamp" --arg gen "$gen" \
-    --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
-    --argjson activity "$activity" --argjson needs_you "$needs_you" \
+    --slurpfile _roles "$_ddir/roles.json" --slurpfile _decisions "$_ddir/decisions.json" \
+    --slurpfile _issues "$_ddir/issues.json" --slurpfile _activity "$_ddir/activity.json" \
+    --slurpfile _needs_you "$_ddir/needs_you.json" \
+    --slurpfile _unrouted_prs "$_ddir/unrouted_prs.json" \
+    --slurpfile _visibility "$_ddir/visibility.json" \
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
-    --argjson unrouted_prs "$unrouted_prs" --argjson visibility "$visibility" --argjson api_budget "$api_budget" \
+    --argjson api_budget "$api_budget" \
     --argjson claim_refusals "$claim_refusals" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
-      stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
-      activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
-      installed:$installed, unrouted_prs:$unrouted_prs, visibility:$visibility, api_budget:$api_budget,
+      stamp:$stamp, generated_at:$gen, roles:$_roles[0], decisions:$_decisions[0], issues:$_issues[0],
+      activity:$_activity[0], needs_you:$_needs_you[0], floor_idle:$floor_idle, upgrade:$upgrade,
+      installed:$installed, unrouted_prs:$_unrouted_prs[0], visibility:$_visibility[0], api_budget:$api_budget,
       claim_refusals:$claim_refusals}'
   rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
