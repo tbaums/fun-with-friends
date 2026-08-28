@@ -216,7 +216,7 @@ refresh_canonical() { # $1=issue|pr  -> populates $ROOT/<topic>s.json
   status="$(printf '%s' "$hdr" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')"
   if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; _metric revalidated; degraded_clear "$json"; unlock "canon-$topic"; return 0; fi
   if [ "$status" != "200" ]; then unlock "canon-$topic"; return 1; fi
-  newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
+  newetag="$(printf '%s' "$hdr" | awk '/^[Ee][Tt][Aa][Gg]:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
   local acc body page=2
   acc="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
   # Paginate while the last page was full (rare for a factory backlog; capped).
@@ -444,7 +444,7 @@ ensure_view_resource() { # $1=topic(issue|pr) $2=number -> $ROOT/views/$1-$2.jso
   # gh so the caller sees gh's own error, never a wrong-but-well-formed result.
   if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; _metric revalidated; degraded_clear "$json"; unlock "view-$topic-$n"; return 0; fi
   if [ "$status" != "200" ]; then unlock "view-$topic-$n"; return 1; fi
-  newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
+  newetag="$(printf '%s' "$hdr" | awk '/^[Ee][Tt][Aa][Gg]:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
   body="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
   printf '%s' "$body" | jq -c '.' > "$json.tmp" 2>/dev/null && [ -s "$json.tmp" ] || { rm -f "$json.tmp"; unlock "view-$topic-$n"; return 1; }
   mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; _metric charged; degraded_clear "$json"
@@ -489,7 +489,7 @@ ensure_view_comments() { # $1=number -> $ROOT/views/$1-comments.json
   elif [ "$status" != "200" ]; then
     unlock "view-comments-$n"; return 1
   else
-    newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
+    newetag="$(printf '%s' "$hdr" | awk '/^[Ee][Tt][Aa][Gg]:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
     acc="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
   fi
   page=2
