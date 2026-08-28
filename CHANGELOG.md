@@ -11,6 +11,15 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-28
+
+### Added
+- **Long-lived processes detect stale binaries and stale prompts** (#174, code 5735c7f, docs 5735c7f) — a seat or supervisor that has been running for hours could keep executing an old binary and an old role prompt while the tree it reasons about has moved on, with nothing to say so. `fwf supervise` now detects running-vs-installed drift for both, so the divergence surfaces instead of quietly shaping every decision the process makes.
+
+### Fixed
+- **Reviewer routing is explicit, not inferred from branch prefixes** (#194, code 100d06e, docs 100d06e) — reviewers were derived from the branch name, so any PR that did not come from an `implN/` branch (captain, GV, PM) got no reviewer assigned and could never satisfy the review requirement to merge. Routing now reads an explicit `fwf-Reviewer:` marker on the PR, with `fwf-pr-assign-reviewer.sh` to set it and `fwf-pr-reviewer.sh` to resolve it.
+- **The gh read-cache no longer reports unchecked-freshness data as SUCCESS** (#266, code 7237a63, docs 7237a63) — when the cache could not confirm its entry was fresh it still returned the entry with a success status, so callers could not tell a verified-current read from a possibly-stale one. This matters because the dash the operator un-gates from reads that cache: an authorization decision was being taken against data whose freshness was never established. Unchecked reads are now reported as such rather than presented as confirmed.
+
 ## [0.33.0] - 2026-08-27
 
 ### Added
