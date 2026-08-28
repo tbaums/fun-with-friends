@@ -205,6 +205,19 @@ fwf_install_ghguard
 # vars regardless of whether the tmux server predates this launch.
 fwf_write_pane_env
 
+# (Re)resolve + persist claude auth (issue #217): panes get their token by
+# process inheritance from THIS shell today; a later respawn/supervise from a
+# different shell inherits nothing. Refreshing on every `up` means a rotated
+# token (or a first-time `claude /login` since the last up) is picked up, not
+# just carried over stale. Fail loud here, before ten panes boot unauthenticated
+# and LOOK up on the dash while doing zero work — the exact failure this
+# ticket exists to prevent.
+_fwf217_auth_src="$(fwf_resolve_claude_auth)" || {
+  echo "fwf: no claude credentials found (checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain) — run 'claude /login' first, or export CLAUDE_CODE_OAUTH_TOKEN, then re-run 'fwf up'" >&2
+  exit 1
+}
+echo "fwf: claude auth resolved from: $_fwf217_auth_src"
+
 # Say what is about to launch BEFORE ten panes boot (issue #30): a profile/env
 # mismatch should be visible here, not discovered by briefing the captain.
 echo "fwf: template=$FWF_TEMPLATE · issues=$FWF_ISSUES · pairs=$FWF_PAIRS · profile=$PROFILE"

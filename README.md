@@ -716,6 +716,23 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   sources fresh right before `claude` launches — never typed into a pane's
   visible scrollback, never committed. Regenerated on every `fwf up`/`fwf
   respawn`, so re-running always forwards the latest value.
+- **Claude auth persists across respawns** (`~/.fun-with-friends/auth.env`,
+  issue #217) — the same tmux gotcha above applies to `CLAUDE_CODE_OAUTH_TOKEN`
+  itself: panes get it purely by process inheritance from whatever shell ran
+  `fwf up`, so a later `fwf respawn` (manual, or via `fwf supervise` with
+  auto-respawn) invoked from a *different* shell inherited nothing — the pane
+  comes up "Not logged in", does zero work, and `fwf dash` still renders it as
+  up. `fwf up` resolves a credential (in order: `$CLAUDE_CODE_OAUTH_TOKEN` in
+  its own environment · `~/.claude/.credentials.json` on Linux · the macOS
+  Keychain) and persists it once to a private, `chmod 600` sink outside the
+  repo, dir `chmod 700`, written atomically (temp file + `mv`) so a concurrent
+  up/respawn never reads a half-written file. Every pane's `claude` launch
+  sources it fresh, same mechanism as `FWF_PANE_ENV` above. `fwf auth resolve`
+  re-checks without launching anything; `fwf auth clear` removes it by hand
+  (`fwf down`'s full teardown already does this — a decommissioned floor
+  shouldn't leave a live token sitting at a predictable path). If `fwf up`
+  can't resolve any credential it fails loud before any pane boots, rather
+  than seating unauthenticated panes that look live on the dash.
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.

@@ -23,6 +23,15 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test.XXXXXX")"
 export TMUX_TMPDIR="$TMP/tmux"; mkdir -p "$TMUX_TMPDIR"
 unset TMUX
 
+# issue #217: `fwf up` now refuses to launch (loud, before any pane boots) if
+# no claude credential resolves — correct in production, but every real-tmux
+# fwf-up.sh fixture below stubs `claude` itself and was never written to
+# provide one. A single fake token here, inherited by every subsequent `env
+# ... fwf-up.sh` call unless a specific test explicitly overrides/unsets it
+# (the #217 no-credential-resolves tests do exactly that), keeps the whole
+# suite green without touching each individual fixture's env string.
+export CLAUDE_CODE_OAUTH_TOKEN="fwf-selftest-fake-token-$$"
+
 # HERMETICITY (issue #175): this suite builds its own throwaway fixtures and
 # pins their env explicitly at each call site. An ambient FWF_REPO/FWF_PROFILE/
 # FWF_PAIRS from the caller silently OVERRIDES those fixtures — measured at 41
@@ -1795,6 +1804,108 @@ EOS
   tmux kill-session -t "${F143BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F143BSESS}-build" 2>/dev/null
   unset F143_SECRET
+
+  # --------------------------------------------------------------------------
+  section "claude auth persistence sink (issue #217): resolve / source / clear"
+  # Delivery into the pane's actual process env is NOT re-tested here: this
+  # sink is sourced by the exact same fwf_claude_cmd prefix mechanism the
+  # #143 test just above already proved reaches a real pane's process env
+  # end-to-end. What's new here is what fwf_claude_cmd doesn't cover:
+  # resolution precedence, atomic writing, secret hygiene, and removal.
+  F217RUN="$TMP/run217"; mkdir -p "$F217RUN"
+
+  # AC 3: file 0600 in a 0700 dir -- and the write's OWN umask governs the
+  # mode regardless of a hostile INHERITED umask (the discriminating half;
+  # a test that only checks the resulting mode passes even if the umask
+  # subshell were silently dropped in a later refactor).
+  F217_ENV_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN FWF_RUN_DIR="$F217RUN/perm" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-test-217 bash -c "
+    umask 000
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC 3: resolved source is 'env'" "env" "$F217_ENV_OUT"
+  assert_eq "AC 3: sink file is 0600 even under a hostile inherited umask 000" "600" \
+    "$(stat -c '%a' "$F217RUN/perm/auth.env" 2>/dev/null || stat -f '%Lp' "$F217RUN/perm/auth.env" 2>/dev/null)"
+  assert_eq "AC 3: enclosing run dir is 0700" "700" \
+    "$(stat -c '%a' "$F217RUN/perm" 2>/dev/null || stat -f '%Lp' "$F217RUN/perm" 2>/dev/null)"
+
+  # AC 4: secret hygiene -- the token appears ONLY in the sink itself, never
+  # in fwf's own stdout/stderr, and never in any OTHER file under $FWF_RUN.
+  F217_SECRET="sk-hygiene-probe-$$"
+  F217_HYG_OUT="$(FWF_RUN_DIR="$F217RUN/hyg" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN="$F217_SECRET" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+    fwf_claude_cmd impl1
+    fwf_claude_cmd qa1
+  " 2>&1)"
+  assert_not_contains "AC 4: the token never appears in captured stdout/stderr" "$F217_HYG_OUT" "$F217_SECRET"
+  F217_OTHER_HITS="$(grep -rl "$F217_SECRET" "$F217RUN/hyg" 2>/dev/null | grep -v '/auth\.env$' || true)"
+  assert_eq "AC 4: the token appears in NO file under \$FWF_RUN other than the sink" "" "$F217_OTHER_HITS"
+  assert_contains "AC 4: (control) the token IS in the sink itself -- proves the grep above isn't vacuous" \
+    "$(cat "$F217RUN/hyg/auth.env" 2>/dev/null)" "$F217_SECRET"
+
+  # AC 5: nothing token-bearing is ever written inside the repo working tree.
+  F217_REPO_HITS="$(cd "$ROOT" && git grep -l "$F217_SECRET" 2>/dev/null; grep -rl "$F217_SECRET" "$ROOT" --exclude-dir=.git 2>/dev/null || true)"
+  assert_eq "AC 5: the token never lands inside the repo working tree" "" "$F217_REPO_HITS"
+
+  # AC 8 regression: credentials_file source (no env var) resolves cleanly,
+  # writes ONLY a source marker (nothing to inject -- claude reads that file
+  # itself), and a cold env-var run still works unchanged (proven by AC 3/4
+  # above already using the env path as the primary case).
+  F217_CREDHOME="$TMP/f217-credhome"; mkdir -p "$F217_CREDHOME/.claude"
+  echo '{"fake":"creds"}' > "$F217_CREDHOME/.claude/.credentials.json"
+  F217_CRED_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F217_CREDHOME" FWF_RUN_DIR="$F217RUN/cred" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC 8: credentials_file source resolves when no env var is present" "credentials_file" "$F217_CRED_OUT"
+  assert_not_contains "AC 8: credentials_file source injects NO token (nothing to inject -- already durable on disk)" \
+    "$(cat "$F217RUN/cred/auth.env" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN"
+
+  # Edge case: no source resolves anywhere -- fails loud, no sink left behind.
+  F217_NONEHOME="$TMP/f217-nonehome"; mkdir -p "$F217_NONEHOME"
+  F217_NONE_RC=0
+  F217_NONE_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F217_NONEHOME" FWF_RUN_DIR="$F217RUN/none" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")" || F217_NONE_RC=$?
+  assert_eq "edge case: no source resolves -> exit 1" "1" "$F217_NONE_RC"
+  assert_eq "edge case: no source resolves -> reports 'none'" "none" "$F217_NONE_OUT"
+  if [ -e "$F217RUN/none/auth.env" ]; then bad "edge case: no sink left behind when nothing resolves"; else ok "edge case: no sink left behind when nothing resolves"; fi
+
+  # AC 9: removal path -- fwf_auth_clear is idempotent, and (below) fwf-down.sh
+  # removes the sink on a FULL teardown but NOT on a partial one (the other
+  # plane may still need it).
+  F217_CLEAR_RUN="$TMP/f217-clear"; mkdir -p "$F217_CLEAR_RUN"
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/lib.sh'; fwf_resolve_claude_auth" >/dev/null
+  [ -f "$F217_CLEAR_RUN/auth.env" ] || bad "AC 9: sink exists before clear (setup)"
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_auth_clear"
+  if [ -e "$F217_CLEAR_RUN/auth.env" ]; then bad "AC 9: fwf_auth_clear removes the sink"; else ok "AC 9: fwf_auth_clear removes the sink"; fi
+  F217_CLEAR_RC=0
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_auth_clear" || F217_CLEAR_RC=$?
+  assert_eq "AC 9: clearing an already-absent sink succeeds silently (idempotent)" "0" "$F217_CLEAR_RC"
+
+  # fwf_claude_cmd wiring: sources the sink when present, no-ops cleanly when absent.
+  F217_CMDRUN="$TMP/f217-cmdrun"; mkdir -p "$F217_CMDRUN"
+  F217_CMD_WITH="$(FWF_RUN_DIR="$F217_CMDRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth >/dev/null; fwf_claude_cmd impl1
+  ")"
+  assert_contains "fwf_claude_cmd sources the auth sink when it exists" "$F217_CMD_WITH" "auth.env"
+  F217_NOSINKRUN="$TMP/f217-nosink"; mkdir -p "$F217_NOSINKRUN"
+  F217_CMD_WITHOUT="$(FWF_RUN_DIR="$F217_NOSINKRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+  assert_not_contains "fwf_claude_cmd has no source prefix when no sink exists" "$F217_CMD_WITHOUT" "auth.env"
+
+  # AC 9 continued: a FULL teardown (bare `fwf-down.sh`, no flags -- the
+  # partial-teardown flags each `exit 0` before ever reaching this path)
+  # removes the sink; a real repo dir is needed only so fwf-down.sh's own
+  # sourcing succeeds, no tmux session needs to actually exist (its
+  # kill-session calls degrade to "no tmux session '...'" and continue).
+  F217_DOWNRUN="$TMP/f217-down"; mkdir -p "$F217_DOWNRUN"
+  FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/lib.sh'; fwf_resolve_claude_auth" >/dev/null
+  [ -f "$F217_DOWNRUN/auth.env" ] || bad "AC 9: sink exists before a full fwf-down.sh (setup)"
+  FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example FWF_SESSION="fwf-217-noexist-$$" FWF_MIN_FREE_GB=0 \
+    bash "$ROOT/fwf-down.sh" >/dev/null 2>&1
+  if [ -e "$F217_DOWNRUN/auth.env" ]; then bad "AC 9: a full 'fwf down' removes the auth sink"; else ok "AC 9: a full 'fwf down' removes the auth sink"; fi
 
   # --- boot-time worktree refresh (issue #146 AC4) ---------------------------
   # `fwf up` should land every read-only role's worktree at 0-behind
