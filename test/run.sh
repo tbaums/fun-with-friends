@@ -867,6 +867,19 @@ section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-
 # The loop's own output format is not asserted anywhere pre-#147 (grep
 # confirms it), so this covers the refactored shape directly: one line per
 # role, UNKNOWN gets its own explanatory line, and roles are independent.
+#
+# issue #193: fwf-supervise.sh now checks tmux SESSION visibility before
+# ever calling fwf-pane-liveness.sh (an invisible session short-circuits to
+# SESSION_UNKNOWN instead). This section is about the tick/token classifier
+# ONLY, so a permissive stub `tmux` that always reports every session
+# visible neutralizes that new gate here -- the real SESSION_UNKNOWN
+# behavior gets its own dedicated section below.
+SV_TMUX_UP="$TMP/svtmux-up"; mkdir -p "$SV_TMUX_UP"
+cat > "$SV_TMUX_UP/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SV_TMUX_UP/tmux"
 SV_RUN="$TMP/supervise"; mkdir -p "$SV_RUN/state/example/tick-watch"
 printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-watch/svwedged"
 # issue #211: WEDGED needs a TRUSTED token read too -- see the matching
@@ -876,7 +889,7 @@ printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-wa
 mkdir -p "$SV_RUN/state/example/usage-cache"
 printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
   "$(( $(date -u +%s) - 3600 ))" > "$SV_RUN/state/example/usage-cache/svwedged.json"
-SVOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
+SVOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
 assert_contains "supervise reports a confirmed-old-baseline role's real verdict" "$SVOUT" "svwedged   WEDGED"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
@@ -892,16 +905,63 @@ assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORE
 # into destroyed in-flight work, which is the worse failure.
 mkdir -p "$SV_RUN/state/example/tick"
 echo 5 > "$SV_RUN/state/example/tick/svunknown"
-FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
+PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
 read -r SVU_T SVU_TOK SVU_EP < "$SV_RUN/state/example/tick-watch/svunknown"
 printf '%s %s %s\n' "$SVU_T" "$SVU_TOK" "$(( SVU_EP - 700 ))" > "$SV_RUN/state/example/tick-watch/svunknown"
 printf garbage > "$SV_RUN/state/example/tick/svunknown"   # simulate a tick READ failure
-SVUOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
+SVUOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
 assert_contains "AC(h): a simulated tick-read failure classifies UNKNOWN, not WEDGED" "$SVUOUT" "svunknown  UNKNOWN"
 assert_not_contains "AC(h): supervise does NOT reap -- no respawn attempted even WITH autorespawn=1" "$SVUOUT" "respawning"
 assert_not_contains "AC(h): fwf-respawn.sh is never invoked at all for this role" "$SVUOUT" "respawn FAILED"
 assert_eq "AC(h): the tick counter itself is unmodified by this whole pass (still 'garbage')" "garbage" \
   "$(cat "$SV_RUN/state/example/tick/svunknown")"
+
+section "fwf supervise: SESSION_UNKNOWN — session invisibility never reaps (issue #193 f/g)"
+# The tick/token classifier alone can't tell "genuinely wedged" apart from
+# "not running because the floor is down (or supervise can't see it from
+# this host/socket)" -- a stale tick file looks identical either way. These
+# fixtures force each of the two visibility outcomes explicitly via a fake
+# `tmux` on PATH, rather than depending on whatever real session (if any)
+# happens to be reachable from the box running the test.
+SV2_RUN="$TMP/supervise-sessionvis"; mkdir -p "$SV2_RUN/state/example"
+echo default > "$SV2_RUN/state/example/tmux_socket"
+
+# Case 1: NO fwf session visible anywhere -- `tmux has-session` always fails.
+SV_TMUX_DOWN="$TMP/svtmux-down"; mkdir -p "$SV_TMUX_DOWN"
+cat > "$SV_TMUX_DOWN/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$SV_TMUX_DOWN/tmux"
+SV2OUT_NONE="$(PATH="$SV_TMUX_DOWN:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_contains "factory genuinely invisible -> SESSION_UNKNOWN names the whole-floor case" "$SV2OUT_NONE" \
+  "SESSION_UNKNOWN no fwf session visible on the resolved tmux socket at all"
+assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (whole-floor case)" "$SV2OUT_NONE" "respawning"
+
+# Case 2: the FACTORY is visible (BUILD_SESSION exists) but THIS role's own
+# session type (pm -> COORD_SESSION) does not -- distinguished from case 1
+# by matching on the "-build"/"-coord" suffix lib.sh always appends, not a
+# hardcoded full session name.
+SV_TMUX_HALF="$TMP/svtmux-half"; mkdir -p "$SV_TMUX_HALF"
+cat > "$SV_TMUX_HALF/tmux" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *-build) exit 0 ;;
+  esac
+done
+exit 1
+EOF
+chmod +x "$SV_TMUX_HALF/tmux"
+SV2OUT_HALF="$(PATH="$SV_TMUX_HALF:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_contains "factory visible but THIS role's session isn't -> the narrower wording" "$SV2OUT_HALF" \
+  "SESSION_UNKNOWN role session not visible on the resolved tmux socket though the factory itself is"
+assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (role-only case)" "$SV2OUT_HALF" "respawning"
+
+# A role whose session IS visible is unaffected by any of this -- proven by
+# reusing the permissive stub from the classifier tests above.
+SV2OUT_VISIBLE="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_not_contains "a visible session never gets the SESSION_UNKNOWN verdict" "$SV2OUT_VISIBLE" "SESSION_UNKNOWN"
 
 section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
 # Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
@@ -1210,7 +1270,14 @@ FI_OFF='{"active":false,"since":"","reason":"","actor":""}'
 NOPANE_TMUX="$TMP/nopane85bin"; mkdir -p "$NOPANE_TMUX"
 cat > "$NOPANE_TMUX/tmux" <<'STUB'
 #!/usr/bin/env bash
-case "$1" in has-session) exit 1;; list-panes) exit 0;; *) exit 1;; esac
+# has-session succeeds (the SESSION is visible -- issue #193 needs that
+# distinguished from "can't tell"); list-panes succeeds but lists nothing
+# (no MATCHING pane), which is the actual "no pane" fixture this section
+# is about. A leading "-S <sock>" (fwf-dash-data.sh's own tmux() wrapper
+# always adds one once a socket resolves, real ambient $TMUX included) is
+# stripped first so it never shadows the real subcommand into the catch-all.
+if [ "$1" = "-S" ]; then shift 2; fi
+case "$1" in has-session) exit 0;; list-panes) exit 0;; *) exit 1;; esac
 STUB
 chmod +x "$NOPANE_TMUX/tmux"
 R85_IDLE="$(PATH="$NOPANE_TMUX:$PATH" FWF_PROFILE=example bash -c "source '$DD85'; roles_json '$FI_ON'")"
@@ -3537,7 +3604,12 @@ assert_eq "role launched on a non-default socket reads UP once the socket is per
 
 NOFILERUN="$TMP/run62nofile"; mkdir -p "$NOFILERUN"
 NOFILEROLES="$(env $DASHENV FWF_RUN_DIR="$NOFILERUN" bash -c "source '$DD'; roles_json")"
-assert_eq "same fixture with NO persisted socket and no ambient \$TMUX reads DOWN (proves the UP above came from reading the persisted socket, not luck — this is what 'unset TMUX' regresses to)" "down" \
+# issue #193: no persisted socket resolves and no ambient \$TMUX names the
+# fake DB's sessions -> the session itself cannot be confirmed visible, so
+# this is the honest UNKNOWN failure mode, not a fabricated DOWN (proves the
+# UP above came from reading the persisted socket, not luck -- this is what
+# "unset TMUX"/an unresolved socket regresses to).
+assert_eq "same fixture with NO persisted socket and no ambient \$TMUX reads UNKNOWN (session unconfirmed, never a fabricated DOWN)" "unknown" \
   "$(printf '%s' "$NOFILEROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
 
 FALLBACKRUN="$TMP/run62fallback"; mkdir -p "$FALLBACKRUN"
