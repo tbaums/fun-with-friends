@@ -23,6 +23,15 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test.XXXXXX")"
 export TMUX_TMPDIR="$TMP/tmux"; mkdir -p "$TMUX_TMPDIR"
 unset TMUX
 
+# issue #217: `fwf up` now refuses to launch (loud, before any pane boots) if
+# no claude credential resolves — correct in production, but every real-tmux
+# fwf-up.sh fixture below stubs `claude` itself and was never written to
+# provide one. A single fake token here, inherited by every subsequent `env
+# ... fwf-up.sh` call unless a specific test explicitly overrides/unsets it
+# (the #217 no-credential-resolves tests do exactly that), keeps the whole
+# suite green without touching each individual fixture's env string.
+export CLAUDE_CODE_OAUTH_TOKEN="fwf-selftest-fake-token-$$"
+
 # HERMETICITY (issue #175): this suite builds its own throwaway fixtures and
 # pins their env explicitly at each call site. An ambient FWF_REPO/FWF_PROFILE/
 # FWF_PAIRS from the caller silently OVERRIDES those fixtures — measured at 41
@@ -62,6 +71,55 @@ assert_log_eventually_contains() {
   bad "$label" "no [$needle] line appeared in $log within ${timeout}s (last line: $(tail -n1 "$log" 2>/dev/null))"
 }
 section() { printf '\n# %s\n' "$1"; }
+
+section "test suite tmux isolation invariants (issue #226 AC e/f/g)"
+# AC(e): the isolation invariant itself, asserted ONCE, suite-wide, right
+# here -- not per-case (every one of the 86+ bare `tmux` call sites below
+# would otherwise need its own copy, and a per-case assertion is exactly the
+# kind of thing that silently stops being true when the isolation moves,
+# per AC(d)'s own lesson).
+case "$TMUX_TMPDIR" in
+  "$TMP"/*) ok "AC(e): \$TMUX_TMPDIR is inside this run's own \$TMP (never a shared/system path)";;
+  *) bad "AC(e): \$TMUX_TMPDIR is inside this run's own \$TMP" "TMUX_TMPDIR=$TMUX_TMPDIR TMP=$TMP";;
+esac
+if [ -z "${TMUX:-}" ]; then ok "AC(e): \$TMUX is unset (no inherited pane socket)"; else bad "AC(e): \$TMUX is unset" "TMUX=$TMUX"; fi
+
+# AC(f): the CLASS guard -- no case may override TMUX_TMPDIR or leak a
+# persisting re-set of $TMUX into the suite's own shell. Deliberately NOT a
+# grep for bare `tmux`: under TMUX_TMPDIR, bare `tmux` is the correct idiom
+# every case uses to reach the isolated server, and flagging it would push
+# toward per-call `-L`/`-S` flags that FRAGMENT the isolation this section
+# just centralised one invariant for. A handful of tests below DO write
+# `TMUX='...' some-command` as a one-shot env PREFIX to test some OTHER
+# function's own socket-resolution logic (fwf_tmux_socket_value, roles_json)
+# against a fabricated value -- that scopes to the one command and never
+# reaches this shell's own $TMUX (still unset per AC(e) above), so it is not
+# an instance of what this guard exists to catch.
+assert_eq "AC(f): \$TMUX_TMPDIR is assigned in EXACTLY one place (the setup above)" "1" \
+  "$(grep -c '^export TMUX_TMPDIR=' "$ROOT/test/run.sh")"
+assert_eq "AC(f): the persisting 'unset TMUX' appears in EXACTLY one place" "1" \
+  "$(grep -c '^unset TMUX$' "$ROOT/test/run.sh")"
+
+# AC(g): teardown invariant (cheap form -- no fault injection: this proves
+# the trap's OWN mechanism actually clears the isolated server and its temp
+# dir, since asserting AFTER a real process exit isn't possible from inside
+# that same process). A throwaway session on the isolated server, then the
+# exact commands the EXIT trap above runs.
+F226_TEARDOWN_PROBE="fwf-selftest-226-teardown-$$"
+tmux new-session -d -s "$F226_TEARDOWN_PROBE" 2>/dev/null
+F226_TEARDOWN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test226-teardown.XXXXXX")"
+touch "$F226_TEARDOWN_DIR/marker"
+tmux kill-server 2>/dev/null; rm -rf "$F226_TEARDOWN_DIR"
+if tmux has-session -t "$F226_TEARDOWN_PROBE" 2>/dev/null; then
+  bad "AC(g): the teardown mechanism leaves no fwf-selftest-* session on the isolated server"
+else
+  ok "AC(g): the teardown mechanism leaves no fwf-selftest-* session on the isolated server"
+fi
+if [ -e "$F226_TEARDOWN_DIR" ]; then
+  bad "AC(g): the teardown mechanism removes its temp dir"
+else
+  ok "AC(g): the teardown mechanism removes its temp dir"
+fi
 
 # Build a git fixture repo: mkfix <name> then drop files into $FIX.
 mkfix() { FIX="$TMP/$1"; mkdir -p "$FIX"; ( cd "$FIX" && git init -q && git config user.email t@t.co && git config user.name t ); }
@@ -281,6 +339,17 @@ pctx_env() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
 # real bug: the first cut of this sanitizer used \b, which silently NEVER
 # matches on this repo's own dev machine (macOS /usr/bin/sed) — every rule
 # below would otherwise pass straight through unsanitized.
+#
+# issue #234: the table used to ALSO substitute role/jargon words (pm, gv,
+# captain, conductor, impl<N>, qa<N>, floor, gate, worktree(s), product-wip,
+# release-hold, "staging branch"/"integration branch") as ordinary vocabulary.
+# GV-signed direction: narrow the table to PROTOCOL MARKERS only (below) and
+# STOP substituting those — they are identifiers a human types (a CLI flag,
+# a command, a seat), not jargon, and substituting them either publishes a
+# command that does not exist ('--pm-only' -> '--the product owner-only') or
+# destroys which seat did what (impl1/impl2/gv/qa1 all collapsing into "the
+# implementer"/"the reviewer"). This repo is public and ships 31 role-
+# template files by name, so there was no secret in that table to begin with.
 SANI_IN="mentions impl3 and impl__ID__ and qa2 and CLAIM impl1 and ASSIGNED qa4
 GV-SIGNOFF then GV-CHANGES; QA-APPROVED: #1 and QA-CHANGES-REQUESTED: #2 and IMPL-ADDRESSED: #3
 captain, conductor, gv, pm all met in the worktree on the floor to review the gate
@@ -288,23 +357,78 @@ staging branch and integration branch; origin/staging and origin/integration
 product-wip and release-hold; Owner: impl9  WIP
 FWF_TOKEN_BUDGET and LI-42 and impl2/issue-9-slug and fwf-self-abc123 and ~/.fun-with-friends/state/x"
 SANI_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SANI_IN")"
-for tok in 'impl3' 'impl__ID__' 'qa2' 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
-           'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:' 'captain' 'conductor' \
-           'worktree' 'floor' 'gate' 'staging branch' 'integration branch' 'origin/staging' \
-           'origin/integration' 'product-wip' 'release-hold' 'Owner:' 'FWF_TOKEN_BUDGET' \
-           'LI-42' 'impl2/issue-9-slug' 'fwf-self-abc123' '.fun-with-friends'; do
+# still substituted: protocol-state markers (kept — see lib/pr_context.sh).
+for tok in 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
+           'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:'; do
   case "$SANI_OUT" in
     *"$tok"*) bad "sanitizer strips '$tok'" "leaked: $SANI_OUT";;
     *)        ok "sanitizer strips '$tok'";;
   esac
 done
-# bare "WIP" (not part of a larger word) is deleted entirely, not replaced.
+# still substituted: composite patterns unrelated to the role/jargon table
+# (branch/session/path sweep, origin/staging|integration, LI-N, FWF_* vars).
+for tok in 'origin/staging' 'origin/integration' 'FWF_TOKEN_BUDGET' 'LI-42' \
+           'impl2/issue-9-slug' 'fwf-self-abc123' '.fun-with-friends'; do
+  case "$SANI_OUT" in
+    *"$tok"*) bad "sanitizer strips '$tok'" "leaked: $SANI_OUT";;
+    *)        ok "sanitizer strips '$tok'";;
+  esac
+done
+# AC(d) / AC(g): the dropped role/jargon words now SURVIVE VERBATIM — they
+# are no longer substituted at all, prose or otherwise (issue #234).
+for tok in 'impl3' 'impl__ID__' 'qa2' 'captain' 'conductor' 'gv' 'pm' \
+           'worktree' 'floor' 'gate' 'staging branch' 'integration branch' \
+           'product-wip' 'release-hold'; do
+  assert_contains "AC(g): sanitizer no longer touches '$tok' (narrowed table, issue #234)" "$SANI_OUT" "$tok"
+done
+# bare "WIP" (not part of a larger word) is deleted entirely, not replaced —
+# unaffected by the narrowing, still exercised here.
 case "$SANI_OUT" in *WIP*) bad "sanitizer deletes bare WIP";; *) ok "sanitizer deletes bare WIP";; esac
-# adjacent tokens sharing a boundary char (the specific bug the \b rewrite fixed)
-# must ALL convert, not just the outermost ones.
-ADJ="$(pctx_env "fwf_sanitize_pr_text" <<<"impl1 impl2 impl3")"
-assert_eq "adjacent role tokens all sanitized (no boundary-consuming gap)" \
-  "the implementer the implementer the implementer" "$ADJ"
+# adjacent tokens sharing a boundary char (the specific bug the \b rewrite
+# fixed) must ALL convert, not just the outermost ones — exercised against a
+# KEPT rule now that the role-word rules it originally used are gone.
+ADJ="$(pctx_env "fwf_sanitize_pr_text" <<<"FWF_A FWF_B FWF_C")"
+assert_eq "adjacent marker tokens all sanitized (no boundary-consuming gap)" \
+  "[internal-var] [internal-var] [internal-var]" "$ADJ"
+
+# issue #234 AC(a) — the four RED cases from the original bug report, GREEN
+# now that pm/floor/gate are no longer substituted at all: a command/flag
+# that never existed cannot be published into permanent history.
+AC_A_IN='fwf up --pm-only refuses when no coord session exists; also try --floor-only.
+Run `fwf gate` before pushing, and see `gate-history` for prior runs.'
+AC_A_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_A_IN")"
+for tok in '--pm-only' '--floor-only' 'fwf gate' 'gate-history'; do
+  assert_contains "AC(a): '$tok' survives sanitization verbatim (issue #234)" "$AC_A_OUT" "$tok"
+done
+
+# issue #234 AC(d2) — distinct seats stay distinguishable; the old table
+# collapsed qa1/gv into the SAME string ("the reviewer"), destroying which
+# reviewer did what. Load-bearing: this is the actual defect behind #189/
+# #212 wanting a faithful record.
+AC_D2_IN="qa1 requested changes on impl2's PR; gv signed off"
+AC_D2_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_D2_IN")"
+assert_eq "AC(d2): three distinct seats remain distinguishable, not collapsed (issue #234)" \
+  "$AC_D2_IN" "$AC_D2_OUT"
+
+# issue #234 AC(e2) — the motivating example: a captain/conductor branch name
+# in prose (and, since it's the same string, in a markdown link target) must
+# survive verbatim, never rewritten into a branch that does not exist.
+AC_E2_IN='see captain/218-sentinel-fixtures and [the PR](https://github.com/x/y/tree/conductor/9-foo)'
+AC_E2_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E2_IN")"
+for tok in 'captain/218-sentinel-fixtures' 'conductor/9-foo'; do
+  assert_contains "AC(e2): branch name '$tok' survives sanitization verbatim (issue #234)" "$AC_E2_OUT" "$tok"
+done
+
+# issue #234 AC(e) — idempotent. Narrowing drops the shield/restore mechanism
+# that motivated this AC originally, but it's not moot: it's a property of
+# the KEPT marker table too — none of [internal-var]/(claimed)/(assigned)/
+# (reviewed)/(review note:) may itself re-match a source pattern on a second
+# pass (QA-caught: reasoning "by eye" isn't the same as asserting it).
+AC_E_IN='CLAIM impl1 then GV-SIGNOFF and QA-APPROVED: #5, ASSIGNED qa2, FWF_A FWF_B'
+AC_E_ONCE="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E_IN")"
+AC_E_TWICE="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E_ONCE")"
+assert_eq "AC(e): sanitizing an already-sanitized body is a no-op (issue #234)" \
+  "$AC_E_ONCE" "$AC_E_TWICE"
 # sensitive-data scrub (constraint 3): secret/token/key SHAPES, not just fwf vocab.
 SEC_IN='ghp_abcdefghijklmnopqrstuvwxyz012345 AKIAABCDEFGHIJKLMNOP sk-abcdefghijklmnopqrstuvwx api_key: sup3rsecret'
 SEC_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SEC_IN")"
@@ -1753,13 +1877,32 @@ EOS
   section "agent panes reliably get FWF_PANE_ENV-forwarded vars, even on a pre-existing tmux server (issue #143)"
   # The whole point of the bug: a NEW pane inherits the tmux SERVER's env from
   # whenever the server itself first started, not the shell that just ran
-  # `fwf up` — so this uses the shared default-socket server (already running
-  # on this box from earlier tests, i.e. genuinely pre-existing), never a
-  # freshly-started one, or the test would pass by accident.
+  # `fwf up`. "pre-existing" here means a PRIVATE server this suite itself
+  # started before `fwf-up.sh` runs (this file's own throwaway TMUX_TMPDIR,
+  # set at the top -- every bare `tmux` call in the suite, this one included,
+  # resolves there, never the real default socket) -- ordering and CONTENTS
+  # are what "pre-existing" tests, not sharedness with anything else on the
+  # box. (Corrected 2026-08-28, issue #226 AC(d): this used to describe an
+  # actual shared default-socket server, which stopped being true the moment
+  # issue #198 centralised suite-wide isolation at :22-24 -- a comment
+  # describing a fixture's isolation is load-bearing documentation, and when
+  # the isolation moves out from under it, the comment becomes a lie the
+  # next reader believes.)
+  #
+  # issue #226 AC(0): reproduced under real floor load, 20 iterations of this
+  # exact chain (fwf-up.sh -> fwf_find_pane -> pane_pid -> pgrep -P, fresh
+  # FWF_SESSION/FWF_RUN_DIR each time) -- 18/20 found, 2/20 missed, and BOTH
+  # misses were at the LAST step only (pgrep -P), never at fwf_find_pane or
+  # pane_pid. Branch 1 (intermittent -> race): the claude stub is `exec sleep
+  # 300`, forked by the pane's shell AFTER fwf-up.sh already returns
+  # (FWF_SKIP_BOOT_GATE=1 is deliberate here -- see the edge-case note below);
+  # pgrep can genuinely run before that fork lands. AC(b): bounded retry on
+  # JUST that step (the only one that raced), diagnostic message names WHICH
+  # step actually came up empty on the (now rare) case it still times out.
   F143WT="$TMP/wt143"; mkdir -p "$F143WT/ex-impl1" "$F143WT/ex-qa1" "$F143WT/ex-conductor" "$F143WT/ex-pm" "$F143WT/ex-gv" "$F143WT/ex-captain"
   F143RUN="$TMP/run143"; mkdir -p "$F143RUN/state/example"
   F143SESS="fwf-selftest-143-$$"
-  F143_SECRET="shh-$$-$(date +%N 2>/dev/null || echo x)"; export F143_SECRET   # a value the ambient server never saw
+  F143_SECRET="shh-$$-$(date +%N 2>/dev/null || echo x)"; export F143_SECRET   # a value the private server never saw
   env FWF_PROFILE=example FWF_RUN_DIR="$F143RUN" FWF_SESSION="$F143SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F143WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F143_SECRET \
@@ -1770,12 +1913,31 @@ EOS
   # by that shell's own later `export`, so the sourced var only shows up on
   # the CHILD it forks (the claude stub) — walk to that child.
   SHELL_PID="$([ -n "$IMPL1_PANE" ] && tmux display -p -t "$IMPL1_PANE" '#{pane_pid}' 2>/dev/null || true)"
-  IMPL1_PID="$([ -n "$SHELL_PID" ] && pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
+  # AC(b): bounded retry -- ONLY on pgrep, the single step AC(0) showed racing.
+  # Up to ~1s total (5 x 0.2s); FWF_SKIP_BOOT_GATE=1 stays in effect above, so
+  # this retry lives in the test's own polling, never fwf's boot gate.
+  IMPL1_PID=""
+  if [ -n "$SHELL_PID" ]; then
+    for _f226_try in 1 2 3 4 5; do
+      IMPL1_PID="$(pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
+      [ -n "$IMPL1_PID" ] && break
+      sleep 0.2
+    done
+  fi
   if [ -n "$IMPL1_PID" ]; then
     assert_contains "FWF_PANE_ENV var reaches the pane's actual process env" \
       "$(ps eww "$IMPL1_PID" 2>/dev/null)" "F143_SECRET=$F143_SECRET"
   else
-    bad "FWF_PANE_ENV var reaches the pane's actual process env" "could not find impl1 pane pid"
+    # AC(b): name WHICH of the three steps actually came up empty, instead of
+    # collapsing all three into one string (the exact thing that made #226's
+    # incident hard to read).
+    if [ -z "$IMPL1_PANE" ]; then
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "fwf_find_pane returned empty -- the impl1 pane itself was never found"
+    elif [ -z "$SHELL_PID" ]; then
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "tmux pane_pid returned empty for pane $IMPL1_PANE"
+    else
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "pgrep -P $SHELL_PID returned empty after 5 retries (~1s) -- the pane's child process never forked in time"
+    fi
   fi
   assert_eq "pane-env file is chmod 600" "600" \
     "$(stat -c '%a' "$F143RUN/state/example/pane-env.sh" 2>/dev/null || stat -f '%Lp' "$F143RUN/state/example/pane-env.sh" 2>/dev/null)"
@@ -1795,6 +1957,247 @@ EOS
   tmux kill-session -t "${F143BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F143BSESS}-build" 2>/dev/null
   unset F143_SECRET
+
+  # --------------------------------------------------------------------------
+  section "claude auth persistence sink (issue #217): AC(1) — respawn from an UNAUTHENTICATED shell reaches the pane's REAL process env"
+  # THE reported bug, driven exactly as filed: `fwf up` runs from a shell
+  # THAT HAS the credential (writing the sink), then `fwf-respawn.sh` runs
+  # from a SEPARATE, DIFFERENT invocation that explicitly does NOT have it
+  # (env -u) -- proving the sink, not caller inheritance, is what authenticates
+  # the new pane. Same real-pane-process assertion style as the #143 test
+  # above (ps eww on the CHILD pid, never just a string check on the typed
+  # command line) -- this must go RED against pre-#217 code, since without
+  # the sink there is nothing for a respawn from a credential-less shell to
+  # source. AC(2) (supervise's own environment) is the SAME mechanism from a
+  # different caller: fwf-supervise.sh's autorespawn path calls fwf-respawn.sh
+  # with no special env handling of its own, so this same proof covers it --
+  # the sink makes the CALLER irrelevant, which is the whole point.
+  F217E2E_WT="$TMP/wt217e2e"; mkdir -p "$F217E2E_WT/ex-impl1" "$F217E2E_WT/ex-qa1" "$F217E2E_WT/ex-conductor" "$F217E2E_WT/ex-pm" "$F217E2E_WT/ex-gv" "$F217E2E_WT/ex-captain"
+  F217E2E_RUN="$TMP/run217e2e"; mkdir -p "$F217E2E_RUN"
+  F217E2E_SESS="fwf-selftest-217e2e-$$"
+  F217E2E_TOKEN="fwf-e2e-secret-$$"
+  # Step 1: `fwf up` from an AUTHENTICATED shell -- writes the sink.
+  env FWF_PROFILE=example FWF_RUN_DIR="$F217E2E_RUN" FWF_SESSION="$F217E2E_SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 CLAUDE_CODE_OAUTH_TOKEN="$F217E2E_TOKEN" \
+      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  # Step 2: respawn impl1 from a DIFFERENT invocation with NO credential at
+  # all in ITS environment -- the exact AC(1) scenario. Only the sink (from
+  # step 1) can authenticate the new pane. issue #116-style interval/margin
+  # overrides: the stub claude never ticks, so the post-arm verify would
+  # otherwise run out its full real ~2m window before returning.
+  env -u CLAUDE_CODE_OAUTH_TOKEN FWF_PROFILE=example FWF_RUN_DIR="$F217E2E_RUN" FWF_SESSION="$F217E2E_SESS" \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
+      "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
+  F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+  F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
+  F217E2E_CHILD_PID="$([ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true)"
+  if [ -n "$F217E2E_CHILD_PID" ]; then
+    assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
+      "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
+  else
+    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "could not find impl1 pane's child pid after respawn"
+  fi
+  tmux kill-session -t "${F217E2E_SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F217E2E_SESS}-build" 2>/dev/null
+
+  section "claude auth persistence sink (issue #217): resolve / source / clear"
+  # The unit-level tests below cover what the real-pane test above does NOT:
+  # resolution precedence, atomic writing, secret hygiene, and removal.
+  F217RUN="$TMP/run217"; mkdir -p "$F217RUN"
+
+  # AC 3: file 0600 in a 0700 dir -- and the write's OWN umask governs the
+  # mode regardless of a hostile INHERITED umask (the discriminating half;
+  # a test that only checks the resulting mode passes even if the umask
+  # subshell were silently dropped in a later refactor).
+  F217_ENV_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN FWF_RUN_DIR="$F217RUN/perm" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-test-217 bash -c "
+    umask 000
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC 3: resolved source is 'env'" "env" "$F217_ENV_OUT"
+  assert_eq "AC 3: sink file is 0600 even under a hostile inherited umask 000" "600" \
+    "$(stat -c '%a' "$F217RUN/perm/auth.env" 2>/dev/null || stat -f '%Lp' "$F217RUN/perm/auth.env" 2>/dev/null)"
+  assert_eq "AC 3: enclosing run dir is 0700" "700" \
+    "$(stat -c '%a' "$F217RUN/perm" 2>/dev/null || stat -f '%Lp' "$F217RUN/perm" 2>/dev/null)"
+
+  # AC 4: secret hygiene -- the token appears ONLY in the sink itself, never
+  # in fwf's own stdout/stderr, and never in any OTHER file under $FWF_RUN.
+  F217_SECRET="sk-hygiene-probe-$$"
+  F217_HYG_OUT="$(FWF_RUN_DIR="$F217RUN/hyg" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN="$F217_SECRET" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+    fwf_claude_cmd impl1
+    fwf_claude_cmd qa1
+  " 2>&1)"
+  assert_not_contains "AC 4: the token never appears in captured stdout/stderr" "$F217_HYG_OUT" "$F217_SECRET"
+  F217_OTHER_HITS="$(grep -rl "$F217_SECRET" "$F217RUN/hyg" 2>/dev/null | grep -v '/auth\.env$' || true)"
+  assert_eq "AC 4: the token appears in NO file under \$FWF_RUN other than the sink" "" "$F217_OTHER_HITS"
+  assert_contains "AC 4: (control) the token IS in the sink itself -- proves the grep above isn't vacuous" \
+    "$(cat "$F217RUN/hyg/auth.env" 2>/dev/null)" "$F217_SECRET"
+
+  # AC 5: nothing token-bearing is ever written inside the repo working tree.
+  F217_REPO_HITS="$(cd "$ROOT" && git grep -l "$F217_SECRET" 2>/dev/null; grep -rl "$F217_SECRET" "$ROOT" --exclude-dir=.git 2>/dev/null || true)"
+  assert_eq "AC 5: the token never lands inside the repo working tree" "" "$F217_REPO_HITS"
+
+  # AC 8 regression: credentials_file source (no env var) resolves cleanly,
+  # writes ONLY a source marker (nothing to inject -- claude reads that file
+  # itself), and a cold env-var run still works unchanged (proven by AC 3/4
+  # above already using the env path as the primary case).
+  F217_CREDHOME="$TMP/f217-credhome"; mkdir -p "$F217_CREDHOME/.claude"
+  echo '{"fake":"creds"}' > "$F217_CREDHOME/.claude/.credentials.json"
+  F217_CRED_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F217_CREDHOME" FWF_RUN_DIR="$F217RUN/cred" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC 8: credentials_file source resolves when no env var is present" "credentials_file" "$F217_CRED_OUT"
+  assert_not_contains "AC 8: credentials_file source injects NO token (nothing to inject -- already durable on disk)" \
+    "$(cat "$F217RUN/cred/auth.env" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN"
+
+  # Edge case: no source resolves anywhere -- fails loud, no sink left behind.
+  F217_NONEHOME="$TMP/f217-nonehome"; mkdir -p "$F217_NONEHOME"
+  F217_NONE_RC=0
+  F217_NONE_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F217_NONEHOME" FWF_RUN_DIR="$F217RUN/none" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")" || F217_NONE_RC=$?
+  assert_eq "edge case: no source resolves -> exit 1" "1" "$F217_NONE_RC"
+  assert_eq "edge case: no source resolves -> reports 'none'" "none" "$F217_NONE_OUT"
+  if [ -e "$F217RUN/none/auth.env" ]; then bad "edge case: no sink left behind when nothing resolves"; else ok "edge case: no sink left behind when nothing resolves"; fi
+
+  # AC 9: removal path -- fwf_auth_clear is idempotent, and (below) fwf-down.sh
+  # removes the sink on a FULL teardown but NOT on a partial one (the other
+  # plane may still need it).
+  F217_CLEAR_RUN="$TMP/f217-clear"; mkdir -p "$F217_CLEAR_RUN"
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/lib.sh'; fwf_resolve_claude_auth" >/dev/null
+  [ -f "$F217_CLEAR_RUN/auth.env" ] || bad "AC 9: sink exists before clear (setup)"
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_auth_clear"
+  if [ -e "$F217_CLEAR_RUN/auth.env" ]; then bad "AC 9: fwf_auth_clear removes the sink"; else ok "AC 9: fwf_auth_clear removes the sink"; fi
+  F217_CLEAR_RC=0
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_auth_clear" || F217_CLEAR_RC=$?
+  assert_eq "AC 9: clearing an already-absent sink succeeds silently (idempotent)" "0" "$F217_CLEAR_RC"
+
+  # fwf_claude_cmd wiring: sources the sink when present, no-ops cleanly when absent.
+  F217_CMDRUN="$TMP/f217-cmdrun"; mkdir -p "$F217_CMDRUN"
+  F217_CMD_WITH="$(FWF_RUN_DIR="$F217_CMDRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth >/dev/null; fwf_claude_cmd impl1
+  ")"
+  assert_contains "fwf_claude_cmd sources the auth sink when it exists" "$F217_CMD_WITH" "auth.env"
+  F217_NOSINKRUN="$TMP/f217-nosink"; mkdir -p "$F217_NOSINKRUN"
+  F217_CMD_WITHOUT="$(FWF_RUN_DIR="$F217_NOSINKRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+  assert_not_contains "fwf_claude_cmd has no source prefix when no sink exists" "$F217_CMD_WITHOUT" "auth.env"
+
+  # AC 9 continued: a FULL teardown (bare `fwf-down.sh`, no flags -- the
+  # partial-teardown flags each `exit 0` before ever reaching this path)
+  # removes the sink; a real repo dir is needed only so fwf-down.sh's own
+  # sourcing succeeds, no tmux session needs to actually exist (its
+  # kill-session calls degrade to "no tmux session '...'" and continue).
+  F217_DOWNRUN="$TMP/f217-down"; mkdir -p "$F217_DOWNRUN"
+  FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/lib.sh'; fwf_resolve_claude_auth" >/dev/null
+  [ -f "$F217_DOWNRUN/auth.env" ] || bad "AC 9: sink exists before a full fwf-down.sh (setup)"
+  FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example FWF_SESSION="fwf-217-noexist-$$" FWF_MIN_FREE_GB=0 \
+    bash "$ROOT/fwf-down.sh" >/dev/null 2>&1
+  if [ -e "$F217_DOWNRUN/auth.env" ]; then bad "AC 9: a full 'fwf down' removes the auth sink"; else ok "AC 9: a full 'fwf down' removes the auth sink"; fi
+
+  # --------------------------------------------------------------------------
+  section "respawn circuit breaker (issue #217 section 4): bounded consecutive failures, no unbounded destroy-and-retry"
+  # Direct unit tests first (fwf_respawn_breaker_check/fail/reset -- PURE
+  # state-file logic), then the real integration through fwf-supervise.sh's
+  # autorespawn loop, isolated the same way the existing AC(f2) supervise
+  # test above is: a throwaway copy of fwf-supervise.sh with fwf-respawn.sh
+  # AND fwf-pane-liveness.sh stubbed (the real classifier is stateful across
+  # calls -- its OWN snapshot-diffing would otherwise reclassify a repeatedly
+  # re-queried static fixture as WORKING/UNKNOWN rather than staying WEDGED,
+  # which is a fact about the classifier, not about the breaker this section
+  # tests).
+  F217BRK="$TMP/run217brk"; mkdir -p "$F217BRK"
+  assert_eq "fresh role (no prior failures): attempt allowed" "0" \
+    "$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK/fresh" FWF_RESPAWN_BREAKER_MAX=3 bash -c "source '$ROOT/lib.sh'; fwf_respawn_breaker_check r1; echo \$?" | tail -1)"
+  F217BRK_BELOW="$TMP/run217brk-below"; mkdir -p "$F217BRK_BELOW"
+  BELOW_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BELOW" FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1; echo \$?
+  " | tail -1)"
+  assert_eq "below FWF_RESPAWN_BREAKER_MAX (2 fails, max 3): still allowed" "0" "$BELOW_RC"
+  ATMAX_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BELOW" FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1; echo \$?
+  " | tail -1)"
+  assert_eq "AT FWF_RESPAWN_BREAKER_MAX (3 fails): breaker OPEN, blocked" "1" "$ATMAX_RC"
+  F217BRK_EXPIRE="$TMP/run217brk-expire"; mkdir -p "$F217BRK_EXPIRE"
+  EXPIRE_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_EXPIRE" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
+    sleep 2
+    fwf_respawn_breaker_check r1 && echo AFTER_ALLOWED || echo AFTER_BLOCKED
+  ")"
+  assert_contains "breaker blocks immediately after crossing the threshold" "$EXPIRE_OUT" "IMMEDIATE_BLOCKED"
+  assert_contains "breaker allows again once its backoff window elapses" "$EXPIRE_OUT" "AFTER_ALLOWED"
+  F217BRK_RESET="$TMP/run217brk-reset"; mkdir -p "$F217BRK_RESET"
+  RESET_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_RESET" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_reset r1
+    fwf_respawn_breaker_check r1; echo \$?
+  " | tail -1)"
+  assert_eq "fwf_respawn_breaker_reset clears an open breaker immediately" "0" "$RESET_RC"
+
+  # Real fwf-supervise.sh integration: N consecutive respawn FAILURES produce
+  # exactly N respawn attempts (never N+1) -- the discriminating half; without
+  # the breaker every pass would call fwf-respawn.sh again.
+  F217ISO="$TMP/f217iso"; mkdir -p "$F217ISO/lib" "$F217ISO/profiles"
+  cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F217ISO/"
+  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F217ISO/lib/"
+  cp "$ROOT/profiles/example.sh" "$F217ISO/profiles/"
+  ln -sf "$ROOT/templates" "$F217ISO/templates"
+  ln -sf "$ROOT/fwf-usage-data.sh" "$F217ISO/fwf-usage-data.sh"
+  F217_VERDICT_FILE="$TMP/f217iso-verdict"
+  cat > "$F217ISO/fwf-pane-liveness.sh" <<EOF
+#!/usr/bin/env bash
+cat "$F217_VERDICT_FILE"
+EOF
+  chmod +x "$F217ISO/fwf-pane-liveness.sh"
+  F217_RESPAWN_LOG="$TMP/f217iso-respawn.log"
+  cat > "$F217ISO/fwf-respawn.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$F217_RESPAWN_LOG"
+exit 1
+EOF
+  chmod +x "$F217ISO/fwf-respawn.sh"
+  F217_SV_RUN="$TMP/f217iso-run"; mkdir -p "$F217_SV_RUN/state/example"
+  echo WEDGED > "$F217_VERDICT_FILE"
+  F217_LAST_PASS=""
+  # PATH="$SV_TMUX_UP:$PATH" -- the same fake-tmux stub the AC(f2) supervise
+  # test above uses (`has-session` always exits 0), so fwf_role_session_visible
+  # reads visible without a real tmux server; otherwise this fixture reads
+  # SESSION_UNKNOWN (never reaped) regardless of the stubbed WEDGED verdict.
+  for _f217_i in 1 2 3 4 5; do
+    F217_LAST_PASS="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F217_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
+      FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/fwf-supervise.sh" brkrole 2>&1)"
+  done
+  assert_eq "N=3 consecutive failures produce EXACTLY 3 respawn attempts, never N+1" "3" \
+    "$(wc -l < "$F217_RESPAWN_LOG" 2>/dev/null | tr -d ' ')"
+  assert_contains "the (N+1)th pass reports the give-up state via the EXISTING WEDGED vocabulary, not a new one" "$F217_LAST_PASS" "WEDGED -> breaker OPEN"
+  assert_contains "the give-up line tells the operator how to clear it" "$F217_LAST_PASS" "manual 'fwf respawn brkrole' clears it"
+
+  # Healing (verdict flips away from WEDGED) resets the breaker -- covers
+  # "manual fwf respawn clears the seat's failure count" as a natural
+  # consequence: a successful manual respawn IS what makes the next
+  # classification non-WEDGED, with no special-casing needed in the breaker
+  # itself for "who" triggered the fix.
+  echo HEALTHY > "$F217_VERDICT_FILE"
+  PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F217_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
+    FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/fwf-supervise.sh" brkrole >/dev/null 2>&1
+  if [ -f "$F217_SV_RUN/state/example/respawn-breaker/brkrole" ]; then
+    bad "healing (non-WEDGED verdict) clears the breaker state"
+  else
+    ok "healing (non-WEDGED verdict) clears the breaker state"
+  fi
 
   # --- boot-time worktree refresh (issue #146 AC4) ---------------------------
   # `fwf up` should land every read-only role's worktree at 0-behind
@@ -3529,6 +3932,168 @@ for fx in 179-captain-1650-denial.txt 179-captain-1655-denial.txt 179-pm-1720-re
   assert_eq "static fixture $fx -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_FX")"
 done
 
+# fwf authz (#215): NOT-GATED — an issue that never carried $WIP_LABEL has
+# nothing to un-gate, so a false HELD refusal must not strand it. Determined
+# from label HISTORY, never current state alone (AC c's discriminating test).
+section "fwf authz (#215): NOT-GATED for never-gated issues, distinct from AUTHORIZED"
+EX_NOT_GATED_CONST="$(grep -oE 'EX_NOT_GATED=[0-9]+' "$ROOT/fwf-authz.sh" | head -1 | cut -d= -f2)"
+CUTOFF_EPOCH_CONST="$(grep -oE 'FWF_AUTHZ_SENTINEL_CUTOFF_EPOCH=[0-9]+' "$ROOT/fwf-authz.sh" | head -1 | cut -d= -f2)"
+
+# --- local backend: no label history at all (Known limitation) -> ALWAYS
+# falls through to was-gated, even for an issue never labeled -- correct and
+# honest, never a guess from current state.
+AZ215I() { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+AZ215L() { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+az215Lrc() { local rc=0; AZ215L "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+AZ215I create --title "never-gated local ticket" >/dev/null
+N_NG_LOCAL="$(AZ215I list --json number --jq '.[-1].number' 2>/dev/null)"
+assert_eq "local backend: never-gated issue still resolves HELD (fail-closed, not NOT-GATED)" "10" "$(az215Lrc "$N_NG_LOCAL")"
+assert_contains "local backend: the fail-closed default is EXPLAINED as the known limitation" \
+  "$(AZ215L "$N_NG_LOCAL" 2>&1)" "local issues backend"
+
+# --- gh backend: build a fake `gh` on PATH answering ONLY the two #215
+# direct (uncached) reads -- the PR-vs-issue check and the label-history
+# events read (issue #150-era ghcache has no events cache, so these calls
+# are direct); the existing ghcache-served issue/comments fixtures
+# (AZGROOT-style) still cover current labels + the sentinel thread,
+# untouched. Anything else -- including fwf-ghcache.sh's OWN fallback-to-
+# real-gh path on a cache miss -- must fail loudly here, never quietly
+# "succeed" with the wrong shape of data standing in for a different read:
+# that would let an unfixtured issue number slip past the intended
+# INDETERMINATE, exactly the collapse issue #211 warns against.
+AZ215GHBIN="$TMP/az215ghbin"; mkdir -p "$AZ215GHBIN"
+cat > "$AZ215GHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${AZ215_CALL_LOG:?}"
+case "$*" in
+  *"/events"*)
+    if [ "${AZ215_EVENTS_FAIL:-0}" = 1 ]; then
+      echo "gh: simulated api failure" >&2; exit 1
+    fi
+    cat "${AZ215_EVENTS_FILE:?}"
+    ;;
+  *"api repos/"*"/issues/"*)
+    # The PR-vs-issue check (#215 QA fix) -- default "definitely an issue,
+    # not a PR" (pull_request: null) unless a test opts into simulating a
+    # PR number or an unreadable check.
+    if [ "${AZ215_PRCHECK_FAIL:-0}" = 1 ]; then
+      echo "gh: simulated api failure" >&2; exit 1
+    fi
+    if [ "${AZ215_IS_PR:-0}" = 1 ]; then
+      echo 'true'
+    else
+      echo 'false'
+    fi
+    ;;
+  *) echo "az215-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$AZ215GHBIN/gh"
+
+AZ215GROOT="$TMP/az215-gh"; mkdir -p "$AZ215GROOT/x__y/views"
+az215_set_labels() { # $1=issue-num  $2=jq-array-of-label-names e.g. '[]' or '["product-wip"]'
+  printf '{"number":%s,"title":"t","body":"","state":"open","html_url":"https://github.com/x/y/issues/%s","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"alice"},"labels":[%s],"assignees":[]}' \
+    "$1" "$1" "$(printf '%s' "$2" | jq -r '.[] | "{\"name\":\"" + . + "\"}"' | paste -sd, -)" > "$AZ215GROOT/x__y/views/issue-$1.json"
+  touch "$AZ215GROOT/x__y/views/issue-$1.ts"
+}
+az215_set_comments() { # $1=issue-num  $2=comments-json-array (default empty)
+  printf '%s' "${2:-[]}" > "$AZ215GROOT/x__y/views/$1-comments.json"
+  touch "$AZ215GROOT/x__y/views/$1-comments.ts"
+}
+AZ215G() { PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+az215Grc() { local rc=0; AZ215G "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+
+# (a) never carried the label at all -> NOT-GATED.
+az215_set_labels 501 '[]'; az215_set_comments 501
+CALLLOG501="$TMP/az215-calllog-501"; : > "$CALLLOG501"
+EVFILE_EMPTY="$TMP/az215-events-empty.json"; printf '[]' > "$EVFILE_EMPTY"
+AZ215_EVENTS_FILE="$EVFILE_EMPTY" AZ215_CALL_LOG="$CALLLOG501"
+export AZ215_EVENTS_FILE AZ215_CALL_LOG
+assert_eq "AC(a)/(f): never-gated issue -> NOT-GATED, its own distinct exit code" "$EX_NOT_GATED_CONST" "$(az215Grc 501)"
+assert_contains "AC(a)/(g): NOT-GATED says no signal required, actionable (safe to proceed)" \
+  "$(AZ215G 501 2>&1)" "No authorization signal is required"
+assert_contains "NOT-GATED explicitly disclaims being the same as AUTHORIZED" \
+  "$(AZ215G 501 2>&1)" "NOT the same as AUTHORIZED"
+case "$EX_NOT_GATED_CONST" in
+  0) bad "AC(f): NOT-GATED's exit code must differ from AUTHORIZED's (0)" ;;
+  *) ok "AC(f): NOT-GATED's exit code ($EX_NOT_GATED_CONST) differs from AUTHORIZED's (0)" ;;
+esac
+
+# (b) currently gated -> unchanged (HELD absent a signal), and the history
+# read is NEVER even attempted (AC b: no history read needed when gated now).
+az215_set_labels 502 '["product-wip"]'; az215_set_comments 502
+CALLLOG502="$TMP/az215-calllog-502"; : > "$CALLLOG502"
+AZ215_CALL_LOG="$CALLLOG502"
+assert_eq "AC(b): currently-gated issue behaves unchanged -- HELD absent a signal" "10" "$(az215Grc 502)"
+assert_eq "AC(b): the label-history events read is never invoked when currently gated" "" "$(cat "$CALLLOG502")"
+
+# (c) THE DISCRIMINATING TEST: was gated, then un-gated (on/after the cutoff),
+# currently NOT gated -> must still require the signal (HELD), never NOT-GATED.
+az215_set_labels 503 '[]'; az215_set_comments 503
+printf '[{"event":"labeled","created_at":"2026-08-20T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"2026-08-21T00:00:00Z","label":{"name":"product-wip"}}]' > "$TMP/az215-events-503.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-503.json"
+assert_eq "AC(c): was-gated-then-ungated (post-cutoff) still resolves HELD, not NOT-GATED" "10" "$(az215Grc 503)"
+
+# (d) label history unreadable -> fail closed to was-gated (HELD), and the
+# output SAYS the history read failed (never silently absorbed).
+az215_set_labels 504 '[]'; az215_set_comments 504
+AZ215_EVENTS_FAIL=1
+export AZ215_EVENTS_FAIL
+assert_eq "AC(d): unreadable label history fails closed to HELD" "10" "$(az215Grc 504)"
+assert_contains "AC(d): the read failure is reported, not silently absorbed" \
+  "$(AZ215G 504 2>&1)" "label history read failed"
+unset AZ215_EVENTS_FAIL
+
+# (h) pre-sentinel: an episode whose UN-GATE predates the cutoff -> NOT-GATED
+# with the pre-sentinel reason named; an otherwise-identical post-cutoff
+# episode -> HELD. Both asserted against the constant, not a hardcoded date.
+PRE_TS="$(date -u -d "@$(( CUTOFF_EPOCH_CONST - 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+POST_TS="$(date -u -d "@$(( CUTOFF_EPOCH_CONST + 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+az215_set_labels 505 '[]'; az215_set_comments 505
+printf '[{"event":"labeled","created_at":"2026-08-01T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"%s","label":{"name":"product-wip"}}]' "$PRE_TS" > "$TMP/az215-events-505.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-505.json"
+assert_eq "AC(h): pre-sentinel-cutoff un-gate episode -> NOT-GATED" "$EX_NOT_GATED_CONST" "$(az215Grc 505)"
+assert_contains "AC(h): pre-sentinel reason is named, distinct from a plain never-gated verdict" \
+  "$(AZ215G 505 2>&1)" "predates the operator-sentinel mechanism"
+
+az215_set_labels 506 '[]'; az215_set_comments 506
+printf '[{"event":"labeled","created_at":"2026-08-01T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"%s","label":{"name":"product-wip"}}]' "$POST_TS" > "$TMP/az215-events-506.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-506.json"
+assert_eq "AC(h): otherwise-identical POST-cutoff un-gate episode -> HELD, not NOT-GATED" "10" "$(az215Grc 506)"
+
+# Edge case (cross-ref #189): a number with no ghcache fixture at all (a
+# genuinely unresolvable read) must NOT silently produce NOT-GATED -- it has
+# to fail closed to INDETERMINATE (no labels, no comments -- both reads
+# fail), same as before this ticket.
+assert_eq "edge: an unresolvable number never reaches NOT-GATED (fails closed to INDETERMINATE)" "2" "$(az215Grc 987654)"
+
+# Edge case (cross-ref #189, QA-caught #300 review): a REAL PR number --
+# resolvable, empty labels, empty label history (near-total for PRs, which
+# are essentially never product-wip-labeled) -- must NOT resolve NOT-GATED.
+# Before the PR-check this fixture reproduced a live bug: `fwf authz 297`
+# and `fwf authz 295` (real merged PRs) both returned NOT-GATED, "safe to
+# proceed", a human-independent go-ahead on a PR number that was never a
+# valid authorization-check input at all.
+az215_set_labels 507 '[]'; az215_set_comments 507
+printf '[]' > "$TMP/az215-events-507.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-507.json"
+AZ215_IS_PR=1
+export AZ215_IS_PR
+assert_eq "edge: a PR number never resolves NOT-GATED -- falls closed to HELD" "10" "$(az215Grc 507)"
+assert_contains "edge: the output names it as a PR, not a plain never-gated issue" \
+  "$(AZ215G 507 2>&1)" "PULL REQUEST"
+unset AZ215_IS_PR
+
+# ...and the mirror: the PR-check read itself failing must ALSO fail closed
+# (never treat an unreadable is-it-a-PR check as "must be a plain issue").
+az215_set_labels 508 '[]'; az215_set_comments 508
+AZ215_PRCHECK_FAIL=1
+export AZ215_PRCHECK_FAIL
+assert_eq "edge: an unreadable PR-check fails closed to HELD, not NOT-GATED" "10" "$(az215Grc 508)"
+unset AZ215_PRCHECK_FAIL
+
+unset AZ215_EVENTS_FILE AZ215_CALL_LOG
+
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
@@ -4059,6 +4624,70 @@ DEEPR() { FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://local
 assert_contains "captain reads 9 personas (deep)"   "$(DEEPR 'fwf_render "$(fwf_tmpl_path captain)" ""')" "just 9 source-blind"
 assert_contains "captain lists impl9 in deep sweep" "$(DEEPR 'fwf_render "$(fwf_tmpl_path captain)" ""')" "impl9"
 assert_contains "researcher reads 9 streams (deep)" "$(DEEPR 'fwf_render "$(fwf_tmpl_path pm)" ""')" "9 streams"
+
+# --------------------------------------------------------------------------
+section "captain roster is single-sourced from FWF_PAIRS, not hardcoded impl1-3/qa1-3 (issue #221)"
+CAPR() { FWF_PAIRS="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''"; }
+
+# AC(a): the live bug, RED first against a hardcoded template -- FWF_PAIRS=2
+# must name NO impl3/qa3 anywhere in the rendered prompt.
+CAPR2="$(CAPR 2)"
+assert_not_contains "AC(a): FWF_PAIRS=2 -> rendered captain prompt names NO impl3" "$CAPR2" "impl3"
+assert_not_contains "AC(a): FWF_PAIRS=2 -> rendered captain prompt names NO qa3"   "$CAPR2" "qa3"
+
+# AC(b): today's default (3) is preserved EXACTLY.
+CAPR3="$(CAPR 3)"
+assert_contains "AC(b): FWF_PAIRS=3 -> floor description names impl1-3/qa1-3, unchanged" "$CAPR3" "(impl1-3, qa1-3, conductor)"
+assert_contains "AC(b): FWF_PAIRS=3 -> team bullet names impl1-3" "$CAPR3" "- impl1-3 — claim any OPEN issue"
+assert_contains "AC(b): FWF_PAIRS=3 -> team bullet names qa1-3"   "$CAPR3" "- qa1-3 — review + merge"
+
+# AC(c): singular reads as prose ("impl1"), never "impl1-1".
+CAPR1="$(CAPR 1)"
+assert_contains "AC(c): FWF_PAIRS=1 -> floor description reads singular impl1/qa1" "$CAPR1" "(impl1, qa1, conductor)"
+assert_not_contains "AC(c): FWF_PAIRS=1 -> never renders impl1-1" "$CAPR1" "impl1-1"
+assert_not_contains "AC(c): FWF_PAIRS=1 -> never renders qa1-1"   "$CAPR1" "qa1-1"
+
+# AC(d): the status table's Owner column is generated from the SAME roster,
+# checked at two different FWF_PAIRS values.
+assert_contains "AC(d): Owner column at FWF_PAIRS=1" "$CAPR1" "Owner (impl1/qa1/pm/gv/conductor/you)"
+assert_contains "AC(d): Owner column at FWF_PAIRS=3" "$CAPR3" "Owner (impl1-3/qa1-3/pm/gv/conductor/you)"
+
+# AC(e): no dev/dev-sre template still hardcodes a seat range or a bare seat
+# name outside a substituted placeholder -- broader than the range fixed
+# here on purpose (the ticket's own point: the range is today's shape, a
+# bare seat name is the next instance of the same class).
+E221_HITS="$(grep -EHn '\bimpl[0-9]\b|\bqa[0-9]\b' "$ROOT"/templates/dev/*.tmpl "$ROOT"/templates/dev-sre/*.tmpl 2>/dev/null || true)"
+assert_eq "AC(e): no dev/dev-sre template hardcodes a bare seat name or range" "" "$E221_HITS"
+
+# AC(g), the load-bearing one: the roster string in the RENDERED PROMPT
+# equals the roster INDEPENDENTLY DERIVED from fwf_all_roles's actual line
+# output (not from the same _fwf_roster_range function the renderer calls --
+# that would test the function against itself and pass even if the renderer
+# used a wholly different, coincidentally-agreeing string builder). Checked
+# at three FWF_PAIRS values, per the AC's own requirement.
+_fwf221_expected_range() { # $1=prefix $2=FWF_PAIRS -> "prefixN-M" or "prefixN", built from fwf_all_roles output alone
+  local prefix="$1" pairs="$2" ids id first="" last=""
+  ids="$(FWF_PAIRS="$pairs" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep "^${prefix}[0-9][0-9]*\$" | sed "s/^$prefix//" | sort -n)"
+  for id in $ids; do [ -n "$first" ] || first="$id"; last="$id"; done
+  [ -n "$first" ] || return 0
+  if [ "$first" = "$last" ]; then printf '%s%s' "$prefix" "$first"; else printf '%s%s-%s' "$prefix" "$first" "$last"; fi
+}
+for _e221_n in 1 2 3; do
+  _e221_expect_impl="$(_fwf221_expected_range impl "$_e221_n")"
+  _e221_expect_qa="$(_fwf221_expected_range qa "$_e221_n")"
+  _e221_rendered="$(CAPR "$_e221_n")"
+  assert_contains "AC(g): FWF_PAIRS=$_e221_n -- rendered impl roster equals fwf_all_roles-derived roster ($_e221_expect_impl)" \
+    "$_e221_rendered" "($_e221_expect_impl, $_e221_expect_qa, conductor)"
+done
+
+# The two OTHER templates the ticket names as hit sites: dev-sre/captain.tmpl
+# (a genuinely separate file, not an override) and dev/pm.tmpl.
+SRECAPR2="$(FWF_PAIRS=2 FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev-sre/captain.tmpl' ''")"
+assert_contains "dev-sre/captain.tmpl: FWF_PAIRS=2 floor description uses the live roster" "$SRECAPR2" "(impl1-2, qa1-2, conductor)"
+assert_not_contains "dev-sre/captain.tmpl: FWF_PAIRS=2 names no impl3" "$SRECAPR2" "impl3"
+PMR2="$(FWF_PAIRS=2 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+assert_contains "dev/pm.tmpl: FWF_PAIRS=2 uses the live impl roster" "$PMR2" "impl1-2 don't collide"
+assert_contains "dev/pm.tmpl: FWF_PAIRS=2 handoff line uses the live impl roster" "$PMR2" "impl1-2 claim it next cycle"
 
 # --------------------------------------------------------------------------
 # e2e lock (#65): liveness-aware acquire/release, shared by every role (not
@@ -4747,6 +5376,248 @@ section "gate single-flight lock AC2a: indeterminate liveness fails CLOSED (skip
 GIND_OUT="$(FWF_RUN_DIR="$GATERUN/ind" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" indeterminate)"
 assert_contains "indeterminate state is refused rather than launched (RC=1)" "$GIND_OUT" "RC=1"
 assert_contains "fail-closed reasoning is logged" "$GIND_OUT" "failing closed"
+
+# --------------------------------------------------------------------------
+# fwf gate (#195): the lock is released while the server the wrapped
+# command spawned is still holding its port -- real subprocesses, real
+# ports (via bash's /dev/tcp, not a real socket LIBRARY, so this stays
+# hermetic/portable), never a synthetic proxy for "did teardown run".
+_fwf195_port_listening() { # $1=port -> rc 0 if something accepts a connection
+  (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null
+}
+_fwf195_wait_listening() { # $1=port $2=max-tenths-of-a-second
+  local port="$1" max="${2:-50}" waited=0
+  while [ "$waited" -lt "$max" ]; do
+    _fwf195_port_listening "$port" && return 0
+    sleep 0.1; waited=$(( waited + 1 ))
+  done
+  return 1
+}
+command -v python3 >/dev/null 2>&1 && FWF195_HAVE_PY3=1 || FWF195_HAVE_PY3=0
+
+if [ "$FWF195_HAVE_PY3" = 1 ]; then
+section "fwf gate (#195 AC a/e): a clean exit tears down a backgrounded server BEFORE the lock releases"
+G195A_ROOT="$TMP/gate195-a"; mkdir -p "$G195A_ROOT/state/example"
+G195A_PORT=$(( 21000 + RANDOM % 3000 ))
+FWF_RUN_DIR="$G195A_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" role195a -- \
+  bash -c "(python3 -m http.server $G195A_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 0.3; exit 7" >/dev/null 2>&1
+G195A_RC=$?
+assert_eq "AC(e): the wrapped command's own exit code propagates through teardown" "7" "$G195A_RC"
+if _fwf195_port_listening "$G195A_PORT"; then
+  bad "AC(a): the backgrounded server is still listening after the gate returned"
+else
+  ok "AC(a): the backgrounded server is torn down by the time the gate returns"
+fi
+if [ -d "$G195A_ROOT/state/example/gate-lock/role195a" ]; then
+  bad "AC(a): the lock is still held after the gate returned"
+else
+  ok "AC(a): the lock is released"
+fi
+
+section "fwf gate (#195 AC b): HUP/TERM/INT to the wrapper tear down the child and release the lock, same as a clean exit"
+for FWF195_SIG in HUP TERM INT; do
+  G195B_ROOT="$TMP/gate195-sig-$FWF195_SIG"; mkdir -p "$G195B_ROOT/state/example"
+  G195B_PORT=$(( 22000 + RANDOM % 3000 ))
+  FWF_RUN_DIR="$G195B_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" "role195sig$FWF195_SIG" -- \
+    bash -c "(python3 -m http.server $G195B_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
+  G195B_PID=$!
+  if _fwf195_wait_listening "$G195B_PORT" 50; then
+    kill -"$FWF195_SIG" "$G195B_PID" 2>/dev/null
+    wait "$G195B_PID" 2>/dev/null
+    sleep 0.3
+    if _fwf195_port_listening "$G195B_PORT"; then
+      bad "AC(b)/$FWF195_SIG: server still listening after $FWF195_SIG"
+    else
+      ok "AC(b)/$FWF195_SIG: server torn down"
+    fi
+    if [ -d "$G195B_ROOT/state/example/gate-lock/role195sig$FWF195_SIG" ]; then
+      bad "AC(b)/$FWF195_SIG: lock still held after $FWF195_SIG"
+    else
+      ok "AC(b)/$FWF195_SIG: lock released"
+    fi
+  else
+    kill "$G195B_PID" 2>/dev/null; wait "$G195B_PID" 2>/dev/null
+    bad "AC(b)/$FWF195_SIG: setup failed -- server never started listening"
+  fi
+done
+
+section "fwf gate (#195 AC c): acquire-side reconciliation reaps an orphan an untrappable SIGKILL to the wrapper left behind"
+G195C_ROOT="$TMP/gate195-c"; mkdir -p "$G195C_ROOT/state/example"
+G195C_PORT=$(( 23000 + RANDOM % 3000 ))
+FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195c -- \
+  bash -c "(python3 -m http.server $G195C_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
+G195C_PID=$!
+if _fwf195_wait_listening "$G195C_PORT" 50; then
+  kill -KILL "$G195C_PID" 2>/dev/null   # untrappable -- no traps fire at all
+  wait "$G195C_PID" 2>/dev/null
+  assert_eq "AC(c): the orphan is still alive right after the untrappable kill (proves the acquire-side reap, not a lucky accident, does the work below)" "true" \
+    "$(_fwf195_port_listening "$G195C_PORT" && echo true || echo false)"
+  # A second acquirer for the SAME role must reap the dead holder's
+  # recorded PGID (killing the orphaned server) and proceed cleanly.
+  G195C2_OUT="$(FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195c -- bash -c 'echo second-run-ok' 2>&1)"
+  assert_contains "AC(c): the next acquirer names the reap as an ANOMALY (not a silent takeover)" "$G195C2_OUT" "ANOMALY"
+  assert_contains "AC(c): the next acquirer's wrapped command actually ran" "$G195C2_OUT" "second-run-ok"
+  # The reap's SIGKILL is asynchronous (the kernel tears the process down
+  # on its own schedule) -- poll rather than a flat sleep, so this stays
+  # robust under the heavy concurrent load this box actually runs under
+  # (several roles' gates at once) instead of a fixed window that's
+  # comfortable when idle and flaky when it isn't.
+  G195C_STILL_LISTENING=1
+  G195C_WAITED=0
+  while [ "$G195C_WAITED" -lt 50 ]; do
+    _fwf195_port_listening "$G195C_PORT" || { G195C_STILL_LISTENING=0; break; }
+    sleep 0.1; G195C_WAITED=$(( G195C_WAITED + 1 ))
+  done
+  if [ "$G195C_STILL_LISTENING" = 1 ]; then
+    bad "AC(c): the orphaned server is STILL listening after acquire-side reconciliation"
+  else
+    ok "AC(c): acquire-side reconciliation reaped the orphaned server (the ticket's load-bearing guarantee)"
+  fi
+else
+  kill "$G195C_PID" 2>/dev/null; wait "$G195C_PID" 2>/dev/null
+  bad "AC(c): setup failed -- server never started listening"
+fi
+
+section "fwf gate (#195 AC h): a dead PGID leader's id reused by an unrelated NEWER process is never signalled"
+G195H_ROOT="$TMP/gate195-h"; mkdir -p "$G195H_ROOT/state/example/gate-lock/role195h"
+# A long-running, harmless background process stands in for "an unrelated
+# process that happens to occupy the recorded pgid number now" -- its own
+# START TIME is what matters, not what it actually is. Given its OWN
+# process group (same setpgid(0,0) trick fwf-gate.sh itself uses) rather
+# than a bare `sleep 60 &`, which would otherwise inherit whatever AMBIENT
+# group this very test run is already nested inside (this validation
+# itself runs under `fwf gate impl2 -- bash -c "bash test/run.sh"` -- the
+# ticket's own flagged "nested fwf gate" edge case, hit for real building
+# this fixture: a bare background job's pgid pointed at that OUTER,
+# already-old group instead of a fresh one, and the reuse check correctly,
+# but uselessly, keyed off the wrong process).
+perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "sleep", "60"' &
+G195H_REUSE_PID=$!
+G195H_REUSE_PGID=""
+G195H_PGID_WAITED=0
+while [ -z "$G195H_REUSE_PGID" ] && [ "$G195H_PGID_WAITED" -lt 20 ]; do
+  G195H_REUSE_PGID="$(ps -o pgid= -p "$G195H_REUSE_PID" 2>/dev/null | tr -d ' ')"
+  [ -n "$G195H_REUSE_PGID" ] && break
+  sleep 0.1; G195H_PGID_WAITED=$(( G195H_PGID_WAITED + 1 ))
+done
+if [ -z "$G195H_REUSE_PGID" ]; then
+  bad "AC(h): setup failed -- could not determine the reuse fixture's own pgid"
+  kill "$G195H_REUSE_PID" 2>/dev/null; wait "$G195H_REUSE_PID" 2>/dev/null
+else
+printf 'role=role195h\npid=999999999\npgid=%s\npgleader=1\nhost=%s\nacquired=%s\n' \
+  "$G195H_REUSE_PGID" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$G195H_ROOT/state/example/gate-lock/role195h/owner"
+G195H_OUT="$(FWF_RUN_DIR="$G195H_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195h -- bash -c 'echo ran' 2>&1)"
+assert_contains "AC(h): the reused pgid is named as a refusal, not silently reaped" "$G195H_OUT" "refusing to signal pgid"
+if kill -0 "$G195H_REUSE_PID" 2>/dev/null; then
+  ok "AC(h): the unrelated newer process sharing that pgid number is UNTOUCHED"
+else
+  bad "AC(h): the unrelated newer process was killed -- PGID/PID reuse safety failed"
+fi
+kill "$G195H_REUSE_PID" 2>/dev/null; wait "$G195H_REUSE_PID" 2>/dev/null
+fi
+
+section "fwf gate (#195 AC d/g): a foreign port occupant is diagnosed by PID/command, never killed, and output/exit code pass through byte-identical"
+python3 -u -m http.server 0 --bind 127.0.0.1 >"$TMP/fwf195g-occ.log" 2>&1 &   # -u: unbuffered, or the startup line never flushes to a redirected file
+G195D_OCC_PID=$!
+G195D_PORT=""
+G195D_WAITED=0
+while [ "$G195D_WAITED" -lt 50 ]; do
+  G195D_PORT="$(grep -oE 'port [0-9]+' "$TMP/fwf195g-occ.log" 2>/dev/null | head -1 | grep -oE '[0-9]+')"
+  [ -n "$G195D_PORT" ] && break
+  sleep 0.1; G195D_WAITED=$(( G195D_WAITED + 1 ))
+done
+if [ -n "$G195D_PORT" ] && _fwf195_port_listening "$G195D_PORT"; then
+  G195D_ROOT="$TMP/gate195-d"; mkdir -p "$G195D_ROOT/state/example"
+  G195D_OUT="$(FWF_RUN_DIR="$G195D_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195d -- \
+    bash -c "printf 'stdout line one\n'; printf 'Error: listen EADDRINUSE: address already in use 127.0.0.1:$G195D_PORT\n' >&2; exit 9" 2>"$TMP/fwf195d-stderr.log")"
+  G195D_RC=$?
+  assert_eq "AC(g): the wrapped command's exit code still propagates with the diagnostic active" "9" "$G195D_RC"
+  assert_contains "AC(g): stdout passes through untouched" "$G195D_OUT" "stdout line one"
+  assert_contains "AC(g): the ORIGINAL stderr line still appears (not swallowed)" "$(cat "$TMP/fwf195d-stderr.log")" "EADDRINUSE"
+  assert_contains "AC(d): the occupant's PID is named" "$(cat "$TMP/fwf195d-stderr.log")" "PID $G195D_OCC_PID"
+  assert_contains "AC(d): the occupant's command is named" "$(cat "$TMP/fwf195d-stderr.log")" "python3"
+  assert_contains "AC(d): it is framed as a lock-protocol violation, not an environment problem" "$(cat "$TMP/fwf195d-stderr.log")" "lock-protocol violation"
+  if kill -0 "$G195D_OCC_PID" 2>/dev/null; then
+    ok "AC(d): the diagnosed occupant is left running -- never killed"
+  else
+    bad "AC(d): the diagnosed occupant was killed by the diagnostic"
+  fi
+else
+  bad "AC(d)/(g): setup failed -- could not determine/confirm the occupant's port"
+fi
+kill "$G195D_OCC_PID" 2>/dev/null; wait "$G195D_OCC_PID" 2>/dev/null
+
+section "fwf gate (#195 AC f): a double signal delivery still converges to the correct final state (idempotent teardown)"
+G195F_ROOT="$TMP/gate195-f"; mkdir -p "$G195F_ROOT/state/example"
+G195F_PORT=$(( 24000 + RANDOM % 3000 ))
+FWF_RUN_DIR="$G195F_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" role195f -- \
+  bash -c "(python3 -m http.server $G195F_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
+G195F_PID=$!
+if _fwf195_wait_listening "$G195F_PORT" 50; then
+  kill -TERM "$G195F_PID" 2>/dev/null
+  kill -TERM "$G195F_PID" 2>/dev/null   # second, near-simultaneous delivery of the SAME signal
+  wait "$G195F_PID" 2>/dev/null
+  sleep 0.3
+  if _fwf195_port_listening "$G195F_PORT"; then
+    bad "AC(f): server still listening after a double TERM"
+  else
+    ok "AC(f): double signal delivery still tears the server down cleanly"
+  fi
+  if [ -d "$G195F_ROOT/state/example/gate-lock/role195f" ]; then
+    bad "AC(f): lock still held after a double TERM"
+  else
+    ok "AC(f): lock released exactly once, no hang/crash from the second signal"
+  fi
+else
+  kill "$G195F_PID" 2>/dev/null; wait "$G195F_PID" 2>/dev/null
+  bad "AC(f): setup failed -- server never started listening"
+fi
+
+section "fwf gate (#195 edge case): a wrapped command that traps TERM and lingers escalates to the hard KILL path after the grace window"
+# The lingering process must be the one actually HOLDING THE PORT (a
+# backgrounded-then-detached child, like the other fixtures use, would die
+# to a direct TERM regardless of what the FOREGROUND shell traps) -- a
+# single Python process that binds the port itself and installs a no-op
+# SIGTERM handler, so the group's TERM is genuinely survived until KILL.
+G195E_ROOT="$TMP/gate195-edge-lingers"; mkdir -p "$G195E_ROOT/state/example"
+G195E_PORT=$(( 25000 + RANDOM % 3000 ))
+G195E_PY="$TMP/gate195-edge-lingers.py"
+cat > "$G195E_PY" <<PYEOF
+import socket, signal, time
+signal.signal(signal.SIGTERM, lambda *a: None)
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", $G195E_PORT))
+s.listen(1)
+time.sleep(30)
+PYEOF
+G195E_GRACE=1
+FWF_RUN_DIR="$G195E_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS="$G195E_GRACE" "$ROOT/fwf-gate.sh" role195e -- \
+  python3 "$G195E_PY" >/dev/null 2>&1 &
+G195E_PID=$!
+if _fwf195_wait_listening "$G195E_PORT" 50; then
+  G195E_START="$(date +%s)"
+  kill -TERM "$G195E_PID" 2>/dev/null
+  wait "$G195E_PID" 2>/dev/null
+  G195E_ELAPSED=$(( $(date +%s) - G195E_START ))
+  if [ "$G195E_ELAPSED" -ge 1 ]; then
+    ok "edge: escalation took at least the ${G195E_GRACE}s grace window (~${G195E_ELAPSED}s) -- proves the hard KILL path actually fired, not a lucky fast exit"
+  else
+    bad "edge: torn down suspiciously fast (~${G195E_ELAPSED}s elapsed) -- the TERM-ignoring process should have survived past the grace window"
+  fi
+  sleep 0.3
+  if _fwf195_port_listening "$G195E_PORT"; then
+    bad "edge: the TERM-ignoring server is still listening after the grace window -- hard KILL never reaped it"
+  else
+    ok "edge: the hard KILL path reaped the lingering, TERM-ignoring process after the grace window"
+  fi
+else
+  kill "$G195E_PID" 2>/dev/null; wait "$G195E_PID" 2>/dev/null
+  bad "edge: setup failed -- the TERM-ignoring server never started listening"
+fi
+else
+  printf '  skip fwf gate (#195) subprocess/port tests (python3 not installed)\n'
+fi
 
 # --------------------------------------------------------------------------
 # fwf gate hermeticity (#123 AC3/AC4): two overlapping e2e-class runs from

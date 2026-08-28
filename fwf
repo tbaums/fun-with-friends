@@ -268,7 +268,14 @@ UTILITIES
                          stacking a second run when <role>'s own prior gate
                          is still in flight; --e2e additionally takes the
                          floor-wide e2e lock (issue #65) for a harness that
-                         shares fixed ports across roles.
+                         shares fixed ports across roles. The wrapped
+                         command never outlives the lock (issue #195): a
+                         backgrounded server is torn down before the lock
+                         releases (FWF_GATE_TEARDOWN_GRACE_SECS, default
+                         5s, bounds the graceful TERM-then-KILL window), a
+                         dead holder's orphaned server is reaped on the
+                         next acquire, and a foreign port occupant on
+                         failure is diagnosed by PID/command, never killed.
   gate-rust-scope --against BRANCH [--safe GLOB]... [--log FILE]
                     [--full-suite-secs N]
                          SHADOW classifier for whether a profile's Rust suite
@@ -282,10 +289,21 @@ UTILITIES
                          (issue #150): AUTHORIZED (exit 0) iff the operator
                          un-gate signal — a comment emitted only by a human
                          `fwf dash` approve keypress — is in the thread; else
-                         HELD (exit 10). Fails closed to INDETERMINATE (exit 2)
+                         HELD (exit 10). NOT-GATED (exit 12, issue #215) when
+                         the issue never carried the gate label at all — there
+                         is nothing to un-gate, but this is NOT the same as
+                         AUTHORIZED. Fails closed to INDETERMINATE (exit 2)
                          if unreadable. The checkable answer to "was this
                          approved?" — never infer it from label state or pane
                          text. Read-only.
+  auth resolve           Re-resolve the claude auth credential (issue #217)
+                         and print its source (env|credentials_file|
+                         keychain), without launching anything — `fwf up`
+                         already does this on every launch; use this to
+                         check what it WOULD resolve to right now.
+  auth clear             Remove the persisted auth sink
+                         (~/.fun-with-friends/auth.env) by hand. `fwf down`'s
+                         full teardown already does this; idempotent.
   reconcile [--check] [--branch NAME ...] [--against BRANCH]
                          Classify staging/integration against main (BEHIND ->
                          fast-forward reconcile / AHEAD -> normal no-op /
@@ -889,6 +907,7 @@ case "$cmd" in
   gate-tip)  engine fwf-gate-tip.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
+  auth)      engine fwf-auth.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
   worktree-refresh) engine fwf-worktree-refresh.sh "$@";;

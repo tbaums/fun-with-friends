@@ -136,9 +136,24 @@ _fwf_pr_ctx_wordsub() {
 # --- sanitizer (constraints 1 + 3: no fwf leakage, no sensitive data) ---------
 # Deny-list transform + pattern sweep + a sensitive-data scrub, applied to
 # mechanically-pulled ticket content BEFORE it is folded into a public body.
-# Order matters: composite/specific patterns run before the generic single-
-# token rules they'd otherwise be swallowed by (e.g. a branch name must be
-# caught whole before the bare `impl<N>` rule fires on its leftover pieces).
+# Order matters: composite/specific patterns run before any remaining generic
+# rule they'd otherwise be swallowed by.
+#
+# issue #234: this used to also run a generic role/jargon word table (pm, gv,
+# captain, conductor, impl<N>, qa<N>, floor, gate, worktree(s), product-wip,
+# release-hold, "staging branch", "integration branch") over ALL prose. Two
+# defects followed from treating those as ordinary vocabulary: (1) the word-
+# boundary regex can't tell a flag/command from prose, so `--pm-only` became
+# `--the product owner-only` -- a flag that does not exist, frozen into
+# permanent history; (2) `impl1`/`impl2`/`gv`/`qa1` all collapsed into "the
+# implementer"/"the reviewer", destroying which seat did what. This repo is
+# public and ships 31 role-template files by name (`templates/dev/*.tmpl`),
+# so there was no secret being protected by that table -- only readability,
+# and readability cannot justify publishing a command that does not exist or
+# erasing which reviewer signed off. Principle: substitute PROTOCOL MARKERS
+# (below); never substitute the name of a thing a human types. The five
+# entries that remain are markers, not identifiers -- each is justified where
+# it's defined.
 fwf_sanitize_pr_text() {
   sed -E '
     # --- sensitive-data scrub (constraint 3) -------------------------------
@@ -156,30 +171,23 @@ fwf_sanitize_pr_text() {
     s#origin/integration#the release-candidate branch#g
     s/__PROVENANCE__|__CREDIT__|__CONTEXT__//g
   ' |
+  # kept: compresses many internal-only var names to one placeholder; unlike
+  # the dropped role words it never collapses two DISTINCT identifiable
+  # actors into the same string, so no information is destroyed by keeping it.
   _fwf_pr_ctx_wordsub 'FWF_[A-Z_]+' '[internal-var]' |
   sed -E '
     :_li
     s/(^|[^A-Za-z0-9_])LI-([0-9]+)([^A-Za-z0-9_]|$)/\1#\2\3/
     t_li
   ' |
+  # kept: protocol-state markers, not identifiers -- "who did what" is
+  # already in the diff/thread; the marker only says a claim/sign-off event
+  # happened, and unlike the dropped role words it never appears inside a
+  # CLI flag or command a reader would type.
   _fwf_pr_ctx_wordsub 'CLAIM impl[0-9]+|CLAIM qa[0-9]+' '(claimed)' |
   _fwf_pr_ctx_wordsub 'ASSIGNED impl[0-9]+|ASSIGNED qa[0-9]+' '(assigned)' |
   _fwf_pr_ctx_wordsub 'GV-SIGNOFF|GV-CHANGES' '(reviewed)' |
   _fwf_pr_ctx_wordsub 'QA-APPROVED:|QA-CHANGES-REQUESTED:|IMPL-ADDRESSED:' '(review note:)' |
-  _fwf_pr_ctx_wordsub 'impl__ID__|impl[0-9]+' 'the implementer' |
-  _fwf_pr_ctx_wordsub 'qa__ID__|qa[0-9]+' 'the reviewer' |
-  _fwf_pr_ctx_wordsub 'captain' 'the project lead' |
-  _fwf_pr_ctx_wordsub 'conductor' 'the release pipeline' |
-  _fwf_pr_ctx_wordsub 'gv' 'the reviewer' |
-  _fwf_pr_ctx_wordsub 'pm' 'the product owner' |
-  _fwf_pr_ctx_wordsub 'worktrees' 'workspaces' |
-  _fwf_pr_ctx_wordsub 'worktree' 'workspace' |
-  _fwf_pr_ctx_wordsub 'floor' 'environment' |
-  _fwf_pr_ctx_wordsub 'gate' 'check' |
-  _fwf_pr_ctx_wordsub 'staging branch' 'the pre-release branch' |
-  _fwf_pr_ctx_wordsub 'integration branch' 'the release-candidate branch' |
-  _fwf_pr_ctx_wordsub 'product-wip' 'in progress' |
-  _fwf_pr_ctx_wordsub 'release-hold' 'on hold' |
   sed -E 's/Owner:[[:space:]]*//gI' |
   sed -E '
     :_wip

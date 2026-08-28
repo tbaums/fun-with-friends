@@ -123,6 +123,14 @@ for s in "$COORD_SESSION" "$BUILD_SESSION"; do
   if tmux kill-session -t "$s" 2>/dev/null; then echo "killed tmux session '$s'"; else echo "no tmux session '$s'"; fi
 done
 rm -rf "$E2E_LOCK"
+# issue #217: a full teardown decommissions the whole floor -- leaving the
+# auth sink behind means a live OAuth token sits at a predictable path
+# indefinitely with nothing running to use it, the worst version of the
+# persistence property the sink exists to provide. Deliberately NOT done on
+# the --build-only/--pm-only/--floor-only partial-teardown paths above: those
+# leave the OTHER plane running, and it may still need this same shared sink
+# for its own later respawn.
+fwf_auth_clear
 fwf_budget_writer_stop
 fwf_budget_baseline_clear   # issue #108: full teardown ends this run — the next full 'fwf up' snapshots a fresh baseline
 fwf_subscription_state_clear   # issue #149: same reasoning — don't inherit a stale ratchet/parked-state into the next run
