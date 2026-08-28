@@ -16,39 +16,78 @@ resolution — see [docs/dash.md](docs/dash.md).
 
 ## Cut a release
 
-1. **Land the work on `main`** and make sure it's green (CI passing).
-2. **Bump the version** in `VERSION` (e.g. `0.26.0`). Skip if it already holds the
-   number you're releasing. **Bump rule (SemVer, pre-1.0):** if the release adds
-   any new feature — i.e. it has a `### Added` entry — bump the **minor**
-   (`0.x.0`); if it's only fixes / changes / docs / chores (`### Fixed`,
-   `### Changed`, `### Documentation`, `### Removed`, `### Internal` — **no
-   `### Added`**), bump the **patch** (`0.x.y`). The CHANGELOG section types for
-   the release decide it: **any `Added` ⇒ minor.** (A user-facing feature shipped
-   as a patch understates the change and is a versioning bug — classify by the
-   CHANGELOG, don't just increment the patch digit.)
+**The version bump rides the normal promotion path (`staging` → `integration` →
+`main`) — it is never committed directly to `main`.** (issue #262.) `main` only
+ever *advances*, by fast-forward, to a SHA that already exists on `staging`/
+`integration`; it never receives a commit of its own. That keeps the pipeline's
+invariant — `main` ⊆ `integration` ⊆ `staging`, every branch a subset of the one
+upstream of it — intact through a cut, so a release can no longer manufacture the
+two-way divergence the pre-publish guard below then has to (correctly) refuse.
+
+1. **Land the work on `staging`** (the normal path — impl/QA/conductor) and make
+   sure it's green.
+2. **Bump the version** in `VERSION` (e.g. `0.26.0`) **as an ordinary PR onto
+   `staging`**, alongside the CHANGELOG update in the next step. Skip if it
+   already holds the number you're releasing. **Bump rule (SemVer, pre-1.0):**
+   if the release adds any new feature — i.e. it has a `### Added` entry — bump
+   the **minor** (`0.x.0`); if it's only fixes / changes / docs / chores
+   (`### Fixed`, `### Changed`, `### Documentation`, `### Removed`,
+   `### Internal` — **no `### Added`**), bump the **patch** (`0.x.y`). The
+   CHANGELOG section types for the release decide it: **any `Added` ⇒ minor.**
+   (A user-facing feature shipped as a patch understates the change and is a
+   versioning bug — classify by the CHANGELOG, don't just increment the patch
+   digit.)
 3. **Update [`CHANGELOG.md`](CHANGELOG.md)**: move items from `Unreleased` into a
-   new `## [X.Y.Z] - YYYY-MM-DD` section. **Every entry carries two commit refs —
-   code and docs**: `- **Feature** (#NNN, code <sha>, docs <sha>) — …`. Same SHA
-   when docs rode in the implementing commit; distinct when docs landed
-   separately. The **docs ref is mandatory** — it's the per-item proof the doc
-   changes are in for that change (a genuinely doc-less internal change cites
-   `docs none — internal`). Verify each user-facing item's `docs <sha>` actually
-   touched a doc (`git show <sha> --stat`) before tagging.
-4. **Commit** the bump: `git commit -am "Release vX.Y.Z"`.
-5. **Tag and push**:
+   new `## [X.Y.Z] - YYYY-MM-DD` section, in the **same PR** as the version bump.
+   **Every entry carries two commit refs — code and docs**: `- **Feature**
+   (#NNN, code <sha>, docs <sha>) — …`. Same SHA when docs rode in the
+   implementing commit; distinct when docs landed separately. The **docs ref is
+   mandatory** — it's the per-item proof the doc changes are in for that change
+   (a genuinely doc-less internal change cites `docs none — internal`). Verify
+   each user-facing item's `docs <sha>` actually touched a doc (`git show <sha>
+   --stat`) before tagging.
+4. **Wait for the bump to promote to `integration`** (the conductor's normal
+   `staging` → `integration` gate cycle — no manual step). Confirm:
+   `git fetch origin && git log origin/integration -1` should show the bump
+   commit.
+5. **Fast-forward `main` to `integration`'s tip** — this is `main`'s ONLY write
+   path; it never gets a commit of its own:
    ```bash
-   git tag vX.Y.Z          # must equal the VERSION file
+   git fetch origin
+   git switch main
+   git merge --ff-only origin/integration
+   git push origin main
+   ```
+   If the `--ff-only` merge refuses, `main` has a commit `integration` lacks —
+   stop and reconcile by hand (see "Re-syncing staging/integration" below)
+   rather than forcing it.
+6. **Pre-tag divergence check — DO NOT SKIP.** Before tagging, run the same
+   non-mutating check the release workflow's pre-publish guard runs:
+   ```bash
+   ./fwf reconcile --check
+   ```
+   **On `check-diverged` (or `check-suspect`), STOP — do not tag.** That is a
+   genuine divergence needing a human decision, not a rerun; resolve it (see
+   "Re-syncing staging/integration" below) before proceeding. `check-ok` means
+   it's safe to continue. (Steps 4–5 make this pass by construction on the
+   ordinary path; this step is the cheap guard for the exception — e.g. an
+   emergency hotfix landed straight on `main`.)
+7. **Tag and push**:
+   ```bash
+   git tag vX.Y.Z          # must equal the VERSION file, now on main via step 5
    git push origin main --tags
    ```
-6. The **Release workflow** runs on the tag. Watch it:
+8. The **Release workflow** runs on the tag. Watch it:
    ```bash
    gh run watch
    ```
    If `tag != VERSION` it fails fast — fix `VERSION`, re-tag, push again. The
-   workflow's last step also auto-reconciles `staging`/`integration` back to
-   `main` (issue #114 — see "Re-syncing staging/integration" below); no manual
-   step needed on the happy path.
-7. **Verify** the published release and the artifacts (the tarball AND the four
+   workflow's own pre-publish check re-runs step 6's guard as a backstop (never
+   trust a local run alone), and its last step auto-reconciles
+   `staging`/`integration` back to `main` (issue #114 — see "Re-syncing
+   staging/integration" below); this is normally a no-op now, since `main` never
+   moved ahead of them — no manual step needed on the happy path.
+9. **Verify** the published release and the artifacts (the tarball AND the four
    `fwf-dash-*` assets — 3 binaries + checksums — five total):
    ```bash
    gh release view vX.Y.Z --json assets -q '.assets[].name' | sort
