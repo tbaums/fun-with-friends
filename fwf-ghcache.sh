@@ -125,6 +125,52 @@ SLUG="$(repo_slug)"
 ROOT="${FWF_GHCACHE_DIR:-${FWF_RUN:-$HOME/.fun-with-friends}/ghcache}/${SLUG//\//__}"
 mkdir -p "$ROOT/locks" "$ROOT/stdout" "$ROOT/reviews" 2>/dev/null
 
+# --- quota-consuming-response metrics (issue #239) --------------------------
+# "N identical polls collapse to one fetch" is the whole design, so a
+# call-site counter would measure requests, not spend — the two differ by
+# the hit rate, and on a dozen roles polling the same bus the hit rate IS
+# the design. This counts what actually reaches the API and what it cost:
+# a TTL-served answer (free), a 304-revalidated answer (free), or a genuine
+# 200 fetch (the only one that counts against quota) — recorded as one
+# timestamped line each, so a caller can compute a rate over any window
+# without needing separate bucketed counters. Bounded to the last
+# METRICS_MAX lines (self-trimmed on every write), same rolling-window
+# shape as issue #227's gate-history store.
+METRICS_LOG="$ROOT/metrics.log"
+METRICS_MAX="${FWF_GHCACHE_METRICS_MAX:-5000}"
+_metric() { # $1=hit|revalidated|charged
+  printf 'ts=%s kind=%s\n' "$(now)" "$1" >> "$METRICS_LOG" 2>/dev/null
+  # Trim roughly 1-in-20 writes rather than every write -- tail+mv on every
+  # single free (hit/304) response would turn the cheap path into the
+  # expensive one. A bounded burst above METRICS_MAX between trims is fine;
+  # nothing here needs an exact count, only one that cannot grow forever.
+  if [ $(( RANDOM % 20 )) -eq 0 ] && [ -f "$METRICS_LOG" ]; then
+    tail -n "$METRICS_MAX" "$METRICS_LOG" > "$METRICS_LOG.tmp.$$" 2>/dev/null \
+      && mv "$METRICS_LOG.tmp.$$" "$METRICS_LOG" || rm -f "$METRICS_LOG.tmp.$$"
+  fi
+}
+# $1=kind(hit|revalidated|charged|all) $2=window-seconds (default 3600) ->
+# count on stdout, rc 0. Never fabricates: an unreadable/absent log reports
+# 0 (a genuinely fresh cache has recorded nothing yet -- not an error), but
+# see `report` below for the UNKNOWN-vs-zero distinction at the reporting
+# layer, where "never measured" and "measured zero" DO need to differ.
+_metric_count() {
+  local kind="$1" window="${2:-3600}" cutoff
+  [ -f "$METRICS_LOG" ] || { echo 0; return 0; }
+  cutoff=$(( $(now) - window ))
+  awk -v cutoff="$cutoff" -v kind="$kind" '
+    { ts=""; k=""
+      for (i=1;i<=NF;i++) {
+        if ($i ~ /^ts=/) ts=substr($i,4)
+        else if ($i ~ /^kind=/) k=substr($i,6)
+      }
+      if (ts=="" || ts+0 < cutoff) next
+      if (kind=="all" || k==kind) n++
+    }
+    END { print n+0 }
+  ' "$METRICS_LOG"
+}
+
 # --- single-flight lock (mkdir is atomic; break stale) ----------------------
 lock() { # $1=name -> 0 once held
   local d="$ROOT/locks/$1.lock" waited=0
@@ -146,20 +192,20 @@ refresh_canonical() { # $1=issue|pr  -> populates $ROOT/<topic>s.json
     pr)    path="pulls";  json="$ROOT/prs.json";    etag="$ROOT/prs.etag";    tsf="$ROOT/prs.ts";;
     *) return 1;;
   esac
-  fresh "$tsf" "$TTL" && [ -f "$json" ] && { degraded_clear "$json"; return 0; }
+  fresh "$tsf" "$TTL" && [ -f "$json" ] && { _metric hit; degraded_clear "$json"; return 0; }
   if ! lock "canon-$topic"; then
     # Another pane is already fetching. Wait for ITS fresh REST snapshot rather
     # than firing our own (GraphQL) fallback — this is what kills the cold-start
     # thundering herd so N concurrent first-polls collapse to ONE upstream fetch.
-    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
+    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { _metric hit; degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
     # issue #266 AC (a): the wait timed out — this snapshot's freshness was
     # NEVER confirmed against upstream. Serving it is still the right call
     # (a stale row beats none), but it must be MARKED, not reported as plain
     # success identical to a validated read.
-    if [ -f "$json" ]; then degraded_mark "$json"; return 0; fi
+    if [ -f "$json" ]; then _metric hit; degraded_mark "$json"; return 0; fi
     return 1
   fi
-  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "canon-$topic"; degraded_clear "$json"; return 0; fi
+  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "canon-$topic"; _metric hit; degraded_clear "$json"; return 0; fi
 
   # Page 1 with a conditional ETag — the OPEN set only (the hot path). A change
   # to the open set (new/closed issue) shifts page 1, so its ETag is a faithful
@@ -168,22 +214,24 @@ refresh_canonical() { # $1=issue|pr  -> populates $ROOT/<topic>s.json
   hdr="$(real_gh api -i "/repos/$SLUG/$path?state=open&per_page=100&page=1" \
           ${et:+-H "If-None-Match: $et"} 2>/dev/null)" || { unlock "canon-$topic"; return 1; }
   status="$(printf '%s' "$hdr" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')"
-  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; degraded_clear "$json"; unlock "canon-$topic"; return 0; fi
+  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; _metric revalidated; degraded_clear "$json"; unlock "canon-$topic"; return 0; fi
   if [ "$status" != "200" ]; then unlock "canon-$topic"; return 1; fi
   newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
   local acc body page=2
   acc="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
   # Paginate while the last page was full (rare for a factory backlog; capped).
+  # Every page beyond the first is ALSO a charged 200 fetch (no ETag on it).
   while [ "$(printf '%s' "$acc" | jq 'length' 2>/dev/null || echo 0)" -ge $((100*(page-1))) ] && [ "$page" -le 8 ]; do
     body="$(real_gh api "/repos/$SLUG/$path?state=open&per_page=100&page=$page" 2>/dev/null)" || break
     [ "$(printf '%s' "$body" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ] || break
+    _metric charged
     acc="$(printf '%s\n%s' "$acc" "$body" | jq -cs 'add')" || break
     page=$((page+1))
   done
   # Drop PRs from the issues endpoint; order created-desc to match gh's default.
   local filt='.'; [ "$topic" = "issue" ] && filt='[.[] | select(has("pull_request")|not)]'
   printf '%s' "$acc" | jq -c "$filt | sort_by(.created_at) | reverse" > "$json.tmp" 2>/dev/null || { unlock "canon-$topic"; return 1; }
-  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; degraded_clear "$json"
+  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; _metric charged; degraded_clear "$json"
   unlock "canon-$topic"; return 0
 }
 
@@ -382,24 +430,24 @@ ensure_view_resource() { # $1=topic(issue|pr) $2=number -> $ROOT/views/$1-$2.jso
   local topic="$1" n="$2" path json etag tsf hdr status newetag body
   case "$topic" in issue) path="issues";; pr) path="pulls";; *) return 1;; esac
   json="$ROOT/views/$topic-$n.json"; etag="$ROOT/views/$topic-$n.etag"; tsf="$ROOT/views/$topic-$n.ts"
-  fresh "$tsf" "$TTL" && [ -f "$json" ] && { degraded_clear "$json"; return 0; }
+  fresh "$tsf" "$TTL" && [ -f "$json" ] && { _metric hit; degraded_clear "$json"; return 0; }
   if ! lock "view-$topic-$n"; then
-    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
-    if [ -f "$json" ]; then degraded_mark "$json"; return 0; fi   # issue #266 AC (a)
+    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$tsf" "$TTL" && [ -f "$json" ]; } && { _metric hit; degraded_clear "$json"; return 0; }; sleep 1; w=$((w+1)); done
+    if [ -f "$json" ]; then _metric hit; degraded_mark "$json"; return 0; fi   # issue #266 AC (a)
     return 1
   fi
-  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "view-$topic-$n"; degraded_clear "$json"; return 0; fi
+  if fresh "$tsf" "$TTL" && [ -f "$json" ]; then unlock "view-$topic-$n"; _metric hit; degraded_clear "$json"; return 0; fi
   local et=""; [ -f "$etag" ] && et="$(cat "$etag")"
   hdr="$(real_gh api -i "/repos/$SLUG/$path/$n" ${et:+-H "If-None-Match: $et"} 2>/dev/null)" || { unlock "view-$topic-$n"; return 1; }
   status="$(printf '%s' "$hdr" | awk 'toupper($1) ~ /^HTTP/ {print $2; exit}')"
   # 404 (or any non-200/304): don't crash, don't guess — fall through to real
   # gh so the caller sees gh's own error, never a wrong-but-well-formed result.
-  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; degraded_clear "$json"; unlock "view-$topic-$n"; return 0; fi
+  if [ "$status" = "304" ] && [ -f "$json" ]; then touch "$tsf"; _metric revalidated; degraded_clear "$json"; unlock "view-$topic-$n"; return 0; fi
   if [ "$status" != "200" ]; then unlock "view-$topic-$n"; return 1; fi
   newetag="$(printf '%s' "$hdr" | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/^[Ee][Tt][Aa][Gg]: /,""); gsub(/\r/,""); print; exit}')"
   body="$(printf '%s' "$hdr" | awk 'f{print} /^\r?$/{f=1}')"
   printf '%s' "$body" | jq -c '.' > "$json.tmp" 2>/dev/null && [ -s "$json.tmp" ] || { rm -f "$json.tmp"; unlock "view-$topic-$n"; return 1; }
-  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; degraded_clear "$json"
+  mv "$json.tmp" "$json"; [ -n "$newetag" ] && printf '%s' "$newetag" > "$etag"; touch "$tsf"; _metric charged; degraded_clear "$json"
   unlock "view-$topic-$n"; return 0
 }
 
@@ -608,12 +656,60 @@ invalidate() { # $1=issue|pr  $2=number
   return 0
 }
 
+# --- headroom: gh api rate_limit, cached on the SAME TTL (issue #239) -------
+# "Headroom must not become the fourth per-tick call" — /rate_limit is exempt
+# from the PRIMARY limit but still counts against SECONDARY limits, so it is
+# cached exactly like every other read here, never fetched unconditionally
+# per render. Never fabricates: any failure (network, auth, rate-limited
+# itself) reports UNKNOWN on stdout and a nonzero exit, same convention as
+# #211 everywhere else in this cache.
+HEADROOM_JSON="$ROOT/ratelimit.json"
+HEADROOM_TSF="$ROOT/ratelimit.ts"
+_headroom_refresh() {
+  fresh "$HEADROOM_TSF" "$TTL" && [ -f "$HEADROOM_JSON" ] && return 0
+  if ! lock ratelimit; then
+    local w=0; while [ "$w" -lt "$WAITER_ITERS" ]; do { fresh "$HEADROOM_TSF" "$TTL" && [ -f "$HEADROOM_JSON" ]; } && return 0; sleep 1; w=$((w+1)); done
+    [ -f "$HEADROOM_JSON" ] && return 0   # degraded (unconfirmed-fresh) beats none; never fabricated
+    return 1
+  fi
+  if fresh "$HEADROOM_TSF" "$TTL" && [ -f "$HEADROOM_JSON" ]; then unlock ratelimit; return 0; fi
+  local out; out="$(real_gh api rate_limit 2>/dev/null)"
+  if [ -z "$out" ]; then unlock ratelimit; return 1; fi
+  printf '%s' "$out" | jq -e '.resources.core.remaining != null' >/dev/null 2>&1 || { unlock ratelimit; return 1; }
+  printf '%s' "$out" > "$HEADROOM_JSON.tmp" 2>/dev/null && mv "$HEADROOM_JSON.tmp" "$HEADROOM_JSON" && touch "$HEADROOM_TSF"
+  unlock ratelimit; return 0
+}
+# stdout on success: "remaining=N limit=N reset=<epoch>", rc 0.
+# stdout on ANY failure: literal "UNKNOWN", rc 1 -- never a guessed number.
+headroom_report() {
+  local remaining limit reset
+  if _headroom_refresh; then
+    remaining="$(jq -r '.resources.core.remaining // empty' "$HEADROOM_JSON" 2>/dev/null)"
+    limit="$(jq -r '.resources.core.limit // empty' "$HEADROOM_JSON" 2>/dev/null)"
+    reset="$(jq -r '.resources.core.reset // empty' "$HEADROOM_JSON" 2>/dev/null)"
+    if [ -n "$remaining" ] && [ -n "$limit" ] && [ -n "$reset" ]; then
+      printf 'remaining=%s limit=%s reset=%s\n' "$remaining" "$limit" "$reset"
+      return 0
+    fi
+  fi
+  echo UNKNOWN
+  return 1
+}
+
 # --- entry ------------------------------------------------------------------
-# `invalidate` is handled BEFORE the OFF passthrough: it's a local cache-file op
-# (never an upstream call), so it's a harmless no-op — not a real-gh passthrough
-# — even when the cache is bypassed.
+# `invalidate`/`metrics`/`headroom` are handled BEFORE the OFF passthrough:
+# local cache-file ops or a cached-but-real read, never a raw real-gh
+# passthrough of an arbitrary caller argv — harmless no-ops even when the
+# cache is bypassed for everything else.
 case "${1:-} ${2:-}" in
   "invalidate issue"|"invalidate pr") invalidate "$2" "${3:-}"; exit $?;;
+esac
+case "${1:-}" in
+  metrics) window="${2:-3600}"
+    printf 'hit=%s revalidated=%s charged=%s window=%ss\n' \
+      "$(_metric_count hit "$window")" "$(_metric_count revalidated "$window")" "$(_metric_count charged "$window")" "$window"
+    exit 0 ;;
+  headroom) headroom_report; exit $? ;;
 esac
 [ "${1:-}" = serve ] && shift     # drop the 'serve' subcommand verb
 [ "${FWF_GHCACHE_OFF:-0}" = 1 ] && { real_gh "$@"; exit $?; }
