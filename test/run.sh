@@ -418,6 +418,17 @@ AC_E2_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E2_IN")"
 for tok in 'captain/218-sentinel-fixtures' 'conductor/9-foo'; do
   assert_contains "AC(e2): branch name '$tok' survives sanitization verbatim (issue #234)" "$AC_E2_OUT" "$tok"
 done
+
+# issue #234 AC(e) — idempotent. Narrowing drops the shield/restore mechanism
+# that motivated this AC originally, but it's not moot: it's a property of
+# the KEPT marker table too — none of [internal-var]/(claimed)/(assigned)/
+# (reviewed)/(review note:) may itself re-match a source pattern on a second
+# pass (QA-caught: reasoning "by eye" isn't the same as asserting it).
+AC_E_IN='CLAIM impl1 then GV-SIGNOFF and QA-APPROVED: #5, ASSIGNED qa2, FWF_A FWF_B'
+AC_E_ONCE="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E_IN")"
+AC_E_TWICE="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E_ONCE")"
+assert_eq "AC(e): sanitizing an already-sanitized body is a no-op (issue #234)" \
+  "$AC_E_ONCE" "$AC_E_TWICE"
 # sensitive-data scrub (constraint 3): secret/token/key SHAPES, not just fwf vocab.
 SEC_IN='ghp_abcdefghijklmnopqrstuvwxyz012345 AKIAABCDEFGHIJKLMNOP sk-abcdefghijklmnopqrstuvwx api_key: sup3rsecret'
 SEC_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SEC_IN")"
