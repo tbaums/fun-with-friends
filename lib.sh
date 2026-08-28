@@ -3336,7 +3336,11 @@ fwf_log_unknown_read() { # $1=reader-name $2=reason (one line; no tabs/newlines)
   { printf '%s\t%s\t%s\n' "$ts" "$1" "$2" >> "$log"; } 2>/dev/null || return 1
   # Bound the log (keep only the last N lines) -- best-effort; a failure to
   # trim is not itself a logging failure, the append above already landed.
-  n="$(wc -l < "$log" 2>/dev/null || echo 0)"
+  # BSD wc(1) pads its count with leading spaces ("      10"); GNU wc does
+  # not. Strip whitespace BEFORE the digit check below -- otherwise the
+  # sanitizer sees the leading space, treats a perfectly good count as
+  # garbage, forces n=0, and the bound never fires at all on macOS (#284).
+  n="$(wc -l < "$log" 2>/dev/null | tr -d '[:space:]')"
   case "$n" in ''|*[!0-9]*) n=0;; esac
   if [ "$n" -gt "$FWF_UNKNOWN_LOG_MAX_LINES" ]; then
     tail -n "$FWF_UNKNOWN_LOG_MAX_LINES" "$log" > "$log.tmp.$$" 2>/dev/null \
