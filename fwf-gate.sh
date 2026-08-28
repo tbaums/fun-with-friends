@@ -112,9 +112,25 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # fatal flaw. macOS has no setsid(1); /usr/bin/perl (present on macOS and Linux)
 # does setpgid then re-execs the original argv. FAIL-CLOSED when the leader is
 # REQUIRED but perl is absent — never silently run ungrouped.
-if [ "${FWF_GATE_PGLEADER_ENABLE:-1}" = 1 ] && [ -z "${_FWF_GATE_IS_PGLEADER:-}" ]; then
+# issue #195 (nested-gate fix): `_FWF_GATE_IS_PGLEADER` alone is not a safe
+# guard here -- it is a plain exported env var, so a NESTED fwf-gate.sh
+# invocation (e.g. this very script, run for a DIFFERENT role, from inside
+# a wrapped command that is itself already running under an outer `fwf
+# gate` -- exactly how test/run.sh is always invoked) inherits it from the
+# ancestor and wrongly concludes IT is already its own group leader,
+# silently skipping setpgid/re-exec and staying in the ANCESTOR's group.
+# That breaks every pgid-based guarantee below (teardown isolation, the
+# self-vs-reused-pgid disambiguation in _fwf_kill_orphan_group) for the
+# nested call. Pairing the flag with the PID that actually set it makes
+# the check a true self-test: exec() preserves PID across both hops
+# (perl's own exec, then perl's exec of "$0" "$@"), so "$$" is identical
+# before and after a genuine self-re-exec, but differs for any inherited-
+# from-ancestor case (a different, child PID) -- forcing every distinct
+# invocation to redo its own setpgid, nested or not.
+if [ "${FWF_GATE_PGLEADER_ENABLE:-1}" = 1 ] && [ "${_FWF_GATE_PGLEADER_PID:-}" != "$$" ]; then
   if command -v perl >/dev/null 2>&1; then
     export _FWF_GATE_IS_PGLEADER=1
+    export _FWF_GATE_PGLEADER_PID="$$"
     exec perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$0" "$@"
   else
     echo "fwf gate: FWF_GATE_PGLEADER_ENABLE=1 but perl is absent — refusing to gate ungrouped (set FWF_GATE_PGLEADER_ENABLE=0 to override)" >&2

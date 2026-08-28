@@ -5105,6 +5105,49 @@ else
   kill "$G195F_PID" 2>/dev/null; wait "$G195F_PID" 2>/dev/null
   bad "AC(f): setup failed -- server never started listening"
 fi
+
+section "fwf gate (#195 edge case): a wrapped command that traps TERM and lingers escalates to the hard KILL path after the grace window"
+# The lingering process must be the one actually HOLDING THE PORT (a
+# backgrounded-then-detached child, like the other fixtures use, would die
+# to a direct TERM regardless of what the FOREGROUND shell traps) -- a
+# single Python process that binds the port itself and installs a no-op
+# SIGTERM handler, so the group's TERM is genuinely survived until KILL.
+G195E_ROOT="$TMP/gate195-edge-lingers"; mkdir -p "$G195E_ROOT/state/example"
+G195E_PORT=$(( 25000 + RANDOM % 3000 ))
+G195E_PY="$TMP/gate195-edge-lingers.py"
+cat > "$G195E_PY" <<PYEOF
+import socket, signal, time
+signal.signal(signal.SIGTERM, lambda *a: None)
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", $G195E_PORT))
+s.listen(1)
+time.sleep(30)
+PYEOF
+G195E_GRACE=1
+FWF_RUN_DIR="$G195E_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS="$G195E_GRACE" "$ROOT/fwf-gate.sh" role195e -- \
+  python3 "$G195E_PY" >/dev/null 2>&1 &
+G195E_PID=$!
+if _fwf195_wait_listening "$G195E_PORT" 50; then
+  G195E_START="$(date +%s)"
+  kill -TERM "$G195E_PID" 2>/dev/null
+  wait "$G195E_PID" 2>/dev/null
+  G195E_ELAPSED=$(( $(date +%s) - G195E_START ))
+  if [ "$G195E_ELAPSED" -ge 1 ]; then
+    ok "edge: escalation took at least the ${G195E_GRACE}s grace window (~${G195E_ELAPSED}s) -- proves the hard KILL path actually fired, not a lucky fast exit"
+  else
+    bad "edge: torn down suspiciously fast (~${G195E_ELAPSED}s elapsed) -- the TERM-ignoring process should have survived past the grace window"
+  fi
+  sleep 0.3
+  if _fwf195_port_listening "$G195E_PORT"; then
+    bad "edge: the TERM-ignoring server is still listening after the grace window -- hard KILL never reaped it"
+  else
+    ok "edge: the hard KILL path reaped the lingering, TERM-ignoring process after the grace window"
+  fi
+else
+  kill "$G195E_PID" 2>/dev/null; wait "$G195E_PID" 2>/dev/null
+  bad "edge: setup failed -- the TERM-ignoring server never started listening"
+fi
 else
   printf '  skip fwf gate (#195) subprocess/port tests (python3 not installed)\n'
 fi
