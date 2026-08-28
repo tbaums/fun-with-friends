@@ -9575,6 +9575,95 @@ assert_eq "AC1: the final summary format names a skipped count, not just passed/
 # exactly how #242 happened, and how two real failures shipped green. An
 # explicit `exit` cannot be shadowed by an append, only preceded by one, and
 # the section above fails loudly if someone tries.
+
+# ---------------------------------------------------------------------------
+# issue #337 / #332: GNU-only constructs on portability-critical paths.
+#
+# Every macOS-only defect found on 2026-08-28 was a GNU extension that a
+# Linux runner cannot observe in either direction: the code works there, so
+# no behavioural test on Linux can go red. These guards CAN go red on Linux,
+# which is the point -- they assert the construct is absent rather than
+# waiting for a Mac to notice. Each names the defect it prevents.
+section "portability (#337): no GNU-only constructs on kill / cache / time paths"
+
+PORT_FILES="$ROOT/lib.sh $ROOT/fwf-gate.sh $ROOT/fwf-ghcache.sh"
+# Match only LIVE code, never comments. Deliberately POSIX: an earlier version
+# of this very guard used `grep -v '^\s*#'`, and \s is itself a GNU extension --
+# a portability check that was not portable. awk strips "file:line:" then any
+# leading blanks and drops the line if what remains starts with '#'.
+port_live() { # $1=pattern
+  grep -n "$1" $PORT_FILES 2>/dev/null | awk '{ l=$0
+      sub(/^[^:]*:[0-9]+:/, "", l); sub(/^[ \t]+/, "", l)
+      if (substr(l,1,1) != "#") print }'
+}
+
+# #332: `ps -o etimes` is GNU procps only. On BSD it yields nothing, the
+# reuse guard failed OPEN, and the gate SIGKILLed the test runner's own
+# process group -- the suite could not complete on macOS at all.
+PORT_ETIMES="$(port_live 'ps -o etimes' || true)"
+[ -z "$PORT_ETIMES" ] \
+  && ok "no live 'ps -o etimes' (#332: GNU-only; failed OPEN into a SIGKILL on macOS)" \
+  || bad "no live 'ps -o etimes' (#332)" "$PORT_ETIMES"
+
+# #337 Group D: gawk's IGNORECASE is silently ignored by BSD awk, so the
+# ETag was never captured and every post-TTL poll was a charged 200.
+PORT_IGN="$(port_live 'IGNORECASE' || true)"
+[ -z "$PORT_IGN" ] \
+  && ok "no awk IGNORECASE (#337 D: gawk-only; ETag never captured on BSD)" \
+  || bad "no awk IGNORECASE (#337 D)" "$PORT_IGN"
+
+# #337 Group A: `date -j -f` without -u parses a UTC stamp as LOCAL time.
+# On a PDT box that is +25200s, which tripped the fail-closed skew guard and
+# meant #149's usage brake never engaged on macOS.
+PORT_DATEJ="$(port_live 'date -j -f' | grep -v 'date -u -j -f' || true)"
+[ -z "$PORT_DATEJ" ] \
+  && ok "every 'date -j -f' carries -u (#337 A: UTC stamp parsed as local otherwise)" \
+  || bad "every 'date -j -f' carries -u (#337 A)" "$PORT_DATEJ"
+
+# ---------------------------------------------------------------------------
+section "portability (#332): _fwf_ps_elapsed_secs + the fail-CLOSED split"
+
+# Behavioural, and platform-neutral: `ps -o etime=` exists on GNU and BSD.
+PORT_EL_LIVE="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs \$\$")"
+case "$PORT_EL_LIVE" in
+  ''|*[!0-9]*) bad "elapsed-secs of a LIVE pid is numeric" "got [$PORT_EL_LIVE]";;
+  *) ok "elapsed-secs of a LIVE pid is numeric (portable 'ps -o etime=' parse)";;
+esac
+PORT_EL_DEAD="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs 999999999")"
+[ -z "$PORT_EL_DEAD" ] \
+  && ok "elapsed-secs of a DEAD pid is EMPTY, never a fabricated 0 (#211)" \
+  || bad "elapsed-secs of a DEAD pid is EMPTY" "got [$PORT_EL_DEAD]"
+
+# The load-bearing #332 change: a LIVE pgid whose elapsed time cannot be
+# determined must REFUSE, not reap. Driven with a `ps` stub that answers the
+# pid-exists probe but returns junk for etime -- the exact shape BSD produced
+# when `etimes` was passed. Goes RED against the pre-fix code on Linux too:
+# pre-fix, an unparseable value fell through to `kill -KILL`.
+PORT_STUB="$TMP/port332-stub"; mkdir -p "$PORT_STUB"
+cat > "$PORT_STUB/ps" <<'PSEOF'
+#!/bin/sh
+# -o pid= : the pid EXISTS. -o etime= : unparseable (the BSD 'etimes' shape).
+for a in "$@"; do
+  case "$a" in
+    pid=)   echo 4242; exit 0;;
+    etime=) echo "not-a-time"; exit 0;;
+    pgid=)  echo 4242; exit 0;;
+    ppid=)  echo 1; exit 0;;
+  esac
+done
+exit 0
+PSEOF
+chmod +x "$PORT_STUB/ps"
+PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" bash -c "source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 4242 \$(( \$(date +%s) - 9999 ))" 2>&1)"
+case "$PORT_REFUSE" in
+  *"refusing to signal"*) ok "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES (never reaps)";;
+  *) bad "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES" "got [$PORT_REFUSE]";;
+esac
+case "$PORT_REFUSE" in
+  *"SIGKILL group"*) bad "#332: it must NOT reap on an unanswered question" "$PORT_REFUSE";;
+  *) ok "#332: no SIGKILL is emitted when elapsed time is unknown";;
+esac
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1
 exit "$_rc"

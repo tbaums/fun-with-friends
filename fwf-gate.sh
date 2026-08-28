@@ -285,7 +285,7 @@ release_done=0
 # is tool- and locale-dependent; that's an accepted residual, not
 # something to engineer around).
 _fwf_gate_diagnose_port_collision() {
-  local capture="$1" line port occ_raw occ_pid occ_cmd
+  local capture="$1" line port occ_raw occ_pid occ_cmd occ_args
   [ -f "$capture" ] || return 0
   line="$(grep -iE 'address already in use|EADDRINUSE' "$capture" 2>/dev/null | tail -1)"
   [ -n "$line" ] || return 0
