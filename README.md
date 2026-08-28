@@ -732,7 +732,18 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   (`fwf down`'s full teardown already does this — a decommissioned floor
   shouldn't leave a live token sitting at a predictable path). If `fwf up`
   can't resolve any credential it fails loud before any pane boots, rather
-  than seating unauthenticated panes that look live on the dash.
+  than seating unauthenticated panes that look live on the dash. `fwf
+  supervise`'s own auto-respawn (`FWF_SUPERVISE_AUTORESPAWN=1`) is bounded by
+  a circuit breaker: `FWF_RESPAWN_BREAKER_MAX` (default 3) consecutive failed
+  respawns for a role open the breaker, backing off (doubling from
+  `FWF_RESPAWN_BREAKER_BASE_SECS`, default 60s) instead of retrying every
+  pass — without this, a box where supervise's own environment can never
+  resolve a credential (exactly the case this sink can't fix, since respawn
+  deliberately never re-resolves) would otherwise destroy-and-relaunch every
+  WEDGED pane on every tick, the floor-wide outage auto-respawn is meant to
+  avoid causing. The breaker clears itself the moment a role classifies as
+  non-`WEDGED` again — including right after a successful manual `fwf respawn
+  <role>`, with no special-casing needed.
 - **Issue auto-close** requires the `Closes #N` text to ride a commit onto the
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.

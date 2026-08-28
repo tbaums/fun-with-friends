@@ -3180,6 +3180,74 @@ fwf_lane_stale_verdict() {
   echo LANE_HEALTHY
 }
 
+# --- respawn circuit breaker (issue #217 section 4) --------------------------
+# fwf-supervise.sh's own exit 1 from a failed fwf-respawn.sh stops THAT
+# invocation, but nothing stopped supervise from calling it again next tick —
+# each call kills and relaunches the pane. On a box where no auth credential
+# resolves in supervise's OWN environment (exactly the case this ticket's
+# sink cannot fix, since supervise never re-resolves), that's an unbounded
+# destroy-and-retry loop across every WEDGED seat: the floor-wide outage the
+# captain refused to enable auto-respawn to avoid in the first place.
+#
+# No second vocabulary: the verdict supervise reports stays WEDGED (it is)
+# -- only whether it ACTS on it is gated here, via a qualifier on that same
+# line, never a new top-level state.
+FWF_RESPAWN_BREAKER_MAX="${FWF_RESPAWN_BREAKER_MAX:-3}"
+FWF_RESPAWN_BREAKER_BASE_SECS="${FWF_RESPAWN_BREAKER_BASE_SECS:-60}"
+
+_fwf_respawn_breaker_file() { printf '%s/respawn-breaker/%s' "$FWF_STATE_DIR" "$1"; }
+
+# $1=role -> 0 = attempt allowed now, 1 = breaker OPEN (still backing off).
+# Never errors on a missing/malformed state file -- absent means "never
+# failed", which must always allow an attempt.
+fwf_respawn_breaker_check() {
+  local role="$1" f count next now
+  f="$(_fwf_respawn_breaker_file "$role")"
+  [ -f "$f" ] || return 0
+  count="$(awk -F= '$1=="fail_count"{print $2}' "$f" 2>/dev/null || true)"
+  case "$count" in ''|*[!0-9]*) return 0;; esac
+  [ "$count" -ge "$FWF_RESPAWN_BREAKER_MAX" ] || return 0
+  next="$(awk -F= '$1=="next_attempt"{print $2}' "$f" 2>/dev/null || true)"
+  case "$next" in ''|*[!0-9]*) return 0;; esac
+  now="$(date +%s)"
+  [ "$now" -lt "$next" ] && return 1
+  return 0
+}
+
+# $1=role -> record one failed respawn attempt and compute the next backoff.
+# Backoff is flat (does not start doubling) until the count PASSES the
+# FWF_RESPAWN_BREAKER_MAX threshold -- fwf_respawn_breaker_check never
+# blocks below that count anyway, so a shorter flat wait before it is purely
+# informational (it still shows up in the recorded state) and doubling only
+# once the breaker can actually open avoids a needlessly long first wait.
+fwf_respawn_breaker_fail() {
+  local role="$1" f count now excess backoff
+  f="$(_fwf_respawn_breaker_file "$role")"
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  # $f legitimately does not exist yet on a role's FIRST-EVER failure -- awk
+  # exits nonzero reading a missing file, which under a caller's `set -e`
+  # (fwf-supervise.sh) silently aborts the whole script right here with no
+  # error text (2>/dev/null hides awk's own message, set -e prints nothing).
+  # `|| true` is required, not decoration; `[ -f "$f" ] &&` guards the same
+  # class of caller in fwf_respawn_breaker_check above.
+  count="$(awk -F= '$1=="fail_count"{print $2}' "$f" 2>/dev/null || true)"
+  case "$count" in ''|*[!0-9]*) count=0;; esac
+  count=$(( count + 1 ))
+  now="$(date +%s)"
+  excess=$(( count > FWF_RESPAWN_BREAKER_MAX ? count - FWF_RESPAWN_BREAKER_MAX : 0 ))
+  backoff=$(( FWF_RESPAWN_BREAKER_BASE_SECS * (1 << excess) ))
+  printf 'fail_count=%s\nnext_attempt=%s\n' "$count" "$(( now + backoff ))" > "$f"
+}
+
+# $1=role -> clear the breaker (role is healthy again, or an operator ran a
+# manual respawn and it succeeded). No special-casing "manual" vs
+# "supervise-triggered" is needed: the caller (fwf-supervise.sh) resets on
+# ANY non-WEDGED observation, which is exactly what a successful manual
+# respawn produces on the very next pass.
+fwf_respawn_breaker_reset() {
+  rm -f "$(_fwf_respawn_breaker_file "$1")"
+}
+
 # Fetch-then-detach worktree refresh for a READ-ONLY role (issue #146):
 # PM/GV/Captain hold no code and answer "what has already SHIPPED", so their
 # worktree should track __DEFAULT__ (main) freshly, not drift stale across a

@@ -1806,11 +1806,51 @@ EOS
   unset F143_SECRET
 
   # --------------------------------------------------------------------------
+  section "claude auth persistence sink (issue #217): AC(1) — respawn from an UNAUTHENTICATED shell reaches the pane's REAL process env"
+  # THE reported bug, driven exactly as filed: `fwf up` runs from a shell
+  # THAT HAS the credential (writing the sink), then `fwf-respawn.sh` runs
+  # from a SEPARATE, DIFFERENT invocation that explicitly does NOT have it
+  # (env -u) -- proving the sink, not caller inheritance, is what authenticates
+  # the new pane. Same real-pane-process assertion style as the #143 test
+  # above (ps eww on the CHILD pid, never just a string check on the typed
+  # command line) -- this must go RED against pre-#217 code, since without
+  # the sink there is nothing for a respawn from a credential-less shell to
+  # source. AC(2) (supervise's own environment) is the SAME mechanism from a
+  # different caller: fwf-supervise.sh's autorespawn path calls fwf-respawn.sh
+  # with no special env handling of its own, so this same proof covers it --
+  # the sink makes the CALLER irrelevant, which is the whole point.
+  F217E2E_WT="$TMP/wt217e2e"; mkdir -p "$F217E2E_WT/ex-impl1" "$F217E2E_WT/ex-qa1" "$F217E2E_WT/ex-conductor" "$F217E2E_WT/ex-pm" "$F217E2E_WT/ex-gv" "$F217E2E_WT/ex-captain"
+  F217E2E_RUN="$TMP/run217e2e"; mkdir -p "$F217E2E_RUN"
+  F217E2E_SESS="fwf-selftest-217e2e-$$"
+  F217E2E_TOKEN="fwf-e2e-secret-$$"
+  # Step 1: `fwf up` from an AUTHENTICATED shell -- writes the sink.
+  env FWF_PROFILE=example FWF_RUN_DIR="$F217E2E_RUN" FWF_SESSION="$F217E2E_SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 CLAUDE_CODE_OAUTH_TOKEN="$F217E2E_TOKEN" \
+      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  # Step 2: respawn impl1 from a DIFFERENT invocation with NO credential at
+  # all in ITS environment -- the exact AC(1) scenario. Only the sink (from
+  # step 1) can authenticate the new pane. issue #116-style interval/margin
+  # overrides: the stub claude never ticks, so the post-arm verify would
+  # otherwise run out its full real ~2m window before returning.
+  env -u CLAUDE_CODE_OAUTH_TOKEN FWF_PROFILE=example FWF_RUN_DIR="$F217E2E_RUN" FWF_SESSION="$F217E2E_SESS" \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
+      "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
+  F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+  F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
+  F217E2E_CHILD_PID="$([ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true)"
+  if [ -n "$F217E2E_CHILD_PID" ]; then
+    assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
+      "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
+  else
+    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "could not find impl1 pane's child pid after respawn"
+  fi
+  tmux kill-session -t "${F217E2E_SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F217E2E_SESS}-build" 2>/dev/null
+
   section "claude auth persistence sink (issue #217): resolve / source / clear"
-  # Delivery into the pane's actual process env is NOT re-tested here: this
-  # sink is sourced by the exact same fwf_claude_cmd prefix mechanism the
-  # #143 test just above already proved reaches a real pane's process env
-  # end-to-end. What's new here is what fwf_claude_cmd doesn't cover:
+  # The unit-level tests below cover what the real-pane test above does NOT:
   # resolution precedence, atomic writing, secret hygiene, and removal.
   F217RUN="$TMP/run217"; mkdir -p "$F217RUN"
 
@@ -1906,6 +1946,105 @@ EOS
   FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example FWF_SESSION="fwf-217-noexist-$$" FWF_MIN_FREE_GB=0 \
     bash "$ROOT/fwf-down.sh" >/dev/null 2>&1
   if [ -e "$F217_DOWNRUN/auth.env" ]; then bad "AC 9: a full 'fwf down' removes the auth sink"; else ok "AC 9: a full 'fwf down' removes the auth sink"; fi
+
+  # --------------------------------------------------------------------------
+  section "respawn circuit breaker (issue #217 section 4): bounded consecutive failures, no unbounded destroy-and-retry"
+  # Direct unit tests first (fwf_respawn_breaker_check/fail/reset -- PURE
+  # state-file logic), then the real integration through fwf-supervise.sh's
+  # autorespawn loop, isolated the same way the existing AC(f2) supervise
+  # test above is: a throwaway copy of fwf-supervise.sh with fwf-respawn.sh
+  # AND fwf-pane-liveness.sh stubbed (the real classifier is stateful across
+  # calls -- its OWN snapshot-diffing would otherwise reclassify a repeatedly
+  # re-queried static fixture as WORKING/UNKNOWN rather than staying WEDGED,
+  # which is a fact about the classifier, not about the breaker this section
+  # tests).
+  F217BRK="$TMP/run217brk"; mkdir -p "$F217BRK"
+  assert_eq "fresh role (no prior failures): attempt allowed" "0" \
+    "$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK/fresh" FWF_RESPAWN_BREAKER_MAX=3 bash -c "source '$ROOT/lib.sh'; fwf_respawn_breaker_check r1; echo \$?" | tail -1)"
+  F217BRK_BELOW="$TMP/run217brk-below"; mkdir -p "$F217BRK_BELOW"
+  BELOW_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BELOW" FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1; echo \$?
+  " | tail -1)"
+  assert_eq "below FWF_RESPAWN_BREAKER_MAX (2 fails, max 3): still allowed" "0" "$BELOW_RC"
+  ATMAX_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BELOW" FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1; echo \$?
+  " | tail -1)"
+  assert_eq "AT FWF_RESPAWN_BREAKER_MAX (3 fails): breaker OPEN, blocked" "1" "$ATMAX_RC"
+  F217BRK_EXPIRE="$TMP/run217brk-expire"; mkdir -p "$F217BRK_EXPIRE"
+  EXPIRE_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_EXPIRE" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
+    sleep 2
+    fwf_respawn_breaker_check r1 && echo AFTER_ALLOWED || echo AFTER_BLOCKED
+  ")"
+  assert_contains "breaker blocks immediately after crossing the threshold" "$EXPIRE_OUT" "IMMEDIATE_BLOCKED"
+  assert_contains "breaker allows again once its backoff window elapses" "$EXPIRE_OUT" "AFTER_ALLOWED"
+  F217BRK_RESET="$TMP/run217brk-reset"; mkdir -p "$F217BRK_RESET"
+  RESET_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_RESET" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_reset r1
+    fwf_respawn_breaker_check r1; echo \$?
+  " | tail -1)"
+  assert_eq "fwf_respawn_breaker_reset clears an open breaker immediately" "0" "$RESET_RC"
+
+  # Real fwf-supervise.sh integration: N consecutive respawn FAILURES produce
+  # exactly N respawn attempts (never N+1) -- the discriminating half; without
+  # the breaker every pass would call fwf-respawn.sh again.
+  F217ISO="$TMP/f217iso"; mkdir -p "$F217ISO/lib" "$F217ISO/profiles"
+  cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F217ISO/"
+  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F217ISO/lib/"
+  cp "$ROOT/profiles/example.sh" "$F217ISO/profiles/"
+  ln -sf "$ROOT/templates" "$F217ISO/templates"
+  ln -sf "$ROOT/fwf-usage-data.sh" "$F217ISO/fwf-usage-data.sh"
+  F217_VERDICT_FILE="$TMP/f217iso-verdict"
+  cat > "$F217ISO/fwf-pane-liveness.sh" <<EOF
+#!/usr/bin/env bash
+cat "$F217_VERDICT_FILE"
+EOF
+  chmod +x "$F217ISO/fwf-pane-liveness.sh"
+  F217_RESPAWN_LOG="$TMP/f217iso-respawn.log"
+  cat > "$F217ISO/fwf-respawn.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$F217_RESPAWN_LOG"
+exit 1
+EOF
+  chmod +x "$F217ISO/fwf-respawn.sh"
+  F217_SV_RUN="$TMP/f217iso-run"; mkdir -p "$F217_SV_RUN/state/example"
+  echo WEDGED > "$F217_VERDICT_FILE"
+  F217_LAST_PASS=""
+  # PATH="$SV_TMUX_UP:$PATH" -- the same fake-tmux stub the AC(f2) supervise
+  # test above uses (`has-session` always exits 0), so fwf_role_session_visible
+  # reads visible without a real tmux server; otherwise this fixture reads
+  # SESSION_UNKNOWN (never reaped) regardless of the stubbed WEDGED verdict.
+  for _f217_i in 1 2 3 4 5; do
+    F217_LAST_PASS="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F217_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
+      FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/fwf-supervise.sh" brkrole 2>&1)"
+  done
+  assert_eq "N=3 consecutive failures produce EXACTLY 3 respawn attempts, never N+1" "3" \
+    "$(wc -l < "$F217_RESPAWN_LOG" 2>/dev/null | tr -d ' ')"
+  assert_contains "the (N+1)th pass reports the give-up state via the EXISTING WEDGED vocabulary, not a new one" "$F217_LAST_PASS" "WEDGED -> breaker OPEN"
+  assert_contains "the give-up line tells the operator how to clear it" "$F217_LAST_PASS" "manual 'fwf respawn brkrole' clears it"
+
+  # Healing (verdict flips away from WEDGED) resets the breaker -- covers
+  # "manual fwf respawn clears the seat's failure count" as a natural
+  # consequence: a successful manual respawn IS what makes the next
+  # classification non-WEDGED, with no special-casing needed in the breaker
+  # itself for "who" triggered the fix.
+  echo HEALTHY > "$F217_VERDICT_FILE"
+  PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F217_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
+    FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/fwf-supervise.sh" brkrole >/dev/null 2>&1
+  if [ -f "$F217_SV_RUN/state/example/respawn-breaker/brkrole" ]; then
+    bad "healing (non-WEDGED verdict) clears the breaker state"
+  else
+    ok "healing (non-WEDGED verdict) clears the breaker state"
+  fi
 
   # --- boot-time worktree refresh (issue #146 AC4) ---------------------------
   # `fwf up` should land every read-only role's worktree at 0-behind
