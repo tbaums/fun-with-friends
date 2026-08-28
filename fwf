@@ -587,6 +587,7 @@ doctor() {
   printf '  run dir   : %s\n' "$FWF_RUN"
   fwf_doctor_version_line
   _doctor_usage_schema
+  _doctor_e2e_cmd_check
   [ "$ok" = 0 ] && echo "  -> all good." || echo "  -> fix the items above before launching."
   return "$ok"
 }
@@ -618,6 +619,46 @@ _doctor_usage_schema() {
   else
     echo "  usage schema: WARNING — transcript line shape has drifted from what 'fwf usage' expects (message.usage.{input,output}_tokens / message.model) — see docs/proposals/70-token-usage-budget.md"
   fi
+}
+# issue #205 AC(h): warn (never refuse) when a profile's E2E_CMD looks like it
+# hardcodes a port or data dir instead of reading the exported
+# FWF_E2E_PORT/FWF_E2E_DATA_DIR (see lib.sh's fwf_e2e_lock_acquire and its
+# canonical _fwf_e2e_cmd_hardcoded_warn, which this mirrors) -- a consumer
+# that ignores the allocation silently re-serializes its own lane with every
+# test still green, and this grep is the only signal fwf can give from its
+# own side. Informational only, self-contained like _doctor_usage_schema
+# above: doctor must still succeed with zero profiles configured, so this
+# does NOT call resolve_profile() (which die()s on that case).
+_doctor_e2e_cmd_check() {
+  local names count prof pfile e2e_cmd warned=0
+  if [ -n "${FWF_PROFILE:-}" ]; then
+    prof="$FWF_PROFILE"
+  else
+    names="$(list_profiles)"
+    count="$(printf '%s\n' "$names" | grep -c . || true)"
+    if [ "$count" != "1" ]; then
+      echo "  e2e lease : skip (no single profile to check -- pass --profile NAME)"
+      return 0
+    fi
+    prof="$names"
+  fi
+  pfile="$(profiles_dir)/$prof.sh"
+  [ -f "$pfile" ] || { echo "  e2e lease : skip (profile '$prof' not found)"; return 0; }
+  e2e_cmd="$(E2E_CMD=""; . "$pfile" >/dev/null 2>&1; printf '%s' "${E2E_CMD:-}")"
+  if [ -z "$e2e_cmd" ]; then
+    echo "  e2e lease : ok (profile '$prof' has no E2E_CMD)"
+    return 0
+  fi
+  if printf '%s' "$e2e_cmd" | grep -Eq '[0-9]{4,5}' && ! printf '%s' "$e2e_cmd" | grep -q 'FWF_E2E_PORT'; then
+    echo "  e2e lease : WARNING -- profile '$prof' E2E_CMD appears to hardcode a port instead of reading \$FWF_E2E_PORT (issue #205)"
+    warned=1
+  fi
+  if printf '%s' "$e2e_cmd" | grep -Eq -- '(--data[= ]|/tmp/[A-Za-z0-9_./-]+)' && ! printf '%s' "$e2e_cmd" | grep -q 'FWF_E2E_DATA_DIR'; then
+    echo "  e2e lease : WARNING -- profile '$prof' E2E_CMD appears to hardcode a data dir instead of reading \$FWF_E2E_DATA_DIR (issue #205)"
+    warned=1
+  fi
+  [ "$warned" = 1 ] || echo "  e2e lease : ok (profile '$prof' E2E_CMD reads the exported allocation, or hardcodes neither)"
+  return 0
 }
 # cwd -> Claude Code's project-dir slug: every '/' and '.' -> '-' (shared with
 # fwf-usage-data.sh's identical helper; kept local here so doctor has no
