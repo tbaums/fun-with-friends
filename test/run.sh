@@ -276,6 +276,27 @@ assert_eq "AC(#247 a3): the corpus-nonempty guard itself goes RED on a genuinely
 tmpl_corpus_nonempty "$ROOT/templates"
 assert_eq "AC(#247 a3): ...and stays GREEN against the real corpus" "0" "$?"
 
+# issue #247 AC (a4): the three "PR-producing template" invariants (provenance
+# stamp / built-with credit / context-fold CLI) all narrow their corpus with
+# an INNER filter (`grep -qE 'gh pr (create|merge)'`) before checking
+# anything. If that filter itself matches nothing -- a renamed PR-open
+# construct, e.g. a future `fwf pr-open` verb -- the accumulator stays empty
+# and the invariant stops being checked while staying green, same defect as
+# (a3) one layer in. Same never-calls-ok/bad shape as tmpl_corpus_nonempty,
+# for the same reason: its own correctness must be demonstrable without a
+# synthetic failure polluting the real counters.
+tmpl_filter_nonempty() { # $1=base-dir $2=ERE pattern $3...=extra find args (before -exec)
+  local base="$1" pat="$2"; shift 2
+  local n; n="$(find "$base" -name "*.tmpl" "$@" -exec /usr/bin/grep -lE "$pat" {} \; 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$n" -gt 0 ]
+}
+FILT_FIXTURE_247="$TMP/filter-fixture-247"; mkdir -p "$FILT_FIXTURE_247"
+printf 'this template never opens a PR via any recognized construct\n' > "$FILT_FIXTURE_247/x.tmpl"
+tmpl_filter_nonempty "$FILT_FIXTURE_247" 'gh pr (create|merge)'
+assert_eq "AC(#247 a4): the filter-nonempty guard goes RED when the filter's construct is renamed/absent (the guard is not itself vacuous)" "1" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "AC(#247 a4): ...and stays GREEN against the real corpus" "0" "$?"
+
 section "step-0 tick: a monotonic loop-tick bump, never the pane glyph (#99 Fix 2 / #133)"
 assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
 assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
@@ -345,6 +366,8 @@ assert_contains "implementer PR body carries the provenance trailer" \
 # "did quality regress?" diagnosis impossible.
 tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
 assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the provenance-stamp assertion below is vacuous" "0" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one template -- else the provenance-stamp assertion checked nothing" "0" "$?"
 MISSING_PROV=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
@@ -524,6 +547,8 @@ case "$CLI_CTX" in *impl[0-9]*|*QA-*) bad "fwf pr-context output has no fwf-inte
 # constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.
 tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
 assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the built-with-credit assertion below is vacuous" "0" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one template -- else the built-with-credit assertion checked nothing" "0" "$?"
 MISSING_CREDIT=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
@@ -541,6 +566,8 @@ assert_eq "every PR-producing template carries the built-with credit" "" "$MISSI
 # the issue-closing squash-merge moment.
 tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
 assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the context-fold-CLI assertion below is vacuous" "0" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one template -- else the context-fold-CLI assertion checked nothing" "0" "$?"
 MISSING_CTX=""
 while IFS= read -r -d '' f; do
   # only the actual gh pr create/merge command LINE decides "closes a ticket"
