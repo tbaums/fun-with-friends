@@ -3937,7 +3937,26 @@ printf '%s' '{"number":40,"title":"gh-backed ticket","body":"","state":"open","h
 touch "$AZGROOT/x__y/views/issue-40.ts"
 printf '%s' '[]' > "$AZGROOT/x__y/views/40-comments.json"
 touch "$AZGROOT/x__y/views/40-comments.ts"
-AZG() { FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+# issue #265 AC1: fwf-authz.sh's thread read no longer goes through
+# fwf-ghcache.sh -- it is now a direct top-level `gh` call, so this section
+# (unlike the local-backend AZ/AZI tests above) needs its own stubbed `gh` on
+# PATH rather than relying on ghcache's own views/ cache files being served
+# without ever shelling out. Serves the SAME fixture files this section
+# already writes.
+AZGHBIN="$TMP/azghbin"; mkdir -p "$AZGHBIN"
+cat > "$AZGHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "issue view "*" --json comments --jq .comments")
+    num="$3"
+    f="$AZG_VIEWS_DIR/$num-comments.json"
+    if [ -f "$f" ]; then cat "$f"; else echo "gh: could not resolve to an issue with the number of $num." >&2; exit 1; fi
+    ;;
+  *) echo "azg-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$AZGHBIN/gh"
+AZG() { PATH="$AZGHBIN:$PATH" AZG_VIEWS_DIR="$AZGROOT/x__y/views" FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
 azgrc() { local rc=0; AZG "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 assert_eq "authz: genuinely zero comments (successful read) is HELD, not INDETERMINATE" "10" "$(azgrc 40)"
 assert_contains "authz HELD verdict on zero-comment issue" "$(AZG 40 2>&1)" "HELD #40"
@@ -4153,6 +4172,18 @@ cat > "$AZ215GHBIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${AZ215_CALL_LOG:?}"
 case "$*" in
+  "issue view "*" --json comments --jq .comments")
+    # issue #265 AC1: fwf-authz.sh's thread read no longer goes through
+    # fwf-ghcache.sh at all -- this now IS the top-level `gh` call the
+    # oracle makes, not an internal ghcache reshape. Serve the SAME fixture
+    # file az215_set_comments already writes (a bare JSON array, exactly
+    # what --jq '.comments' would have extracted), so every existing
+    # az215_set_comments-driven fixture below still drives the real oracle.
+    num="$3"
+    repo_dir="${FWF_GHCACHE_REPO//\//__}"
+    f="$FWF_GHCACHE_DIR/$repo_dir/views/$num-comments.json"
+    if [ -f "$f" ]; then cat "$f"; else echo "gh: could not resolve to an issue with the number of $num." >&2; exit 1; fi
+    ;;
   *"/events"*)
     if [ "${AZ215_EVENTS_FAIL:-0}" = 1 ]; then
       echo "gh: simulated api failure" >&2; exit 1
@@ -4212,7 +4243,12 @@ az215_set_labels 502 '["product-wip"]'; az215_set_comments 502
 CALLLOG502="$TMP/az215-calllog-502"; : > "$CALLLOG502"
 AZ215_CALL_LOG="$CALLLOG502"
 assert_eq "AC(b): currently-gated issue behaves unchanged -- HELD absent a signal" "10" "$(az215Grc 502)"
-assert_eq "AC(b): the label-history events read is never invoked when currently gated" "" "$(cat "$CALLLOG502")"
+# issue #265: the call log now also legitimately carries the comments read
+# (a direct top-level `gh` call, no longer served from ghcache) -- AC(b)'s
+# actual claim is narrower than "no gh calls at all": only that the
+# LABEL-HISTORY read specifically is skipped when the issue is gated right
+# now (#215's own point -- no history read needed in the common case).
+assert_not_contains "AC(b): the label-history events read is never invoked when currently gated" "$(cat "$CALLLOG502")" "/events"
 
 # (c) THE DISCRIMINATING TEST: was gated, then un-gated (on/after the cutoff),
 # currently NOT gated -> must still require the signal (HELD), never NOT-GATED.

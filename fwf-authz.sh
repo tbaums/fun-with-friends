@@ -54,8 +54,13 @@
 
 # The verdict keys on a DURABLE comment, not the mutable label — so it stays
 # correct even if a role has wrongly re-applied the gate. Read-only: it never
-# mutates an issue and (gh backend) goes through the shared REST+ETag cache, so
-# it never re-drains the budget.
+# mutates an issue. The thread read (gh backend) deliberately does NOT go
+# through the shared REST+ETag poller cache (issue #265) — a full-price read
+# here is a rounding error against a rate limit ten polling agents share, and
+# it removes a whole class of stale-answer defect (including ones nobody has
+# diagnosed yet) rather than depending on every future caller remembering to
+# invalidate. The label-history read above this one is a different, cheap,
+# high-frequency signal and still shares the poller cache on purpose.
 #
 # ROUND-TRIP SAFETY (issue #218 AC (m)): "a security oracle must not emit a
 # string that satisfies its own matcher." None of this script's own output
@@ -219,12 +224,17 @@ read_ok=1
 if [ "$FWF_ISSUES" = "local" ]; then
   comments_json="$("$DIR/fwf-issues.sh" view "$num" --json comments --jq '.comments' 2>/dev/null)" || read_ok=0
 else
-  # Belt-and-suspenders for a just-un-gated ticket (issue #167): read the thread
-  # through a short TTL so the operator sentinel is seen within ~10s even if the
-  # approve path's write-through invalidate was somehow missed. The comment-view
-  # ETag conditional keeps this forced-fresh read near-free (304 when unchanged),
-  # so the tighter window costs a role nothing in the common case.
-  comments_json="$(FWF_GHCACHE_TTL=10 FWF_REAL_GH="$(command -v gh)" "$DIR/fwf-ghcache.sh" serve issue view "$num" --json comments --jq '.comments' 2>/dev/null)" || read_ok=0
+  # issue #265 AC1: this does NOT read through fwf-ghcache.sh at all -- not a
+  # short TTL, not a forced-fresh call, nothing shared with the poller cache.
+  # A stale `stdout/` entry can be REWRITTEN with a bumped mtime on a 304
+  # renewal while still serving pre-edit content (verified live on #247),
+  # which defeats every age/TTL-based freshness check by construction; the
+  # only fix that removes the whole class is not depending on that cache at
+  # all. fwf authz is not a poller -- it runs on a human decision, a handful
+  # of times per ticket -- so a full-price read here is a rounding error,
+  # not a rate-limit risk. A signal posted seconds ago is visible on the very
+  # next call, no sleep, no invalidate call for any future caller to forget.
+  comments_json="$(gh issue view "$num" --json comments --jq '.comments' 2>/dev/null)" || read_ok=0
 fi
 if [ "$read_ok" = 1 ]; then
   printf '%s' "$comments_json" | jq -e 'type=="array"' >/dev/null 2>&1 || read_ok=0
