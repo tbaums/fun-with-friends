@@ -3937,7 +3937,26 @@ printf '%s' '{"number":40,"title":"gh-backed ticket","body":"","state":"open","h
 touch "$AZGROOT/x__y/views/issue-40.ts"
 printf '%s' '[]' > "$AZGROOT/x__y/views/40-comments.json"
 touch "$AZGROOT/x__y/views/40-comments.ts"
-AZG() { FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+# issue #265 AC1: fwf-authz.sh's thread read no longer goes through
+# fwf-ghcache.sh -- it is now a direct top-level `gh` call, so this section
+# (unlike the local-backend AZ/AZI tests above) needs its own stubbed `gh` on
+# PATH rather than relying on ghcache's own views/ cache files being served
+# without ever shelling out. Serves the SAME fixture files this section
+# already writes.
+AZGHBIN="$TMP/azghbin"; mkdir -p "$AZGHBIN"
+cat > "$AZGHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "issue view "*" --json comments --jq .comments")
+    num="$3"
+    f="$AZG_VIEWS_DIR/$num-comments.json"
+    if [ -f "$f" ]; then cat "$f"; else echo "gh: could not resolve to an issue with the number of $num." >&2; exit 1; fi
+    ;;
+  *) echo "azg-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$AZGHBIN/gh"
+AZG() { PATH="$AZGHBIN:$PATH" AZG_VIEWS_DIR="$AZGROOT/x__y/views" FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
 azgrc() { local rc=0; AZG "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 assert_eq "authz: genuinely zero comments (successful read) is HELD, not INDETERMINATE" "10" "$(azgrc 40)"
 assert_contains "authz HELD verdict on zero-comment issue" "$(AZG 40 2>&1)" "HELD #40"
@@ -3957,6 +3976,39 @@ assert_contains "authz AUTHORIZED verdict via JSON path" "$(AZG 40 2>&1)" "AUTHO
 printf '%s' '[{"id":223,"user":{"login":"ops"},"author_association":"OWNER","body":"discussing OPERATOR-UNGATE #40 as a mechanism, not un-gating anything","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-223"}]' > "$AZGROOT/x__y/views/40-comments.json"
 touch "$AZGROOT/x__y/views/40-comments.ts"
 assert_eq "authz (gh, #218): mid-line mention -> HELD, not AUTHORIZED" "10" "$(azgrc 40)"
+
+# issue #265 AC4/AC6: no cache layer means both directions land on the VERY
+# NEXT call, no sleep -- the stub `gh` here always serves whatever the
+# fixture file currently holds, so this is a direct structural test of
+# "does authz re-read every time", not a timing-window reproduction.
+printf '%s' '[]' > "$AZGROOT/x__y/views/40-comments.json"; touch "$AZGROOT/x__y/views/40-comments.ts"
+assert_eq "AC4 setup: no sentinel yet -> HELD" "10" "$(azgrc 40)"
+printf '%s' '[{"id":224,"user":{"login":"ops"},"author_association":"OWNER","body":"**OPERATOR-UNGATE #40** — approved","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-224"}]' > "$AZGROOT/x__y/views/40-comments.json"
+assert_eq "AC4: a freshly-posted sentinel is visible on the VERY NEXT call, no sleep, no invalidate" "0" "$(azgrc 40)"
+printf '%s' '[{"id":224,"user":{"login":"ops"},"author_association":"OWNER","body":"~~OPERATOR-UNGATE #40~~ retracted, wrong ticket","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:05:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-224"}]' > "$AZGROOT/x__y/views/40-comments.json"
+assert_eq "AC6: a sentinel REMOVED by a comment edit no longer produces AUTHORIZED on the very next call (the #247 direction: false AUTHORIZED, silent and unearned)" "10" "$(azgrc 40)"
+
+# issue #265 AC1, qa2-caught (#338 review): a hand-rolled stub `gh` never had
+# a chance to reproduce the REAL interception -- every pane's PATH puts the
+# ACTUAL ghguard shim (lib.sh's fwf_install_ghguard) ahead of gh, and that
+# shim unconditionally routes "issue view" into fwf-ghcache.sh serve
+# regardless of what fwf-authz.sh intends. Install the REAL shim (not a
+# fake) and assert the oracle's read creates NO comments cache file under
+# it -- the only assertion immune to a fake stub's own honesty, since a
+# regression back to a bare `gh issue view` call would pass every AZG/AZ215
+# test above (they never touch the real shim) while failing this one.
+SHIMRUN="$TMP/authz-shim-fidelity"; mkdir -p "$SHIMRUN"
+# FWF_GHCACHE_DIR explicit, not left to FWF_RUN_DIR's own derivation -- an
+# ambient FWF_GHCACHE_DIR already exported in the CALLER's shell (this is a
+# live, verified failure mode: the exact factory environment this test runs
+# in sets one) silently wins over FWF_RUN_DIR-derived defaults and would
+# point this "isolated" fixture at the real, shared production cache.
+( FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_REPO="$ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_install_ghguard" )
+shim_comments_cache_count() { find "$SHIMRUN/ghcache" -name "*-comments.*" 2>/dev/null | wc -l | tr -d ' '; }
+SHIM_BEFORE="$(shim_comments_cache_count)"
+PATH="$SHIMRUN/ghguard:$PATH" FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_PROFILE=example "$ROOT/fwf-authz.sh" 265 >/dev/null 2>&1
+SHIM_AFTER="$(shim_comments_cache_count)"
+assert_eq "AC1 (#338 review): against the REAL ghguard shim, the oracle's thread read creates NO comments cache file (FWF_GHCACHE_OFF=1 reaches fwf-ghcache.sh's own bypass even via the shim's re-exec)" "$SHIM_BEFORE" "$SHIM_AFTER"
 
 # --------------------------------------------------------------------------
 # fwf authz (#218): anchoring — column 0, per comment, fence-stripped. A
@@ -4153,6 +4205,18 @@ cat > "$AZ215GHBIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${AZ215_CALL_LOG:?}"
 case "$*" in
+  "issue view "*" --json comments --jq .comments")
+    # issue #265 AC1: fwf-authz.sh's thread read no longer goes through
+    # fwf-ghcache.sh at all -- this now IS the top-level `gh` call the
+    # oracle makes, not an internal ghcache reshape. Serve the SAME fixture
+    # file az215_set_comments already writes (a bare JSON array, exactly
+    # what --jq '.comments' would have extracted), so every existing
+    # az215_set_comments-driven fixture below still drives the real oracle.
+    num="$3"
+    repo_dir="${FWF_GHCACHE_REPO//\//__}"
+    f="$FWF_GHCACHE_DIR/$repo_dir/views/$num-comments.json"
+    if [ -f "$f" ]; then cat "$f"; else echo "gh: could not resolve to an issue with the number of $num." >&2; exit 1; fi
+    ;;
   *"/events"*)
     if [ "${AZ215_EVENTS_FAIL:-0}" = 1 ]; then
       echo "gh: simulated api failure" >&2; exit 1
@@ -4212,7 +4276,12 @@ az215_set_labels 502 '["product-wip"]'; az215_set_comments 502
 CALLLOG502="$TMP/az215-calllog-502"; : > "$CALLLOG502"
 AZ215_CALL_LOG="$CALLLOG502"
 assert_eq "AC(b): currently-gated issue behaves unchanged -- HELD absent a signal" "10" "$(az215Grc 502)"
-assert_eq "AC(b): the label-history events read is never invoked when currently gated" "" "$(cat "$CALLLOG502")"
+# issue #265: the call log now also legitimately carries the comments read
+# (a direct top-level `gh` call, no longer served from ghcache) -- AC(b)'s
+# actual claim is narrower than "no gh calls at all": only that the
+# LABEL-HISTORY read specifically is skipped when the issue is gated right
+# now (#215's own point -- no history read needed in the common case).
+assert_not_contains "AC(b): the label-history events read is never invoked when currently gated" "$(cat "$CALLLOG502")" "/events"
 
 # (c) THE DISCRIMINATING TEST: was gated, then un-gated (on/after the cutoff),
 # currently NOT gated -> must still require the signal (HELD), never NOT-GATED.

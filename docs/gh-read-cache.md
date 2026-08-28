@@ -95,11 +95,24 @@ Consumers, and whether a degraded (unconfirmed) read is tolerable for each:
   its own summary row too, since no per-row check is ever reached for a row
   that isn't in the list at all.
 - **`fwf-authz.sh`** (the operator un-gate sentinel oracle) — intolerable,
-  and already fail-closed for free: its read is `... || read_ok=0`, which
-  catches any nonzero exit (including the new `2`) and reports
-  `INDETERMINATE`. `#265` is the ticket that eventually takes authz off
-  this cache entirely; this is defense-in-depth in the meantime, not a
-  substitute for it.
+  and now structurally exempt rather than merely fail-closed: issue #265
+  found that this cache's own freshness defect (a `stdout/` entry can be
+  REWRITTEN with a bumped mtime on a 304 renewal while still serving
+  pre-edit content, so it looks fresh to every mtime/TTL check while
+  serving stale content — the failure mode this section's `2`/degraded
+  signal exists to catch, but through a **success** exit, not a failure
+  one) produced a live false HELD and a live false AUTHORIZED. The
+  `read_ok=0` guard this doc describes above catches a non-zero exit; a
+  stale-and-self-renewing read exits zero, so it could not see this one.
+  As of #265, `fwf-authz.sh`'s thread read no longer goes through this
+  cache at all (a direct `gh issue view --json comments` call) — not
+  because the degraded-read signalling above is wrong, but because a
+  reader this security-critical, running only a handful of times per
+  ticket, should not depend on a cache tuned for pollers in the first
+  place. **This does not fix the underlying cache defect** — every other
+  reader listed below still depends on this cache's own freshness
+  behaving as documented, and #266 (still open) is where that gets fixed,
+  not here.
 - **Every other `gh issue|pr list|view` call** — routed here transparently
   via the `gh` shim, so its exit code becomes the shim's own. Tolerable by
   default: a caller that ignores the exit code sees no behaviour change
