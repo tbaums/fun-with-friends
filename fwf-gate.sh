@@ -469,6 +469,12 @@ fi
 # writes through to the real stderr in the same instant it writes to the
 # file. Only ever READ after the fact; never influences what streams live.
 wrapped_err_capture="$(mktemp 2>/dev/null || echo "$FWF_STATE_DIR/gate-stderr.$$")"
+# issue #227: also tee stdout to a scratch file, same live-passthrough-only
+# contract as the stderr capture above -- read AFTER the run, only when a
+# GATE_CASE_EXTRACTOR is declared, to drive the flake-vs-broken report below.
+# Captured unconditionally (cheap) so the wrapped-command invocation itself
+# never branches on whether an extractor happens to be configured.
+wrapped_out_capture="$(mktemp 2>/dev/null || echo "$FWF_STATE_DIR/gate-stdout.$$")"
 
 rc=0
 if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
@@ -479,6 +485,7 @@ if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
   # _fwf_gate_teardown_wrapped can TERM/KILL just it without also ending
   # fwf-gate.sh before the lock(s) are released.
   perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$@" \
+    > >(tee "$wrapped_out_capture") \
     2> >(tee "$wrapped_err_capture" >&2) &
   wrapped_pgid=$!
   # Re-stamp the lock(s)' owner file(s) with the REAL child group now that
@@ -498,13 +505,44 @@ if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
   # trap) still has a real group to check/signal -- it clears the handle
   # itself, only once it has confirmed the group is actually empty.
 else
-  "$@" 2> >(tee "$wrapped_err_capture" >&2) || rc=$?
+  "$@" > >(tee "$wrapped_out_capture") 2> >(tee "$wrapped_err_capture" >&2) || rc=$?
 fi
 
 if [ "$rc" -ne 0 ]; then
   _fwf_gate_diagnose_port_collision "$wrapped_err_capture"
 fi
-rm -f "$wrapped_err_capture"
+
+# issue #227: flake-vs-broken discrimination. Per-case when the profile
+# declares GATE_CASE_EXTRACTOR (a shell command read on stdin, emitting
+# "PASS <case-id>" / "FAIL <case-id>" lines); SUITE-level (case-id "SUITE",
+# this run's own rc) otherwise -- the mode is always named in the output
+# (AC d). Computed from plain `git ...` (cwd-relative), the same convention
+# already used for $verdict_head below -- FWF_REPO was already restored to
+# the CALLER's own value above (issue #175) and may not be this worktree.
+_fwf227_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+_fwf227_sha="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+_fwf227_base="$(git merge-base HEAD "origin/$STAGING_BRANCH" 2>/dev/null || true)"
+if [ -n "${GATE_CASE_EXTRACTOR:-}" ]; then
+  _fwf227_saw_case=0
+  # Deliberately NOT `IFS= read` -- that disables field splitting entirely,
+  # so with only two read-vars the whole line would land in $_fwf227_status
+  # and $_fwf227_case_id would stay empty. Default IFS splits off the first
+  # word (the status) and dumps the untouched remainder (spaces intact)
+  # into the last var -- exactly the "PASS <case-id with spaces>" contract.
+  while read -r _fwf227_status _fwf227_case_id; do
+    [ -n "$_fwf227_status" ] && [ -n "$_fwf227_case_id" ] || continue
+    _fwf227_saw_case=1
+    fwf_gate_history_report_case "$_fwf227_case_id" "$_fwf227_status" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "per-case (GATE_CASE_EXTRACTOR)"
+  done < <(bash -c "$GATE_CASE_EXTRACTOR" < "$wrapped_out_capture" 2>/dev/null)
+  if [ "$_fwf227_saw_case" != 1 ] && [ "$rc" -ne 0 ]; then
+    echo "fwf gate [#227]: GATE_CASE_EXTRACTOR is declared but produced no PASS/FAIL lines for this run — falling back to SUITE-level" >&2
+    fwf_gate_history_report_case SUITE "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "SUITE-level (extractor produced nothing)"
+  fi
+else
+  fwf_gate_history_report_case SUITE "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "SUITE-level (no GATE_CASE_EXTRACTOR declared)"
+fi
+
+rm -f "$wrapped_err_capture" "$wrapped_out_capture"
 
 if [ "$want_e2e" = 1 ]; then
   unset FWF_E2E_PORT FWF_E2E_DATA_DIR

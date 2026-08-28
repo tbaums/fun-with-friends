@@ -2378,6 +2378,171 @@ fwf_gate_verdict_read() {
   printf '\n'
 }
 
+# --- gate history: flake-vs-broken discrimination (issue #227) --------------
+# "Red on the merge base too" collapses two different situations into one
+# signal: a case that is genuinely broken, and a case that is simply flaky.
+# This store answers both halves for a FAILING case: (1) did it also fail at
+# the merge-base commit (opportunistically, from whatever earlier runs have
+# already recorded there — this never triggers a new gate run of its own),
+# and (2) how often has it failed recently, across branches and on this one.
+#
+# Scope, stated per AC (f): one directory tree under $FWF_STATE_DIR, which is
+# already "$FWF_RUN/state/$PROFILE" — per-PROFILE and, because FWF_RUN is a
+# per-box run directory never shared or synced between machines, per-BOX.
+# Nothing here is meant to mean the same thing on two different boxes.
+#
+# A "case" is either one label extracted by a profile-declared
+# GATE_CASE_EXTRACTOR (per-case mode), or the sentinel "SUITE" standing in
+# for the whole gate command when no extractor is declared (suite-level
+# mode) — both are recorded through the exact same functions below, so the
+# two modes differ only in what case-id the caller passes in.
+fwf_gate_history_dir() { echo "$FWF_STATE_DIR/gate-history"; }
+
+# A case-id is free text (an extracted test label can contain almost
+# anything) — hashed to a stable, filename-safe key. cksum is POSIX and
+# needs no Linux/macOS fallback, unlike sha256sum/shasum.
+_fwf_gate_history_key() { # $1=case-id -> numeric key
+  printf '%s' "$1" | cksum | awk '{print $1}'
+}
+
+# $1=line $2=field-name(no trailing =) -> value, or empty. Each history line
+# is a fixed set of space-separated key=value tokens (ts/verdict/branch/sha);
+# scanning by key rather than a positional column keeps a future new field
+# from shifting the meaning of an older line already on disk.
+_fwf_gate_history_field() {
+  printf '%s' "$1" | awk -v k="$2=" '{for (i=1;i<=NF;i++) if (index($i,k)==1) {print substr($i,length(k)+1); exit}}'
+}
+
+# $1=epoch -> "Ns ago" / "Nm ago" / "Nh ago" / "Nd ago". Deliberately plain
+# arithmetic, not `date -d`/`date -r` — those two flags are mutually
+# exclusive between Linux/GNU and macOS/BSD date, a recurring portability
+# trap in this codebase (issue #284).
+_fwf_gate_history_ago() {
+  local ts="$1" now delta
+  case "$ts" in ''|*[!0-9]*) echo "unknown time"; return 0;; esac
+  now="$(date +%s)"; delta=$(( now - ts )); [ "$delta" -lt 0 ] && delta=0
+  if   [ "$delta" -lt 60 ];    then echo "${delta}s ago"
+  elif [ "$delta" -lt 3600 ];  then echo "$(( delta/60 ))m ago"
+  elif [ "$delta" -lt 86400 ]; then echo "$(( delta/3600 ))h ago"
+  else echo "$(( delta/86400 ))d ago"
+  fi
+}
+
+# $1=case-id $2=verdict(PASS|FAIL) $3=branch $4=sha  Appends ONE run record
+# — called for EVERY run, verdict PASS or FAIL alike (AC i: green runs ARE
+# the denominator; a store that only records failures could never compute a
+# real pass rate). Bounded to the last FWF_GATE_HISTORY_WINDOW (default 20)
+# lines — a rolling window that self-maintains on every write (AC f), never
+# an unbounded file nobody prunes. The raw label is written once to a small
+# sidecar (never trimmed — it is a single line, not a growing log) so the
+# per-run lines stay a fixed, cheap shape regardless of label length.
+fwf_gate_history_record() {
+  local case_id="${1:?fwf_gate_history_record needs a case-id}" verdict="${2:?fwf_gate_history_record needs a verdict}" branch="${3:-unknown}" sha="${4:-unknown}" dir key f window
+  dir="$(fwf_gate_history_dir)"; mkdir -p "$dir" 2>/dev/null
+  key="$(_fwf_gate_history_key "$case_id")"; f="$dir/$key"
+  window="${FWF_GATE_HISTORY_WINDOW:-20}"
+  printf 'ts=%s verdict=%s branch=%s sha=%s\n' "$(date +%s)" "$verdict" "$branch" "$sha" >> "$f"
+  [ -f "$dir/$key.label" ] || printf '%s\n' "$case_id" > "$dir/$key.label"
+  tail -n "$window" "$f" > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f"
+}
+
+# $1=case-id $2=current-branch(optional) -> summary fields on stdout, rc 0.
+# rc 1 (no output) means this case has NEVER been recorded — the caller must
+# print UNKNOWN, never a fabricated 0% (AC e): an empty result and a clean
+# 0-failures result are NOT the same fact.
+fwf_gate_history_summary() {
+  local case_id="${1:?fwf_gate_history_summary needs a case-id}" branch="${2:-}" dir key f
+  local total=0 failed=0 last_green="" btotal=0 bfailed=0 line t v b
+  dir="$(fwf_gate_history_dir)"; key="$(_fwf_gate_history_key "$case_id")"; f="$dir/$key"
+  [ -f "$f" ] || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    v="$(_fwf_gate_history_field "$line" verdict)"; [ -n "$v" ] || continue
+    t="$(_fwf_gate_history_field "$line" ts)"; b="$(_fwf_gate_history_field "$line" branch)"
+    total=$((total+1))
+    if [ "$v" = "FAIL" ]; then failed=$((failed+1)); else last_green="$t"; fi
+    if [ -n "$branch" ] && [ "$b" = "$branch" ]; then
+      btotal=$((btotal+1)); [ "$v" = "FAIL" ] && bfailed=$((bfailed+1))
+    fi
+  done < "$f"
+  [ "$total" -gt 0 ] || return 1
+  printf 'total=%s\nfailed=%s\nlast_green=%s\nbranch_total=%s\nbranch_failed=%s\nwindow=%s\n' \
+    "$total" "$failed" "${last_green:-none}" "$btotal" "$bfailed" "${FWF_GATE_HISTORY_WINDOW:-20}"
+}
+
+# $1=case-id $2=sha -> PASS|FAIL|UNKNOWN on stdout, always rc 0. This is the
+# "(already available today)" baseline signal AC (a) describes: it NEVER
+# triggers a new gate run against $2 — it only surfaces the most recent
+# verdict this exact case already recorded at that exact commit, from
+# whichever earlier run (any role, any branch) happened to gate it there.
+# No such run yet -> UNKNOWN, same fail-closed convention as #211.
+fwf_gate_history_baseline() {
+  local case_id="${1:?fwf_gate_history_baseline needs a case-id}" sha="${2:-}" dir key f line s v="" match=""
+  [ -n "$sha" ] || { echo UNKNOWN; return 0; }
+  dir="$(fwf_gate_history_dir)"; key="$(_fwf_gate_history_key "$case_id")"; f="$dir/$key"
+  [ -f "$f" ] || { echo UNKNOWN; return 0; }
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    s="$(_fwf_gate_history_field "$line" sha)"
+    [ "$s" = "$sha" ] || continue
+    match="$(_fwf_gate_history_field "$line" verdict)"
+  done < "$f"
+  echo "${match:-UNKNOWN}"
+}
+
+# $1=case-id $2=verdict(PASS|FAIL) $3=branch $4=sha $5=merge-base(optional,
+# may be empty) $6=mode-label ("per-case (GATE_CASE_EXTRACTOR)" or
+# "SUITE-level (no GATE_CASE_EXTRACTOR declared)"). Records the run (always
+# — AC i) and, ONLY on a FAIL verdict, prints the flake-vs-broken diagnostic
+# to stderr (AC h: a passing case/run changes NOTHING about the output).
+fwf_gate_history_report_case() {
+  local case_id="${1:?}" verdict="${2:?}" branch="${3:-unknown}" sha="${4:-unknown}" merge_base="${5:-}" mode_label="${6:?}"
+  fwf_gate_history_record "$case_id" "$verdict" "$branch" "$sha"
+  [ "$verdict" = "FAIL" ] || return 0
+
+  local baseline_line bv
+  if [ -n "$merge_base" ]; then
+    bv="$(fwf_gate_history_baseline "$case_id" "$merge_base")"
+    case "$bv" in
+      FAIL) baseline_line="also FAILS on merge base $(printf '%.7s' "$merge_base") — pre-existing on this ref, not introduced by this branch" ;;
+      PASS) baseline_line="PASSES on merge base $(printf '%.7s' "$merge_base") — this branch is the first place it is known to fail" ;;
+      *)    baseline_line="UNKNOWN on merge base $(printf '%.7s' "$merge_base") (never recorded at that exact commit)" ;;
+    esac
+  else
+    baseline_line="UNKNOWN (could not resolve a merge-base against $STAGING_BRANCH)"
+  fi
+
+  echo "fwf gate [#227 $mode_label]: FAILED — $case_id" >&2
+  echo "  baseline: $baseline_line" >&2
+
+  local summary total failed last_green btotal bfailed window
+  summary="$(fwf_gate_history_summary "$case_id" "$branch")" || summary=""
+  if [ -z "$summary" ]; then
+    echo "  history: UNKNOWN — this is the first recorded run of this case, no prior history to compare against" >&2
+    return 0
+  fi
+  total="$(printf '%s\n' "$summary" | sed -n 's/^total=//p')"
+  failed="$(printf '%s\n' "$summary" | sed -n 's/^failed=//p')"
+  last_green="$(printf '%s\n' "$summary" | sed -n 's/^last_green=//p')"
+  btotal="$(printf '%s\n' "$summary" | sed -n 's/^branch_total=//p')"
+  bfailed="$(printf '%s\n' "$summary" | sed -n 's/^branch_failed=//p')"
+  window="$(printf '%s\n' "$summary" | sed -n 's/^window=//p')"
+
+  local lg_disp
+  if [ "$last_green" = "none" ]; then lg_disp="no recorded green run"; else lg_disp="last green $(_fwf_gate_history_ago "$last_green")"; fi
+
+  # AC (a): across-branches leads because it is the discriminating fact —
+  # a fresh branch's own count is n<=1 on day one, exactly when a reader is
+  # most likely to misread a red case as broken rather than flaky.
+  echo "  history (last $window runs, ALL branches): $failed/$total failed ($lg_disp)" >&2
+  echo "  history (this branch, $branch): $bfailed/$btotal failed" >&2
+  if [ "$failed" -gt 0 ] && [ "$failed" -lt "$total" ]; then
+    echo "  ==> FLAKY: passed $(( total - failed ))/$total recent runs — a red here does not by itself mean this branch broke it" >&2
+  else
+    echo "  ==> CONSISTENTLY FAILING: 0 passes in the last $total recorded run(s) — likely a real, stable failure" >&2
+  fi
+}
+
 # --- token-budget WRITER lifecycle (issue #96) -------------------------------
 # The WRITER (fwf-budget-check.sh --loop) is a plain detached bash background
 # loop, not a Claude Code role — there is no `/loop` skill for a host-side
