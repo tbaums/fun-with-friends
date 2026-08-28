@@ -644,6 +644,7 @@ _doctor_e2e_cmd_check() {
   fi
   pfile="$(profiles_dir)/$prof.sh"
   [ -f "$pfile" ] || { echo "  e2e lease : skip (profile '$prof' not found)"; return 0; }
+  # shellcheck source=/dev/null  # runtime-selected profile; path is not constant
   e2e_cmd="$(E2E_CMD=""; . "$pfile" >/dev/null 2>&1; printf '%s' "${E2E_CMD:-}")"
   if [ -z "$e2e_cmd" ]; then
     echo "  e2e lease : ok (profile '$prof' has no E2E_CMD)"
