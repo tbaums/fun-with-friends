@@ -4590,6 +4590,131 @@ assert_not_contains "the old unconditional branch-prefix survey line is gone" "$
   'Keep only PRs whose headRefName starts with "impl1/" AND isDraft is false.'
 
 # --------------------------------------------------------------------------
+# fwf-branch-policy.sh (issue #220): is the committed .github/branch-policy.json
+# actually LIVE on GitHub? Read-only diff checker -- never mutates. Real
+# policy-diff logic driven with stubbed gh_branch_protection fixtures (never
+# a decoy grep), covering compliant/drifted/unprotected/unreadable, plus a
+# real fixture proving today's live repo is genuinely unprotected (AC a).
+BP="$ROOT/fwf-branch-policy.sh"
+BP_POLICY='{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"],"strict":false,"enforce_admins":true,"branches":["staging","integration","main"]}'
+
+section "branch-policy (#220): diff_branch -- pure policy-vs-live comparison"
+bp_diff() { # $1=branch $2=live-json("" = unprotected)
+  FWF_PROFILE=example bash -c "
+    source '$BP'
+    diff_branch '$BP_POLICY' '$1' '$2'"
+}
+assert_eq "unprotected branch is itself a violation" \
+  "staging: NOT PROTECTED (no branch protection configured at all)" \
+  "$(bp_diff staging '')"
+BP_LIVE_OK='{"required_status_checks":{"strict":false,"contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"]},"enforce_admins":{"enabled":true}}'
+assert_eq "fully compliant live settings produce no violation" "" "$(bp_diff staging "$BP_LIVE_OK")"
+BP_LIVE_DRIFTED_CTX='{"required_status_checks":{"strict":false,"contexts":["shellcheck + syntax"]},"enforce_admins":{"enabled":true}}'
+assert_contains "a missing required context is reported as drift" "$(bp_diff staging "$BP_LIVE_DRIFTED_CTX")" \
+  "required_contexts drifted"
+BP_LIVE_DRIFTED_ADMIN='{"required_status_checks":{"strict":false,"contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"]},"enforce_admins":{"enabled":false}}'
+assert_contains "enforce_admins turned off is reported as drift (issue #220: without it protection is decorative -- every seat has admin creds)" \
+  "$(bp_diff staging "$BP_LIVE_DRIFTED_ADMIN")" "enforce_admins drifted"
+BP_LIVE_DRIFTED_STRICT='{"required_status_checks":{"strict":true,"contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"]},"enforce_admins":{"enabled":true}}'
+assert_contains "strict turned on (against A2's decision) is reported as drift" "$(bp_diff staging "$BP_LIVE_DRIFTED_STRICT")" "strict drifted"
+
+section "branch-policy (#220): cmd_check -- 404 (unprotected) vs a real read failure must never collapse together"
+# The bug this test exists to catch: an earlier version signaled 404-vs-error
+# via a global variable SET INSIDE a \$(...) command substitution -- which
+# runs in a subshell, so the assignment never reached the caller and every
+# 404 (a NORMAL, expected "not protected yet" answer) misread as UNKNOWN
+# (issue #211's own lesson: unreadable != empty, applied in the other
+# direction too -- a readable-and-empty answer must not misread as unreadable).
+bp_check_stub() { # $1=policy-file-content $2=gh_branch_protection-stub-body
+  local pf; pf="$(mktemp)"; printf '%s' "$1" > "$pf"
+  FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$pf" bash -c "
+    source '$BP'
+    gh_branch_protection() { $2; }
+    cmd_check"
+}
+assert_eq "a clean 404 (unprotected) is reported by NAME, not misread as UNKNOWN" \
+  "staging: NOT PROTECTED (no branch protection configured at all)" \
+  "$(bp_check_stub "$BP_POLICY" 'echo "gh: Branch not protected (HTTP 404)" >&2; return 1' 2>/dev/null | grep staging)"
+assert_contains "a genuine read failure (not a 404) is reported as UNKNOWN, never silently 'no violations'" \
+  "$(bp_check_stub "$BP_POLICY" 'echo "gh: connection reset by peer" >&2; return 1' 2>&1)" \
+  "staging: UNKNOWN"
+assert_eq "compliant live settings on every branch -> empty output, exit 0" "" \
+  "$(bp_check_stub "$BP_POLICY" "echo '$BP_LIVE_OK'")"
+
+section "branch-policy (#220) AC (a): against the REAL live repo, today, all three branches are genuinely unprotected"
+# Not a decoy -- this drives the actual gh_branch_protection (real gh api
+# call, no stub) against this repo. Documents the reported bug directly:
+# "if it passes today the checker is wrong."
+REAL_BP_CHECK="$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_REPO="$ROOT" bash -c "source '$BP'; set +e; cmd_check; echo RC=\$?" 2>&1)"
+assert_contains "staging genuinely unprotected today" "$REAL_BP_CHECK" "staging: NOT PROTECTED"
+assert_contains "integration genuinely unprotected today" "$REAL_BP_CHECK" "integration: NOT PROTECTED"
+assert_contains "main genuinely unprotected today" "$REAL_BP_CHECK" "main: NOT PROTECTED"
+assert_contains "checker exits non-zero (RED) against the unprotected repo" "$REAL_BP_CHECK" "RC=1"
+
+section "branch-policy (#220) AC (h): every required context must be producible by a real CI job"
+assert_eq "the real .github/branch-policy.json's contexts are all producible by the real ci.yml" "" \
+  "$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_CI_WORKFLOW_FILE="$ROOT/.github/workflows/ci.yml" bash -c "source '$BP'; cmd_producible")"
+BROKEN_CI="$(mktemp)"
+printf 'jobs:\n  lint:\n    name: shellcheck + syntax\n' > "$BROKEN_CI"
+assert_contains "a required context with no matching job is flagged by name" \
+  "$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_CI_WORKFLOW_FILE="$BROKEN_CI" bash -c "source '$BP'; cmd_producible")" \
+  "dash crate (rust)"
+
+section "branch-policy (#220): policy file is a valid, committed artifact (AC g)"
+assert_eq "committed policy file parses as JSON" "0" \
+  "$(jq empty "$ROOT/.github/branch-policy.json" >/dev/null 2>&1; echo $?)"
+
+section "branch-policy (#220): CLI wiring"
+assert_contains "help mentions branch-policy check" "$("$ROOT/fwf" help)" "branch-policy check"
+assert_contains "help mentions branch-policy producible" "$("$ROOT/fwf" help)" "branch-policy producible"
+
+# --------------------------------------------------------------------------
+# fwf-pr-checks-honored.sh (issue #220 AC i/o/p): the QA-side ERGONOMIC
+# pre-merge checkpoint. Real jq diff logic driven with stubbed gh_pr_checks/
+# gh_pr_comments fixtures, reproducing instance 2 (the live incident this
+# ticket was filed on) directly: a deterministic red (shellcheck) alongside
+# a genuinely flaky red, with only the flaky one named.
+PCH="$ROOT/fwf-pr-checks-honored.sh"
+pch() { # $1=checks-json $2=comments-json
+  FWF_PROFILE=example bash -c "
+    source '$PCH'
+    gh_pr_checks() { printf '%s' '$1'; }
+    gh_pr_comments() { printf '%s' '$2'; }
+    main 999"
+}
+INST2_CHECKS='[{"name":"shellcheck + syntax","bucket":"fail"},{"name":"functional suite (ubuntu-latest)","bucket":"fail"},{"name":"functional suite (macos-latest)","bucket":"pass"},{"name":"dash crate (rust)","bucket":"pass"}]'
+
+section "pr-checks-honored (#220 AC o): instance 2 reproduced -- naming ONE flaky check never licenses a different deterministic red"
+assert_contains "no discount at all -> both reds refused" "$(pch "$INST2_CHECKS" '[]' 2>/dev/null)" \
+  "REFUSED: shellcheck + syntax"
+NAMED_FLAKY_ONLY='[{"body":"fwf-CI-discount: functional suite (ubuntu-latest)\nknown timing flake (#245), unrelated to this diff"}]'
+DISCRIMINATING="$(pch "$INST2_CHECKS" "$NAMED_FLAKY_ONLY" 2>/dev/null)"
+assert_contains "the discriminating test: shellcheck is STILL refused even with the flaky check discounted" "$DISCRIMINATING" \
+  "REFUSED: shellcheck + syntax"
+assert_not_contains "the discounted flaky check itself is NOT refused" "$DISCRIMINATING" \
+  "REFUSED: functional suite (ubuntu-latest)"
+NAMED_BOTH='[{"body":"fwf-CI-discount: functional suite (ubuntu-latest)"},{"body":"fwf-CI-discount: shellcheck + syntax\nfixed forward in e86bf6a, this run predates it"}]'
+assert_eq "both explicitly named -> honored, nothing refused" "" "$(pch "$INST2_CHECKS" "$NAMED_BOTH" 2>/dev/null)"
+assert_eq "all green, no discount needed -> honored" "" \
+  "$(pch '[{"name":"shellcheck + syntax","bucket":"pass"}]' '[]' 2>/dev/null)"
+
+section "pr-checks-honored (#220 AC p, same defect family as #218/#194's own repro): a discount quoted inside a fence must not count"
+FENCED_DISCOUNT="$(jq -nc --arg b $'Quoting for discussion:\n```\nfwf-CI-discount: shellcheck + syntax\n```\nThat is not a real discount.' '[{body:$b}]')"
+assert_contains "a fenced discount is ignored -- the check is still refused" \
+  "$(pch '[{"name":"shellcheck + syntax","bucket":"fail"}]' "$FENCED_DISCOUNT" 2>/dev/null)" \
+  "REFUSED: shellcheck + syntax"
+
+section "pr-checks-honored (#220): unreadable != empty -- a failed gh read never silently honors"
+UNREADABLE_RC="$(FWF_PROFILE=example bash -c "
+  source '$PCH'
+  gh_pr_checks() { return 1; }
+  main 999" >/dev/null 2>&1; echo $?)"
+assert_eq "a checks-read failure exits 2 (UNKNOWN), never 0 (honored)" "2" "$UNREADABLE_RC"
+
+section "pr-checks-honored (#220): CLI wiring"
+assert_contains "help mentions pr-checks-honored" "$("$ROOT/fwf" help)" "pr-checks-honored <n>"
+
+# --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
 # any role raises on an issue/PR, that the captain's per-tick sweep picks up
 # reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests
@@ -6545,6 +6670,66 @@ assert_eq "no --tip-cmd: behaves exactly as before" "0" "$rc"
 rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
         "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
+
+# --------------------------------------------------------------------------
+section "fwf gate: SHA-keyed, reviewer-readable verdict recording (issue #220 AC r/r0)"
+# The PRIOR clause a promotion-integrity check must satisfy: a gate invoked
+# WITHOUT --tip-cmd must still record its verdict, in a store keyed by SHA
+# and readable by something other than the gate itself (a reviewer, a
+# promotion artifact, fwf dash) -- distinct from #202's role-keyed skip-
+# optimization marker above, which only exists when --tip-cmd was passed.
+F220RUN="$TMP/run220"; mkdir -p "$F220RUN"
+F220REPO="$TMP/f220-repo"; mkdir -p "$F220REPO"
+git -C "$F220REPO" init -q
+git -C "$F220REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+F220SHA="$(git -C "$F220REPO" rev-parse HEAD)"
+
+rc=0; ( cd "$F220REPO" && FWF_RUN_DIR="$F220RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f220plain -- true ) >/dev/null 2>&1 || rc=$?
+assert_eq "AC(r0): a gate run with NO --tip-cmd still exits normally" "0" "$rc"
+F220_VERDICT_FILE="$F220RUN/state/example/gate-verdict/$F220SHA"
+[ -f "$F220_VERDICT_FILE" ] && ok "AC(r0): the SHA-keyed verdict marker exists after a --tip-cmd-less run (costs one ls)" \
+  || bad "AC(r0): the SHA-keyed verdict marker exists after a --tip-cmd-less run" "no file at $F220_VERDICT_FILE"
+assert_contains "the recorded verdict names the role" "$(cat "$F220_VERDICT_FILE" 2>/dev/null)" "role=f220plain"
+assert_contains "the recorded verdict is green (wrapped command succeeded)" "$(cat "$F220_VERDICT_FILE" 2>/dev/null)" "verdict=green"
+
+rc=0; ( cd "$F220REPO" && FWF_RUN_DIR="$F220RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f220plainred -- false ) >/dev/null 2>&1 || rc=$?
+assert_eq "a failing wrapped command still exits non-zero" "1" "$rc"
+assert_contains "a RED wrapped command records verdict=red, not silently green" \
+  "$(cat "$F220RUN/state/example/gate-verdict/$F220SHA" 2>/dev/null)" "verdict=red"
+
+assert_eq "AC(r0)/discriminating: a SHA nobody has gated yet has NO verdict record -- never attempted is not misread as green" "" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$F220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read 0000000000000000000000000000000000dead" 2>/dev/null)"
+
+section "fwf dash (issue #220 AC r): a recorded verdict is visible through the artifact a reviewer actually reads, not just the local store"
+# The bar qa1 set on PR #296: recording a verdict nobody but the gate itself
+# can read is not visibility. This drives it through fwf-dash-data.sh's
+# activity_json -- the same surface fwf dash renders -- keyed by the SAME
+# headRefOid a reviewer sees in `gh pr view`. If gate_verdict wiring ever
+# regresses (e.g. the set -e bug this PR also fixes silently swallowing the
+# record call), this goes RED without needing to inspect the state dir.
+DD220RUN="$TMP/run220dash"; mkdir -p "$DD220RUN"
+FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_record '$F220SHA' impl1 green"
+printf '%s' '[
+  {"number":21,"title":"gated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-220-x","headRefOid":"'"$F220SHA"'","statusCheckRollup":[]},
+  {"number":22,"title":"ungated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-221-y","headRefOid":"0000000000000000000000000000000000face","statusCheckRollup":[]}
+]' > "$TMP/dd220-open.json"
+printf '%s' '[]' > "$TMP/dd220-merged.json"
+DD220_ACT="$(FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" FWF_TEMPLATE=dev bash -c "source '$DD'; STAGING_BRANCH=staging INTEGRATION_BRANCH=integration DEFAULT_BRANCH=main; gh_pr() { case \"\$*\" in *'--state open'*) cat '$TMP/dd220-open.json';; *'--state merged'*) cat '$TMP/dd220-merged.json';; esac; }; activity_json")"
+assert_eq "a recorded verdict is surfaced on its PR via activity_json (dash's actual data source)" "green" \
+  "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==21) | .gate_verdict')"
+assert_eq "a PR whose SHA was never gated reports unknown, not a stale/misleading verdict" "unknown" \
+  "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==22) | .gate_verdict')"
+
+section "fwf gate: the --tip-cmd path ALSO populates the SHA-keyed store, without touching the role-keyed skip marker"
+FWF_GATE_FORCE=1 f202gate -- true >/dev/null 2>&1
+CUR202TIP="$(git -C "$F202REPO" rev-parse HEAD)"
+assert_contains "a --tip-cmd gate ALSO writes the SHA-keyed store (same tip, same role, same verdict as the role-keyed marker)" \
+  "$(cat "$F202RUN/state/example/gate-verdict/$CUR202TIP" 2>/dev/null)" "role=f202role"
+[ -d "$F202RUN/state/example/gate-tip" ] && [ -d "$F202RUN/state/example/gate-verdict" ] && \
+  ok "the two stores live in genuinely separate directories (gate-tip/ vs gate-verdict/), never one file" || \
+  bad "the two stores live in genuinely separate directories" "one or both missing"
 
 # --------------------------------------------------------------------------
 # fwf gate --tip-ancestry: ancestry, not movement, is the ruling (issue #254)

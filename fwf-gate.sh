@@ -332,6 +332,17 @@ _fwf_gate_env_restore
 rc=0
 "$@" || rc=$?
 
+# issue #220 AC (r)/(r0): record a SHA-keyed, reviewer-readable verdict --
+# see fwf_gate_verdict_record's own doc comment (lib.sh) for why this is a
+# SEPARATE store from fwf_gate_tip_record just below, never the same file.
+# Recorded alongside every fwf_gate_tip_record call (identical role/verdict/
+# reason, just re-keyed by tip instead of role) so the two stores can never
+# silently drift apart.
+_fwf_gate_record_verdict() { # $1=tip/sha  $2=verdict  $3=reason(optional)
+  fwf_gate_tip_record "$role" "$1" "$2" "${3:-}"
+  fwf_gate_verdict_record "$1" "$role" "$2" "${3:-}"
+}
+
 if [ -n "$tip_cmd" ]; then
   tip_after="$(eval "$tip_cmd" 2>/dev/null)" || tip_after=""
   # A failed/empty re-read is the SAME uncertainty as a confirmed move -- we
@@ -339,11 +350,11 @@ if [ -n "$tip_cmd" ]; then
   # STALE, never fall through to recording a real (and promotable) verdict.
   if [ -z "$tip_after" ]; then
     echo "fwf gate: could not re-read the tip after this run (ref transiently unreadable) — verdict is STALE, not promotable" >&2
-    fwf_gate_tip_record "$role" "$tip_before" "stale"
+    _fwf_gate_record_verdict "$tip_before" "stale"
     rc="$EX_STALE"
   elif [ "$tip_after" != "$tip_before" ] && [ "$want_tip_ancestry" != 1 ]; then
     echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) — verdict is STALE, not promotable" >&2
-    fwf_gate_tip_record "$role" "$tip_before" "stale"
+    _fwf_gate_record_verdict "$tip_before" "stale"
     rc="$EX_STALE"
   elif [ "$tip_after" != "$tip_before" ]; then
     # issue #254: "the ref changed" is the wrong question -- ancestry is.
@@ -354,19 +365,30 @@ if [ -n "$tip_cmd" ]; then
     anc_rc=$?
     if [ "$anc_rc" -eq 0 ]; then
       echo "fwf gate: tip moved during this run ($tip_before -> $tip_after), but $tip_before is still an ancestor -- verdict stands, promote it by its literal hash" >&2
-      fwf_gate_tip_record "$role" "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
+      _fwf_gate_record_verdict "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
     elif [ "$anc_rc" -eq 1 ]; then
       echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) and $tip_before is NOT an ancestor of $tip_after (history rewritten) — verdict is STALE, not promotable" >&2
-      fwf_gate_tip_record "$role" "$tip_before" "stale" "not-ancestor"
+      _fwf_gate_record_verdict "$tip_before" "stale" "not-ancestor"
       rc="$EX_STALE"
     else
       echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) and ancestry could not be determined (git merge-base --is-ancestor exit $anc_rc — shallow clone or missing objects?) — verdict is STALE, not promotable" >&2
-      fwf_gate_tip_record "$role" "$tip_before" "stale" "indeterminate-ancestry"
+      _fwf_gate_record_verdict "$tip_before" "stale" "indeterminate-ancestry"
       rc="$EX_STALE"
     fi
   else
-    fwf_gate_tip_record "$role" "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
+    _fwf_gate_record_verdict "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
   fi
+else
+  # AC (r0): "a gate invoked WITHOUT --tip-cmd must still record its
+  # verdict." No externally-supplied tip exists here, so the natural
+  # identifier for "what was actually tested" is the invoking worktree's
+  # own HEAD -- the code state the wrapped command just ran against. Only
+  # fwf_gate_verdict_record fires (never fwf_gate_tip_record): the #202
+  # skip-optimization marker is meaningless without a --tip-cmd to compare
+  # against, and writing it here would let a --tip-cmd-less call for this
+  # role clobber a --tip-cmd caller's skip state.
+  verdict_head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  fwf_gate_verdict_record "$verdict_head" "$role" "$([ "$rc" -eq 0 ] && echo green || echo red)"
 fi
 
 exit "$rc"
