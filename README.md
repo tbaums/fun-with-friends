@@ -369,8 +369,9 @@ not a per-role copy:
   lease pool, so a local run structurally cannot bind a port a sibling's
   live run holds (subsumes issue #65's implementer-bypass concern —
   meaningful only once the cap is raised above 1). Each lane's lock dir
-  carries a holder-identity stamp (role/PID/host/worktree/timestamp/
-  port/data_dir) so a role that dies mid-hold is recovered automatically —
+  carries a holder-identity stamp (role/PID/pgid/pgleader/host/worktree/
+  timestamp/port/data_dir; issue #195 adds pgid/pgleader) so a role that
+  dies mid-hold is recovered automatically —
   a live holder is never reclaimed no matter how long it runs, only a
   confirmed-dead one is broken immediately
   (`fwf_e2e_lock_acquire` / `fwf_e2e_lock_release` in `lib.sh`).
@@ -387,6 +388,42 @@ not a per-role copy:
   identical ones. The timeout message itself says explicitly whether the
   holder is healthy ("this is a queue, not a wedge — do not kill it") or
   will be broken at the indeterminate-liveness backstop.
+
+- **The wrapped command never outlives the lock it's protected by** (issue
+  #195) — a wrapped command that BACKGROUNDS a server (the e2e lane's own
+  `E2E_CMD` shape) used to be able to outlive `fwf gate` itself: the lock
+  released while the server it protected kept holding its port, so the
+  *next* holder's bind failed with a confusing `Address already in use`
+  that read like an environment problem, not a lock-protocol violation.
+  Two halves, in priority order:
+  - **Acquire-side reconciliation is the load-bearing guarantee** — every
+    lock/lease record now also stamps the holder's own process-group id
+    (`pgid`, alongside the existing `pgleader` flag `fwf up`'s kill-safe
+    cargo protection already introduced). On acquire, a DEAD holder's
+    recorded group is SIGKILLed before the lock is granted — same
+    mechanism the cargo-build slot and mem-admit token already used, now
+    also covering the per-role gate lock and the e2e lease. A recorded
+    group whose id has since been reused by an unrelated, NEWER process
+    (checked against the lock's own acquisition timestamp) is named as a
+    refusal and left alone, never guessed at.
+  - **Trap teardown is the fast, polite path** — the wrapped command runs
+    in its own process group (separate from `fwf gate`'s own), so on a
+    clean exit OR a trappable `HUP`/`TERM`/`INT`, that group is TERMed,
+    given `FWF_GATE_TEARDOWN_GRACE_SECS` (default 5s) to exit on its own,
+    then KILLed — BEFORE the lock is released, never after. An untrappable
+    `SIGKILL` to `fwf gate` itself bypasses this entirely; that's what the
+    acquire-side half exists to catch.
+  - **A foreign port occupant is diagnosed, never killed** — when the
+    wrapped command fails with a bind-collision signature (`Address
+    already in use` / `EADDRINUSE`) in its own stderr, `fwf gate` looks up
+    the occupying PID/command read-only (`ss`, falling back to `lsof`) and
+    reports it as a lock-protocol violation naming both — the occupant is
+    left running regardless, since a port busy but owned by something
+    outside this lock's own recorded group must only ever be named, not
+    touched, on a shared box.
+  (`_fwf_kill_orphan_group` / `_fwf_owner_restamp_pgid` in `lib.sh`;
+  `_fwf_gate_teardown_wrapped` / `_fwf_gate_diagnose_port_collision` in
+  `fwf-gate.sh`.)
 
 - **The caller's environment, not the gate's** (issue #175) — `fwf gate`
   resolves a profile of its own to build those lock paths, and doing so sets

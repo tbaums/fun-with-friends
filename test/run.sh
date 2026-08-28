@@ -5225,6 +5225,248 @@ assert_contains "indeterminate state is refused rather than launched (RC=1)" "$G
 assert_contains "fail-closed reasoning is logged" "$GIND_OUT" "failing closed"
 
 # --------------------------------------------------------------------------
+# fwf gate (#195): the lock is released while the server the wrapped
+# command spawned is still holding its port -- real subprocesses, real
+# ports (via bash's /dev/tcp, not a real socket LIBRARY, so this stays
+# hermetic/portable), never a synthetic proxy for "did teardown run".
+_fwf195_port_listening() { # $1=port -> rc 0 if something accepts a connection
+  (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null
+}
+_fwf195_wait_listening() { # $1=port $2=max-tenths-of-a-second
+  local port="$1" max="${2:-50}" waited=0
+  while [ "$waited" -lt "$max" ]; do
+    _fwf195_port_listening "$port" && return 0
+    sleep 0.1; waited=$(( waited + 1 ))
+  done
+  return 1
+}
+command -v python3 >/dev/null 2>&1 && FWF195_HAVE_PY3=1 || FWF195_HAVE_PY3=0
+
+if [ "$FWF195_HAVE_PY3" = 1 ]; then
+section "fwf gate (#195 AC a/e): a clean exit tears down a backgrounded server BEFORE the lock releases"
+G195A_ROOT="$TMP/gate195-a"; mkdir -p "$G195A_ROOT/state/example"
+G195A_PORT=$(( 21000 + RANDOM % 3000 ))
+FWF_RUN_DIR="$G195A_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" role195a -- \
+  bash -c "(python3 -m http.server $G195A_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 0.3; exit 7" >/dev/null 2>&1
+G195A_RC=$?
+assert_eq "AC(e): the wrapped command's own exit code propagates through teardown" "7" "$G195A_RC"
+if _fwf195_port_listening "$G195A_PORT"; then
+  bad "AC(a): the backgrounded server is still listening after the gate returned"
+else
+  ok "AC(a): the backgrounded server is torn down by the time the gate returns"
+fi
+if [ -d "$G195A_ROOT/state/example/gate-lock/role195a" ]; then
+  bad "AC(a): the lock is still held after the gate returned"
+else
+  ok "AC(a): the lock is released"
+fi
+
+section "fwf gate (#195 AC b): HUP/TERM/INT to the wrapper tear down the child and release the lock, same as a clean exit"
+for FWF195_SIG in HUP TERM INT; do
+  G195B_ROOT="$TMP/gate195-sig-$FWF195_SIG"; mkdir -p "$G195B_ROOT/state/example"
+  G195B_PORT=$(( 22000 + RANDOM % 3000 ))
+  FWF_RUN_DIR="$G195B_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" "role195sig$FWF195_SIG" -- \
+    bash -c "(python3 -m http.server $G195B_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
+  G195B_PID=$!
+  if _fwf195_wait_listening "$G195B_PORT" 50; then
+    kill -"$FWF195_SIG" "$G195B_PID" 2>/dev/null
+    wait "$G195B_PID" 2>/dev/null
+    sleep 0.3
+    if _fwf195_port_listening "$G195B_PORT"; then
+      bad "AC(b)/$FWF195_SIG: server still listening after $FWF195_SIG"
+    else
+      ok "AC(b)/$FWF195_SIG: server torn down"
+    fi
+    if [ -d "$G195B_ROOT/state/example/gate-lock/role195sig$FWF195_SIG" ]; then
+      bad "AC(b)/$FWF195_SIG: lock still held after $FWF195_SIG"
+    else
+      ok "AC(b)/$FWF195_SIG: lock released"
+    fi
+  else
+    kill "$G195B_PID" 2>/dev/null; wait "$G195B_PID" 2>/dev/null
+    bad "AC(b)/$FWF195_SIG: setup failed -- server never started listening"
+  fi
+done
+
+section "fwf gate (#195 AC c): acquire-side reconciliation reaps an orphan an untrappable SIGKILL to the wrapper left behind"
+G195C_ROOT="$TMP/gate195-c"; mkdir -p "$G195C_ROOT/state/example"
+G195C_PORT=$(( 23000 + RANDOM % 3000 ))
+FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195c -- \
+  bash -c "(python3 -m http.server $G195C_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
+G195C_PID=$!
+if _fwf195_wait_listening "$G195C_PORT" 50; then
+  kill -KILL "$G195C_PID" 2>/dev/null   # untrappable -- no traps fire at all
+  wait "$G195C_PID" 2>/dev/null
+  assert_eq "AC(c): the orphan is still alive right after the untrappable kill (proves the acquire-side reap, not a lucky accident, does the work below)" "true" \
+    "$(_fwf195_port_listening "$G195C_PORT" && echo true || echo false)"
+  # A second acquirer for the SAME role must reap the dead holder's
+  # recorded PGID (killing the orphaned server) and proceed cleanly.
+  G195C2_OUT="$(FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195c -- bash -c 'echo second-run-ok' 2>&1)"
+  assert_contains "AC(c): the next acquirer names the reap as an ANOMALY (not a silent takeover)" "$G195C2_OUT" "ANOMALY"
+  assert_contains "AC(c): the next acquirer's wrapped command actually ran" "$G195C2_OUT" "second-run-ok"
+  # The reap's SIGKILL is asynchronous (the kernel tears the process down
+  # on its own schedule) -- poll rather than a flat sleep, so this stays
+  # robust under the heavy concurrent load this box actually runs under
+  # (several roles' gates at once) instead of a fixed window that's
+  # comfortable when idle and flaky when it isn't.
+  G195C_STILL_LISTENING=1
+  G195C_WAITED=0
+  while [ "$G195C_WAITED" -lt 50 ]; do
+    _fwf195_port_listening "$G195C_PORT" || { G195C_STILL_LISTENING=0; break; }
+    sleep 0.1; G195C_WAITED=$(( G195C_WAITED + 1 ))
+  done
+  if [ "$G195C_STILL_LISTENING" = 1 ]; then
+    bad "AC(c): the orphaned server is STILL listening after acquire-side reconciliation"
+  else
+    ok "AC(c): acquire-side reconciliation reaped the orphaned server (the ticket's load-bearing guarantee)"
+  fi
+else
+  kill "$G195C_PID" 2>/dev/null; wait "$G195C_PID" 2>/dev/null
+  bad "AC(c): setup failed -- server never started listening"
+fi
+
+section "fwf gate (#195 AC h): a dead PGID leader's id reused by an unrelated NEWER process is never signalled"
+G195H_ROOT="$TMP/gate195-h"; mkdir -p "$G195H_ROOT/state/example/gate-lock/role195h"
+# A long-running, harmless background process stands in for "an unrelated
+# process that happens to occupy the recorded pgid number now" -- its own
+# START TIME is what matters, not what it actually is. Given its OWN
+# process group (same setpgid(0,0) trick fwf-gate.sh itself uses) rather
+# than a bare `sleep 60 &`, which would otherwise inherit whatever AMBIENT
+# group this very test run is already nested inside (this validation
+# itself runs under `fwf gate impl2 -- bash -c "bash test/run.sh"` -- the
+# ticket's own flagged "nested fwf gate" edge case, hit for real building
+# this fixture: a bare background job's pgid pointed at that OUTER,
+# already-old group instead of a fresh one, and the reuse check correctly,
+# but uselessly, keyed off the wrong process).
+perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "sleep", "60"' &
+G195H_REUSE_PID=$!
+G195H_REUSE_PGID=""
+G195H_PGID_WAITED=0
+while [ -z "$G195H_REUSE_PGID" ] && [ "$G195H_PGID_WAITED" -lt 20 ]; do
+  G195H_REUSE_PGID="$(ps -o pgid= -p "$G195H_REUSE_PID" 2>/dev/null | tr -d ' ')"
+  [ -n "$G195H_REUSE_PGID" ] && break
+  sleep 0.1; G195H_PGID_WAITED=$(( G195H_PGID_WAITED + 1 ))
+done
+if [ -z "$G195H_REUSE_PGID" ]; then
+  bad "AC(h): setup failed -- could not determine the reuse fixture's own pgid"
+  kill "$G195H_REUSE_PID" 2>/dev/null; wait "$G195H_REUSE_PID" 2>/dev/null
+else
+printf 'role=role195h\npid=999999999\npgid=%s\npgleader=1\nhost=%s\nacquired=%s\n' \
+  "$G195H_REUSE_PGID" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$G195H_ROOT/state/example/gate-lock/role195h/owner"
+G195H_OUT="$(FWF_RUN_DIR="$G195H_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195h -- bash -c 'echo ran' 2>&1)"
+assert_contains "AC(h): the reused pgid is named as a refusal, not silently reaped" "$G195H_OUT" "refusing to signal pgid"
+if kill -0 "$G195H_REUSE_PID" 2>/dev/null; then
+  ok "AC(h): the unrelated newer process sharing that pgid number is UNTOUCHED"
+else
+  bad "AC(h): the unrelated newer process was killed -- PGID/PID reuse safety failed"
+fi
+kill "$G195H_REUSE_PID" 2>/dev/null; wait "$G195H_REUSE_PID" 2>/dev/null
+fi
+
+section "fwf gate (#195 AC d/g): a foreign port occupant is diagnosed by PID/command, never killed, and output/exit code pass through byte-identical"
+python3 -u -m http.server 0 --bind 127.0.0.1 >"$TMP/fwf195g-occ.log" 2>&1 &   # -u: unbuffered, or the startup line never flushes to a redirected file
+G195D_OCC_PID=$!
+G195D_PORT=""
+G195D_WAITED=0
+while [ "$G195D_WAITED" -lt 50 ]; do
+  G195D_PORT="$(grep -oE 'port [0-9]+' "$TMP/fwf195g-occ.log" 2>/dev/null | head -1 | grep -oE '[0-9]+')"
+  [ -n "$G195D_PORT" ] && break
+  sleep 0.1; G195D_WAITED=$(( G195D_WAITED + 1 ))
+done
+if [ -n "$G195D_PORT" ] && _fwf195_port_listening "$G195D_PORT"; then
+  G195D_ROOT="$TMP/gate195-d"; mkdir -p "$G195D_ROOT/state/example"
+  G195D_OUT="$(FWF_RUN_DIR="$G195D_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195d -- \
+    bash -c "printf 'stdout line one\n'; printf 'Error: listen EADDRINUSE: address already in use 127.0.0.1:$G195D_PORT\n' >&2; exit 9" 2>"$TMP/fwf195d-stderr.log")"
+  G195D_RC=$?
+  assert_eq "AC(g): the wrapped command's exit code still propagates with the diagnostic active" "9" "$G195D_RC"
+  assert_contains "AC(g): stdout passes through untouched" "$G195D_OUT" "stdout line one"
+  assert_contains "AC(g): the ORIGINAL stderr line still appears (not swallowed)" "$(cat "$TMP/fwf195d-stderr.log")" "EADDRINUSE"
+  assert_contains "AC(d): the occupant's PID is named" "$(cat "$TMP/fwf195d-stderr.log")" "PID $G195D_OCC_PID"
+  assert_contains "AC(d): the occupant's command is named" "$(cat "$TMP/fwf195d-stderr.log")" "python3"
+  assert_contains "AC(d): it is framed as a lock-protocol violation, not an environment problem" "$(cat "$TMP/fwf195d-stderr.log")" "lock-protocol violation"
+  if kill -0 "$G195D_OCC_PID" 2>/dev/null; then
+    ok "AC(d): the diagnosed occupant is left running -- never killed"
+  else
+    bad "AC(d): the diagnosed occupant was killed by the diagnostic"
+  fi
+else
+  bad "AC(d)/(g): setup failed -- could not determine/confirm the occupant's port"
+fi
+kill "$G195D_OCC_PID" 2>/dev/null; wait "$G195D_OCC_PID" 2>/dev/null
+
+section "fwf gate (#195 AC f): a double signal delivery still converges to the correct final state (idempotent teardown)"
+G195F_ROOT="$TMP/gate195-f"; mkdir -p "$G195F_ROOT/state/example"
+G195F_PORT=$(( 24000 + RANDOM % 3000 ))
+FWF_RUN_DIR="$G195F_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" role195f -- \
+  bash -c "(python3 -m http.server $G195F_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
+G195F_PID=$!
+if _fwf195_wait_listening "$G195F_PORT" 50; then
+  kill -TERM "$G195F_PID" 2>/dev/null
+  kill -TERM "$G195F_PID" 2>/dev/null   # second, near-simultaneous delivery of the SAME signal
+  wait "$G195F_PID" 2>/dev/null
+  sleep 0.3
+  if _fwf195_port_listening "$G195F_PORT"; then
+    bad "AC(f): server still listening after a double TERM"
+  else
+    ok "AC(f): double signal delivery still tears the server down cleanly"
+  fi
+  if [ -d "$G195F_ROOT/state/example/gate-lock/role195f" ]; then
+    bad "AC(f): lock still held after a double TERM"
+  else
+    ok "AC(f): lock released exactly once, no hang/crash from the second signal"
+  fi
+else
+  kill "$G195F_PID" 2>/dev/null; wait "$G195F_PID" 2>/dev/null
+  bad "AC(f): setup failed -- server never started listening"
+fi
+
+section "fwf gate (#195 edge case): a wrapped command that traps TERM and lingers escalates to the hard KILL path after the grace window"
+# The lingering process must be the one actually HOLDING THE PORT (a
+# backgrounded-then-detached child, like the other fixtures use, would die
+# to a direct TERM regardless of what the FOREGROUND shell traps) -- a
+# single Python process that binds the port itself and installs a no-op
+# SIGTERM handler, so the group's TERM is genuinely survived until KILL.
+G195E_ROOT="$TMP/gate195-edge-lingers"; mkdir -p "$G195E_ROOT/state/example"
+G195E_PORT=$(( 25000 + RANDOM % 3000 ))
+G195E_PY="$TMP/gate195-edge-lingers.py"
+cat > "$G195E_PY" <<PYEOF
+import socket, signal, time
+signal.signal(signal.SIGTERM, lambda *a: None)
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", $G195E_PORT))
+s.listen(1)
+time.sleep(30)
+PYEOF
+G195E_GRACE=1
+FWF_RUN_DIR="$G195E_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS="$G195E_GRACE" "$ROOT/fwf-gate.sh" role195e -- \
+  python3 "$G195E_PY" >/dev/null 2>&1 &
+G195E_PID=$!
+if _fwf195_wait_listening "$G195E_PORT" 50; then
+  G195E_START="$(date +%s)"
+  kill -TERM "$G195E_PID" 2>/dev/null
+  wait "$G195E_PID" 2>/dev/null
+  G195E_ELAPSED=$(( $(date +%s) - G195E_START ))
+  if [ "$G195E_ELAPSED" -ge 1 ]; then
+    ok "edge: escalation took at least the ${G195E_GRACE}s grace window (~${G195E_ELAPSED}s) -- proves the hard KILL path actually fired, not a lucky fast exit"
+  else
+    bad "edge: torn down suspiciously fast (~${G195E_ELAPSED}s elapsed) -- the TERM-ignoring process should have survived past the grace window"
+  fi
+  sleep 0.3
+  if _fwf195_port_listening "$G195E_PORT"; then
+    bad "edge: the TERM-ignoring server is still listening after the grace window -- hard KILL never reaped it"
+  else
+    ok "edge: the hard KILL path reaped the lingering, TERM-ignoring process after the grace window"
+  fi
+else
+  kill "$G195E_PID" 2>/dev/null; wait "$G195E_PID" 2>/dev/null
+  bad "edge: setup failed -- the TERM-ignoring server never started listening"
+fi
+else
+  printf '  skip fwf gate (#195) subprocess/port tests (python3 not installed)\n'
+fi
+
+# --------------------------------------------------------------------------
 # fwf gate hermeticity (#123 AC3/AC4): two overlapping e2e-class runs from
 # DIFFERENT roles must not mutually stall on a shared fixed resource — RED
 # against today's unwrapped/direct invocation (both would collide), GREEN
