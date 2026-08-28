@@ -204,6 +204,18 @@ shadow-log data before anyone could respect it anyway.
   this codebase). The would-skip-rate half of the A→B decision has zero
   data until that wiring happens and gates actually run on the live floor —
   this write-up covers the always-on-gate-time half only.
+  **Issue #261 found this claim understated: it isn't just unwired, it was
+  UNREACHABLE — no template, config, or profile in this repo ever called it,
+  so `test/run.sh`'s own coverage (exercising the script by path) could pass
+  forever without a live gate ever invoking it.** `test/run.sh`'s
+  "gate-rust-scope" section now includes an end-to-end test proving the
+  wiring pattern below actually accumulates a shadow-log entry when driven
+  through the real `fwf gate` dispatcher, not the classifier called
+  directly — closing the presence-vs-substance gap for the PATTERN.
+  **Actually wiring THIS repo's own live dogfooding profile remains a
+  genuinely separate, out-of-repo operational step** (see "Not yet built"
+  below) — the pattern being proven correct is not the same as data
+  existing yet.
 
 ## Piece C: a real concurrency-bound race, found and fixed post-review (2026-08-24)
 
@@ -258,4 +270,12 @@ claimed as fully closed.
   shadow-log data says otherwise.
 - Wiring `fwf gate-rust-scope` into a real GATE_CMD so the shadow log
   actually accumulates would-skip-rate data — outside this codebase's scope
-  (it lives in the consuming repo's own profile).
+  (it lives in the consuming repo's own profile). Issue #261 verified the
+  wiring PATTERN end-to-end (test/run.sh's "gate-rust-scope" section, the
+  final case: a real `fwf gate` run whose GATE_CMD calls this before the
+  wrapped suite gains a real shadow-log entry) — what remains is an
+  operator actually applying that pattern to a live profile and letting it
+  accumulate over a stated window, per this ticket's AC (b). No trigger,
+  owner, or date is recorded for that step as of this PR; per AC (c) that
+  is drift, not a deferral, and should be assigned rather than left open
+  indefinitely.
