@@ -61,7 +61,28 @@ assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got
 # assert_contains <label> <haystack> <needle>
 assert_contains() { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "[$2] did not contain [$3]";; esac; }
 # assert_not_contains <label> <haystack> <needle>
-assert_not_contains() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contained [$3]";; *) ok "$1";; esac; }
+# issue #247 AC (a5): an EMPTY haystack takes the `*)` branch below and
+# reports ok -- so "the bad string is absent" also passes when there is no
+# output at all (the command failed, the path was wrong, the render
+# produced nothing). A genuinely-empty-and-that's-correct claim is NOT this
+# helper's job (AC a6): it has its own sound, non-vacuous form already,
+# `assert_eq "" "$VAR"` -- so failing here on empty never collides with a
+# legitimate use, it only catches call sites that were silently relying on
+# the vacuous pass.
+assert_not_contains() {
+  [ -n "$2" ] || { bad "$1" "haystack is EMPTY -- the assertion is vacuous, not passing"; return; }
+  case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contained [$3]";; *) ok "$1";; esac
+}
+# AC (a5) demonstration: invoked inside $(...) so its own PASS/FAIL mutation
+# happens in a subshell and never leaks into the real counters above --
+# proving the guard fires (not just exists) without a synthetic call
+# polluting this run's actual pass/fail total.
+AC_A5_DEMO_EMPTY="$(assert_not_contains "demo" "" "needle")"
+assert_contains "AC(#247 a5): assert_not_contains itself goes RED on an EMPTY haystack (not vacuously ok)" "$AC_A5_DEMO_EMPTY" "FAIL"
+AC_A5_DEMO_REAL="$(assert_not_contains "demo" "haystack with real content" "absent-needle")"
+assert_contains "AC(#247 a5): ...and stays GREEN on a non-empty haystack that genuinely lacks the needle" "$AC_A5_DEMO_REAL" "ok"
+# issue #247 (B): the CORRECT pattern, not the problem -- bounded, loud on
+# timeout, presence-based. Copy this idiom rather than a fixed sleep+read.
 # assert_log_eventually_contains <label> <logfile> <needle> [timeout-secs]
 # Bounded wait-for-condition, for asserting on an async log append (issue
 # #185) instead of a single fixed-time read that can sample before the append
@@ -268,6 +289,44 @@ assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
 DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
 assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
 
+# issue #247 AC (a3): an empty `find` yields an empty accumulator, and an
+# empty accumulator satisfies every "every template carries X" assertion
+# below identically to full compliance -- a corpus-scan bug (a typo'd path, a
+# directory that moved) would go undetected forever. This helper never calls
+# ok/bad itself -- callers assert on its rc -- so its OWN correctness can be
+# demonstrated (AC a3 requires the guard be shown to fire, not just exist)
+# without a synthetic call polluting the real PASS/FAIL counters.
+tmpl_corpus_nonempty() { # $1=base-dir  $2...=extra find args (after -name "*.tmpl")
+  local base="$1"; shift
+  [ -n "$(find "$base" -name "*.tmpl" "$@" 2>/dev/null)" ]
+}
+EMPTY_TMPL_DIR_247="$TMP/empty-tmpl-dir-247"; mkdir -p "$EMPTY_TMPL_DIR_247"
+tmpl_corpus_nonempty "$EMPTY_TMPL_DIR_247"
+assert_eq "AC(#247 a3): the corpus-nonempty guard itself goes RED on a genuinely empty scan (the guard is not itself vacuous)" "1" "$?"
+tmpl_corpus_nonempty "$ROOT/templates"
+assert_eq "AC(#247 a3): ...and stays GREEN against the real corpus" "0" "$?"
+
+# issue #247 AC (a4): the three "PR-producing template" invariants (provenance
+# stamp / built-with credit / context-fold CLI) all narrow their corpus with
+# an INNER filter (`grep -qE 'gh pr (create|merge)'`) before checking
+# anything. If that filter itself matches nothing -- a renamed PR-open
+# construct, e.g. a future `fwf pr-open` verb -- the accumulator stays empty
+# and the invariant stops being checked while staying green, same defect as
+# (a3) one layer in. Same never-calls-ok/bad shape as tmpl_corpus_nonempty,
+# for the same reason: its own correctness must be demonstrable without a
+# synthetic failure polluting the real counters.
+tmpl_filter_nonempty() { # $1=base-dir $2=ERE pattern $3...=extra find args (before -exec)
+  local base="$1" pat="$2"; shift 2
+  local n; n="$(find "$base" -name "*.tmpl" "$@" -exec /usr/bin/grep -lE "$pat" {} \; 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$n" -gt 0 ]
+}
+FILT_FIXTURE_247="$TMP/filter-fixture-247"; mkdir -p "$FILT_FIXTURE_247"
+printf 'this template never opens a PR via any recognized construct\n' > "$FILT_FIXTURE_247/x.tmpl"
+tmpl_filter_nonempty "$FILT_FIXTURE_247" 'gh pr (create|merge)'
+assert_eq "AC(#247 a4): the filter-nonempty guard goes RED when the filter's construct is renamed/absent (the guard is not itself vacuous)" "1" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "AC(#247 a4): ...and stays GREEN against the real corpus" "0" "$?"
+
 section "step-0 tick: a monotonic loop-tick bump, never the pane glyph (#99 Fix 2 / #133)"
 assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
 assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
@@ -281,13 +340,19 @@ assert_contains "tick write is framed as durable, NOT the pane glyph" "$HB_QA3" 
 # overlay fragments, which compose onto a base and have no loop of their own)
 # carries the step-0 tick bump — the monotonic loop-tick counter (#133) that
 # superseded the bare heartbeat touch. __ROLETAG__ renders to the role tag.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the tick-bump assertion below is vacuous" "0" "$?"
 MISSING_TICK=""
 while IFS= read -r -d '' f; do
   /usr/bin/grep -q "fwf tick __ROLETAG__" "$f" || MISSING_TICK="$MISSING_TICK $f"
 done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
 assert_eq "every role template (all factory designs) carries the step-0 tick bump" "" "$MISSING_TICK"
+tmpl_corpus_nonempty "$ROOT/templates"
+assert_eq "#247 (a3): corpus scan (all templates) is non-empty -- else the heartbeat-touch assertion below is vacuous" "0" "$?"
 assert_eq "no template still uses the superseded bare heartbeat touch" "0" \
   "$(find "$ROOT/templates" -name "*.tmpl" -exec /usr/bin/grep -l "touch __HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
+tmpl_corpus_nonempty "$ROOT/templates/_local-issues"
+assert_eq "#247 (a3): corpus scan (_local-issues only) is non-empty -- else the exclusion assertion below is vacuous" "0" "$?"
 assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
   "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "fwf tick __ROLETAG__" {} \; | wc -l | tr -d ' ')"
 
@@ -329,6 +394,10 @@ assert_contains "implementer PR body carries the provenance trailer" \
 # opens an upstream PR) MUST carry __PROVENANCE__ — else a factory could ship
 # un-attributed work, the exact instrumentation gap that makes a post-hoc
 # "did quality regress?" diagnosis impossible.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the provenance-stamp assertion below is vacuous" "0" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one template -- else the provenance-stamp assertion checked nothing" "0" "$?"
 MISSING_PROV=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
@@ -355,6 +424,13 @@ staging branch and integration branch; origin/staging and origin/integration
 product-wip and release-hold; Owner: impl9  WIP
 FWF_TOKEN_BUDGET and LI-42 and impl2/issue-9-slug and fwf-self-abc123 and ~/.fun-with-friends/state/x"
 SANI_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SANI_IN")"
+# issue #247 (A), qa2-caught (#325 review): a genuinely-empty $SANI_OUT
+# (sanitizer crashed, produced nothing) would make EVERY "strips X" check
+# below pass vacuously -- prove the sanitizer actually ran and preserved
+# non-denylisted content before trusting any absence claim about it. #234 is
+# actively rewriting this substitution table, making this the single most
+# concrete live risk this whole ticket names.
+assert_contains "sanitizer output is non-empty and preserves non-denylisted content (not vacuously erased)" "$SANI_OUT" "mentions"
 for tok in 'impl3' 'impl__ID__' 'qa2' 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
            'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:' 'captain' 'conductor' \
            'worktree' 'floor' 'gate' 'staging branch' 'integration branch' 'origin/staging' \
@@ -506,6 +582,10 @@ case "$CLI_CTX" in *impl[0-9]*|*QA-*) bad "fwf pr-context output has no fwf-inte
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
 # constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the built-with-credit assertion below is vacuous" "0" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one template -- else the built-with-credit assertion checked nothing" "0" "$?"
 MISSING_CREDIT=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
@@ -521,6 +601,10 @@ assert_eq "every PR-producing template carries the built-with credit" "" "$MISSI
 # so folding a full ticket distillation into every one of their PRs would be
 # noise, not signal; the ticket's own "Anchor" language ties context-fold to
 # the issue-closing squash-merge moment.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the context-fold-CLI assertion below is vacuous" "0" "$?"
+tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-issues*"
+assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one template -- else the context-fold-CLI assertion checked nothing" "0" "$?"
 MISSING_CTX=""
 while IFS= read -r -d '' f; do
   # only the actual gh pr create/merge command LINE decides "closes a ticket"
@@ -1613,6 +1697,8 @@ rm -f "$PE_MARKER"
 
 if command -v tmux >/dev/null 2>&1; then
   section "floor-lifecycle wiring (issue #85): fwf-up.sh / fwf-respawn.sh append floor-up on success (real tmux, stubbed claude)"
+  # issue #247 (B): a long-lived PANE STAND-IN, not an assertion -- exists so
+  # tmux has a real, distinguishable process to report as pane_current_command.
   # A fast, non-shell "claude" stand-in: tmux reports its pane_current_command
   # as soon as the shell execs it, so fwf_ensure_claude's shell-vs-not-shell
   # poll resolves on its first ~1s tick instead of the real 15s×5 retry budget
@@ -2565,6 +2651,12 @@ GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=
 assert_contains "guard names the shortfall" "$GUARDOUT" "REFUSING to start"
 # Floor of 0 disables the guard (it must not be the thing that blocks here).
 G0="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0 "$ROOT/fwf-up.sh" --floor-only 2>&1)"
+# issue #247 (A), qa2-caught (#325 review): --floor-only genuinely refuses
+# here too (no pre-existing coord session -- expected, unrelated to the disk
+# guard), so success is NOT the right proof; a silently-empty $G0 would also
+# satisfy the absence check below. Prove it actually produced real
+# diagnostic output before trusting the absence claim.
+assert_contains "floor 0 disables guard -- the command actually produced output, not vacuously silent" "$G0" "fwf-up:"
 case "$G0" in *"REFUSING to start"*) bad "floor 0 disables guard";; *) ok "floor 0 disables guard";; esac
 
 section "runtime sizing + models (issue #7)"
@@ -2590,6 +2682,10 @@ assert_contains "default output style is Concise" "$STYLECMD" '--settings \{\"ou
 STYLEOVERRIDE="$(FWF_OUTPUT_STYLE=Explanatory FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
 assert_contains "FWF_OUTPUT_STYLE override honored" "$STYLEOVERRIDE" '--settings \{\"outputStyle\":\"Explanatory\"\}'
 STYLEOFF="$(FWF_OUTPUT_STYLE='' FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+# issue #247 (A), qa2-caught (#325 review): the absence of --settings also
+# holds if fwf_claude_cmd errored outright -- prove it still produced the
+# base command line before trusting the absence claim.
+assert_contains "FWF_OUTPUT_STYLE=\"\" still produces a real command line (not vacuously empty on error)" "$STYLEOFF" "claude"
 case "$STYLEOFF" in *--settings*) bad "FWF_OUTPUT_STYLE=\"\" disables --settings";; *) ok "FWF_OUTPUT_STYLE=\"\" disables --settings";; esac
 STYLEWITHMODEL="$(FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
 assert_contains "output style composes with --model (model)" "$STYLEWITHMODEL" "--model sonnet"
@@ -3109,6 +3205,10 @@ assert_contains "conductor: never fetch/pull/push" "$NPCON" "NEVER fetch/pull/pu
 NPCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 assert_contains "captain: sole exception, per-instance" "$NPCAP" "FWF_ALLOW_PUSH=1"
 GHCAP="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+# issue #247 (A), qa2-caught (#325 review): the absence of FWF_ALLOW_PUSH
+# also holds if the render failed outright -- prove it actually rendered
+# the captain prompt before trusting the absence claim.
+assert_contains "gh-mode captain prompt actually rendered (not vacuously empty on a render failure)" "$GHCAP" "CAPTAIN (orchestrator)"
 case "$GHCAP" in *FWF_ALLOW_PUSH*) bad "gh mode has no push-guard text";; *) ok "gh mode has no push-guard text";; esac
 
 section "no shared-branch collision on claim/gate (issue #91): implementers and read-only conductors never hold local staging"
@@ -3143,6 +3243,10 @@ cat > "$VSSTUB/gh" <<'EOS'
 case "${1:-}" in
   api)
     [ -n "${VS_CALL_LOG:-}" ] && echo x >> "$VS_CALL_LOG"
+    # issue #247 (B): a hang STUB, not an assertion -- simulates a genuinely
+    # hung gh call so the "never blocks" test above (line ~3186) can prove
+    # the caller returns anyway. The sleep only needs to outlast the test's
+    # own bounded wait; it is never itself the thing under test.
     [ "${VS_HANG:-0}" = 1 ] && sleep 300
     [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
     echo "${FAKE_LATEST:-v0.0.0}";;
@@ -3174,6 +3278,11 @@ assert_contains "(c) fwf-up warning fires" "$VSC_WARN" "v99.0.0 is released"
 VSC_DOC="$(vs_run "$VSRUN" 'fwf_doctor_version_line')"
 assert_contains "(c) doctor line fires" "$VSC_DOC" "OUT OF DATE"
 
+# issue #247 (A)-minor: sleep-bounded and could in principle fire before the
+# detached refresh lands -- but a miss here FAILS LOUD (the dir genuinely
+# isn't there yet), never silently passes, which is the safe direction this
+# whole ticket is about preserving. Left as-is rather than converted to a
+# bounded poll: not the load-bearing case.
 # cache location: must be under $FWF_RUN/upgrade-check, never $TMPDIR. The
 # refresh that creates the dir is detached (that's the whole point — see
 # never-block below), so give it a moment to land before asserting on it.
@@ -3214,16 +3323,49 @@ VS_SKIP="$(FWF_SKIP_VERSION_CHECK=1 vs_run "$VSRUN" 'fwf_version_skew_check')"
 [ -z "$VS_SKIP" ] && ok "kill switch: no warning" || bad "kill switch: no warning"
 [ -e "$VSRUN/upgrade-check" ] && bad "kill switch: no cache dir touched at all" || ok "kill switch: no cache dir touched at all"
 
-# single-flight: N concurrent stale-triggered refreshes make AT MOST ONE gh call
+# issue #247 AC (b): the (A) case -- `-le 1` is satisfied by ZERO, and the
+# refresh is deliberately DETACHED (the enclosing subshell's `wait` above
+# does not cover the `gh` call itself), so "nothing ran yet" and
+# "single-flight held" were indistinguishable to the old fixed-`sleep 1`
+# read. Give it a perfect barrier and it is STILL wrong for that reason --
+# this is not primarily a sleep bug. Fix, per the idiom already used four
+# times in this file (assert_log_eventually_contains): wait for the FIRST
+# call to actually land (bounded, loud on timeout -- rules out the null
+# state), then poll until the count stops changing (bounded -- rules out a
+# still-racing duplicate that just hadn't landed yet) before trusting it.
+vs_singleflight_count() { # $1=call-log-file -> prints the stabilized call count; rc 1 + empty if none ever appeared
+  local log="$1" i=0 last=-1 now
+  while [ "$i" -lt 25 ]; do
+    grep -q -F -- "x" "$log" 2>/dev/null && break
+    sleep 0.2; i=$((i + 1))
+  done
+  [ "$i" -lt 25 ] || return 1
+  i=0
+  while [ "$i" -lt 25 ]; do
+    now="$(wc -l < "$log" | tr -d ' ')"
+    [ "$now" = "$last" ] && { printf '%s' "$now"; return 0; }
+    last="$now"; sleep 0.2; i=$((i + 1))
+  done
+  printf '%s' "$last"
+}
+# AC (b) demonstration: the counter must still go RED on a genuinely-broken
+# single-flight (proves the fix isn't a weakened check that always passes),
+# and RED on a refresh that never started at all (the null state this whole
+# fix exists to stop conflating with success).
+VS_SF_BROKEN="$TMP/vs-singleflight-demo-broken"; printf 'x\nx\n' > "$VS_SF_BROKEN"
+assert_eq "AC(#247 b): the single-flight counter still goes RED on a genuinely-broken case (2 calls, not silently accepted)" "2" "$(vs_singleflight_count "$VS_SF_BROKEN")"
+VS_SF_NULL="$TMP/vs-singleflight-demo-null"; : > "$VS_SF_NULL"
+vs_singleflight_count "$VS_SF_NULL" >/dev/null 2>&1
+assert_eq "AC(#247 b): ...and goes RED (times out) on the null state -- a refresh that never ran is not single-flight held" "1" "$?"
+
 VSRUN="$TMP/vs-singleflight"
 VS_CALLS="$TMP/vs-call-log"; : > "$VS_CALLS"
 ( VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   wait )
-sleep 1
-VS_CALL_COUNT="$(wc -l < "$VS_CALLS" | tr -d ' ')"
-[ "$VS_CALL_COUNT" -le 1 ] && ok "single-flight: >=3 concurrent refreshes make <=1 gh call" || bad "single-flight: >=3 concurrent refreshes make <=1 gh call" "made $VS_CALL_COUNT calls"
+VS_CALL_COUNT="$(vs_singleflight_count "$VS_CALLS")" || VS_CALL_COUNT="TIMEOUT-no-call-ever-appeared"
+assert_eq "single-flight: >=3 concurrent refreshes make EXACTLY 1 gh call (proven to have run, then proven not to have run twice)" "1" "$VS_CALL_COUNT"
 
 section "profile persistence of template/issues + per-template identity (issues #30/#31)"
 cat > "$ROOT/profiles/.__persist.sh" <<EOF
@@ -5393,7 +5535,21 @@ me="$counter_dir/$$-$RANDOM"
 : > "$me"
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
+# issue #247 AC (a9-i): sample THROUGHOUT the hold via a BACKGROUND poller,
+# decoupled from the actual hold/release timing. An earlier version of this
+# fix looped `sleep 0.05` in the SAME process as the `sleep "$hold"` it was
+# meant to sample -- under real load (many forked subprocesses per
+# iteration: date, ls, wc, tr), the loop's own overhead can make the total
+# elapsed time exceed `hold`, delaying the unlink below and manufacturing a
+# THIRD holder that was never really concurrent, a self-inflicted instance
+# of exactly the defect this ticket is about. Backgrounding the poller and
+# killing it once the fixed `sleep "$hold"` completes keeps the release
+# timing exactly as reliable as the original one-shot version while still
+# sampling many times during the hold.
+( while :; do sleep 0.05; ls "$counter_dir" | wc -l | tr -d ' ' >> "$peaks_file"; done ) &
+POLLER=$!
 sleep "$hold"
+kill "$POLLER" 2>/dev/null; wait "$POLLER" 2>/dev/null
 rm -f "$me"
 echo DONE
 EOSCRIPT
@@ -5471,7 +5627,14 @@ me="$counter_dir/$$-$RANDOM"
 : > "$me"
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
+# issue #247 AC (a9-ii): same background-poller fix as cargo-build-harness.sh
+# above -- decoupled from the fixed 1s hold so the poller's own overhead can
+# never delay the unlink/release past the true hold, which would manufacture
+# a false extra-holder reading rather than observe a real one.
+( while :; do sleep 0.05; ls "$counter_dir" | wc -l | tr -d ' ' >> "$peaks_file"; done ) &
+POLLER=$!
 sleep 1
+kill "$POLLER" 2>/dev/null; wait "$POLLER" 2>/dev/null
 rm -f "$me"
 fwf_cargo_build_slot_release "$s"
 echo "$label GOT=$s"
@@ -5500,9 +5663,15 @@ RACE_PEAK_MAX="$(sort -n "$CBRACE_PEAKS" | tail -1)"
 # legitimately report GOT=1 in the correct, non-buggy case too -- racer-a
 # acquires, holds, releases; racer-b then legitimately acquires the SAME
 # slot number SEQUENTIALLY afterward. That is correct semaphore behavior,
-# not the defect. The peak-concurrency check above is the real assertion:
-# it fails only if both were EVER concurrently inside their hold, which is
-# what the double-reap bug actually produces.
+# not the defect. The peak-concurrency check above is the real assertion --
+# BUT (issue #247 AC a9-ii, corrected here): it is NOT true, as an earlier
+# version of this comment claimed, that it "fails only if both were EVER
+# concurrently inside their hold." It fails only if both were concurrent
+# AND the sampler observed that concurrency -- with the old ONE-SHOT
+# sampler (fixed above to sample continuously), a real overlap that never
+# landed on either racer's single sample instant would pass silently. The
+# fixed sampler above closes that gap for realistic timing, not by
+# strengthening this claim to an unconditional guarantee.
 
 # --------------------------------------------------------------------------
 # per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
@@ -5588,6 +5757,12 @@ assert_contains "dead-PID holder is named an anomaly and reaped" "$GDEAD_OUT" "A
 assert_contains "dead-PID lock is re-acquired, not permanently wedged" "$GDEAD_OUT" "RC=0"
 assert_contains "the new stamp overwrites the dead one"  "$GDEAD_OUT" "NEWOWNER"
 
+# issue #247 (A), out of scope here: #119's race test was fixed on #245 and
+# is listed in the audit only for completeness, not re-fixed by this ticket.
+# Note for the next sweep: it still shows a small residual timing-window
+# flake rate in this tree (verified: a test-timing gap in lib.sh's
+# fwf_gate_lock_acquire, not a real lock defect) -- worth a dedicated look,
+# but out of scope for #247.
 section "QA adversarial check (#119): a REAL simultaneous race for a never-before-held lock is still atomic (not just the sequential simulated states above)"
 RACERUN="$TMP/gate123-race"
 FWF_RUN_DIR="$RACERUN" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/gate-lock-drive.sh" race-contestant > "$TMP/race-a.out" 2>&1 &
@@ -5888,6 +6063,10 @@ rm -f "$marker"
 echo "DONE"
 EOSCRIPT
 
+# issue #247 (B): timing present but not load-bearing -- the 2s budget vs 4s
+# hold is a fixed, generous margin (~2x), not a race the assertion could
+# silently stop exercising; a slower runner still deterministically times
+# out, it just takes longer to do so.
 # RED (today, unwrapped): both invocations touch the SAME fixed marker
 # directly with no coordination. The second's wait budget (2s) is
 # deliberately shorter than the first's hold (4s), so it deterministically
@@ -5904,6 +6083,7 @@ assert_eq "RED (unwrapped): first invocation completes" "0" "$RED_A_RC"
   || bad "RED (unwrapped): second invocation should have failed on the shared fixed resource"
 assert_contains "RED (unwrapped): second invocation times out on the shared fixed resource" "$(cat "$TMP/red-b.out")" "TIMEOUT"
 
+# issue #247 (B): same margin as the RED case above, same non-fragile reason.
 # GREEN (through fwf gate --e2e): the SAME two invocations (different roles),
 # each routed through the shared guarded launcher — the floor-wide e2e lock
 # (issue #65) serializes them, so the second waits for the first to finish
@@ -8842,7 +9022,12 @@ assert_contains "AC(c): refusal names the sha it would have promoted" "$F278_ERR
 ( cd "$F278" && git checkout -q --detach "$F278_SHA_NEW" )
 F278_OK_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example eval "$F278_PROMOTE_CMD_LOCAL" 2>&1 1>/dev/null)"; F278_OK_RC=$?
 assert_eq "AC(d): detached HEAD at the correct sha does not refuse" "0" "$F278_OK_RC"
-assert_not_contains "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "$F278_OK_ERR" "issue #278"
+# issue #247 AC (a6): legitimately-empty, routed rather than converted -- the
+# happy path is defined to produce NO stderr at all (this section's own
+# title: "silent when correct"), so the sound positive form is assert_eq ""
+# rather than assert_not_contains, which (a5) now correctly refuses to treat
+# an empty haystack as a pass.
+assert_eq "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "" "$F278_OK_ERR"
 
 # AC(d2) -- THE test that would have caught a mis-scoped (a): a NON-promoting
 # role (impl1) on a feature branch, passing --e2e (implementer.tmpl's own
@@ -8852,7 +9037,8 @@ assert_not_contains "AC(d): detached HEAD at the correct sha produces no #278 re
 ( cd "$F278" && git checkout -q -b "impl1/issue-9-slug" "$F278_SHA_OLD" )
 F278_D2_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" impl1 --e2e -- bash -c true 2>&1 1>/dev/null)"; F278_D2_RC=$?
 assert_eq "AC(d2): non-promoting role on a feature branch with --e2e does not refuse" "0" "$F278_D2_RC"
-assert_not_contains "AC(d2): non-promoting role produces no #278 refusal text" "$F278_D2_ERR" "issue #278"
+# issue #247 AC (a6): same routing as (d) above -- legitimately empty, not converted.
+assert_eq "AC(d2): non-promoting role produces no #278 refusal text" "" "$F278_D2_ERR"
 
 # unresolvable target ref -- refuses rather than guessing (never a silent skip).
 F278_NOREF="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278-noref.XXXXXX")"
