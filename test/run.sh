@@ -916,6 +916,37 @@ assert_not_contains "AC(h): fwf-respawn.sh is never invoked at all for this role
 assert_eq "AC(h): the tick counter itself is unmodified by this whole pass (still 'garbage')" "garbage" \
   "$(cat "$SV_RUN/state/example/tick/svunknown")"
 
+section "fwf_tick_read callers are enumerated, none silently collapse (issue #193 AC h1)"
+# #211 already made fwf_tick_read a two-line honest-status reader; #193's own
+# obligation (AC h1) is that its blast radius was actually CHECKED, not
+# assumed, at #193's own claim time -- so this locks the caller list down: a
+# NEW call site that appears here without going through this list is exactly
+# the silent-collapse risk the ticket warns about, and this test goes RED
+# the moment one shows up unaudited.
+TICKREAD_MENTIONS="$(grep -rl 'fwf_tick_read' "$ROOT"/*.sh 2>/dev/null | sort)"
+TICKREAD_EXPECTED="$(printf '%s\n' \
+  "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-supervise.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh" | sort)"
+assert_eq "AC(h1): fwf_tick_read has exactly the known, audited mentions" \
+  "$TICKREAD_EXPECTED" "$TICKREAD_MENTIONS"
+# Each real CALLER checks the exit status explicitly (an `if`/`||` around the
+# call), never a bare `x="$(fwf_tick_read ...)"` that would mask a non-zero
+# status the way issue #211's own lib.sh comment warns against.
+# fwf-supervise.sh only NAMES fwf_tick_read in a comment (explaining why
+# issue #193's session guard exists) -- it never calls it directly, since it
+# gets tick/token state via fwf-pane-liveness.sh instead.
+for _tr_f in "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh"; do
+  case "$(grep -n 'fwf_tick_read' "$_tr_f")" in
+    *'if cur_tick="$(fwf_tick_read'*|*'if ! fwf_tick_read'*|*'if ! cur="$(fwf_tick_read'*)
+      ok "AC(h1): $(basename "$_tr_f") checks fwf_tick_read's exit status" ;;
+    *'fwf_tick_read() {'*) ok "AC(h1): $(basename "$_tr_f") is the definition site, not a caller" ;;
+    *) bad "AC(h1): $(basename "$_tr_f") calls fwf_tick_read without an evident status check" ;;
+  esac
+done
+case "$(grep -n 'fwf_tick_read' "$ROOT/fwf-supervise.sh")" in
+  *'fwf_tick_read'*'if cur_tick'*|*'if ! cur='*) bad "AC(h1): fwf-supervise.sh now calls fwf_tick_read directly -- audit it and add it above" ;;
+  *) ok "AC(h1): fwf-supervise.sh only names fwf_tick_read in a comment, never calls it" ;;
+esac
+
 section "fwf supervise: SESSION_UNKNOWN — session invisibility never reaps (issue #193 f/g)"
 # The tick/token classifier alone can't tell "genuinely wedged" apart from
 # "not running because the floor is down (or supervise can't see it from
