@@ -3222,13 +3222,33 @@ printf '%s' '[
  {"number":2,"title":"B","body":"","state":"open","html_url":"u","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L2","name":"product-wip","description":"","color":"c"}],"assignees":[]},
  {"number":3,"title":"C","body":"","state":"open","html_url":"u","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L3","name":"release-hold","description":"","color":"c"}],"assignees":[]},
  {"number":4,"title":"D","body":"","state":"open","html_url":"u","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L4","name":"idea","description":"","color":"c"}],"assignees":[]},
- {"number":5,"title":"E","body":"","state":"open","html_url":"u","created_at":"2026-01-05T00:00:00Z","updated_at":"2026-01-05T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L5a","name":"product-wip","description":"","color":"c"},{"node_id":"L5b","name":"release-hold","description":"","color":"c"}],"assignees":[]}
+ {"number":5,"title":"E","body":"","state":"open","html_url":"u","created_at":"2026-01-05T00:00:00Z","updated_at":"2026-01-05T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L5a","name":"product-wip","description":"","color":"c"},{"node_id":"L5b","name":"release-hold","description":"","color":"c"}],"assignees":[]},
+ {"number":6,"title":"[TRACKING] F","body":"","state":"open","html_url":"u","created_at":"2026-01-06T00:00:00Z","updated_at":"2026-01-06T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L6","name":"tracking","description":"","color":"c"}],"assignees":[]}
 ]' > "$SROOT/x__y/issues.json"
 touch "$SROOT/x__y/issues.ts"
 GHCS() { FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
-assert_eq "search: is:open (qa queue pattern)" "1,2,3,4,5" "$(GHCS serve issue list --search "is:open" --json number --jq '[.[].number]|sort|@csv')"
-assert_eq "search: is:open -label:product-wip -label:release-hold -label:idea (implementer survey)" "1" "$(GHCS serve issue list --search "is:open -label:product-wip -label:release-hold -label:idea" --json number --jq '[.[].number]|sort|@csv')"
-assert_eq "search: is:open -label:product-wip -label:release-hold (pm/captain queued)" "1,4" "$(GHCS serve issue list --search "is:open -label:product-wip -label:release-hold" --json number --jq '[.[].number]|sort|@csv')"
+assert_eq "search: is:open (qa queue pattern)" "1,2,3,4,5,6" "$(GHCS serve issue list --search "is:open" --json number --jq '[.[].number]|sort|@csv')"
+# issue #255: the implementer/captain/pm survey searches below are the
+# ACTUAL rendered strings (fwf_render), never hand-retyped -- a hand-typed
+# reconstruction would only prove the stub can parse SOME string, not that
+# it matches what a role actually sends (the exact gap issue #234's AC(b2)
+# and issue #278's AC(b2) both existed to close).
+GHCS_IMPL_SEARCH="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1" | grep -oE 'is:open [^"]*' | head -1)"
+GHCS_COORD_SEARCH="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''" | grep -oE 'is:open [^"]*' | head -1)"
+# AC(a) -- THE DISCRIMINATING TEST: issue #6 (#161's own shape -- open,
+# ONLY the tracking label) must be excluded from BOTH the implementer and
+# coord surveys. Issue #4 (idea-labeled) stays excluded from the
+# implementer survey but must remain VISIBLE to captain/pm -- same label,
+# opposite correct treatment, per issue #255's own design decision.
+assert_eq "search: implementer survey (rendered, issue #255) excludes #6 (tracking) and #4 (idea)" "1" \
+  "$(GHCS serve issue list --search "$GHCS_IMPL_SEARCH" --json number --jq '[.[].number]|sort|@csv')"
+assert_eq "search: captain/pm queued (rendered, issue #255) excludes #6 (tracking) but KEEPS #4 (idea)" "1,4" \
+  "$(GHCS serve issue list --search "$GHCS_COORD_SEARCH" --json number --jq '[.[].number]|sort|@csv')"
+# ...and the regression check: WITHOUT the tracking exclusion (the pre-#255
+# 3-label implementer search), #6 would have been eligible -- proving the
+# fix actually changes the outcome, not just the search string's shape.
+assert_eq "search: pre-#255 3-label implementer search would have let #6 through (regression check)" "1,6" \
+  "$(GHCS serve issue list --search "is:open -label:product-wip -label:release-hold -label:idea" --json number --jq '[.[].number]|sort|@csv')"
 assert_eq "search: is:open label:release-hold (pm held-issues list)" "3,5" "$(GHCS serve issue list --search "is:open label:release-hold" --json number --jq '[.[].number]|sort|@csv')"
 
 # Fail-safe (#58 GV item 2, highest priority): an off-list --search string
@@ -3265,10 +3285,19 @@ _search_literals_in_templates() {
       done
 }
 FOUND_SEARCH="$(_search_literals_in_templates)"
+# issue #255: the two `-label:` shaped searches above are GONE from this raw
+# (pre-render) scan -- both implementer.tmpl and captain/pm.tmpl now emit
+# `__SURVEY_EXCLUDE__`, a role-aware RENDER-TIME placeholder (fwf_render,
+# lib.sh) rather than a literal `-label:X` token, so the scanner correctly
+# treats it as unrecognized vocabulary and drops it (`vok=0` above) -- it is
+# not a template regression. `parse_search_tokens` (fwf-ghcache.sh) is
+# GENERIC over any `-label:X` value regardless of what X is, so no new
+# vocabulary is actually needed to serve the rendered searches; that is
+# verified directly, against the REAL rendered strings (not this raw scan),
+# by the "search: implementer survey (rendered, issue #255)" /
+# "captain/pm queued (rendered, issue #255)" assertions above.
 EXPECT_SEARCH="$(printf '%s\n' \
   'is:open' \
-  'is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__' \
-  'is:open -label:__WIP_LABEL__ -label:__HOLD_LABEL__ -label:idea' \
   'is:open label:__HOLD_LABEL__' | sort)"
 assert_eq "search: recognized --search literals in templates match the pinned/tested set" "$EXPECT_SEARCH" "$FOUND_SEARCH"
 
@@ -5968,6 +5997,77 @@ assert_eq "End-to-end: qa's checkout landed on the NEW sha, not the old one" "$F
   "$(git -C "$F177/qa1-wt" rev-parse HEAD)"
 assert_eq "End-to-end: impl's worktree branch is unchanged across the whole cycle" "impl1/issue-9-x" \
   "$(git -C "$F177/impl1-wt" symbolic-ref -q --short HEAD)"
+
+# --------------------------------------------------------------------------
+section "survey exclusion labels are single-sourced (issue #255)"
+
+# AC (b): ZERO bare -label: literals anywhere across templates/**/*.tmpl --
+# the nine affected files enumerated BY NAME, not a count, so a partial
+# conversion cannot close the ticket (#189 AC (c) discipline -- the same
+# shape #255 itself was nearly closed under, per its own AC (b) revision
+# history: an early draft grepped implementer.tmpl only and would have
+# passed with three captain/pm templates still hardcoding the list).
+F255_NINE="templates/dev/implementer.tmpl templates/refactor/implementer.tmpl templates/ideation/implementer.tmpl templates/defect-report/implementer.tmpl templates/consulting/implementer.tmpl templates/validate/implementer.tmpl templates/dev/captain.tmpl templates/dev-sre/captain.tmpl templates/dev/pm.tmpl"
+for f in $F255_NINE; do
+  assert_not_contains "$f: no bare -label:__WIP_LABEL__ literal remains" "$(cat "$ROOT/$f")" '-label:__WIP_LABEL__'
+  assert_not_contains "$f: no bare -label:idea literal remains" "$(cat "$ROOT/$f")" '-label:idea'
+  assert_contains     "$f: uses the single-sourced __SURVEY_EXCLUDE__ placeholder" "$(cat "$ROOT/$f")" '__SURVEY_EXCLUDE__'
+done
+# ...and a whole-corpus grep, independent of the enumerated list above, in
+# case a TENTH file appears with the same hardcoded shape and is missed by
+# both this list and the ticket's own audit.
+F255_CORPUS_LITERALS="$(grep -rlE -- '-label:(__WIP_LABEL__|__HOLD_LABEL__|idea)' "$ROOT/templates" 2>/dev/null || true)"
+assert_eq "no template anywhere still hardcodes a bare survey-exclusion -label: literal" "" "$F255_CORPUS_LITERALS"
+
+# AC (c): renaming any excluded label is a ONE-PLACE edit -- change the
+# DEFAULT set (config.sh) and confirm all nine rendered prompts follow,
+# covering the idea-is-hardcoded half too (the part nobody would notice,
+# since it has no config var to grep for).
+F255_RENAME_OUT="$(FWF_SURVEY_EXCLUDE_IMPL='renamed-wip renamed-hold renamed-idea renamed-tracking' \
+  FWF_SURVEY_EXCLUDE_COORD='renamed-wip renamed-hold renamed-tracking' \
+  FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    for f in $F255_NINE; do
+      fwf_render \"$ROOT/\$f\" 1
+      echo '---'
+    done
+  ")"
+assert_contains    "AC(c): a renamed set reaches every one of the nine rendered prompts" "$F255_RENAME_OUT" "renamed-tracking"
+assert_not_contains "AC(c): the OLD default label names are gone once renamed (no stale fallback)" "$F255_RENAME_OUT" "-label:product-wip"
+assert_not_contains "AC(c): the OLD 'idea' literal is gone once renamed too -- the half with no config var" "$F255_RENAME_OUT" "-label:idea"
+
+# AC (e): shared default + PER-ROLE override, initialised to TODAY'S actual
+# per-role sets -- a genuinely behaviour-preserving refactor, not a silent
+# change. Implementers exclude "idea"; captain/pm do NOT (the PM's own role
+# prompt instructs it to SEE parked ideas and skip them by hand -- excluding
+# the label would hide exactly what it's told to watch).
+F255_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+F255_CAPTAIN_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+F255_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+for tok in '-label:product-wip' '-label:release-hold' '-label:idea' '-label:tracking'; do
+  assert_contains "AC(e): implementer survey excludes $tok" "$F255_IMPL_RENDER" "$tok"
+done
+for role_name in captain pm; do
+  case "$role_name" in
+    captain) F255_ROLE_RENDER="$F255_CAPTAIN_RENDER" ;;
+    pm)      F255_ROLE_RENDER="$F255_PM_RENDER" ;;
+  esac
+  for tok in '-label:product-wip' '-label:release-hold' '-label:tracking'; do
+    assert_contains "AC(e): $role_name queued-issues search excludes $tok" "$F255_ROLE_RENDER" "$tok"
+  done
+  assert_not_contains "AC(e): $role_name survey does NOT exclude idea (must SEE parked ideas)" "$F255_ROLE_RENDER" '-label:idea'
+done
+
+# AC (a) / AC (d): the rendered eligibility PROSE (dev + refactor
+# implementer.tmpl, the two templates with a formal "ELIGIBLE =" rule) is
+# generated from the SAME set as the search command -- asserted by content,
+# not merely "both mention labels somewhere" -- so the two can never
+# independently drift the way six statements in two styles did.
+assert_contains "AC(d): dev implementer eligibility prose names tracking, matching the search" \
+  "$F255_IMPL_RENDER" 'NOT "tracking" (a living coordination document, not buildable work)'
+F255_REFACTOR_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/implementer.tmpl' 1")"
+assert_contains "AC(d): refactor implementer eligibility prose names tracking, matching the search" \
+  "$F255_REFACTOR_RENDER" 'NOT "tracking" (a living coordination document, not buildable work)'
 
 # --------------------------------------------------------------------------
 # fwf-branch-policy.sh (issue #220): is the committed .github/branch-policy.json

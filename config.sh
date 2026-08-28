@@ -96,6 +96,30 @@ HOLD_LABEL="${FWF_HOLD_LABEL:-release-hold}"
 # This is the path for GV-signed-as-SCOPED (not "build it") tickets, so they no longer
 # stall in product-wip limbo with no role to produce them.
 DISCOVERY_LABEL="${FWF_DISCOVERY_LABEL:-discovery}"
+# A parked idea the human recorded for later, distinct from DISCOVERY_LABEL
+# above (a scoped investigation ticket whose deliverable is a proposal doc).
+# Previously a bare literal ("idea") repeated in five templates with no
+# config var at all -- issue #255's "half-templated, half-hardcoded" defect,
+# named so a future edit does not re-conflate it with DISCOVERY_LABEL again.
+IDEA_LABEL="${FWF_IDEA_LABEL:-idea}"
+# Meta/coordination marker (issue #255): a living document (the dependency
+# graph, the release audit) the PM posts to every cycle, not buildable work.
+TRACKING_LABEL="${FWF_TRACKING_LABEL:-tracking}"
+# Survey exclusion set (issue #255): what an implementer's / captain's / pm's
+# `gh issue list` survey excludes. Single-sourced here so a rename, or adding
+# a new exclusion, is a ONE-PLACE edit instead of N template edits in two
+# different styles (which is how #161 -- a TRACKING issue with none of the
+# other exclusion labels -- ended up claimable: `tracking` was never added
+# anywhere). Two sets, not one, and the split is DELIBERATE, not duplication:
+# implementers must never see (and so never claim) a parked "idea"; the PM's
+# own role prompt instructs it to SEE "idea" issues and skip them by hand,
+# which requires the PM's survey to include them. Same label, opposite
+# correct treatment. fwf_render (lib.sh) picks the set by role and expands
+# both the -label: flags AND the matching human-readable eligibility prose
+# from it, so the two can never independently drift the way the six-times,
+# two-styles version did.
+SURVEY_EXCLUDE_IMPL="${FWF_SURVEY_EXCLUDE_IMPL:-$WIP_LABEL $HOLD_LABEL $IDEA_LABEL $TRACKING_LABEL}"
+SURVEY_EXCLUDE_COORD="${FWF_SURVEY_EXCLUDE_COORD:-$WIP_LABEL $HOLD_LABEL $TRACKING_LABEL}"
 # needs-captain flag (issue #113): any role raises this on an issue/PR via
 # `fwf flag-captain` when something needs the captain's decision; the captain
 # sweeps it every tick so a raised flag can't go unseen (the pane-line
