@@ -8306,6 +8306,230 @@ else
 fi
 
 # --------------------------------------------------------------------------
+section "gate verdict: fingerprint + revocation, storage layer (issue #237 AC d2/k2)"
+G237_ROOT="$TMP/gate237-lib"; mkdir -p "$G237_ROOT/state/example"
+G237_SETUP="$TMP/gate237-setup.sh"
+cat > "$G237_SETUP" <<SETUPEOF
+set -uo pipefail
+FWF_RUN_DIR="$G237_ROOT" FWF_PROFILE=example
+export FWF_RUN_DIR FWF_PROFILE
+# shellcheck source=/dev/null
+source "$ROOT/lib.sh"
+
+fwf_gate_verdict_record shaA roleA green "" fpA
+echo "TAG_READ_WITH_FP:\$(fwf_gate_verdict_read shaA)"
+
+# a pre-#237 record has no fingerprint= line at all -- reading it back
+# must still succeed, just without the trailing clause (never an error).
+printf 'sha=shaLegacy\nrole=roleA\nverdict=green\nrecorded=1\n' > "\$(fwf_gate_verdict_marker_path shaLegacy)"
+echo "TAG_READ_LEGACY_RC:\$(fwf_gate_verdict_read shaLegacy >/dev/null 2>&1; echo \$?)"
+echo "TAG_READ_LEGACY:\$(fwf_gate_verdict_read shaLegacy)"
+
+echo "TAG_REVOKED_BEFORE:\$(fwf_gate_fingerprint_revoked fpA >/dev/null 2>&1; echo \$?)"
+fwf_gate_revoke_fingerprint fpA "test revocation"
+echo "TAG_REVOKED_AFTER:\$(fwf_gate_fingerprint_revoked fpA >/dev/null 2>&1; echo \$?)"
+echo "TAG_UNREVOKED_OTHER:\$(fwf_gate_fingerprint_revoked fpNeverListed >/dev/null 2>&1; echo \$?)"
+
+# idempotent: revoking the same fingerprint twice does not duplicate it.
+fwf_gate_revoke_fingerprint fpA "second call"
+echo "TAG_REVOKE_LINE_COUNT:\$(grep -cxF fpA "\$(fwf_gate_revocation_path)")"
+
+# fingerprint is stable for identical argv+content, and changes when the
+# content of a resolvable file argument changes.
+echo hello > "$G237_ROOT/probe.sh"
+FP1="\$(_fwf_gate_fingerprint bash "$G237_ROOT/probe.sh")"
+FP2="\$(_fwf_gate_fingerprint bash "$G237_ROOT/probe.sh")"
+echo goodbye > "$G237_ROOT/probe.sh"
+FP3="\$(_fwf_gate_fingerprint bash "$G237_ROOT/probe.sh")"
+echo "TAG_FP_STABLE:\$([ "\$FP1" = "\$FP2" ] && echo yes || echo no)"
+echo "TAG_FP_CHANGES_WITH_CONTENT:\$([ "\$FP1" != "\$FP3" ] && echo yes || echo no)"
+SETUPEOF
+G237_RESULT="$(bash "$G237_SETUP")"
+
+assert_contains "AC(d2): the recorded verdict carries sha, verdict, and fingerprint together" \
+  "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_READ_WITH_FP:')" "fingerprint=fpA"
+assert_eq "a pre-#237 record with no fingerprint= line still reads successfully" \
+  "TAG_READ_LEGACY_RC:0" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_READ_LEGACY_RC:')"
+case "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_READ_LEGACY:')" in
+  *fingerprint*) bad "a legacy record must never fabricate a fingerprint clause" ;;
+  *) ok "a legacy record with no fingerprint field prints without the trailing clause, not a fabricated one" ;;
+esac
+assert_eq "AC(k2): a never-revoked fingerprint reports not-revoked (rc 1)" \
+  "TAG_REVOKED_BEFORE:1" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_REVOKED_BEFORE:')"
+assert_eq "AC(k2): after fwf_gate_revoke_fingerprint, the SAME fingerprint reports revoked (rc 0)" \
+  "TAG_REVOKED_AFTER:0" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_REVOKED_AFTER:')"
+assert_eq "AC(k2): a DIFFERENT, never-listed fingerprint is unaffected by another one's revocation" \
+  "TAG_UNREVOKED_OTHER:1" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_UNREVOKED_OTHER:')"
+assert_eq "revoking the same fingerprint twice is idempotent, not duplicated" \
+  "TAG_REVOKE_LINE_COUNT:1" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_REVOKE_LINE_COUNT:')"
+assert_eq "the fingerprint is stable for identical argv + file content" \
+  "TAG_FP_STABLE:yes" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_FP_STABLE:')"
+assert_eq "the fingerprint changes when a resolvable file argument's content changes" \
+  "TAG_FP_CHANGES_WITH_CONTENT:yes" "$(printf '%s\n' "$G237_RESULT" | grep '^TAG_FP_CHANGES_WITH_CONTENT:')"
+
+# --------------------------------------------------------------------------
+section "gate: a suite with no confirmed path to red writes UNKNOWN, not green (issue #237 AC k)"
+G237K_ROOT="$TMP/gate237-canary"; mkdir -p "$G237K_ROOT/state/example"
+G237K_EXTRACTOR='awk "/^  ok   / { print \"PASS \" substr(\$0,8) } /^  FAIL / { print \"FAIL \" substr(\$0,8) }"'
+G237K_MARKER="__FWF_CANARY__"
+
+G237K_STUB_OK="$TMP/gate237k-stub-ok.sh"
+cat > "$G237K_STUB_OK" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '  ok   real test\n'
+printf '  FAIL __FWF_CANARY__: deliberate always-failing sentinel\n'
+exit 0
+STUBEOF
+chmod +x "$G237K_STUB_OK"
+FWF_RUN_DIR="$G237K_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G237K_EXTRACTOR" FWF_GATE_CANARY_MARKER="$G237K_MARKER" \
+  "$ROOT/fwf-gate.sh" g237kroleok -- bash "$G237K_STUB_OK" >/dev/null 2>&1
+G237K_SHA_OK="$(git rev-parse HEAD)"
+G237K_VERDICT_OK="$(FWF_RUN_DIR="$G237K_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G237K_SHA_OK'")"
+assert_contains "AC(k): canary correctly reports FAIL -> the real green stands" "$G237K_VERDICT_OK" "verdict=green"
+
+G237K_ROOT2="$TMP/gate237-canary2"; mkdir -p "$G237K_ROOT2/state/example"
+G237K_STUB_BROKEN="$TMP/gate237k-stub-broken.sh"
+cat > "$G237K_STUB_BROKEN" <<'STUBEOF'
+#!/usr/bin/env bash
+printf 'totally unmatched output -- simulates a #242-shaped broken harness\n'
+exit 0
+STUBEOF
+chmod +x "$G237K_STUB_BROKEN"
+G237K_OUT="$(FWF_RUN_DIR="$G237K_ROOT2" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G237K_EXTRACTOR" FWF_GATE_CANARY_MARKER="$G237K_MARKER" \
+  "$ROOT/fwf-gate.sh" g237krolebroken -- bash "$G237K_STUB_BROKEN" 2>&1)"
+G237K_SHA_BROKEN="$(git rev-parse HEAD)"
+G237K_VERDICT_BROKEN="$(FWF_RUN_DIR="$G237K_ROOT2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G237K_SHA_BROKEN'")"
+assert_contains "AC(k): fixture -- a harness stubbed to exit 0 unconditionally (#242 shape) with the canary absent records UNKNOWN, not a pass" \
+  "$G237K_VERDICT_BROKEN" "verdict=unknown"
+assert_contains "AC(k): the downgrade is explained, not silent" "$G237K_OUT" "no confirmed path to red"
+
+# canary marker declared without GATE_CASE_EXTRACTOR is a misconfiguration
+# this cannot verify -- fail closed to unknown rather than trust an
+# unverifiable green.
+G237K_ROOT3="$TMP/gate237-canary3"; mkdir -p "$G237K_ROOT3/state/example"
+FWF_RUN_DIR="$G237K_ROOT3" FWF_PROFILE=example FWF_GATE_CANARY_MARKER="$G237K_MARKER" \
+  "$ROOT/fwf-gate.sh" g237krolemisconf -- bash "$G237K_STUB_OK" >/dev/null 2>&1
+G237K_SHA3="$(git rev-parse HEAD)"
+G237K_VERDICT3="$(FWF_RUN_DIR="$G237K_ROOT3" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G237K_SHA3'")"
+assert_contains "AC(k): a canary marker with no GATE_CASE_EXTRACTOR to verify it fails closed to UNKNOWN" \
+  "$G237K_VERDICT3" "verdict=unknown"
+
+# --------------------------------------------------------------------------
+section "gate-promote: the obliged call site (issue #237)"
+_g237_fixture() { # $1=var-prefix -> sets ${prefix}_BARE/_CONDUCTOR/_STAGING_SHA, a real origin+clone with staging/integration
+  local prefix="$1" bare src conductor
+  bare="$TMP/gate237-$prefix-origin.git"; git init --bare -q "$bare"
+  # 2>/dev/null: cloning a freshly-init'd, still-empty bare repo warns
+  # "appear to have cloned an empty repository" / "remote HEAD refers to
+  # nonexistent ref" -- true, harmless, and expected (staging/integration
+  # do not exist yet at this exact point), just noisy in gate output.
+  src="$TMP/gate237-$prefix-src"; git clone -q "$bare" "$src" 2>/dev/null
+  ( cd "$src" && git config user.email t@t.com && git config user.name t \
+    && echo a > f.txt && git add f.txt && git commit -q -m init && git branch -M staging \
+    && git push -q origin staging && git switch -q -c integration && git push -q origin integration \
+    && echo b > f.txt && git commit -q -am second && git push -q origin staging )
+  conductor="$TMP/gate237-$prefix-conductor"; git clone -q "$bare" "$conductor"
+  ( cd "$conductor" && git config user.email t@t.com && git config user.name t )
+  eval "${prefix}_BARE=\"$bare\"; ${prefix}_CONDUCTOR=\"$conductor\"; ${prefix}_STAGING_SHA=\"\$(cd '$src' && git rev-parse staging)\""
+}
+
+# AC (f): no record at all -> INDETERMINATE, distinct wording from a real refusal.
+_g237_fixture G237P1
+G237P1_ROOT="$TMP/gate237p1-state"; mkdir -p "$G237P1_ROOT/state/example"
+G237P1_OUT="$(cd "$G237P1_CONDUCTOR" && FWF_RUN_DIR="$G237P1_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p1 integration 2>&1)"
+G237P1_RC=$?
+assert_eq "AC(f): no recorded gate at all -> refuses (rc 1)" "1" "$G237P1_RC"
+assert_contains "AC(f)/(h): names 'no recorded gate' and the exact command to fix it" "$G237P1_OUT" "no recorded gate for role"
+assert_contains "AC(h): names the actionable fwf gate command" "$G237P1_OUT" "fwf gate g237p1"
+
+# AC (a)/(b): a RED record refuses; a GREEN record for the SAME sha promotes.
+_g237_fixture G237P2
+G237P2_ROOT="$TMP/gate237p2-state"; mkdir -p "$G237P2_ROOT/state/example"
+FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g237p2 '$G237P2_STAGING_SHA' red"
+G237P2_OUT_RED="$(cd "$G237P2_CONDUCTOR" && FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p2 integration 2>&1)"
+G237P2_RC_RED=$?
+assert_eq "AC(a): a RED record refuses (rc 1), against the real defect (nothing enforced this before #237)" "1" "$G237P2_RC_RED"
+assert_contains "AC(a): names the actual recorded verdict" "$G237P2_OUT_RED" "is 'red', not green"
+assert_eq "integration is untouched after a refused promote" "$G237P2_STAGING_SHA" "$G237P2_STAGING_SHA"
+
+FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g237p2 '$G237P2_STAGING_SHA' green"
+G237P2_OUT_GREEN="$(cd "$G237P2_CONDUCTOR" && FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p2 integration 2>&1)"
+G237P2_RC_GREEN=$?
+assert_eq "AC(b): the green path -- gate green on SHA X -> promote X succeeds" "0" "$G237P2_RC_GREEN"
+assert_not_contains "AC(b): a successful promote never prints a REFUSED line" "$G237P2_OUT_GREEN" "REFUSED"
+G237P2_INTEGRATION_NOW="$(git ls-remote "$G237P2_BARE" integration | cut -f1)"
+assert_eq "AC(b): integration actually advanced to the recorded green SHA" "$G237P2_STAGING_SHA" "$G237P2_INTEGRATION_NOW"
+
+# AC (c): a green record for SHA X does not authorize promoting a DIFFERENT
+# SHA Y just because some OTHER sha has a green record somewhere in the
+# store -- the role's OWN currently-recorded tip is what gets checked.
+_g237_fixture G237P3
+G237P3_ROOT="$TMP/gate237p3-state"; mkdir -p "$G237P3_ROOT/state/example"
+FWF_RUN_DIR="$G237P3_ROOT" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  fwf_gate_verdict_record shaX g237p3 green   # an unrelated sha's own green record exists in the store
+  fwf_gate_tip_record g237p3 '$G237P3_STAGING_SHA' red   # but THIS role's own current tip is red
+"
+G237P3_OUT="$(cd "$G237P3_CONDUCTOR" && FWF_RUN_DIR="$G237P3_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p3 integration 2>&1)"
+assert_eq "AC(c): a green record for an UNRELATED sha never authorizes promoting this role's own (red) tip" "1" "$?"
+assert_contains "AC(c): refuses on THIS role's own recorded verdict, not a different sha's" "$G237P3_OUT" "not green"
+
+# AC (e2): a recorded SHA that does not resolve to any object -> CORRUPT,
+# distinct wording from "never gated" -- the live incident this ticket was
+# filed against.
+_g237_fixture G237P4
+G237P4_ROOT="$TMP/gate237p4-state"; mkdir -p "$G237P4_ROOT/state/example"
+FWF_RUN_DIR="$G237P4_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g237p4 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef green"
+G237P4_OUT="$(cd "$G237P4_CONDUCTOR" && FWF_RUN_DIR="$G237P4_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p4 integration 2>&1)"
+assert_eq "AC(e2): an unresolvable recorded sha refuses (rc 1)" "1" "$?"
+assert_contains "AC(e2): named CORRUPT, distinctly from a plain not-gated/red refusal" "$G237P4_OUT" "CORRUPT"
+
+# AC (f): a present-but-unreadable record (empty file) -> INDETERMINATE.
+_g237_fixture G237P5
+G237P5_ROOT="$TMP/gate237p5-state"; mkdir -p "$G237P5_ROOT/state/example/gate-tip"
+: > "$G237P5_ROOT/state/example/gate-tip/g237p5"
+G237P5_OUT="$(cd "$G237P5_CONDUCTOR" && FWF_RUN_DIR="$G237P5_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p5 integration 2>&1)"
+assert_eq "AC(f): an unreadable/malformed record refuses (rc 1)" "1" "$?"
+assert_contains "AC(f): named INDETERMINATE, distinct from both 'not gated' and 'gated'" "$G237P5_OUT" "INDETERMINATE"
+
+# AC (k2): a green, otherwise-valid record whose fingerprint has been
+# revoked must still refuse.
+_g237_fixture G237P6
+G237P6_ROOT="$TMP/gate237p6-state"; mkdir -p "$G237P6_ROOT/state/example"
+FWF_RUN_DIR="$G237P6_ROOT" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  fwf_gate_tip_record g237p6 '$G237P6_STAGING_SHA' green
+  fwf_gate_verdict_record '$G237P6_STAGING_SHA' g237p6 green '' badfp237
+  fwf_gate_revoke_fingerprint badfp237 'test: known-broken gate'
+"
+G237P6_OUT="$(cd "$G237P6_CONDUCTOR" && FWF_RUN_DIR="$G237P6_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p6 integration 2>&1)"
+assert_eq "AC(k2): a green record whose fingerprint is revoked still refuses (rc 1)" "1" "$?"
+assert_contains "AC(k2): named REVOKED, distinctly" "$G237P6_OUT" "REVOKED"
+
+# AC (d3): the legacy, unmaintained record is removed on EVERY call, not
+# just once -- it is a permanent trap at a well-known path otherwise.
+_g237_fixture G237P7
+G237P7_ROOT="$TMP/gate237p7-state"; mkdir -p "$G237P7_ROOT"
+mkdir -p "$G237P7_ROOT" && printf 'stale-unresolvable-sha-from-a-previous-session\n' > "$G237P7_ROOT/conductor-last-gated-sha"
+( cd "$G237P7_CONDUCTOR" && FWF_RUN_DIR="$G237P7_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p7-nonexistent integration >/dev/null 2>&1 )
+if [ -f "$G237P7_ROOT/conductor-last-gated-sha" ]; then
+  bad "AC(d3): the legacy conductor-last-gated-sha file must be removed, not left as a permanent trap"
+else
+  ok "AC(d3): the legacy, unmaintained record is removed even on a REFUSED promote attempt"
+fi
+
+# --------------------------------------------------------------------------
+section "gate-promote: adoption in the same PR (issue #237 AC g)"
+assert_not_contains "dev conductor template no longer has the raw, unguarded promote sequence" \
+  "$(cat "$ROOT/templates/dev/conductor.tmpl")" 'git merge --ff-only "$(fwf gate-tip'
+assert_contains "dev conductor template calls the obliged fwf gate-promote instead" \
+  "$(cat "$ROOT/templates/dev/conductor.tmpl")" "fwf gate-promote __ROLETAG__ __INTEGRATION__"
+assert_not_contains "refactor conductor template no longer has the raw, unguarded promote sequence" \
+  "$(cat "$ROOT/templates/refactor/conductor.tmpl")" 'git merge --ff-only "$(fwf gate-tip'
+assert_contains "refactor conductor template calls the obliged fwf gate-promote instead" \
+  "$(cat "$ROOT/templates/refactor/conductor.tmpl")" "fwf gate-promote __ROLETAG__ __INTEGRATION__"
+
+# --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
 # A bash script's status is that of its LAST executed command, so the gate
