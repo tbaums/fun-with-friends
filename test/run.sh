@@ -4046,8 +4046,15 @@ unset AZ215_EVENTS_FAIL
 # (h) pre-sentinel: an episode whose UN-GATE predates the cutoff -> NOT-GATED
 # with the pre-sentinel reason named; an otherwise-identical post-cutoff
 # episode -> HELD. Both asserted against the constant, not a hardcoded date.
-PRE_TS="$(date -u -d "@$(( CUTOFF_EPOCH_CONST - 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
-POST_TS="$(date -u -d "@$(( CUTOFF_EPOCH_CONST + 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+PRE_EPOCH=$(( CUTOFF_EPOCH_CONST - 86400 ))
+POST_EPOCH=$(( CUTOFF_EPOCH_CONST + 86400 ))
+# GNU `date -d` has no BSD/macOS equivalent (issue #328, same shape as #304's
+# `touch -d`) -- fall back to `-j -f %s` there, and fail LOUDLY (not a silent
+# empty PRE_TS/POST_TS flowing into the fixture JSON) if neither works.
+PRE_TS="$(date -u -d "@$PRE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$PRE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+[ -n "$PRE_TS" ] || { echo "fixture: could not format PRE_TS (epoch->ISO8601) on this platform" >&2; exit 1; }
+POST_TS="$(date -u -d "@$POST_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$POST_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+[ -n "$POST_TS" ] || { echo "fixture: could not format POST_TS (epoch->ISO8601) on this platform" >&2; exit 1; }
 az215_set_labels 505 '[]'; az215_set_comments 505
 printf '[{"event":"labeled","created_at":"2026-08-01T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"%s","label":{"name":"product-wip"}}]' "$PRE_TS" > "$TMP/az215-events-505.json"
 AZ215_EVENTS_FILE="$TMP/az215-events-505.json"
