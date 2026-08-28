@@ -417,6 +417,17 @@ pctx_env() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
 # real bug: the first cut of this sanitizer used \b, which silently NEVER
 # matches on this repo's own dev machine (macOS /usr/bin/sed) — every rule
 # below would otherwise pass straight through unsanitized.
+#
+# issue #234: the table used to ALSO substitute role/jargon words (pm, gv,
+# captain, conductor, impl<N>, qa<N>, floor, gate, worktree(s), product-wip,
+# release-hold, "staging branch"/"integration branch") as ordinary vocabulary.
+# GV-signed direction: narrow the table to PROTOCOL MARKERS only (below) and
+# STOP substituting those — they are identifiers a human types (a CLI flag,
+# a command, a seat), not jargon, and substituting them either publishes a
+# command that does not exist ('--pm-only' -> '--the product owner-only') or
+# destroys which seat did what (impl1/impl2/gv/qa1 all collapsing into "the
+# implementer"/"the reviewer"). This repo is public and ships 31 role-
+# template files by name, so there was no secret in that table to begin with.
 SANI_IN="mentions impl3 and impl__ID__ and qa2 and CLAIM impl1 and ASSIGNED qa4
 GV-SIGNOFF then GV-CHANGES; QA-APPROVED: #1 and QA-CHANGES-REQUESTED: #2 and IMPL-ADDRESSED: #3
 captain, conductor, gv, pm all met in the worktree on the floor to review the gate
@@ -431,23 +442,81 @@ SANI_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SANI_IN")"
 # actively rewriting this substitution table, making this the single most
 # concrete live risk this whole ticket names.
 assert_contains "sanitizer output is non-empty and preserves non-denylisted content (not vacuously erased)" "$SANI_OUT" "mentions"
-for tok in 'impl3' 'impl__ID__' 'qa2' 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
-           'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:' 'captain' 'conductor' \
-           'worktree' 'floor' 'gate' 'staging branch' 'integration branch' 'origin/staging' \
-           'origin/integration' 'product-wip' 'release-hold' 'Owner:' 'FWF_TOKEN_BUDGET' \
-           'LI-42' 'impl2/issue-9-slug' 'fwf-self-abc123' '.fun-with-friends'; do
+# issue #234: the substitution table was NARROWED to protocol-state markers;
+# identifiers are deliberately no longer substituted, so they must NOT be
+# asserted here. Keeps #247's vacuity guard above AND #234's narrowed list.
+# still substituted: protocol-state markers (kept — see lib/pr_context.sh).
+for tok in 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
+           'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:'; do
   case "$SANI_OUT" in
     *"$tok"*) bad "sanitizer strips '$tok'" "leaked: $SANI_OUT";;
     *)        ok "sanitizer strips '$tok'";;
   esac
 done
-# bare "WIP" (not part of a larger word) is deleted entirely, not replaced.
+# still substituted: composite patterns unrelated to the role/jargon table
+# (branch/session/path sweep, origin/staging|integration, LI-N, FWF_* vars).
+for tok in 'origin/staging' 'origin/integration' 'FWF_TOKEN_BUDGET' 'LI-42' \
+           'impl2/issue-9-slug' 'fwf-self-abc123' '.fun-with-friends'; do
+  case "$SANI_OUT" in
+    *"$tok"*) bad "sanitizer strips '$tok'" "leaked: $SANI_OUT";;
+    *)        ok "sanitizer strips '$tok'";;
+  esac
+done
+# AC(d) / AC(g): the dropped role/jargon words now SURVIVE VERBATIM — they
+# are no longer substituted at all, prose or otherwise (issue #234).
+for tok in 'impl3' 'impl__ID__' 'qa2' 'captain' 'conductor' 'gv' 'pm' \
+           'worktree' 'floor' 'gate' 'staging branch' 'integration branch' \
+           'product-wip' 'release-hold'; do
+  assert_contains "AC(g): sanitizer no longer touches '$tok' (narrowed table, issue #234)" "$SANI_OUT" "$tok"
+done
+# bare "WIP" (not part of a larger word) is deleted entirely, not replaced —
+# unaffected by the narrowing, still exercised here.
 case "$SANI_OUT" in *WIP*) bad "sanitizer deletes bare WIP";; *) ok "sanitizer deletes bare WIP";; esac
-# adjacent tokens sharing a boundary char (the specific bug the \b rewrite fixed)
-# must ALL convert, not just the outermost ones.
-ADJ="$(pctx_env "fwf_sanitize_pr_text" <<<"impl1 impl2 impl3")"
-assert_eq "adjacent role tokens all sanitized (no boundary-consuming gap)" \
-  "the implementer the implementer the implementer" "$ADJ"
+# adjacent tokens sharing a boundary char (the specific bug the \b rewrite
+# fixed) must ALL convert, not just the outermost ones — exercised against a
+# KEPT rule now that the role-word rules it originally used are gone.
+ADJ="$(pctx_env "fwf_sanitize_pr_text" <<<"FWF_A FWF_B FWF_C")"
+assert_eq "adjacent marker tokens all sanitized (no boundary-consuming gap)" \
+  "[internal-var] [internal-var] [internal-var]" "$ADJ"
+
+# issue #234 AC(a) — the four RED cases from the original bug report, GREEN
+# now that pm/floor/gate are no longer substituted at all: a command/flag
+# that never existed cannot be published into permanent history.
+AC_A_IN='fwf up --pm-only refuses when no coord session exists; also try --floor-only.
+Run `fwf gate` before pushing, and see `gate-history` for prior runs.'
+AC_A_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_A_IN")"
+for tok in '--pm-only' '--floor-only' 'fwf gate' 'gate-history'; do
+  assert_contains "AC(a): '$tok' survives sanitization verbatim (issue #234)" "$AC_A_OUT" "$tok"
+done
+
+# issue #234 AC(d2) — distinct seats stay distinguishable; the old table
+# collapsed qa1/gv into the SAME string ("the reviewer"), destroying which
+# reviewer did what. Load-bearing: this is the actual defect behind #189/
+# #212 wanting a faithful record.
+AC_D2_IN="qa1 requested changes on impl2's PR; gv signed off"
+AC_D2_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_D2_IN")"
+assert_eq "AC(d2): three distinct seats remain distinguishable, not collapsed (issue #234)" \
+  "$AC_D2_IN" "$AC_D2_OUT"
+
+# issue #234 AC(e2) — the motivating example: a captain/conductor branch name
+# in prose (and, since it's the same string, in a markdown link target) must
+# survive verbatim, never rewritten into a branch that does not exist.
+AC_E2_IN='see captain/218-sentinel-fixtures and [the PR](https://github.com/x/y/tree/conductor/9-foo)'
+AC_E2_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E2_IN")"
+for tok in 'captain/218-sentinel-fixtures' 'conductor/9-foo'; do
+  assert_contains "AC(e2): branch name '$tok' survives sanitization verbatim (issue #234)" "$AC_E2_OUT" "$tok"
+done
+
+# issue #234 AC(e) — idempotent. Narrowing drops the shield/restore mechanism
+# that motivated this AC originally, but it's not moot: it's a property of
+# the KEPT marker table too — none of [internal-var]/(claimed)/(assigned)/
+# (reviewed)/(review note:) may itself re-match a source pattern on a second
+# pass (QA-caught: reasoning "by eye" isn't the same as asserting it).
+AC_E_IN='CLAIM impl1 then GV-SIGNOFF and QA-APPROVED: #5, ASSIGNED qa2, FWF_A FWF_B'
+AC_E_ONCE="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E_IN")"
+AC_E_TWICE="$(pctx_env "fwf_sanitize_pr_text" <<<"$AC_E_ONCE")"
+assert_eq "AC(e): sanitizing an already-sanitized body is a no-op (issue #234)" \
+  "$AC_E_ONCE" "$AC_E_TWICE"
 # sensitive-data scrub (constraint 3): secret/token/key SHAPES, not just fwf vocab.
 SEC_IN='ghp_abcdefghijklmnopqrstuvwxyz012345 AKIAABCDEFGHIJKLMNOP sk-abcdefghijklmnopqrstuvwx api_key: sup3rsecret'
 SEC_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SEC_IN")"
