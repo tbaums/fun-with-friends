@@ -415,6 +415,13 @@ staging branch and integration branch; origin/staging and origin/integration
 product-wip and release-hold; Owner: impl9  WIP
 FWF_TOKEN_BUDGET and LI-42 and impl2/issue-9-slug and fwf-self-abc123 and ~/.fun-with-friends/state/x"
 SANI_OUT="$(pctx_env "fwf_sanitize_pr_text" <<<"$SANI_IN")"
+# issue #247 (A), qa2-caught (#325 review): a genuinely-empty $SANI_OUT
+# (sanitizer crashed, produced nothing) would make EVERY "strips X" check
+# below pass vacuously -- prove the sanitizer actually ran and preserved
+# non-denylisted content before trusting any absence claim about it. #234 is
+# actively rewriting this substitution table, making this the single most
+# concrete live risk this whole ticket names.
+assert_contains "sanitizer output is non-empty and preserves non-denylisted content (not vacuously erased)" "$SANI_OUT" "mentions"
 for tok in 'impl3' 'impl__ID__' 'qa2' 'CLAIM impl1' 'ASSIGNED qa4' 'GV-SIGNOFF' 'GV-CHANGES' \
            'QA-APPROVED:' 'QA-CHANGES-REQUESTED:' 'IMPL-ADDRESSED:' 'captain' 'conductor' \
            'worktree' 'floor' 'gate' 'staging branch' 'integration branch' 'origin/staging' \
@@ -2564,6 +2571,12 @@ GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=
 assert_contains "guard names the shortfall" "$GUARDOUT" "REFUSING to start"
 # Floor of 0 disables the guard (it must not be the thing that blocks here).
 G0="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0 "$ROOT/fwf-up.sh" --floor-only 2>&1)"
+# issue #247 (A), qa2-caught (#325 review): --floor-only genuinely refuses
+# here too (no pre-existing coord session -- expected, unrelated to the disk
+# guard), so success is NOT the right proof; a silently-empty $G0 would also
+# satisfy the absence check below. Prove it actually produced real
+# diagnostic output before trusting the absence claim.
+assert_contains "floor 0 disables guard -- the command actually produced output, not vacuously silent" "$G0" "fwf-up:"
 case "$G0" in *"REFUSING to start"*) bad "floor 0 disables guard";; *) ok "floor 0 disables guard";; esac
 
 section "runtime sizing + models (issue #7)"
@@ -2589,6 +2602,10 @@ assert_contains "default output style is Concise" "$STYLECMD" '--settings \{\"ou
 STYLEOVERRIDE="$(FWF_OUTPUT_STYLE=Explanatory FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
 assert_contains "FWF_OUTPUT_STYLE override honored" "$STYLEOVERRIDE" '--settings \{\"outputStyle\":\"Explanatory\"\}'
 STYLEOFF="$(FWF_OUTPUT_STYLE='' FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+# issue #247 (A), qa2-caught (#325 review): the absence of --settings also
+# holds if fwf_claude_cmd errored outright -- prove it still produced the
+# base command line before trusting the absence claim.
+assert_contains "FWF_OUTPUT_STYLE=\"\" still produces a real command line (not vacuously empty on error)" "$STYLEOFF" "claude"
 case "$STYLEOFF" in *--settings*) bad "FWF_OUTPUT_STYLE=\"\" disables --settings";; *) ok "FWF_OUTPUT_STYLE=\"\" disables --settings";; esac
 STYLEWITHMODEL="$(FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
 assert_contains "output style composes with --model (model)" "$STYLEWITHMODEL" "--model sonnet"
@@ -3108,6 +3125,10 @@ assert_contains "conductor: never fetch/pull/push" "$NPCON" "NEVER fetch/pull/pu
 NPCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 assert_contains "captain: sole exception, per-instance" "$NPCAP" "FWF_ALLOW_PUSH=1"
 GHCAP="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+# issue #247 (A), qa2-caught (#325 review): the absence of FWF_ALLOW_PUSH
+# also holds if the render failed outright -- prove it actually rendered
+# the captain prompt before trusting the absence claim.
+assert_contains "gh-mode captain prompt actually rendered (not vacuously empty on a render failure)" "$GHCAP" "CAPTAIN (orchestrator)"
 case "$GHCAP" in *FWF_ALLOW_PUSH*) bad "gh mode has no push-guard text";; *) ok "gh mode has no push-guard text";; esac
 
 section "no shared-branch collision on claim/gate (issue #91): implementers and read-only conductors never hold local staging"

@@ -49,6 +49,7 @@ Every hit is one of three buckets, marked at the site with `# issue #247
 | the 3 filtered corpus-scan assertions: `grep -qE 'gh pr (create|merge)'` itself can match nothing | `tmpl_filter_nonempty` | A | same shape, one shared guard asserting the filter matched at least one file |
 | `assert_not_contains`: an empty haystack takes the pass branch | the helper itself | A | reject on empty haystack; surfaced 2 real instances relying on the old vacuous pass (#278 AC d/d2), routed to `assert_eq ""` per AC (a6) since they are legitimately-empty, not bugs |
 | cargo-build e2e peak / double-reap race peak: a max inferred from a ONE-SHOT sample at registration | `n="$(ls "$counter_dir" \| wc -l \| tr -d ' ')"` (2 sites, same idiom copied) | A | continuous polling through the full presence window, backgrounded and decoupled from the fixed hold/release sleep (see the self-inflicted-flake note below) |
+| the 4 hand-rolled `case ... in *X*) bad;; *) ok;; esac` sites AC (a5) names explicitly: `$SANI_OUT` (twice — the ~28-token leak loop and the bare-WIP check, one guard covers both), `$G0`, `$STYLEOFF`, `$GHCAP` — an empty/crashed producer makes each pass vacuously (qa2-caught in review of the first version of this PR) | `$SANI_OUT`/`$G0`/`$STYLEOFF`/`$GHCAP` | A | one `assert_contains` per site proving the producer actually ran (non-erased content / real diagnostic output — `--floor-only` genuinely refuses here on an unrelated, expected reason, so success is not the right proof / base command present / prompt actually rendered) placed immediately before each absence check |
 
 **A bug found in the fix itself, worth recording for the next sweep too:**
 the first version of the sampler fix looped the poll *in the same process*
@@ -62,6 +63,47 @@ fixed-cost `sleep "$hold"` completes, so polling overhead can never affect
 release timing. **The lesson generalizes: a sampling loop's own cost is
 itself a timing assumption, and belongs on the same suspicion list as the
 `sleep` it replaces.**
+
+## AC (a7): the `assert_not_contains`-family count, broken down
+
+The heuristic count in #247's own body ("35 vacuous assertions") is
+explicitly an upper bound and wrong in both directions — it is not repeated
+here. What this PR actually inspected and disposed of:
+
+| status | detail |
+|---|---|
+| **confirmed and fixed, direct helper call sites** | all real call sites of `assert_not_contains()` — the helper itself now rejects an empty haystack, so every one of them is sound by construction rather than needing per-site inspection (10 call sites were counted in the ticket's own filing; the current tree has 66 — a stale count, corrected here rather than repeated. All are covered by the single helper fix) |
+| **confirmed and fixed, hand-rolled (not the helper)** | 4 — `$SANI_OUT` (×2 sites), `$G0`, `$STYLEOFF`, `$GHCAP`, the exact 4 the ticket names explicitly |
+| **confirmed FALSE POSITIVE, already sound** | `$UT_ROLES` (per the ticket's own audit — properly paired by two preceding `assert_eq`), and the 12+ legitimately-empty sites at AC (a6) above (`assert_eq "" "$VAR"`, the correct positive form) |
+| **routed under AC (a6), not converted** | 2 — `#278` AC (d)/(d2), surfaced by the `assert_not_contains` helper fix itself, legitimately expect total silence |
+| **candidates outstanding** | not exhaustively re-audited beyond the 4 the ticket named and the direct helper call sites; the ~25–30 *other* hand-rolled `case`-shaped blocks the ticket estimated (not calling `assert_not_contains`, not one of the 4 named) have not been individually inspected in this PR |
+
+## AC (d): runtime cost on a red run
+
+The floor is red right now (per #286, tracked separately), so the failing
+path is the one actually walked in CI today, and a bounded-timeout poll is
+slow specifically on failure — every assertion that would have failed at a
+fixed offset before now waits out its own timeout instead.
+
+Fixes landed in this PR that replaced a fixed-time read with a bounded
+poll, and their worst-case added wait if genuinely broken:
+
+- `single-flight` (issue #243 area): up to 5s waiting for the first call to
+  appear, plus up to 5s for the count to stabilize — **10s worst case**,
+  versus the old fixed `sleep 1`.
+- cargo-build e2e / double-reap race sampler: unchanged worst-case timeout
+  — the poller is bounded by the SAME fixed `sleep "$hold"` (2s/2s/1s and
+  1s respectively) it always was; this PR did not add a new timeout here,
+  it fixed what happens *during* the existing one.
+- `assert_not_contains` / `tmpl_corpus_nonempty` / `tmpl_filter_nonempty`:
+  no polling added — these are single-pass checks, not bounded waits, so
+  they add no timeout cost on a red run.
+
+**If every timeout-bearing assertion above failed simultaneously in one
+run** (the true worst case, not the expected one): +10s from
+`single-flight`, no change from the others. Small in absolute terms next to
+this suite's real-tmux sections (multi-minute today), but recorded per
+AC (d)'s own instruction rather than left unstated.
 
 ## What was marked but intentionally not touched (B)
 
