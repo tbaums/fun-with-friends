@@ -1198,14 +1198,21 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let count = match (app.feed.dashboard(), t) {
-                (Some(d), Tab::Activity) => d.activity.len(),
-                (Some(d), Tab::Roles) => d.roles.len(),
-                (Some(d), Tab::Decisions) => d.decisions.len(),
-                (Some(d), Tab::Issues) => d.issues.len(),
-                (_, Tab::Usage) => app.usage_feed.usage().map(|u| u.roles.len()).unwrap_or(0),
-                _ => 0,
+            // #291: a tab whose backing feed hasn't produced data yet (still
+            // loading, or a dead board with no last-good snapshot) must never
+            // render a confident "(0)" -- that reads as "genuinely empty",
+            // indistinguishable from a queue that actually drained. "(?)"
+            // instead, same #193/#211 shape as every other UNKNOWN-not-zero
+            // read in this dash.
+            let count: Option<usize> = match (app.feed.dashboard(), t) {
+                (Some(d), Tab::Activity) => Some(d.activity.len()),
+                (Some(d), Tab::Roles) => Some(d.roles.len()),
+                (Some(d), Tab::Decisions) => Some(d.decisions.len()),
+                (Some(d), Tab::Issues) => Some(d.issues.len()),
+                (_, Tab::Usage) => app.usage_feed.usage().map(|u| u.roles.len()),
+                _ => None,
             };
+            let count = count.map_or_else(|| "?".to_string(), |c| c.to_string());
             Line::from(format!(" {} {} ({}) ", i + 1, t.title(), count))
         })
         .collect();
@@ -3112,6 +3119,40 @@ mod tests {
             0,
             "fixture default must be zero"
         );
+    }
+
+    // #291: a dead board (data provider exited nonzero, e.g. jq's ARG_MAX
+    // exit 126, and no prior successful fetch to fall back on) must render
+    // every tab count as "(?)", never a confident "(0)" -- "(0)" reads as
+    // "genuinely empty", which is a lie about a read that never happened.
+    #[test]
+    fn dead_board_tabs_show_unknown_not_zero() {
+        let mut app = test_app();
+        app.feed = Feed::Err("data provider exited 126: jq: Argument list too long".into(), None);
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| render_tabs(f, area, &app));
+        let text = buffer_to_text(&buf);
+        assert!(
+            !text.contains("(0)"),
+            "dead board must never render a confident zero count: {text}"
+        );
+        assert!(
+            text.contains("(?)"),
+            "dead board tabs must render (?) for an unread count: {text}"
+        );
+    }
+
+    // Still loading (no fetch has completed yet, success or failure) is the
+    // same "don't know yet" state as a dead board -- same "(?)" rendering,
+    // not a transient "(0)" that would visually flicker on every startup.
+    #[test]
+    fn loading_board_tabs_show_unknown_not_zero() {
+        let app = test_app();
+        assert!(matches!(app.feed, Feed::Loading));
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| render_tabs(f, area, &app));
+        let text = buffer_to_text(&buf);
+        assert!(!text.contains("(0)"), "loading tabs must never render a confident zero count: {text}");
     }
 
     #[test]
