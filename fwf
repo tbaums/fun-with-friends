@@ -641,8 +641,44 @@ doctor() {
   fwf_doctor_version_line
   _doctor_usage_schema
   _doctor_e2e_cmd_check
+  _doctor_api_budget_check
   [ "$ok" = 0 ] && echo "  -> all good." || echo "  -> fix the items above before launching."
   return "$ok"
+}
+# issue #239: surface GitHub API headroom where an operator already looks.
+# "1,900 left" means nothing without the burn rate beside it -- reports
+# remaining/limit, seconds to reset, and the CHARGED rate (200s only, never
+# free TTL-hits/304s) over the last hour, so a reader can see whether
+# anything is trending toward exhaustion. Both reads (headroom + metrics)
+# are cached on fwf-ghcache.sh's own standard TTL -- doctor adds zero new
+# per-run API calls of its own. Informational only, like the other
+# doctor sub-checks above: never fails doctor, and degrades to an explicit
+# UNKNOWN rather than a guessed number when the read itself can't complete.
+_doctor_api_budget_check() {
+  command -v gh >/dev/null 2>&1 || { echo "  api budget : skip (gh not installed)"; return 0; }
+  local hr remaining limit reset now reset_in mret charged eta
+  hr="$("$FWF_DIR/fwf-ghcache.sh" headroom 2>/dev/null)" || true   # exit 1 on UNKNOWN is intentional -- inspect $hr, don't let set -e treat it as doctor failing
+  if [ "$hr" = "UNKNOWN" ] || [ -z "$hr" ]; then
+    echo "  api budget : UNKNOWN — could not read gh api rate_limit (network/auth/rate-limited)"
+    return 0
+  fi
+  remaining="$(printf '%s' "$hr" | grep -oE 'remaining=[0-9]+' | cut -d= -f2)"
+  limit="$(printf '%s' "$hr" | grep -oE 'limit=[0-9]+' | cut -d= -f2)"
+  reset="$(printf '%s' "$hr" | grep -oE 'reset=[0-9]+' | cut -d= -f2)"
+  if [ -z "$remaining" ] || [ -z "$limit" ] || [ -z "$reset" ]; then
+    echo "  api budget : UNKNOWN — headroom read was malformed"
+    return 0
+  fi
+  now="$(date +%s)"; reset_in=$(( reset - now )); [ "$reset_in" -lt 0 ] && reset_in=0
+  mret="$("$FWF_DIR/fwf-ghcache.sh" metrics 3600 2>/dev/null)"
+  charged="$(printf '%s' "$mret" | grep -oE 'charged=[0-9]+' | cut -d= -f2)"
+  charged="${charged:-0}"
+  if [ "$charged" -gt 0 ] 2>/dev/null && [ "$remaining" -gt 0 ] 2>/dev/null; then
+    eta="~$(( remaining / charged ))h at the current ${charged}/hr charged rate"
+  else
+    eta="no exhaustion risk at the current charged rate (${charged}/hr)"
+  fi
+  printf '  api budget : %s/%s remaining, resets in %ss — %s\n' "$remaining" "$limit" "$reset_in" "$eta"
 }
 # `fwf usage` (issue #95) reads message.usage.*/message.model off THIS process's
 # own Claude Code transcript line shape — check it here so a Claude Code
@@ -658,9 +694,14 @@ _doctor_usage_schema() {
     return 0
   fi
   command -v jq >/dev/null 2>&1 || { echo "  usage schema: skip (jq not installed)"; return 0; }
-  f="$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1)"
+  # `|| true` on both: under this script's `set -euo pipefail`, `head -1`
+  # closing the pipe early after its one line SIGPIPEs the writer (jq on a
+  # large transcript, reliably; `ls` more rarely) -- pipefail then reports
+  # the pipeline's exit as 141, which would abort doctor() entirely rather
+  # than just skipping this one informational sub-check.
+  f="$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1)" || true
   [ -n "$f" ] || { echo "  usage schema: skip (no transcript files yet)"; return 0; }
-  sample="$(jq -c 'select(.type=="assistant")' "$f" 2>/dev/null | head -1)"
+  sample="$(jq -c 'select(.type=="assistant")' "$f" 2>/dev/null | head -1)" || true
   if [ -z "$sample" ]; then
     echo "  usage schema: no assistant-type line found yet in $(basename "$f") — nothing to check"
     return 0

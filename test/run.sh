@@ -8547,6 +8547,115 @@ assert_contains "refactor conductor template calls the obliged fwf gate-promote 
   "$(cat "$ROOT/templates/refactor/conductor.tmpl")" "fwf gate-promote __ROLETAG__ __INTEGRATION__"
 
 # --------------------------------------------------------------------------
+section "fwf-ghcache.sh: quota-consuming responses are measured, hit/304/charged distinguished (issue #239)"
+G239_FAKEGH="$TMP/gate239-fakegh.sh"
+G239_STATE="$TMP/gate239-fakegh-state"; mkdir -p "$G239_STATE"
+printf 'etag-v1' > "$G239_STATE/etag"
+cat > "$G239_FAKEGH" <<'FAKEEOF'
+#!/usr/bin/env bash
+# Speaks the exact shape refresh_canonical calls: `api -i /repos/.../issues?
+# state=open&per_page=100&page=1 [-H "If-None-Match: <etag>"]`. Same
+# established convention as the #266 fixtures elsewhere in this suite.
+set -u
+STATE="${G239_STATE:?}"
+etag="$(cat "$STATE/etag" 2>/dev/null || echo v1)"
+inm=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "-H" ]; then case "$a" in "If-None-Match: "*) inm="${a#If-None-Match: }";; esac; fi
+  prev="$a"
+done
+if [ -n "$inm" ] && [ "$inm" = "$etag" ]; then
+  printf 'HTTP/2.0 304 Not Modified\r\nETag: %s\r\n\r\n' "$etag"
+else
+  printf 'HTTP/2.0 200 OK\r\nETag: %s\r\n\r\n[]\n' "$etag"
+fi
+FAKEEOF
+chmod +x "$G239_FAKEGH"
+G239_CACHE="$TMP/gate239-cache"
+
+G239_ENV="G239_STATE=$G239_STATE FWF_REAL_GH=$G239_FAKEGH FWF_GHCACHE_DIR=$G239_CACHE FWF_GHCACHE_REPO=owner/g239repo"
+
+assert_eq "AC: before any traffic, all three counters are zero, not UNKNOWN or an error" \
+  "hit=0 revalidated=0 charged=0 window=3600s" \
+  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+
+env $G239_ENV bash "$ROOT/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
+assert_eq "the first-ever poll is a charged 200 fetch" \
+  "hit=0 revalidated=0 charged=1 window=3600s" \
+  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+
+# AC: "a burst of identical polls shows as hits, not as spend."
+for _ in 1 2 3 4 5; do
+  env $G239_ENV bash "$ROOT/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
+done
+assert_eq "AC(hit-storm != spend-storm): 5 more identical polls inside the TTL window register as hits, charged stays 1" \
+  "hit=5 revalidated=0 charged=1 window=3600s" \
+  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+
+# Force staleness (without changing the upstream ETag) to drive a 304.
+touch -t 202001010000 "$G239_CACHE/owner__g239repo/issues.ts"
+env $G239_ENV bash "$ROOT/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
+assert_eq "an unchanged poll past the TTL revalidates via 304 -- free, not charged" \
+  "hit=5 revalidated=1 charged=1 window=3600s" \
+  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+
+# The window actually bounds the count, not just labels it -- proven with a
+# deliberately backdated log entry rather than a real-time race against the
+# epoch's 1-second granularity (a window=0 call racing "this same second"
+# is inherently unreliable, not a real assertion about the windowing logic).
+G239_METRICS_LOG="$G239_CACHE/owner__g239repo/metrics.log"
+printf 'ts=%s kind=charged\n' "$(( $(date +%s) - 7200 ))" >> "$G239_METRICS_LOG"
+assert_eq "a backdated (2h-old) event is EXCLUDED by a 1-hour window" \
+  "hit=5 revalidated=1 charged=1 window=3600s" \
+  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+assert_eq "the SAME backdated event IS included once the window widens past its age" \
+  "hit=5 revalidated=1 charged=2 window=10800s" \
+  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 10800)"
+
+# --------------------------------------------------------------------------
+section "fwf-ghcache.sh headroom: rate-limit exhaustion renders as UNKNOWN, never a guessed number (issue #239)"
+G239_FAILGH="$TMP/gate239-failgh.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$G239_FAILGH"
+chmod +x "$G239_FAILGH"
+G239_FAIL_CACHE="$TMP/gate239-fail-cache"
+G239_HEADROOM_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail bash "$ROOT/fwf-ghcache.sh" headroom)"
+assert_eq "AC: with the API forced to fail, headroom prints the literal UNKNOWN, never a number" \
+  "UNKNOWN" "$G239_HEADROOM_OUT"
+assert_eq "the UNKNOWN case exits non-zero (a caller checking rc, not just parsing stdout, still catches it)" \
+  "1" "$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail bash "$ROOT/fwf-ghcache.sh" headroom >/dev/null 2>&1; echo $?)"
+
+G239_OKGH="$TMP/gate239-okgh.sh"
+cat > "$G239_OKGH" <<'OKEOF'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [ "$2" = "rate_limit" ]; then
+  printf '{"resources":{"core":{"remaining":42,"limit":5000,"reset":9999999999}}}\n'
+  exit 0
+fi
+exit 1
+OKEOF
+chmod +x "$G239_OKGH"
+G239_OK_CACHE="$TMP/gate239-ok-cache"
+G239_OK_OUT="$(FWF_REAL_GH="$G239_OKGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/fwf-ghcache.sh" headroom)"
+assert_eq "a successful headroom read reports the real numbers" "remaining=42 limit=5000 reset=9999999999" "$G239_OK_OUT"
+
+# AC: "the headroom report is cached on the standard TTL, and asserted NOT
+# to add a per-render API call." Swap in a gh that FAILS after the first
+# successful read -- if headroom re-fetched instead of serving its cache,
+# the second call would flip to UNKNOWN.
+FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/fwf-ghcache.sh" headroom >/dev/null 2>&1
+G239_CACHED_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/fwf-ghcache.sh" headroom)"
+assert_eq "AC: a second headroom call inside the TTL window is served from cache, not a new API call" \
+  "remaining=42 limit=5000 reset=9999999999" "$G239_CACHED_OUT"
+
+# --------------------------------------------------------------------------
+section "fwf doctor: API budget is reported, degrades to UNKNOWN, never fails doctor (issue #239)"
+G239_DOCTOR_OUT="$(FWF_REAL_GH="$G239_OKGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok "$ROOT/fwf" doctor 2>&1)"
+assert_contains "fwf doctor reports the api budget line" "$G239_DOCTOR_OUT" "api budget"
+assert_contains "fwf doctor's api budget line names remaining/limit" "$G239_DOCTOR_OUT" "42/5000 remaining"
+G239_DOCTOR_UNKNOWN_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail "$ROOT/fwf" doctor 2>&1)"
+assert_contains "fwf doctor's api budget degrades to UNKNOWN under a forced failure" "$G239_DOCTOR_UNKNOWN_OUT" "api budget : UNKNOWN"
+
+# --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
 # A bash script's status is that of its LAST executed command, so the gate
