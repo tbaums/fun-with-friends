@@ -259,6 +259,23 @@ assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
 DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
 assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
 
+# issue #247 AC (a3): an empty `find` yields an empty accumulator, and an
+# empty accumulator satisfies every "every template carries X" assertion
+# below identically to full compliance -- a corpus-scan bug (a typo'd path, a
+# directory that moved) would go undetected forever. This helper never calls
+# ok/bad itself -- callers assert on its rc -- so its OWN correctness can be
+# demonstrated (AC a3 requires the guard be shown to fire, not just exist)
+# without a synthetic call polluting the real PASS/FAIL counters.
+tmpl_corpus_nonempty() { # $1=base-dir  $2...=extra find args (after -name "*.tmpl")
+  local base="$1"; shift
+  [ -n "$(find "$base" -name "*.tmpl" "$@" 2>/dev/null)" ]
+}
+EMPTY_TMPL_DIR_247="$TMP/empty-tmpl-dir-247"; mkdir -p "$EMPTY_TMPL_DIR_247"
+tmpl_corpus_nonempty "$EMPTY_TMPL_DIR_247"
+assert_eq "AC(#247 a3): the corpus-nonempty guard itself goes RED on a genuinely empty scan (the guard is not itself vacuous)" "1" "$?"
+tmpl_corpus_nonempty "$ROOT/templates"
+assert_eq "AC(#247 a3): ...and stays GREEN against the real corpus" "0" "$?"
+
 section "step-0 tick: a monotonic loop-tick bump, never the pane glyph (#99 Fix 2 / #133)"
 assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
 assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
@@ -272,13 +289,19 @@ assert_contains "tick write is framed as durable, NOT the pane glyph" "$HB_QA3" 
 # overlay fragments, which compose onto a base and have no loop of their own)
 # carries the step-0 tick bump — the monotonic loop-tick counter (#133) that
 # superseded the bare heartbeat touch. __ROLETAG__ renders to the role tag.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the tick-bump assertion below is vacuous" "0" "$?"
 MISSING_TICK=""
 while IFS= read -r -d '' f; do
   /usr/bin/grep -q "fwf tick __ROLETAG__" "$f" || MISSING_TICK="$MISSING_TICK $f"
 done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
 assert_eq "every role template (all factory designs) carries the step-0 tick bump" "" "$MISSING_TICK"
+tmpl_corpus_nonempty "$ROOT/templates"
+assert_eq "#247 (a3): corpus scan (all templates) is non-empty -- else the heartbeat-touch assertion below is vacuous" "0" "$?"
 assert_eq "no template still uses the superseded bare heartbeat touch" "0" \
   "$(find "$ROOT/templates" -name "*.tmpl" -exec /usr/bin/grep -l "touch __HEARTBEAT__" {} \; | wc -l | tr -d ' ')"
+tmpl_corpus_nonempty "$ROOT/templates/_local-issues"
+assert_eq "#247 (a3): corpus scan (_local-issues only) is non-empty -- else the exclusion assertion below is vacuous" "0" "$?"
 assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
   "$(find "$ROOT/templates/_local-issues" -name "*.tmpl" -exec /usr/bin/grep -l "fwf tick __ROLETAG__" {} \; | wc -l | tr -d ' ')"
 
@@ -320,6 +343,8 @@ assert_contains "implementer PR body carries the provenance trailer" \
 # opens an upstream PR) MUST carry __PROVENANCE__ — else a factory could ship
 # un-attributed work, the exact instrumentation gap that makes a post-hoc
 # "did quality regress?" diagnosis impossible.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the provenance-stamp assertion below is vacuous" "0" "$?"
 MISSING_PROV=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
@@ -497,6 +522,8 @@ case "$CLI_CTX" in *impl[0-9]*|*QA-*) bad "fwf pr-context output has no fwf-inte
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
 # constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the built-with-credit assertion below is vacuous" "0" "$?"
 MISSING_CREDIT=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
@@ -512,6 +539,8 @@ assert_eq "every PR-producing template carries the built-with credit" "" "$MISSI
 # so folding a full ticket distillation into every one of their PRs would be
 # noise, not signal; the ticket's own "Anchor" language ties context-fold to
 # the issue-closing squash-merge moment.
+tmpl_corpus_nonempty "$ROOT/templates" ! -path "*_local-issues*"
+assert_eq "#247 (a3): corpus scan (excl _local-issues) is non-empty -- else the context-fold-CLI assertion below is vacuous" "0" "$?"
 MISSING_CTX=""
 while IFS= read -r -d '' f; do
   # only the actual gh pr create/merge command LINE decides "closes a ticket"
