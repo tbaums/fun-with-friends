@@ -392,17 +392,43 @@ gh_pr() {
     *) if [ -d "$FWF_REPO/.git" ]; then ( cd "$FWF_REPO" && gh pr "$@" ); else gh pr "$@"; fi ;;
   esac
 }
+# $1=open-PRs-json (gh_pr list shape, must include headRefOid) -> same
+# shape, each entry with a `gate_verdict` field: the value this FLOOR's own
+# gate actually recorded for that PR's head SHA (fwf_gate_verdict_read,
+# issue #220 AC (r)) -- "green"/"red"/"stale", or "unknown" if the gate has
+# never recorded anything for that SHA. Deliberately DISTINCT from `checks`
+# (GitHub's own statusCheckRollup) above: `checks` is what CI reported;
+# `gate_verdict` is what fwf gate itself ran and recorded, which can differ
+# (a role gating locally before CI finishes, or `--tip-cmd`'s stale-tip
+# handling). This is what makes the recorded verdict genuinely
+# REVIEWER-READABLE rather than only locally readable by the gate that
+# wrote it (issue #220 AC (r)'s own wording) -- `fwf dash` is an artifact a
+# reviewer/captain actually looks at, unlike the raw state-dir file.
+_activity_attach_gate_verdict() {
+  printf '%s' "$1" | jq -c '.[]' | while IFS= read -r pr; do
+    local sha line verdict
+    sha="$(printf '%s' "$pr" | jq -r '.headRefOid // empty')"
+    verdict="unknown"
+    if [ -n "$sha" ] && line="$(fwf_gate_verdict_read "$sha" 2>/dev/null)"; then
+      verdict="$(printf '%s' "$line" | sed -n 's/.*verdict=\([a-z]*\).*/\1/p')"
+      [ -n "$verdict" ] || verdict="unknown"
+    fi
+    printf '%s' "$pr" | jq -c --arg v "$verdict" '.gate_verdict = $v'
+  done | jq -sc '.'
+}
+
 activity_json() {
   if [ "${FWF_ISSUES:-gh}" = "local" ]; then
     echo '{"building":[],"in_test":[],"merged":[]}'; return 0
   fi
   local open merged
   open="$(gh_pr list --state open --limit 50 \
-            --json number,title,isDraft,baseRefName,headRefName,statusCheckRollup 2>/dev/null || true)"
+            --json number,title,isDraft,baseRefName,headRefName,headRefOid,statusCheckRollup 2>/dev/null || true)"
   merged="$(gh_pr list --state merged --limit 12 \
             --json number,title,baseRefName,headRefName,mergedAt 2>/dev/null || true)"
   [ -n "$open" ] || open='[]'
   [ -n "$merged" ] || merged='[]'
+  open="$(_activity_attach_gate_verdict "$open")"
   jq -n --argjson open "$open" --argjson merged "$merged" \
         --arg staging "$STAGING_BRANCH" --arg integ "$INTEGRATION_BRANCH" \
         --arg default "$DEFAULT_BRANCH" '
@@ -417,14 +443,14 @@ activity_json() {
           else "pass" end;
       {
         building: [ $open[]   | .baseRefName as $b | select($t|index($b)) | select(.isDraft)
-                    | {pr:.number, role:role, issue:issue, base:$b, checks:checks, title:.title} ],
+                    | {pr:.number, role:role, issue:issue, base:$b, checks:checks, gate_verdict:(.gate_verdict // "unknown"), title:.title} ],
         in_test:  [ $open[]   | .baseRefName as $b | select($t|index($b)) | select(.isDraft|not)
-                    | {pr:.number, role:role, issue:issue, base:$b, checks:checks, title:.title} ],
+                    | {pr:.number, role:role, issue:issue, base:$b, checks:checks, gate_verdict:(.gate_verdict // "unknown"), title:.title} ],
         merged:   [ $merged[] | .baseRefName as $b | select($t|index($b))
                     | {pr:.number, role:role, issue:issue, base:$b,
                        when:((.mergedAt // "")[5:16] | gsub("T";" ")), title:.title} ],
         to_main:  [ $open[]   | select(.baseRefName == $default)
-                    | {pr:.number, role:role, issue:issue, base:.baseRefName, checks:checks, title:.title} ]
+                    | {pr:.number, role:role, issue:issue, base:.baseRefName, checks:checks, gate_verdict:(.gate_verdict // "unknown"), title:.title} ]
       }'
 }
 

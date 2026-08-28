@@ -6626,6 +6626,26 @@ assert_contains "a RED wrapped command records verdict=red, not silently green" 
 assert_eq "AC(r0)/discriminating: a SHA nobody has gated yet has NO verdict record -- never attempted is not misread as green" "" \
   "$(FWF_PROFILE=example FWF_RUN_DIR="$F220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read 0000000000000000000000000000000000dead" 2>/dev/null)"
 
+section "fwf dash (issue #220 AC r): a recorded verdict is visible through the artifact a reviewer actually reads, not just the local store"
+# The bar qa1 set on PR #296: recording a verdict nobody but the gate itself
+# can read is not visibility. This drives it through fwf-dash-data.sh's
+# activity_json -- the same surface fwf dash renders -- keyed by the SAME
+# headRefOid a reviewer sees in `gh pr view`. If gate_verdict wiring ever
+# regresses (e.g. the set -e bug this PR also fixes silently swallowing the
+# record call), this goes RED without needing to inspect the state dir.
+DD220RUN="$TMP/run220dash"; mkdir -p "$DD220RUN"
+FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_record '$F220SHA' impl1 green"
+printf '%s' '[
+  {"number":21,"title":"gated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-220-x","headRefOid":"'"$F220SHA"'","statusCheckRollup":[]},
+  {"number":22,"title":"ungated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-221-y","headRefOid":"0000000000000000000000000000000000face","statusCheckRollup":[]}
+]' > "$TMP/dd220-open.json"
+printf '%s' '[]' > "$TMP/dd220-merged.json"
+DD220_ACT="$(FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" FWF_TEMPLATE=dev bash -c "source '$DD'; STAGING_BRANCH=staging INTEGRATION_BRANCH=integration DEFAULT_BRANCH=main; gh_pr() { case \"\$*\" in *'--state open'*) cat '$TMP/dd220-open.json';; *'--state merged'*) cat '$TMP/dd220-merged.json';; esac; }; activity_json")"
+assert_eq "a recorded verdict is surfaced on its PR via activity_json (dash's actual data source)" "green" \
+  "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==21) | .gate_verdict')"
+assert_eq "a PR whose SHA was never gated reports unknown, not a stale/misleading verdict" "unknown" \
+  "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==22) | .gate_verdict')"
+
 section "fwf gate: the --tip-cmd path ALSO populates the SHA-keyed store, without touching the role-keyed skip marker"
 FWF_GATE_FORCE=1 f202gate -- true >/dev/null 2>&1
 CUR202TIP="$(git -C "$F202REPO" rev-parse HEAD)"

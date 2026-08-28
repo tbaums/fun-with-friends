@@ -1934,9 +1934,16 @@ fwf_gate_tip_record() {
   local role="${1:?fwf_gate_tip_record needs a role}" tip="${2:?fwf_gate_tip_record needs a tip}" verdict="${3:?fwf_gate_tip_record needs a verdict}" reason="${4:-}" f
   f="$(fwf_gate_tip_marker_path "$role")"
   mkdir -p "$(dirname "$f")" 2>/dev/null
+  # `if/fi`, not `[ -n "$reason" ] && printf ...`, as the LAST statement of
+  # the redirected group: a `&&` chain's overall exit status is the failed
+  # LHS's status when reason is empty (the common case) -- and since this
+  # is the group's (and the function's) final statement, that failure would
+  # trip `set -e` in ANY caller running under it (this codebase's default
+  # convention for every entrypoint script). An `if` with no `else` is 0
+  # regardless of whether its body ran.
   {
     printf 'tip=%s\nverdict=%s\nrecorded=%s\n' "$tip" "$verdict" "$(date +%s)"
-    [ -n "$reason" ] && printf 'reason=%s\n' "$reason"
+    if [ -n "$reason" ]; then printf 'reason=%s\n' "$reason"; fi
   } > "$f"
 }
 
@@ -1967,9 +1974,15 @@ fwf_gate_verdict_record() {
   local sha="${1:?fwf_gate_verdict_record needs a sha}" role="${2:?fwf_gate_verdict_record needs a role}" verdict="${3:?fwf_gate_verdict_record needs a verdict}" reason="${4:-}" f
   f="$(fwf_gate_verdict_marker_path "$sha")"
   mkdir -p "$(dirname "$f")" 2>/dev/null
+  # Same `if/fi`-not-`&&` reasoning as fwf_gate_tip_record just above --
+  # empty $reason is the common case, and a `&&` chain as the group's LAST
+  # statement would exit 1 exactly then, tripping `set -e` in any caller
+  # (e.g. this is now called from fwf-dash-data.sh, which runs under
+  # `set -euo pipefail`; fwf-gate.sh itself does not, which is why this bug
+  # was latent rather than visibly broken until a second caller exposed it).
   {
     printf 'sha=%s\nrole=%s\nverdict=%s\nrecorded=%s\n' "$sha" "$role" "$verdict" "$(date +%s)"
-    [ -n "$reason" ] && printf 'reason=%s\n' "$reason"
+    if [ -n "$reason" ]; then printf 'reason=%s\n' "$reason"; fi
   } > "$f"
 }
 
