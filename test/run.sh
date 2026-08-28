@@ -8173,6 +8173,24 @@ KSOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_GATE_FULL=1 FWF_RUN_DIR="$TMP/
 assert_contains "FWF_GATE_FULL=1 forces WOULD RUN even on a docs-only diff" "$KSOUT" "Rust suite WOULD RUN"
 assert_contains "FWF_GATE_FULL=1 names itself as the reason"                "$KSOUT" "FWF_GATE_FULL=1"
 
+# --- issue #261 AC(a0)/(a1): everything above proves the CLASSIFIER is
+# correct when called BY PATH -- #261's own finding is that #138's "SHADOW
+# MODE is the shipped state, and it is asserted" claim only ever exercised
+# it that way, and nothing on the floor calls it. Prove the wiring pattern
+# docs/gate-throughput.md prescribes (a GATE_CMD that calls this before the
+# real Rust suite) actually accumulates a shadow-log entry when driven
+# through the REAL `fwf gate` dispatcher -- not fwf-gate-rust-scope.sh
+# invoked directly, which is exactly the presence-vs-substance gap the
+# ticket names.
+gts_setup wired
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only, would SKIP" )
+GTS_WIRE_RUN="$TMP/gts-wired-run"; GTS_WIRE_LOG="$GTS_WIRE_RUN/shadow.log"
+GTS_WIRE_GATE_CMD="\"$ROOT/fwf\" gate-rust-scope --against main --safe \"docs/*\" --safe \"*.md\" --log \"$GTS_WIRE_LOG\" || true
+echo stub-rust-suite-ran"
+WIREOUT="$(cd "$GTS_DIR" && FWF_RUN_DIR="$GTS_WIRE_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" gtswire -- bash -c "$GTS_WIRE_GATE_CMD" 2>&1)"
+assert_contains "AC(261 a1): a REAL 'fwf gate' run still runs the wrapped Rust suite (shadow mode -- verdict never withholds it)" "$WIREOUT" "stub-rust-suite-ran"
+assert_contains "AC(261 a0): ...and that real gate run appends a shadow-log entry (not the classifier called by path)" "$(cat "$GTS_WIRE_LOG" 2>/dev/null)" "decision=SKIP"
+
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
