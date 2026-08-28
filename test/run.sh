@@ -7742,22 +7742,55 @@ assert_eq "AC2: --check does not fast-forward a BEHIND branch either" "$(rec_sha
 guard_stub() { # $1=dir
   mkdir -p "$1"
   GH_LOG="$1/calls.log"; GH_STATE="$1/issues.json"
-  : > "$GH_LOG"; printf '[]\n' > "$GH_STATE"
+  GH_GUARD_BODY="$1/guard.body"; GH_STREAK_STATE="$1/streak.json"; GH_STREAK_BODY="$1/streak.body"
+  : > "$GH_LOG"; printf '[]\n' > "$GH_STATE"; printf '[]\n' > "$GH_STREAK_STATE"
   cat > "$1/gh" <<STUB
 #!/usr/bin/env bash
-# stub gh: logs calls, keeps one fake issue in \$GH_STATE
-log="$GH_LOG"; state="$GH_STATE"
+# stub gh: logs calls, keeps up to TWO fake issues -- the pre-existing
+# #179/#238 divergence artifact (number 4242, state \$state / body \$gbody)
+# and, separately, the CI-durable indeterminate-streak counter #258 adds
+# (number 4343, state \$sstate / body \$sbody). Picked apart by whether the
+# caller's --jq (issue list) or --title (issue create) argument names the
+# streak marker key -- the same distinction the real gh CLI gets for free
+# from two differently-titled issues actually being different issues.
+log="$GH_LOG"; state="$GH_STATE"; gbody="$GH_GUARD_BODY"
+sstate="$GH_STREAK_STATE"; sbody="$GH_STREAK_BODY"
 echo "\$1 \$2" >> "\$log"
+is_streak() { case "\$*" in *indeterminate-streak*) return 0 ;; *) return 1 ;; esac; }
 case "\$1 \$2" in
   "issue list")
-    # emit the marker line only while a fake issue is open
-    if grep -q OPEN "\$state" 2>/dev/null; then echo 4242; fi ;;
+    # emit the marker line only while the matching fake issue is open
+    if is_streak "\$@"; then
+      grep -q OPEN "\$sstate" 2>/dev/null && echo 4343
+    else
+      grep -q OPEN "\$state" 2>/dev/null && echo 4242
+    fi ;;
+  "issue view")
+    case "\$3" in
+      4242) [ -f "\$gbody" ] && cat "\$gbody" || exit 1 ;;
+      4343) [ -f "\$sbody" ] && cat "\$sbody" || exit 1 ;;
+      *) exit 1 ;;
+    esac ;;
   "issue create")
-    cat > /dev/null           # consume --body-file -
-    echo OPEN > "\$state"
-    echo "https://example.invalid/issues/4242" ;;
-  "issue edit")   cat > /dev/null ;;
-  "issue close")  echo CLOSED > "\$state" ;;
+    b="\$(cat)"           # consume --body-file -
+    if is_streak "\$@"; then
+      printf '%s' "\$b" > "\$sbody"; echo OPEN > "\$sstate"
+      echo "https://example.invalid/issues/4343"
+    else
+      printf '%s' "\$b" > "\$gbody"; echo OPEN > "\$state"
+      echo "https://example.invalid/issues/4242"
+    fi ;;
+  "issue edit")
+    b="\$(cat)"
+    case "\$3" in
+      4242) printf '%s' "\$b" > "\$gbody" ;;
+      4343) printf '%s' "\$b" > "\$sbody" ;;
+    esac ;;
+  "issue close")
+    case "\$3" in
+      4242) echo CLOSED > "\$state" ;;
+      4343) echo CLOSED > "\$sstate" ;;
+    esac ;;
   "issue comment") : ;;
 esac
 exit 0
@@ -8120,7 +8153,13 @@ rc=0; CL_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example
 GH_LOG="$CL_GH/calls.log"
 assert_eq       "AC1: indeterminate alone -> guard exits its OWN code (2), never 0" "2" "$rc"
 assert_contains "AC1: guard reports it, does not file" "$CL_OUT" "indeterminate"
-assert_eq       "AC1: no artifact filed for a self-healing race" "0" "$(gh_calls 'issue create')"
+# issue #258: a single indeterminate hit now DOES cause one "issue create" --
+# the CI-durable streak counter's own first write (a distinct, low-noise
+# marker issue #258 explicitly sanctions on this path; AC1 forbids filing
+# only THE DIVERGENCE ARTIFACT). Assert on the divergence artifact
+# specifically -- it still gets no body file -- rather than the bare
+# subcommand tally, which a second, legitimate kind of issue now shares.
+assert_eq "AC1: no DIVERGENCE artifact filed for a self-healing race" "0" "$([ -f "$CL_GH/guard.body" ] && echo 1 || echo 0)"
 
 # AC3: indeterminate must not close an EXISTING artifact either -- it is not
 # evidence a real divergence resolved, only that this run couldn't confirm
@@ -8135,7 +8174,11 @@ GH_LOG="$CL2_GH/calls.log"
 assert_eq       "AC3: indeterminate with an existing artifact still exits 2" "2" "$rc"
 assert_eq       "AC3: indeterminate does NOT close the existing artifact" "0" "$(gh_calls 'issue close')"
 assert_eq       "AC3: indeterminate does NOT edit the existing artifact either" "0" "$(gh_calls 'issue edit')"
-assert_eq       "AC3: indeterminate still files nothing" "0" "$(gh_calls 'issue create')"
+# issue #258: same distinction as AC1 above -- the streak counter's own
+# first write is an expected "issue create" now; the pre-seeded DIVERGENCE
+# artifact (issues.json = OPEN, number 4242) is what AC3 actually protects,
+# and it is untouched (no edit/close above, and its body is never written).
+assert_eq "AC3: the existing DIVERGENCE artifact is never (re)written" "0" "$([ -f "$CL2_GH/guard.body" ] && echo 1 || echo 0)"
 
 # AC5 (the qa2 finding this ticket was reopened for): lock-busy specifically
 # -- fixed at its OWN root (fwf_reconcile_branch now returns rc 2 for it, see
@@ -8184,6 +8227,102 @@ rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
   FWF_RECONCILE_SCRIPT="$AC6_ESC_STUB" FWF_GH="$AC6_ESC_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
 GH_LOG="$AC6_ESC_GH/calls.log"
 assert_eq "AC6: exit code 1 alone (unrecognizable text) still means escalate -- files" "1" "$(gh_calls 'issue create')"
+
+# --------------------------------------------------------------------------
+section "reconcile-guard: CI-durable indeterminate streak (#258)"
+# #238 AC7 ("an indeterminate that never resolves must not silently re-check
+# forever") is satisfied by fwf_reconcile_indeterminate_streak (lib.sh) only
+# for a caller with a PERSISTENT $FWF_RUN -- a captain's local tick. CI has
+# no such disk: ci.yml runs ./fwf reconcile-guard on a fresh runner every
+# push, so that counter resets to 0/1 every time and the threshold (3) is
+# never reached. These tests drive the REAL, unmodified fwf-reconcile-guard.sh
+# across SEPARATE invocations (never sharing a process, exactly like separate
+# CI runs) against guard_stub's now-persistent fake gh, so the guard's own
+# CI-durable counter is what has to do the escalating.
+
+# AC(a) + (b): three consecutive indeterminate evaluations, no intervening
+# clean, on a "fresh runner" each time (a new bash process every call, with
+# no local state of its own -- the only continuity is guard_stub's
+# persisted fake-issue body, exactly modelling what a marker issue gives a
+# stateless CI runner). The first two must NOT escalate (AC(b): a single, or
+# even a double, firing is still just self-healing); the third must.
+AC258_DIR="$TMP/rec258-streak"
+AC258_STUB="$(guard_reconcile_stub "$AC258_DIR" "cas-lost staging (ref moved under us, re-check next tick)" 2)"
+AC258_GH="$TMP/rec258-streak-gh"; guard_stub "$AC258_GH"
+AC258_run() {
+  FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+    FWF_RECONCILE_SCRIPT="$AC258_STUB" FWF_GH="$AC258_GH/gh" \
+    bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1
+}
+rc=0; AC258_run >/dev/null 2>&1 || rc=$?
+GH_LOG="$AC258_GH/calls.log"
+assert_eq "AC(a)/(b): 1st consecutive indeterminate -> still rc 2, not escalated" "2" "$rc"
+assert_eq "AC(a)/(b): 1st indeterminate does not file the DIVERGENCE artifact" "0" "$([ -f "$AC258_GH/guard.body" ] && echo 1 || echo 0)"
+
+rc=0; AC258_run >/dev/null 2>&1 || rc=$?
+assert_eq "AC(a)/(b): 2nd consecutive indeterminate -> STILL rc 2 (needs a fresh 3, not 2)" "2" "$rc"
+assert_eq "AC(a)/(b): 2nd indeterminate still does not file" "0" "$([ -f "$AC258_GH/guard.body" ] && echo 1 || echo 0)"
+
+rc=0; AC258_R3="$(AC258_run)" || rc=$?
+assert_eq       "AC(a): 3rd CONSECUTIVE indeterminate escalates -- the case CI could never reach before #258" "1" "$rc"
+assert_contains "AC(a): guard reports the streak threshold, not a genuine divergence" "$AC258_R3" "indeterminate-streak threshold reached"
+assert_eq       "AC(a): the escalation DOES file the durable artifact" "1" "$([ -f "$AC258_GH/guard.body" ] && echo 1 || echo 0)"
+assert_contains "AC(a): the filed artifact's body says why (not an AC1 violation -- see the header comment)" "$(cat "$AC258_GH/guard.body")" "consecutive indeterminate verdicts"
+
+# AC(c) regression, stated explicitly here even though the mechanism lives
+# entirely in lib.sh and is untouched by #258: a captain's persistent-$FWF_RUN
+# local tick keeps escalating on its OWN counter exactly as it did before this
+# ticket -- proven by the existing "AC7: 3rd consecutive indeterminate
+# escalates" assertions above (rec_setup indeterminate-escalate), which #258
+# did not modify and which still pass unchanged.
+
+# AC(a2): a FAILED read of the streak counter is a failed MEASUREMENT, not
+# evidence the streak never existed -- it must not silently reset progress.
+# Sequence: indeterminate (streak 0->1) / indeterminate but the counter's
+# OWN read fails this one time (streak must stay at 1, not fall back to a
+# fresh 0/1) / indeterminate (streak 1->2) / indeterminate (streak 2->3,
+# escalates). A naive implementation that treats a failed read as "no streak
+# yet" would need a 4th REAL indeterminate after the failure to reach 3; this
+# proves the failure was truly skipped, not counted as a reset.
+AC258B_DIR="$TMP/rec258-streak-failread"
+AC258B_STUB="$(guard_reconcile_stub "$AC258B_DIR" "cas-lost integration (ref moved under us, re-check next tick)" 2)"
+AC258B_GH="$TMP/rec258-streak-failread-gh"; guard_stub "$AC258B_GH"
+AC258B_run() {
+  FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
+    FWF_RECONCILE_SCRIPT="$AC258B_STUB" FWF_GH="$AC258B_GH/gh" \
+    bash "$ROOT/fwf-reconcile-guard.sh" --branch integration 2>&1
+}
+rc=0; AC258B_run >/dev/null 2>&1 || rc=$?              # 1/3: streak integration 0 -> 1
+assert_eq "AC(a2): setup run 1/3 is indeterminate" "2" "$rc"
+assert_contains "AC(a2): setup run 1/3 persisted the count" "$(cat "$AC258B_GH/streak.body" 2>/dev/null)" "streak:integration:1"
+
+# Break the counter's OWN read for exactly the next call: `gh issue view`
+# on the streak issue (4343) fails, simulating a transient API error --
+# distinct from "the issue does not exist yet" (streak_find, which tolerates
+# no-match fine; this is a failed VIEW of a KNOWN issue).
+mv "$AC258B_GH/gh" "$AC258B_GH/gh.real"
+cat > "$AC258B_GH/gh" <<FAILSTUB
+#!/usr/bin/env bash
+if [ "\$1 \$2" = "issue view" ] && [ "\$3" = "4343" ]; then
+  echo "\$1 \$2" >> "$AC258B_GH/calls.log"
+  exit 1
+fi
+exec "$AC258B_GH/gh.real" "\$@"
+FAILSTUB
+chmod +x "$AC258B_GH/gh"
+rc=0; AC258B_R2="$(AC258B_run)" || rc=$?               # 2/3 attempted: read fails, update skipped
+mv "$AC258B_GH/gh.real" "$AC258B_GH/gh"                # restore the real stub for the rest of the sequence
+assert_eq       "AC(a2): a run whose streak READ fails is still just indeterminate (rc 2), not an escalation" "2" "$rc"
+assert_contains "AC(a2): the guard says it skipped the update rather than silently resetting" "$AC258B_R2" "skipping this run's streak update"
+assert_contains "AC(a2): the persisted count is UNCHANGED by the failed read (still 1, not reset to 0 or fabricated to 1 again)" "$(cat "$AC258B_GH/streak.body" 2>/dev/null)" "streak:integration:1"
+
+rc=0; AC258B_run >/dev/null 2>&1 || rc=$?              # 2nd REAL indeterminate: 1 -> 2
+assert_eq "AC(a2): next real indeterminate resumes from the preserved count (2), still below threshold" "2" "$rc"
+assert_contains "AC(a2): count advanced from the PRESERVED 1, not from a reset 0" "$(cat "$AC258B_GH/streak.body" 2>/dev/null)" "streak:integration:2"
+
+rc=0; AC258B_R4="$(AC258B_run)" || rc=$?               # 3rd REAL indeterminate: 2 -> 3, escalates
+assert_eq       "AC(a2): the 3rd REAL indeterminate (not counting the failed read) escalates" "1" "$rc"
+assert_contains "AC(a2): had the failed read reset the streak, this would still be indeterminate, not escalated" "$AC258B_R4" "indeterminate-streak threshold reached"
 
 # --------------------------------------------------------------------------
 section "fwf gate --tip-cmd: tip-triggered gating, not timer-triggered (#202)"
