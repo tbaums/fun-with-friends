@@ -43,6 +43,26 @@ E2E_SETUP_CMD=''                  # one-time e2e dep install in the conductor tr
 # runs, it can't protect against a harness reaping a process it doesn't know
 # is a different worktree's.
 
+# Flake-vs-broken discrimination (issue #227), OPTIONAL: a failing GATE_CMD
+# run means one of two very different things — "broken" or "flaky" — and
+# `fwf gate` cannot tell them apart from a bare pass/fail without help. When
+# GATE_CASE_EXTRACTOR is declared, `fwf gate` reads the wrapped command's
+# captured STDOUT through it and expects "PASS <case-id>" / "FAIL <case-id>"
+# lines back (one per test case; the rest of the line, spaces included, is
+# the case-id) — from THAT it reports, on every FAILING case, whether it
+# also failed at the merge-base commit and how often it has failed in
+# recent runs (across branches and on this one), so a red case reads as
+# either a real regression or a known flake, not just "red". Leave unset
+# for suite-level reporting instead (same discrimination, one case named
+# "SUITE" standing in for the whole gate command) — every profile gets this
+# for free with zero configuration; per-case is strictly more precise where
+# GATE_CMD's own output has a stable, parseable pass/fail convention. The
+# reference extractor for fwf's OWN "  ok   <label>" / "  FAIL <label>"
+# test/run.sh convention (what a profile gating THIS repo would declare):
+#   GATE_CASE_EXTRACTOR="awk '/^  ok   / { print \"PASS \" substr(\$0,8) } /^  FAIL / { print \"FAIL \" substr(\$0,8) }'"
+# A passing run's output is completely unaffected either way — the report
+# only ever appears alongside a FAILING case.
+
 
 
 # Live-dev hint shown to implementers. Use __DATA__ for this tree's dev-data dir
