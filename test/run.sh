@@ -3037,10 +3037,12 @@ assert_contains "impl: claims branch off origin/staging" "$NCIMPL" "git switch -
 case "$NCIMPL" in *"git switch staging &&"*) bad "impl: never checks out local staging";; *) ok "impl: never checks out local staging";; esac
 NCCON="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
 assert_contains "conductor (dev, read-only): detaches for e2e"    "$NCCON" "git switch --detach origin/staging"
-# issue #254: promotes the gate's own RECORDED tip (by literal hash via
-# `fwf gate-tip`), not a re-resolved origin/staging — the ref could have
-# moved again since the gate itself resolved its tip.
-assert_contains "conductor (dev, read-only): promotes the gate's recorded tip, not a re-resolved ref" "$NCCON" 'git merge --ff-only "$(fwf gate-tip conductor)"'
+# issue #237: promotes through the OBLIGED call site, which itself reads
+# the gate's own RECORDED tip (by literal hash), not a re-resolved
+# origin/staging — the ref could have moved again since the gate itself
+# resolved its tip (issue #254's own reasoning, now enforced in code rather
+# than merely followed in a prompt).
+assert_contains "conductor (dev, read-only): promotes through the obliged fwf gate-promote call site" "$NCCON" "fwf gate-promote conductor integration"
 case "$NCCON" in *'git merge --ff-only origin/staging'*) bad "conductor (dev): must not merge a re-resolved origin/staging (issue #254)";; *) ok "conductor (dev): never re-resolves origin/staging for the promote merge";; esac
 case "$NCCON" in *"git switch staging &&"*) bad "conductor (dev): never checks out local staging";; *) ok "conductor (dev): never checks out local staging";; esac
 # the validate/ideation adjudicators DO legitimately hold local staging (they commit
