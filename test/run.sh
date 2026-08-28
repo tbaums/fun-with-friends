@@ -8023,6 +8023,45 @@ R="$(ci_run_noconfigure 'export CARGO_TARGET_DIR="$shared"')"
 assert_eq "configure_sccache=0 still composes with target isolation (target dropped)" "UNSET" "$(ci_f 1 "$R")"
 
 # --------------------------------------------------------------------------
+section "fwf-gate.sh (issue #277 AC a1/b/c/d): hints the by-path workaround only when the CONTENT actually differs"
+
+# A minimal, isolated worktree carrying its OWN copy of the gate scripts --
+# the comparison this AC needs is between $DIR (the installed copy actually
+# executing) and the CALLER's own worktree, discovered via
+# `git rev-parse --show-toplevel` from the caller's cwd.
+G277_WT="$TMP/gate277-worktree"; mkdir -p "$G277_WT/lib" "$G277_WT/profiles"
+( cd "$G277_WT" && git init -q && git config user.email t@t.co && git config user.name t )
+cp "$ROOT/fwf-gate.sh" "$ROOT/lib.sh" "$ROOT/config.sh" "$G277_WT/"
+cp "$ROOT/lib/detect.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile.sh" "$ROOT/lib/version_check.sh" "$G277_WT/lib/"
+cp "$ROOT/profiles/example.sh" "$G277_WT/profiles/"
+ln -s "$ROOT/templates" "$G277_WT/templates"
+printf '%s' "$(cat "$ROOT/VERSION")" > "$G277_WT/VERSION"
+( cd "$G277_WT" && git add -A && git commit -qm base )
+
+# --- AC(b): identical tree -> silence --------------------------------------
+IDENT_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-ident" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
+assert_not_contains "AC(b): identical worktree fwf-gate.sh -> silence, no hint" "$IDENT_OUT" "issue #277"
+
+# --- AC(a1)/(b): differing tree (gate path itself changed) -> hint ---------
+echo "# a local edit to the gate path" >> "$G277_WT/fwf-gate.sh"
+DIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-diff" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
+assert_contains "AC(a1): a content-differing worktree fwf-gate.sh fires the hint" "$DIFF_OUT" "issue #277"
+assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT/fwf-gate.sh\""
+assert_contains "AC(c): safety-equivalence is stated CONDITIONALLY, never flatly" "$DIFF_OUT" "PROVIDED your diff does not touch the locking path"
+assert_contains "AC(c): names the lock files to verify before trusting the result" "$DIFF_OUT" "gate-lock/<role>/owner"
+assert_contains "AC(d): the wrapped command still ran (hint never gates)"        "$DIFF_OUT" "hi"
+
+# --- AC(a1): a differing lib.sh (not fwf-gate.sh) also fires ---------------
+( cd "$G277_WT" && git checkout -q -- fwf-gate.sh )
+echo "# a local edit to lib.sh" >> "$G277_WT/lib.sh"
+LIBDIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-libdiff" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
+assert_contains "AC(a1): a content-differing worktree lib.sh ALSO fires the hint (not just fwf-gate.sh)" "$LIBDIFF_OUT" "issue #277"
+
+# --- AC(d): exit code and normal behaviour unaffected either way -----------
+( cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-rc" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "exit 0" >/dev/null 2>&1 )
+assert_eq "AC(d): the hint changes no exit code on success" "0" "$?"
+
+# --------------------------------------------------------------------------
 section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"
 
 gts_setup() { # $1=label -> a throwaway local repo, 'main' at one commit -> $GTS_DIR

@@ -158,6 +158,34 @@ fi
 # worktree, by design, and that is correct, not a defect to flag).
 echo "fwf-gate.sh: running from $DIR" >&2
 
+# issue #277 AC(a1)/(b): when THIS caller's own worktree carries a
+# fwf-gate.sh/lib.sh that differs in CONTENT from the copy actually
+# executing above ($DIR, the installed gate), hint the by-path remedy.
+# Deliberately NOT "does $DIR differ from the caller's cwd" -- an
+# implementer's/qa's own `fwf gate <role> -- ...` self-verification ALWAYS
+# runs the installed binary against a DIFFERENT worktree, by design (see
+# #276 AC4's own note above); that is the ordinary, correct case, not the
+# failure mode this guards. Only a genuine CONTENT difference in the gate
+# path itself means the installed gate cannot validate a fix to itself --
+# this ticket's whole point (a gate defect can't reach release without
+# passing the gate it's fixing) -- and that is the discriminating test
+# AC(b) requires: a role changing the gate path sees this; a role changing
+# anything else does not.
+_fwf_gate_wt="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$_fwf_gate_wt" ] && [ -f "$_fwf_gate_wt/fwf-gate.sh" ] \
+   && { ! cmp -s "$DIR/fwf-gate.sh" "$_fwf_gate_wt/fwf-gate.sh" 2>/dev/null \
+        || { [ -f "$_fwf_gate_wt/lib.sh" ] && ! cmp -s "$DIR/lib.sh" "$_fwf_gate_wt/lib.sh" 2>/dev/null; }; }; then
+  # issue #277 AC(c): the by-path invocation shares the SAME floor-wide
+  # E2E_LOCK (config.sh, $FWF_RUN-derived) so it is safety-equivalent --
+  # PROVIDED your diff does not touch the locking path itself
+  # (fwf_gate_lock_acquire / fwf_e2e_lock_acquire, lib.sh). If it does,
+  # that equivalence is exactly what may be broken, so it is stated here
+  # conditionally, never flatly: verify the locks are actually held
+  # (state/<profile>/gate-lock/<role>/owner and $FWF_RUN/e2e.lock/owner
+  # name this pid) before trusting the result.
+  echo "fwf-gate.sh: this worktree's fwf-gate.sh/lib.sh differ from the installed copy at $DIR (issue #277) -- a defect in the gate path itself cannot be validated through the installed gate, since the wrapper doing the validating is the pre-fix release. Run it by path instead: bash \"$_fwf_gate_wt/fwf-gate.sh\" <role> ... -- safety-equivalent PROVIDED your diff does not touch the locking path (fwf_gate_lock_acquire / fwf_e2e_lock_acquire in lib.sh); if it does, verify state/<profile>/gate-lock/<role>/owner and \$FWF_RUN/e2e.lock/owner name this pid before trusting the result." >&2
+fi
+
 # --- issue #175: do not leak OUR profile resolution into the wrapped command --
 # Sourcing lib.sh below resolves a profile — we need it, for the lock paths —
 # and in doing so SETS FWF_PROFILE/FWF_PAIRS/FWF_REPO in this shell. Those
