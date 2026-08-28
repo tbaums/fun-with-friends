@@ -557,6 +557,24 @@ success, failure, or a kill — so no role has to manage them by hand; see
   command's raw rc) is unaffected either way — only the RECORDED verdict a
   later promote reads is downgraded.
 
+  **The honest ceiling, stated so this is not read as prevention:**
+  `fwf gate-promote` binds the *ordinary* path — every seat still holds
+  full git credentials and can run `git push origin <target>` directly, or
+  hand-write a green record for a SHA no gate ever actually tested (the
+  record is a file every seat can write, so the same seat that can bypass
+  the check can also satisfy it — #218's substring-forgery shape, one layer
+  down). This raises the cost of an unauthorized promotion from zero to
+  deliberate; it does not make it impossible, and the record is NOT an
+  attribution mechanism (that stays with #82/#191/#216) — it makes the
+  *ordering* checkable on the cooperative path, nothing more.
+  Repository-side enforcement (a required status check reading this same
+  record, refusing the push at a layer no seat can reach) is a follow-up
+  for issue #220's required-contexts list, not built here. Also: `fwf
+  gate-promote` never runs a gate itself on a refusal — a refuse→gate→retry
+  loop would be the most expensive loop available on this floor (a ~20min
+  e2e holding a floor-wide lock), so it only ever reads the existing
+  record and tells the caller what command would produce a fresh one.
+
 - **`fwf tick`'s heartbeat trusts the worktree, not ambient env** (issue #182)
   — `fwf tick <role>` has no `--profile` flag, so any ambient `FWF_PROFILE` it
   sees can only be leftover env from an unrelated shell, never a deliberate
