@@ -276,6 +276,41 @@ UTILITIES
                          dead holder's orphaned server is reaped on the
                          next acquire, and a foreign port occupant on
                          failure is diagnosed by PID/command, never killed.
+                         Every terminal run also writes a SHA-keyed verdict
+                         record (issue #220), now carrying a fingerprint of
+                         what actually ran (issue #237) -- see `gate-promote`
+                         below, the obliged call site that reads it.
+                         FWF_GATE_CANARY_MARKER (issue #237 AC k, opt-in):
+                         a substring identifying a deliberately-failing
+                         sentinel case (requires GATE_CASE_EXTRACTOR too) --
+                         if that case does not come back FAIL, the suite has
+                         no confirmed path to red and the recorded verdict
+                         is downgraded to `unknown` rather than a pass, so a
+                         harness that has silently stopped being able to
+                         fail (the #242 shape) cannot write a confident
+                         green.
+  gate-promote <role> <target-branch>
+                         The OBLIGED call site binding a promote to the
+                         verdict that authorizes it (issue #237) -- replaces
+                         a raw `git merge && git push` an agent was trusted
+                         to gate correctly by its own prose reasoning. Reads
+                         <role>'s last recorded gate-tip verdict; refuses
+                         (exit 1, naming why) unless it is exactly `green`,
+                         its SHA still resolves, and its gate_fingerprint
+                         (if any) is not on the revocation list
+                         ($FWF_STATE_DIR/gate-revoked-fingerprints). On
+                         success, merges that EXACT SHA as a literal hash
+                         (never a re-resolved ref) into <target-branch> and
+                         pushes, as ONE operation -- the check and the push
+                         are never separable in a caller's prompt.
+  gate-revoke <fingerprint> [reason]
+                         List <fingerprint> at
+                         $FWF_STATE_DIR/gate-revoked-fingerprints (issue
+                         #237 AC k2) -- every subsequent `gate-promote`
+                         refuses any green record carrying it. Idempotent.
+                         Populating this list is a governance decision
+                         (a human or the captain, after an investigation)
+                         this command does not make on its own.
   gate-rust-scope --against BRANCH [--safe GLOB]... [--log FILE]
                     [--full-suite-secs N]
                          SHADOW classifier for whether a profile's Rust suite
@@ -905,6 +940,8 @@ case "$cmd" in
   supervise) engine fwf-supervise.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
   gate-tip)  engine fwf-gate-tip.sh "$@";;
+  gate-promote) engine fwf-gate-promote.sh "$@";;
+  gate-revoke) engine fwf-gate-revoke.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   auth)      engine fwf-auth.sh "$@";;

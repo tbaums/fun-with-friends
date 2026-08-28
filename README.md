@@ -506,6 +506,75 @@ Both locks are released by `fwf gate`'s own `EXIT` trap the moment it exits —
 success, failure, or a kill — so no role has to manage them by hand; see
 `fwf gate` in `fwf help` and `fwf-gate.sh`.
 
+- **The promote is an OBLIGED call site, not a raw git sequence an agent
+  gates by belief** (issue #237) — `fwf gate-promote <role> <target-branch>`
+  replaces the conductor's `git switch/merge/push` prose. It re-reads
+  `<role>`'s recorded gate-tip verdict itself (never trusts what a prior
+  step's exit code alone implied), refuses non-zero unless it is exactly
+  `green` for a SHA that still resolves, then merges that EXACT SHA — as a
+  literal hash, never a re-resolved ref — into `<target-branch>` and
+  pushes, as ONE operation the check and the push can never be separated
+  from. Refusals are named distinctly: no record at all, an unreadable/
+  malformed record (`INDETERMINATE`), a recorded SHA that resolves to no
+  object (`CORRUPT` — the live incident this ticket was filed against, not
+  the same thing as "never gated"), a non-green verdict, or a green record
+  whose `gate_fingerprint` has been revoked (see below). Every refusal
+  names the exact `fwf gate ...` command to obtain a fresh green. The
+  legacy, unmaintained `~/.fun-with-friends/conductor-last-gated-sha` is
+  removed on every call — nothing has written it since #202 replaced it
+  with the gate-tip store above, so a dead record at a well-known path was
+  a permanent trap indistinguishable from a live one by inspection.
+  `templates/dev` and `templates/refactor`'s `conductor.tmpl` step 4 call
+  this instead of a raw git sequence.
+
+  **`gate_fingerprint`** (additive field on `fwf`'s existing SHA-keyed
+  verdict record, issue #220) is a fingerprint of WHAT ACTUALLY RAN — fwf's
+  own installed `VERSION`, the wrapped command's argv, and the git blob
+  hash of any argv token that resolves to a real file (fwf's own dogfooding
+  shape, `GATE_CMD='bash test/run.sh'`, folds in `test/run.sh`'s own
+  content) — not a role name, which the record's `role` field already
+  carries. It converts "was the gate broken during some window" from a
+  forensic timestamp hunt (exactly what the #242 incident needed and
+  nobody had) into a query: `fwf gate-revoke <fingerprint> [reason]` lists
+  a fingerprint at `$FWF_STATE_DIR/gate-revoked-fingerprints`, and every
+  `fwf gate-promote` call thereafter refuses any green record carrying it,
+  until a fresh gate on a fixed harness produces a new, non-revoked
+  fingerprint. Who populates the revocation list, and when, is a
+  governance question this mechanism does not answer — only a human or the
+  captain, after an investigation, should.
+
+  **`FWF_GATE_CANARY_MARKER`** (opt-in, requires `GATE_CASE_EXTRACTOR` too
+  — issue #227) applies issue #211's convention to the WRITE side: a gate
+  that cannot demonstrate it has a path to red must not write a confident
+  green. The marker names a substring a harness embeds in one
+  deliberately-failing sentinel case's own case-id; if that case does not
+  come back `FAIL` this run (including when it is simply absent — the
+  #242 shape, a harness stubbed to exit 0 unconditionally), the recorded
+  verdict is downgraded to `unknown` rather than a pass, and `fwf
+  gate-promote` refuses it exactly like a red one. Only ever downgrades a
+  candidate green; a genuine red already proves the suite can fail, so it
+  is never second-guessed. `fwf-gate.sh`'s own exit code (the wrapped
+  command's raw rc) is unaffected either way — only the RECORDED verdict a
+  later promote reads is downgraded.
+
+  **The honest ceiling, stated so this is not read as prevention:**
+  `fwf gate-promote` binds the *ordinary* path — every seat still holds
+  full git credentials and can run `git push origin <target>` directly, or
+  hand-write a green record for a SHA no gate ever actually tested (the
+  record is a file every seat can write, so the same seat that can bypass
+  the check can also satisfy it — #218's substring-forgery shape, one layer
+  down). This raises the cost of an unauthorized promotion from zero to
+  deliberate; it does not make it impossible, and the record is NOT an
+  attribution mechanism (that stays with #82/#191/#216) — it makes the
+  *ordering* checkable on the cooperative path, nothing more.
+  Repository-side enforcement (a required status check reading this same
+  record, refusing the push at a layer no seat can reach) is a follow-up
+  for issue #220's required-contexts list, not built here. Also: `fwf
+  gate-promote` never runs a gate itself on a refusal — a refuse→gate→retry
+  loop would be the most expensive loop available on this floor (a ~20min
+  e2e holding a floor-wide lock), so it only ever reads the existing
+  record and tells the caller what command would produce a fresh one.
+
 - **`fwf tick`'s heartbeat trusts the worktree, not ambient env** (issue #182)
   — `fwf tick <role>` has no `--profile` flag, so any ambient `FWF_PROFILE` it
   sees can only be leftover env from an unrelated shell, never a deliberate

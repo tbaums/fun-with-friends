@@ -2340,9 +2340,14 @@ fwf_gate_tip_record() {
 # the other's skip-optimization state.
 fwf_gate_verdict_marker_path() { echo "$FWF_STATE_DIR/gate-verdict/$1"; } # $1=sha
 
-# $1=sha $2=role $3=verdict(green|red|stale|deferred) $4=reason(optional)
+# $1=sha $2=role $3=verdict(green|red|stale|deferred|unknown) $4=reason(optional) $5=fingerprint(optional)
+# $5, issue #237: a fingerprint of WHAT RAN (see _fwf_gate_fingerprint) --
+# additive on top of #220's original 4-field record, exactly as #202's own
+# extensibility claim promised: one more printf line, zero reader changes,
+# and every record written before this field existed simply reads it back
+# empty (never an error -- _fwf_gate_owner_field's own contract).
 fwf_gate_verdict_record() {
-  local sha="${1:?fwf_gate_verdict_record needs a sha}" role="${2:?fwf_gate_verdict_record needs a role}" verdict="${3:?fwf_gate_verdict_record needs a verdict}" reason="${4:-}" f
+  local sha="${1:?fwf_gate_verdict_record needs a sha}" role="${2:?fwf_gate_verdict_record needs a role}" verdict="${3:?fwf_gate_verdict_record needs a verdict}" reason="${4:-}" fingerprint="${5:-}" f
   f="$(fwf_gate_verdict_marker_path "$sha")"
   mkdir -p "$(dirname "$f")" 2>/dev/null
   # Same `if/fi`-not-`&&` reasoning as fwf_gate_tip_record just above --
@@ -2354,28 +2359,89 @@ fwf_gate_verdict_record() {
   {
     printf 'sha=%s\nrole=%s\nverdict=%s\nrecorded=%s\n' "$sha" "$role" "$verdict" "$(date +%s)"
     if [ -n "$reason" ]; then printf 'reason=%s\n' "$reason"; fi
+    if [ -n "$fingerprint" ]; then printf 'fingerprint=%s\n' "$fingerprint"; fi
   } > "$f"
 }
 
-# $1=sha -> "role=<r> verdict=<v> recorded=<epoch> [reason=<x>]" on stdout,
-# rc 0, if a verdict was ever recorded for this SHA. rc 1 (no output) if
-# none was -- the caller must read that as "never attempted", never
-# collapse it into a confident answer (issue #211's own lesson: unreadable/
-# absent must never fall through to a value indistinguishable from a real
-# one -- here specifically, a promotion must not misread "no record" as
-# "green").
+# $1=sha -> "role=<r> verdict=<v> recorded=<epoch> [reason=<x>] [fingerprint=<f>]"
+# on stdout, rc 0, if a verdict was ever recorded for this SHA. rc 1 (no
+# output) if none was -- the caller must read that as "never attempted",
+# never collapse it into a confident answer (issue #211's own lesson:
+# unreadable/absent must never fall through to a value indistinguishable
+# from a real one -- here specifically, a promotion must not misread "no
+# record" as "green"). A pre-#237 record simply has no fingerprint= line to
+# read, so it prints without the trailing clause -- never an error.
 fwf_gate_verdict_read() {
-  local sha="${1:?fwf_gate_verdict_read needs a sha}" f role verdict recorded reason
+  local sha="${1:?fwf_gate_verdict_read needs a sha}" f role verdict recorded reason fingerprint
   f="$(fwf_gate_verdict_marker_path "$sha")"
   [ -f "$f" ] || return 1
   role="$(_fwf_gate_owner_field role "$f")"
   verdict="$(_fwf_gate_owner_field verdict "$f")"
   recorded="$(_fwf_gate_owner_field recorded "$f")"
   reason="$(_fwf_gate_owner_field reason "$f")"
+  fingerprint="$(_fwf_gate_owner_field fingerprint "$f")"
   [ -n "$verdict" ] || return 1
   printf 'role=%s verdict=%s recorded=%s' "$role" "$verdict" "$recorded"
   [ -n "$reason" ] && printf ' reason=%s' "$reason"
+  [ -n "$fingerprint" ] && printf ' fingerprint=%s' "$fingerprint"
   printf '\n'
+}
+
+# --- gate fingerprint + revocation (issue #237 AC k2) ------------------------
+# A fingerprint of WHAT ACTUALLY RAN, not who ran it -- a role name only
+# tells you which seat gated, which the record's `role` field already
+# carries. This converts "was the gate itself broken during some window" from
+# a forensic exercise (hand-correlating merge timestamps against when a
+# harness regression landed and was fixed -- exactly what #242's incident
+# required, with nobody having the tooling for it) into a query: list every
+# record whose fingerprint is on the revocation list, mark those void.
+#
+# Best-effort and generic across profiles: folds in fwf's own installed
+# VERSION (a broken fwf-gate.sh/lib.sh is itself a "the gate was broken"
+# case) plus the wrapped command's own argv, and — when an argv token
+# resolves to a real file relative to the CALLER's cwd (fwf's own dogfooding
+# shape, GATE_CMD='bash test/run.sh') — that file's git blob hash, so a
+# content change to the actual harness changes the fingerprint even when the
+# command line naming it did not. Never required to resolve; a profile whose
+# GATE_CMD names no on-disk file still gets a real, if coarser, fingerprint
+# from the version + command line alone.
+_fwf_gate_fingerprint() { # $@ = the wrapped command's own argv
+  local ver="unknown" blobs="" a bh
+  [ -f "$FWF_LIB_DIR/VERSION" ] && ver="$(cat "$FWF_LIB_DIR/VERSION" 2>/dev/null)"
+  for a in "$@"; do
+    [ -f "$a" ] || continue
+    bh="$(git hash-object "$a" 2>/dev/null)" || continue
+    blobs="${blobs:+$blobs,}$bh"
+  done
+  printf 'fwf%s|%s|%s' "$ver" "$*" "$blobs" | cksum | awk '{print $1}'
+}
+
+fwf_gate_revocation_path() { echo "$FWF_STATE_DIR/gate-revoked-fingerprints"; }
+
+# $1=fingerprint -> rc 0 if this fingerprint has been revoked, rc 1 if not
+# (including when the revocation file does not exist at all -- absence is
+# never itself grounds to refuse; only an explicit listing is).
+fwf_gate_fingerprint_revoked() {
+  local fp="${1:?fwf_gate_fingerprint_revoked needs a fingerprint}" f
+  [ -n "$fp" ] || return 1
+  f="$(fwf_gate_revocation_path)"
+  [ -f "$f" ] || return 1
+  grep -qxF "$fp" "$f" 2>/dev/null
+}
+
+# $1=fingerprint $2=reason(free text) -- append-only. "Written by a human or
+# the captain after an investigation" (the ticket's own words) is a
+# governance question this function does not answer; it only makes the
+# mechanism usable once someone decides to.
+fwf_gate_revoke_fingerprint() {
+  local fp="${1:?fwf_gate_revoke_fingerprint needs a fingerprint}" reason="${2:-}" f
+  f="$(fwf_gate_revocation_path)"
+  mkdir -p "$(dirname "$f")" 2>/dev/null
+  fwf_gate_fingerprint_revoked "$fp" && return 0   # idempotent: already listed
+  printf '%s\n' "$fp" >> "$f"
+  if [ -n "$reason" ]; then
+    printf '%s revoked=%s reason=%s\n' "$fp" "$(date +%s)" "$reason" >> "$f.log"
+  fi
 }
 
 # --- gate history: flake-vs-broken discrimination (issue #227) --------------

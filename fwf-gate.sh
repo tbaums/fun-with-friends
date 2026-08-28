@@ -522,6 +522,7 @@ fi
 _fwf227_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 _fwf227_sha="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 _fwf227_base="$(git merge-base HEAD "origin/$STAGING_BRANCH" 2>/dev/null || true)"
+_fwf237_canary_seen_fail=0
 if [ -n "${GATE_CASE_EXTRACTOR:-}" ]; then
   _fwf227_saw_case=0
   # Deliberately NOT `IFS= read` -- that disables field splitting entirely,
@@ -532,6 +533,16 @@ if [ -n "${GATE_CASE_EXTRACTOR:-}" ]; then
   while read -r _fwf227_status _fwf227_case_id; do
     [ -n "$_fwf227_status" ] && [ -n "$_fwf227_case_id" ] || continue
     _fwf227_saw_case=1
+    # issue #237 AC (k): a canary case is a deliberately-failing sentinel the
+    # harness always runs -- if it comes back green (or is simply absent
+    # from what got extracted), the suite has no confirmed path to red, and
+    # this run's verdict must not be trusted as a real green (see below,
+    # after this loop, where the recorded verdict is actually downgraded).
+    if [ -n "${FWF_GATE_CANARY_MARKER:-}" ]; then
+      case "$_fwf227_case_id" in
+        *"$FWF_GATE_CANARY_MARKER"*) [ "$_fwf227_status" = FAIL ] && _fwf237_canary_seen_fail=1 ;;
+      esac
+    fi
     fwf_gate_history_report_case "$_fwf227_case_id" "$_fwf227_status" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "per-case (GATE_CASE_EXTRACTOR)"
   done < <(bash -c "$GATE_CASE_EXTRACTOR" < "$wrapped_out_capture" 2>/dev/null)
   # issue #227 (qa2 review): this fallback must NOT be conditioned on
@@ -559,6 +570,35 @@ if [ "$want_e2e" = 1 ]; then
   unset FWF_E2E_PORT FWF_E2E_DATA_DIR
 fi
 
+# issue #237 AC (k): #211's convention applied to the WRITE side -- a gate
+# that cannot demonstrate it has a path to red must not write a confident
+# green. Opt-in and inert by default (FWF_GATE_CANARY_MARKER unset):
+# FWF_GATE_CANARY_MARKER names a substring a profile's harness embeds in one
+# deliberately-failing case's own case-id (test/run.sh's reference canary is
+# below in this same PR). Only ever downgrades a candidate GREEN (rc=0) --
+# a genuine RED already proves the suite can fail, so it is never
+# second-guessed here.
+_fwf237_verdict_downgrade=""
+if [ -n "${FWF_GATE_CANARY_MARKER:-}" ] && [ "$rc" -eq 0 ]; then
+  if [ -z "${GATE_CASE_EXTRACTOR:-}" ]; then
+    echo "fwf gate [#237]: FWF_GATE_CANARY_MARKER is declared but GATE_CASE_EXTRACTOR is not -- the canary cannot be verified, recording UNKNOWN rather than a pass" >&2
+    _fwf237_verdict_downgrade=unknown
+  elif [ "$_fwf237_canary_seen_fail" != 1 ]; then
+    echo "fwf gate [#237]: canary case (marker '$FWF_GATE_CANARY_MARKER') did not report FAIL this run -- the suite has no confirmed path to red, recording UNKNOWN rather than a pass" >&2
+    _fwf237_verdict_downgrade=unknown
+  fi
+fi
+_fwf237_verdict() { # prints this run's verdict: green|red|unknown
+  if [ "$rc" -ne 0 ]; then echo red; return 0; fi
+  [ -n "$_fwf237_verdict_downgrade" ] && { echo "$_fwf237_verdict_downgrade"; return 0; }
+  echo green
+}
+# issue #237 (k2): fingerprint of what actually ran, folded into every
+# verdict record below so a later investigation can revoke every record a
+# now-known-broken gate wrote, by fingerprint, without a manual timestamp
+# hunt (the #242 incident's own unmet need).
+_fwf237_fingerprint="$(_fwf_gate_fingerprint "$@")"
+
 # issue #220 AC (r)/(r0): record a SHA-keyed, reviewer-readable verdict --
 # see fwf_gate_verdict_record's own doc comment (lib.sh) for why this is a
 # SEPARATE store from fwf_gate_tip_record just below, never the same file.
@@ -567,7 +607,7 @@ fi
 # silently drift apart.
 _fwf_gate_record_verdict() { # $1=tip/sha  $2=verdict  $3=reason(optional)
   fwf_gate_tip_record "$role" "$1" "$2" "${3:-}"
-  fwf_gate_verdict_record "$1" "$role" "$2" "${3:-}"
+  fwf_gate_verdict_record "$1" "$role" "$2" "${3:-}" "$_fwf237_fingerprint"
 }
 
 if [ -n "$tip_cmd" ]; then
@@ -592,7 +632,7 @@ if [ -n "$tip_cmd" ]; then
     anc_rc=$?
     if [ "$anc_rc" -eq 0 ]; then
       echo "fwf gate: tip moved during this run ($tip_before -> $tip_after), but $tip_before is still an ancestor -- verdict stands, promote it by its literal hash" >&2
-      _fwf_gate_record_verdict "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
+      _fwf_gate_record_verdict "$tip_before" "$(_fwf237_verdict)"
     elif [ "$anc_rc" -eq 1 ]; then
       echo "fwf gate: tip moved during this run ($tip_before -> $tip_after) and $tip_before is NOT an ancestor of $tip_after (history rewritten) — verdict is STALE, not promotable" >&2
       _fwf_gate_record_verdict "$tip_before" "stale" "not-ancestor"
@@ -603,7 +643,7 @@ if [ -n "$tip_cmd" ]; then
       rc="$EX_STALE"
     fi
   else
-    _fwf_gate_record_verdict "$tip_before" "$([ "$rc" -eq 0 ] && echo green || echo red)"
+    _fwf_gate_record_verdict "$tip_before" "$(_fwf237_verdict)"
   fi
 else
   # AC (r0): "a gate invoked WITHOUT --tip-cmd must still record its
@@ -615,7 +655,7 @@ else
   # against, and writing it here would let a --tip-cmd-less call for this
   # role clobber a --tip-cmd caller's skip state.
   verdict_head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-  fwf_gate_verdict_record "$verdict_head" "$role" "$([ "$rc" -eq 0 ] && echo green || echo red)"
+  fwf_gate_verdict_record "$verdict_head" "$role" "$(_fwf237_verdict)" "" "$_fwf237_fingerprint"
 fi
 
 exit "$rc"
