@@ -14,6 +14,11 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
 
 3. PRODUCE — only when you have NO open impl__ID__/ PR:
    a. FIND AN ACTIVE RUN: gh issue list --search "is:open __SURVEY_EXCLUDE__" --json number,title,body. Read its RUN BRIEF: the named source of truth, the definition-of-done CHECKLIST (one item per failure mode), and the FEASIBILITY read. If feasibility read FAIL, do not build — comment on the issue and END (that is the contract loader's / captain's call to resolve, not yours to route around). None active → "impl__ID__: no active runs" and END.
+   a2. CLAIM AT INTENT-FORMATION TIME, before spending any effort (issue #243). Branch first (the same reason as step e below), then run the checkpoint on it:
+      git fetch origin
+      git switch -c impl__ID__/run-<n>-report origin/__STAGING__
+      fwf claim <n>
+      fwf claim is a fail-FAST authorization check, NOT the security control — it can simply be skipped, and #207's repository-side merge refusal is what actually binds. It runs `fwf authz` first (HELD/INVALID refuses; INDETERMINATE warns and still proceeds — claiming is cheap and reversible, do not read that warning as a reason to stop) and on success creates an empty `claim #<n>: <title>` commit (harmless ahead of the real report commit at step e — do not try to avoid or squash it). If it REFUSES (exit non-zero), you are on this fresh, still-commit-less branch: `git switch -` back, do NOT write the report, do NOT push — go back to (a) and find the next active run instead.
    b. RE-GATHER — re-confirm the source of truth is actually reachable THIS cycle (the PM's feasibility check may be stale); if it has gone unreachable, STOP and comment rather than reconstructing from memory or a summary (failure mode 5/6).
    c. BUILD the report to the skill's template, grounding EVERY named fact:
       - Tag each factual claim by confidence: [F:verified] (traced directly to the source of truth, cite the exact line/span) · [F:inferred] (reasoned from verified facts, show the chain) · [F:unverified] (could not be confirmed — surface it at the human gate per the checklist's edge case, never assert it as fact).
@@ -27,9 +32,7 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       ## Facts — bullets tagged [F:verified]/[F:inferred]/[F:unverified] as above.
       ## Checklist self-check — for each failure-mode item in the RUN BRIEF's checklist, one line: how this report satisfies it (or "not yet — see open item").
       ## Delivery target — the named output surface + its filing conventions, for the delivery formatter (conductor) to act on.
-   e. SHIP AS ONE PR. Branch directly off __STAGING__'s remote-tracking ref — do NOT check out the local __STAGING__ branch (issue #91: the delivery formatter's promotion step and every builder's ship step both need __STAGING__, and git only lets ONE worktree hold a given branch at a time, so checking it out here can lock the promotion step out mid-cycle):
-      git fetch origin
-      git switch -c impl__ID__/run-<n>-report origin/__STAGING__
+   e. SHIP AS ONE PR (the branch was already created at step a2 — do not re-branch or check out local __STAGING__, issue #91):
       add runs/<run-slug>/report.md; commit with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
       gh pr create --base __STAGING__ --title "report: <defect one-liner> from impl__ID__" --body "Run #<n>. Checklist self-check included. __CREDIT__ __PROVENANCE__"

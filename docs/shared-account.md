@@ -155,6 +155,69 @@ behaviour, not a bug to be refactored away.
 An operator un-gates via `fwf dash`'s approve action, which posts the
 anchored sentinel and removes the gate label in one step; see `docs/dash.md`.
 
+## `fwf claim`: a fail-FAST checkpoint at intent-formation time, not a control (issue #243)
+
+`fwf authz` above is the SOLE oracle; `fwf claim <issue>` is not a second
+one — it is the ergonomic half of a fix split from issue #207 (which keeps
+the actual enforcement checkpoint at merge/promote/release, refused
+repository-side). Without it, an implementer discovers a `HELD` issue is
+not authorized only at merge — after the work is already done, the most
+expensive possible moment to learn it, and exactly the pressure that
+produced the forged `CAPTAIN-NOTICE` incident this floor has already lived
+through once.
+
+**Stated everywhere a reader might stop, not only here**: `fwf claim <n>`
+can simply be skipped — an agent that never runs it is not blocked by it.
+Its value is making the authorized path the *easy* path; `fwf authz`'s
+repository-side companion (#207) is what actually binds. `fwf claim --help`
+and every refusal/success message repeat this, deliberately, because the
+terminal is where a reader concludes a check was passed — not the docs.
+
+```
+fwf claim <issue-number>
+```
+
+runs `fwf authz` first and branches on its verdict:
+
+| Verdict | `fwf claim` |
+|---|---|
+| `AUTHORIZED` / `NOT-GATED` | proceed |
+| `INDETERMINATE` | **warn** ("infrastructure" cause) and still proceed — claiming is cheap and reversible, so refusing on a mere read failure would manufacture the exact stall this exists to relieve |
+| `HELD` / `INVALID` | **refuse**, exit 1, naming the verdict and a "policy" cause, plus the exact `fwf authz <n>` to run next |
+
+It also scans the issue body for a declared `## HARD PREREQUISITE` heading
+(the convention `#135` already uses) and **warns, never refuses**, on any
+named prerequisite that is not itself authorized — a scan of a heading, not
+a schema; two independent attempts to derive this from free prose (one
+reading, one writing) produced false positives in most of their own spot
+checks, so an absent heading is reported as exactly that — "no heading
+found" — never as "no prerequisites exist".
+
+On success it creates the claim artifact and nothing else: an empty
+`claim #<n>: <title>` commit — no branch create/switch (issue #177: git
+allows one worktree per branch, and a verb that switches branches inherits
+that contention; one that only commits does not). The caller is expected
+to already be on the branch it wants this commit on.
+
+Refusals append to a durable, bounded rolling log
+(`$FWF_STATE_DIR/claim-refusals.log`) that `fwf dash` reads as a count — a
+plain file read, never a fresh `fwf authz` per candidate issue per render
+(issue #239 already measured that per-render cost as the dash's dominant
+term) — rendered as a red "N blocked on authz" header badge, distinct from
+`FLOOR IDLE` (calm, deliberate) and absent entirely once the queue drains.
+
+**Recorded exclusions** (issue #243 AC e2/e3): `templates/dev/pm.tmpl:29`
+mentions "implementers can claim #N now" — that is PM narrating to the
+human that the gate is off, not a call site that itself performs a claim,
+so no `fwf claim` wiring belongs there. `_local-issues/implementer.tmpl`
+keeps its own atomic CLAIM-*comment* protocol (the comment IS the claim;
+there is no separate empty-commit artifact), a different mechanism this
+issue does not touch. `consulting/implementer.tmpl` and
+`user-testing/implementer.tmpl` don't reference the `claim #<n>: <title>`
+issue-claiming convention at all — `consulting`'s "claim" is a specialist
+picking a lens/section, an unrelated sense of the word — so neither needed
+adoption.
+
 ## Reviewer routing: the `fwf-Reviewer:` marker (issue #194)
 
 `gh pr edit --add-reviewer` is not usable here either, for the same reason

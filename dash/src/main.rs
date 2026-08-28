@@ -1109,6 +1109,19 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
+            // Issue #243 AC (f): a distinct "N blocked on authz" badge, so a
+            // refused-claim queue reads as a queue, not as a floor that has
+            // mysteriously gone quiet -- never recomputed here, just the
+            // count fwf-dash-data.sh already read from the durable log.
+            if d.claim_refusals.count > 0 {
+                l1.push(Span::styled(
+                    format!(" ⛔ {} blocked on authz ", d.claim_refusals.count),
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Red)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             // Line 2: prod / pipeline / provenance / clock.
             l2.push(Span::styled("prod ", key));
             l2.push(Span::raw(d.prod.clone()));
@@ -2931,6 +2944,7 @@ mod tests {
             upgrade: data::UpgradeAvailable::default(),
             installed: data::InstalledVersion::default(),
             api_budget: data::ApiBudget::default(),
+            claim_refusals: data::ClaimRefusals::default(),
         }
     }
 
@@ -3067,6 +3081,36 @@ mod tests {
         assert_golden(
             "header_floor_idle",
             &normalize_running_version(&buffer_to_text(&buf)),
+        );
+    }
+
+    // issue #243 AC (f): "N blocked on authz" is its own distinct badge --
+    // never conflated with FLOOR IDLE (calm, deliberate) or PARKED (whole
+    // factory).
+    #[test]
+    fn golden_header_claim_refusals_badge() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.claim_refusals = data::ClaimRefusals { count: 3 };
+        }
+        let area = Rect::new(0, 0, 90, 4);
+        let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
+        assert_golden(
+            "header_claim_refusals_badge",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
+    }
+
+    // The mirror: a zero count must NOT render the badge at all -- a queue
+    // that has genuinely drained looks identical to a floor that was never
+    // blocked, not a "0 blocked" badge nobody asked for.
+    #[test]
+    fn claim_refusals_badge_absent_when_count_is_zero() {
+        let app = golden_app(Tab::Activity);
+        assert_eq!(
+            app.feed.dashboard().unwrap().claim_refusals.count,
+            0,
+            "fixture default must be zero"
         );
     }
 

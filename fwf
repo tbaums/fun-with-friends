@@ -331,6 +331,26 @@ UTILITIES
                          if unreadable. The checkable answer to "was this
                          approved?" — never infer it from label state or pane
                          text. Read-only.
+  claim <issue>          A fail-FAST authorization checkpoint at intent-
+                         formation time (issue #243) — NOT a security
+                         control (that's #207's repository-side merge
+                         refusal; this can simply be skipped). Runs `fwf
+                         authz` first: HELD/INVALID refuses (exit 1, names
+                         the cause as "policy"); INDETERMINATE warns
+                         ("infrastructure" cause) and still proceeds
+                         (claiming is cheap/reversible — refusing on a mere
+                         read failure is what manufactures a stall);
+                         AUTHORIZED/NOT-GATED proceed. Also scans the issue
+                         body for a declared `## HARD PREREQUISITE` heading
+                         and warns (never refuses) on any prerequisite that
+                         isn't itself AUTHORIZED/NOT-GATED yet — absent, not
+                         "no prerequisites exist": the scan is a heading
+                         match, not a schema, and says so. On success,
+                         creates the claim artifact — an empty commit
+                         `claim #<n>: <title>` — and nothing else (no
+                         branch switch/create; issue #177). Refusals are
+                         logged durably for `fwf dash` to surface as a
+                         count, never recomputed per render.
   auth resolve           Re-resolve the claude auth credential (issue #217)
                          and print its source (env|credentials_file|
                          keychain), without launching anything — `fwf up`
@@ -985,6 +1005,7 @@ case "$cmd" in
   gate-revoke) engine fwf-gate-revoke.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
+  claim)     engine fwf-claim.sh "$@";;
   auth)      engine fwf-auth.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;

@@ -24,6 +24,11 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
 
 3. PRODUCE — only when you have NO open impl__ID__/ PR:
    a. FIND AN ACTIVE HYPOTHESIS: gh issue list --search "is:open __SURVEY_EXCLUDE__" --json number,title,body. Read its GATE CHECKLIST to find the ACTIVE PHASE and read its decomposed CLAIMS + PRE-REGISTERED KILL CRITERIA + EVIDENCE BAR. If the checklist says the active phase is in DEEP mode, do the deep dive; if CHEAP mode (the captain's fast premise scan before committing the research budget), keep it fast and decisive. None active → "impl__ID__: no active hypotheses" and END.
+   a2. CLAIM AT INTENT-FORMATION TIME, before spending any effort (issue #243). Branch first (the same reason as step d below), then run the checkpoint on it:
+      git fetch origin
+      git switch -c impl__ID__/hyp-<n>-<gate>-<k> origin/__STAGING__   (k = your next section number for this hypothesis+gate)
+      fwf claim <n>
+      fwf claim is a fail-FAST authorization check, NOT the security control — it can simply be skipped, and #207's repository-side merge refusal is what actually binds. It runs `fwf authz` first (HELD/INVALID refuses; INDETERMINATE warns and still proceeds — claiming is cheap and reversible, do not read that warning as a reason to stop) and on success creates an empty `claim #<n>: <title>` commit (harmless ahead of the real section commits at step d — do not try to avoid or squash it). If it REFUSES (exit non-zero), you are on this fresh, still-commit-less branch: `git switch -` back, do NOT do the research, do NOT push — go back to (a) and find the next active hypothesis instead.
    b. DO THE WORK FROM YOUR STANCE for the active gate. Ground it in REAL sources — for the Gate-1 deep dive, use the deep-research skill (fan-out web search → fetch → adversarially verify → cited synthesis); name real incumbents, real demand signals, real prior attempts. Lead with the strongest DISCONFIRMING finding you can muster against the gate's claims.
    c. WRITE the section as validation/<idea-slug>/<gate>/<stance-slug>.md (gate ∈ market|solution|business):
       # <Section title> — Gate <N> · impl__ID__ (stance <A|B|C>)
@@ -34,9 +39,7 @@ EACH CYCLE, do exactly ONE of the following, in priority order:
       ## Load-bearing assumptions — the unproven beliefs this section rests on; flag the single riskiest.
       ## Cheapest disconfirming test — the smallest real-world experiment (a smoke-test landing page, 5 customer interviews, a search-volume pull, a fake-door) that would settle the riskiest assumption, and what result would KILL vs confirm. REQUIRED — desk analysis that can't be tested in the real world is an opinion, not validation.
       (For Gate 2/3, also include a smallest-real-version and, for Gate 3 paths, a one-line comparability note so the adjudicator can rank paths pairwise.)
-   d. SHIP AS ONE PR. Branch directly off __STAGING__'s remote-tracking ref — do NOT check out the local __STAGING__ branch (issue #91: the conductor's gate step and every analyst's ship step both need __STAGING__, and git only lets ONE worktree hold a given branch at a time, so checking it out here can lock the conductor out mid-promotion):
-      git fetch origin
-      git switch -c impl__ID__/hyp-<n>-<gate>-<k> origin/__STAGING__   (k = your next section number for this hypothesis+gate)
+   d. SHIP AS ONE PR (the branch was already created at step a2 — do not re-branch or check out local __STAGING__, issue #91):
       add the file(s); commit each with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer
       git push -u origin <branch>
       gh pr create --base __STAGING__ --title "<gate>: <hypothesis short-name> — <stance> from impl__ID__" --body "Hypothesis #<n>, Gate <N>. Bottom line: <GO/KILL/PIVOT-leaning>. Riskiest assumption: <one line>. __CREDIT__ __PROVENANCE__"
