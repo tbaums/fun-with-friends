@@ -1006,7 +1006,9 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
 - [docs/shared-account.md](docs/shared-account.md) — running every role on
   one GitHub account: why formal PR reviews don't work, and the
   `QA-CHANGES-REQUESTED`/`QA-APPROVED`/`IMPL-ADDRESSED` marker protocol
-  (`fwf pr-review-state`) that replaces them.
+  (`fwf pr-review-state`) that replaces them. Also covers `fwf authz` (the
+  sole authorization oracle) and `fwf claim` (a fail-fast, skippable
+  ergonomic checkpoint at intent-formation time — not a control).
 - [docs/needs-captain.md](docs/needs-captain.md) — the persisted
   `needs-captain` flag any role raises on an issue/PR (`fwf flag-captain`),
   swept by the captain every tick so it can't go unseen (issue #113).
