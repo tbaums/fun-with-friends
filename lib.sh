@@ -1488,6 +1488,16 @@ fwf_e2e_lock_acquire() {
   local label="${1:?fwf_e2e_lock_acquire needs a holder label}" waited=0 n lane owner rc ts now holder pid host
   local qstart missing=0 last_report port gen genfile data_dir
   local busy_rc="" busy_holder="" busy_pid="" busy_host="" busy_ts="" busy_missing=0
+  local pgid pgleader
+  # issue #195: same kill-safe process-group stamp #156 already gives the
+  # cargo-build slot and mem-admit token (_fwf_kill_orphan_group, below) --
+  # this lock's own missing half of that pattern. A dead e2e-lock holder's
+  # child (the transom-server it started) is reaped through the SAME shared
+  # helper before the lane is reclaimed, so releasing the LOCK and freeing
+  # the PORT happen together, never lock-first-port-later.
+  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
   qstart="$(date +%s)"
   last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 ))   # force the FIRST report immediate (point 2)
   while true; do
@@ -1502,8 +1512,8 @@ fwf_e2e_lock_acquire() {
         printf '%s\n' "$gen" > "$genfile"
         data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
         mkdir -p "$data_dir" 2>/dev/null
-        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
-          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
+        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
+          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
         printf '%s %s %s\n' "$n" "$port" "$data_dir"
         return 0
       fi
@@ -1516,11 +1526,18 @@ fwf_e2e_lock_acquire() {
       _fwf_e2e_owner_liveness "$owner"; rc=$?
       if [ "$rc" = 1 ]; then
         echo "fwf: e2e lane $n held by dead PID ${pid:-unknown} (${holder:-unknown}) — breaking it" >&2
+        # issue #195: the dead holder's server (if any) shares its process
+        # group -- reap that group BEFORE freeing the lane, or the next
+        # acquirer gets a lock that says "free" while the port is still held
+        # (this ticket's own reported incident). Same shared helper #156
+        # already uses for the cargo-build slot and mem-admit token.
+        _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
         rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
       elif [ "$rc" = 2 ]; then
         now="$(date +%s)"
         if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
           echo "fwf: e2e lane $n indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
+          _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
           rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
         fi
       fi
@@ -1535,8 +1552,8 @@ fwf_e2e_lock_acquire() {
           printf '%s\n' "$gen" > "$genfile"
           data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
           mkdir -p "$data_dir" 2>/dev/null
-          printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
-            "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
+          printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
+            "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
           printf '%s %s %s\n' "$n" "$port" "$data_dir"
           return 0
         fi
@@ -1620,14 +1637,41 @@ FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 # that is neither 1 nor OUR OWN group is ever signalled — signalling a
 # non-leader's group could take out an unrelated tmux pane shell, and a
 # non-pgleader holder's group is left for ground-truth measurement to absorb.
-_fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid
-  local host="$1" pgleader="$2" pgid="$3" ownpgid
+_fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
+  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid etimes now start_epoch
   [ "$pgleader" = 1 ] || return 0
   [ "$host" = "$(hostname)" ] || return 0
   case "$pgid" in ''|*[!0-9]*) return 0;; esac
   [ "$pgid" -gt 1 ] || return 0
   ownpgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
   [ "$pgid" = "$ownpgid" ] && return 0
+  # issue #195 AC(h): the recorded PGID leader can be DEAD with its ID
+  # already reused by an unrelated, newer process (PID space wraps under
+  # load) -- signalling that reused ID would TERM/KILL an innocent
+  # process's group instead of the orphan this exists to clean up. A LIVE
+  # process occupying $pgid that started AFTER the lock's own acquisition
+  # cannot be the recorded holder's group (it didn't exist yet when the
+  # lock was taken) -- that's reuse, so refuse and say so loudly rather
+  # than guess. `ps -o etimes=` (elapsed seconds) is used instead of
+  # `lstart` specifically because a formatted timestamp is locale-
+  # dependent and this comparison must be a plain integer one.
+  # `etimes` returning EMPTY (pid not found at all -- the common, expected
+  # case: the holder is simply gone) skips this check entirely and falls
+  # through to the kill below, which is a safe no-op against a dead pgid.
+  if [ -n "$acquired" ]; then
+    etimes="$(ps -o etimes= -p "$pgid" 2>/dev/null | tr -d ' ')"
+    case "$etimes" in
+      ''|*[!0-9]*) : ;;   # not found, or unparseable -- can't confirm reuse either way; proceed
+      *)
+        now="$(date +%s)"
+        start_epoch=$(( now - etimes ))
+        if [ "$start_epoch" -gt "$acquired" ]; then
+          echo "fwf#195: refusing to signal pgid $pgid -- it started AFTER this lock's own acquisition (pid start ~$start_epoch > lock acquired $acquired), so it is NOT the recorded holder's group (PID/PGID reuse) — this is a lock-protocol anomaly, not reaped" >&2
+          return 0
+        fi
+        ;;
+    esac
+  fi
   echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
   kill -KILL -"$pgid" 2>/dev/null
   return 0
@@ -1694,7 +1738,8 @@ fwf_cargo_build_slot_acquire() {
       _fwf_kill_orphan_group \
         "$(_fwf_e2e_owner_field host "$owner")" \
         "$(_fwf_e2e_owner_field pgleader "$owner")" \
-        "$(_fwf_e2e_owner_field pgid "$owner")"
+        "$(_fwf_e2e_owner_field pgid "$owner")" \
+        "$(_fwf_e2e_owner_field acquired "$owner")"
       rm -rf "$slot"
       if mkdir "$slot" 2>/dev/null; then
         printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
@@ -1826,7 +1871,7 @@ _fwf_mem_admit_reap() {
     fi
     pgleader="$(_fwf_e2e_owner_field pgleader "$f")"
     pgid="$(_fwf_e2e_owner_field pgid "$f")"
-    _fwf_mem_admit_kill_group "$host" "$pgleader" "$pgid"
+    _fwf_mem_admit_kill_group "$host" "$pgleader" "$pgid" "$ts"
     rm -f "$f"
   done
 }
@@ -2011,11 +2056,20 @@ _fwf_gate_owner_liveness() { # $1=owner-file
 # in flight, or its state is indeterminate — fail closed). NEVER blocks/polls;
 # a skip is a normal, expected outcome the caller reports, not an error.
 fwf_gate_lock_acquire() {
-  local role="${1:?fwf_gate_lock_acquire needs a role}" dir owner rc reason
+  local role="${1:?fwf_gate_lock_acquire needs a role}" dir owner rc reason pgid pgleader
+  # issue #195: same kill-safe process-group stamp #156 already gives the
+  # cargo-build slot and mem-admit token -- the per-role gate lock's own
+  # missing half of that pattern. A wrapped command's spawned server shares
+  # this process's group, so reclaiming the LOCK from a dead (or wedged-
+  # anomaly) holder without also reaping that group is exactly how the lock
+  # says "free" while the port stays held (this ticket's reported incident).
+  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
   dir="$(fwf_gate_lock_dir "$role")"; owner="$dir/owner"
   mkdir -p "$(dirname "$dir")" 2>/dev/null
   if mkdir "$dir" 2>/dev/null; then
-    printf 'role=%s\npid=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$(hostname)" "$(date +%s)" > "$owner"
+    printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$pgid" "$pgleader" "$(hostname)" "$(date +%s)" > "$owner"
     return 0
   fi
   _fwf_gate_owner_liveness "$owner"; rc=$?
@@ -2032,9 +2086,15 @@ fwf_gate_lock_acquire() {
     3) reason="past the ${FWF_GATE_LOCK_MAX_RUN_SECS}s max-run ceiling (pid $(_fwf_gate_owner_field pid "$owner") still alive) — treating as wedged";;
   esac
   echo "fwf: ANOMALY — reaping gate lock for '$role' ($reason)" >&2
+  # Reap the PRIOR holder's process group (its wrapped command's spawned
+  # server, if any) BEFORE freeing the lock dir -- rc=1 (confirmed dead) and
+  # rc=3 (treated as wedged/anomalous) both mean "we are done trusting this
+  # holder", so both must free what it was actually holding, not just the
+  # lock file.
+  _fwf_kill_orphan_group "$(_fwf_gate_owner_field host "$owner")" "$(_fwf_gate_owner_field pgleader "$owner")" "$(_fwf_gate_owner_field pgid "$owner")" "$(_fwf_gate_owner_field acquired "$owner")"
   rm -rf "$dir"
   if mkdir "$dir" 2>/dev/null; then
-    printf 'role=%s\npid=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$(hostname)" "$(date +%s)" > "$owner"
+    printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$pgid" "$pgleader" "$(hostname)" "$(date +%s)" > "$owner"
     return 0
   fi
   echo "fwf: gate lock for '$role' contested during reap — skipping this tick" >&2
