@@ -43,7 +43,25 @@ export CLAUDE_CODE_OAUTH_TOKEN="fwf-selftest-fake-token-$$"
 # the code is good, not that the operator's shell happened to be clean.
 unset FWF_REPO FWF_PROFILE FWF_PAIRS
 
-trap 'tmux kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
+# issue #332 AC(f): a section that exercises real kill-capable code (the
+# #195 AC(h) reuse-detection fixture, and its #332 siblings) can, on a
+# regression, terminate this very process abnormally -- and a suite that
+# dies silently mid-run is indistinguishable from one that's merely slow,
+# which is exactly how this went unnoticed for days. An EXIT trap fires on
+# ANY shell exit -- normal, an early/unexpected `exit`, or a caught signal
+# (TERM/INT/HUP) -- so print the tally here too, UNLESS the normal
+# end-of-suite block already did (guarded by _FWF_SUMMARY_PRINTED, set
+# right before that block's own printf, so a clean run never double-prints).
+# The one termination this cannot report is an uncatchable SIGKILL to this
+# process itself -- no trap, in any language, can run after that; the
+# actual defense against THAT is AC(a)-(c1) never letting it happen in the
+# first place, not this trap.
+trap '
+  if [ "${_FWF_SUMMARY_PRINTED:-0}" != 1 ]; then
+    printf "\n%d passed, %d failed, %d skipped -- ABNORMAL TERMINATION, suite did not reach its normal end (issue #332 AC f)\n" "$PASS" "$FAIL" "$SKIP" >&2
+  fi
+  tmux kill-server 2>/dev/null; rm -rf "$TMP"
+' EXIT
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '         %s\n' "$2"; }
@@ -5712,6 +5730,18 @@ printf 'role=role195h\npid=999999999\npgid=%s\npgleader=1\nhost=%s\nacquired=%s\
   "$G195H_REUSE_PGID" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$G195H_ROOT/state/example/gate-lock/role195h/owner"
 G195H_OUT="$(FWF_RUN_DIR="$G195H_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195h -- bash -c 'echo ran' 2>&1)"
 assert_contains "AC(h): the reused pgid is named as a refusal, not silently reaped" "$G195H_OUT" "refusing to signal pgid"
+# #332 AC(d) -- THE LOAD-BEARING CHECK: this fixture's reused pgid is a
+# freshly setpgid(0,0)'d, wholly UNRELATED process -- never this shell's own
+# group nor any ancestor's -- so the own-group/ancestor guard (AC c/c1)
+# structurally CANNOT be why the refusal above happened. Prove it directly
+# rather than trust that by construction: ask the guard itself about this
+# exact pgid and confirm it says "not a match" (rc1). If the refusal above
+# is real reuse-detection (the titular defect), this must be rc1; if a
+# future change made (c) alone satisfy AC(h) for the WRONG reason, this
+# assertion is what catches it.
+bash -c "source '$ROOT/lib.sh'; _fwf_pgid_is_self_or_ancestor $G195H_REUSE_PGID; exit \$?"
+G332D_RC=$?
+assert_eq "AC(d): the reused pgid is NOT flagged as self/ancestor -- the refusal above is genuine reuse detection, not the own-group guard" "1" "$G332D_RC"
 if kill -0 "$G195H_REUSE_PID" 2>/dev/null; then
   ok "AC(h): the unrelated newer process sharing that pgid number is UNTOUCHED"
 else
@@ -5799,6 +5829,74 @@ assert_contains "AC: refuses when the leader is present but elapsed time is unde
   "$G332U_OUT" "refusing to signal pgid $PS332U_TARGET"
 assert_not_contains "AC: never falls through to the reap on an undeterminable read" "$G332U_OUT" "SIGKILL"
 assert_contains "AC: returns cleanly (rc0), not an error" "$G332U_OUT" "DONE-RC=0"
+
+section "fwf lib (#332 AC c1): the ancestor-walk itself fails CLOSED when ps can't be read -- an unreadable ancestry check must refuse, never conclude 'not an ancestor'"
+# Determining ancestry is itself a process-table read on the SAME `ps` whose
+# parsing is the suspected root cause -- an unguarded implementation that
+# can't complete this read must not default to "safe" (#211: permissive-
+# unknown collapse). Every pgid/ppid read in the walk fails outright here.
+PS332C1_DIR="$TMP/ps332-c1"; mkdir -p "$PS332C1_DIR"
+cat > "$PS332C1_DIR/ps" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$PS332C1_DIR/ps"
+PS332C1_TARGET=818181
+G332C1_OUT="$(PATH="$PS332C1_DIR:$PATH" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  _fwf_kill_orphan_group \"\$(hostname)\" 1 $PS332C1_TARGET \$(( \$(date +%s) - 50 )) 2>&1
+  echo DONE-RC=\$?
+")"
+assert_contains "AC(c1): an unreadable ancestry check refuses, never concludes 'not an ancestor'" \
+  "$G332C1_OUT" "refusing to signal pgid $PS332C1_TARGET"
+assert_not_contains "AC(c1): never falls through to the reap on an unreadable ancestry check" "$G332C1_OUT" "SIGKILL"
+assert_contains "AC(c1): returns cleanly (rc0), not an error" "$G332C1_OUT" "DONE-RC=0"
+
+section "test/run.sh's own summary-trap mechanism (#332 AC f): a caught signal still reports the tally, never dies silently"
+# A section that exercises real kill-capable code can, on a regression,
+# terminate the suite abnormally -- and a suite that dies silently mid-run
+# is indistinguishable from one that's merely slow, which is exactly how
+# this went unnoticed for days. Proves the actual mechanism (not the whole
+# 2000+-test suite, which would be prohibitively expensive to re-run here)
+# via a minimal standalone script carrying the identical trap pattern this
+# file itself uses (see the EXIT trap near the top of this file, and
+# _FWF_SUMMARY_PRINTED before the final summary block).
+G332F_ABNORMAL="$TMP/g332f-abnormal.sh"
+cat > "$G332F_ABNORMAL" <<'MINI'
+#!/usr/bin/env bash
+set -uo pipefail
+PASS=3; FAIL=1; SKIP=0
+trap '
+  if [ "${_FWF_SUMMARY_PRINTED:-0}" != 1 ]; then
+    printf "\n%d passed, %d failed, %d skipped -- ABNORMAL TERMINATION, suite did not reach its normal end (issue #332 AC f)\n" "$PASS" "$FAIL" "$SKIP" >&2
+  fi
+' EXIT
+kill -TERM $$
+sleep 5
+MINI
+chmod +x "$G332F_ABNORMAL"
+G332F_ABNORMAL_OUT="$("$G332F_ABNORMAL" 2>&1)"
+assert_contains "AC(f): a caught signal (TERM) still prints the real tally, not silence" \
+  "$G332F_ABNORMAL_OUT" "3 passed, 1 failed, 0 skipped -- ABNORMAL TERMINATION"
+
+G332F_CLEAN="$TMP/g332f-clean.sh"
+cat > "$G332F_CLEAN" <<'MINI2'
+#!/usr/bin/env bash
+set -uo pipefail
+PASS=3; FAIL=0; SKIP=0
+trap '
+  if [ "${_FWF_SUMMARY_PRINTED:-0}" != 1 ]; then
+    printf "\n%d passed, %d failed, %d skipped -- ABNORMAL TERMINATION, suite did not reach its normal end (issue #332 AC f)\n" "$PASS" "$FAIL" "$SKIP" >&2
+  fi
+' EXIT
+_FWF_SUMMARY_PRINTED=1
+echo "$PASS passed, $FAIL failed, $SKIP skipped"
+exit 0
+MINI2
+chmod +x "$G332F_CLEAN"
+G332F_CLEAN_OUT="$("$G332F_CLEAN" 2>&1)"
+assert_not_contains "AC(f): a clean completion never double-prints the abnormal-termination line" "$G332F_CLEAN_OUT" "ABNORMAL TERMINATION"
+assert_contains "AC(f): a clean completion prints exactly one summary" "$G332F_CLEAN_OUT" "3 passed, 0 failed, 0 skipped"
 
 section "fwf gate (#195 AC d/g): a foreign port occupant is diagnosed by PID/command, never killed, and output/exit code pass through byte-identical"
 python3 -u -m http.server 0 --bind 127.0.0.1 >"$TMP/fwf195g-occ.log" 2>&1 &   # -u: unbuffered, or the startup line never flushes to a redirected file
@@ -9608,6 +9706,7 @@ assert_eq "AC1: the final summary format names a skipped count, not just passed/
 # exactly how #242 happened, and how two real failures shipped green. An
 # explicit `exit` cannot be shadowed by an append, only preceded by one, and
 # the section above fails loudly if someone tries.
+_FWF_SUMMARY_PRINTED=1
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1
 exit "$_rc"
