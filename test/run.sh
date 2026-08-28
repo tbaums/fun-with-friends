@@ -1425,6 +1425,17 @@ assert_eq "AC(c): an unreadable (but present) heartbeat file still reads STALE, 
   "$(printf '%s' "$D193_A_UNREAD" | jq -r '.[] | select(.role=="impl1") | .state')"
 chmod 644 "$D193_A_RUN/state/example/heartbeat/impl1"
 
+# Edge case: a heartbeat mtime in the FUTURE (clock skew) must never produce
+# a negative age or a false-fresh reading -- the file's mere existence still
+# means STALE (real evidence this role ran here), but its age is UNKNOWN,
+# never a fabricated negative number.
+touch -d "@$(( $(date +%s) + 3600 ))" "$D193_A_RUN/state/example/heartbeat/impl1"
+D193_A_SKEW="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "clock skew: state stays STALE (the file is real evidence), not a fabricated DOWN" "stale" \
+  "$(printf '%s' "$D193_A_SKEW" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "clock skew: heartbeat_age is null, never a negative number" "null" \
+  "$(printf '%s' "$D193_A_SKEW" | jq -r '.[] | select(.role=="impl1") | .heartbeat_age')"
+
 # --- AC(c)/(e): NO session visible anywhere -> every role UNKNOWN, banner data
 D193_E_RUN="$TMP/d193-e"; mkdir -p "$D193_E_RUN/state/example"
 echo default > "$D193_E_RUN/state/example/tmux_socket"
