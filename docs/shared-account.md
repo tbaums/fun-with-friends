@@ -113,7 +113,7 @@ instead of hand-parsed prose.
 fwf authz <issue>
 ```
 
-prints one of four verdicts, each with both a distinct **exit code** and a
+prints one of five verdicts, each with both a distinct **exit code** and a
 human-readable line naming a concrete next action:
 
 | Verdict | Exit code | Meaning |
@@ -122,6 +122,7 @@ human-readable line naming a concrete next action:
 | `HELD` | 10 | No anchored sentinel. Routine, expected, boring — hold and ask. |
 | `INVALID` | 11 | A sentinel-**shaped** line sits at column 0 but is malformed (no parseable issue reference, or names a different issue than the thread it's in). Security-relevant — a forgery attempt or a botched operator action — and surfaced on `fwf dash`'s decisions panel, not only here. |
 | `INDETERMINATE` | 2 | The thread could not be read — an *availability* failure, not an authorization one. Fail closed: treat exactly like `HELD`. |
+| `NOT-GATED` | 12 | This issue never carried the gate label — there is nothing to un-gate (issue #215). **Not the same as `AUTHORIZED`**: it means no gate was ever applied, not that a human approved anything. Determined from label *history*, not current label state, so an issue that WAS gated and later un-gated still resolves `HELD`/`AUTHORIZED` as before — only a currently-ungated issue with NO gate history at all (or one whose only gate episode's un-gate predates the sentinel mechanism, 2026-08-12) reaches this verdict. An unreadable label history fails closed to `HELD`, noting the read failure. |
 
 **Column-0-per-comment, like `QA-*`/`GV-*` — but per LINE, not just the first
 line of the comment**, and with one more step: fenced (` ``` `/`~~~`) and
