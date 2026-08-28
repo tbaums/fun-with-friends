@@ -1813,14 +1813,45 @@ FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 # that is neither 1 nor OUR OWN group is ever signalled — signalling a
 # non-leader's group could take out an unrelated tmux pane shell, and a
 # non-pgleader holder's group is left for ground-truth measurement to absorb.
+# issue #332: portable elapsed-seconds for a pid. `ps -o etimes=` is GNU-only;
+# `ps -o etime=` exists on GNU and BSD and prints [[DD-]HH:]MM:SS. Prints
+# nothing when the pid is gone or the value cannot be parsed -- callers MUST
+# treat empty as "unknown", never as zero.
+_fwf_ps_elapsed_secs() { # $1=pid
+  local et d h m sec
+  et="$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')"
+  [ -n "$et" ] || return 0
+  case "$et" in *-*) d="${et%%-*}"; et="${et#*-}";; *) d=0;; esac
+  case "$et" in
+    *:*:*) h="${et%%:*}"; et="${et#*:}"; m="${et%%:*}"; sec="${et##*:}";;
+    *:*)   h=0;           m="${et%%:*}"; sec="${et##*:}";;
+    *)     return 0;;
+  esac
+  case "$d$h$m$sec" in *[!0-9]*) return 0;; esac
+  printf '%s' "$(( 10#$d*86400 + 10#$h*3600 + 10#$m*60 + 10#$sec ))"
+}
+
 _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
-  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid etimes now start_epoch
+  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid elapsed now start_epoch anc
   [ "$pgleader" = 1 ] || return 0
   [ "$host" = "$(hostname)" ] || return 0
   case "$pgid" in ''|*[!0-9]*) return 0;; esac
   [ "$pgid" -gt 1 ] || return 0
   ownpgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
   [ "$pgid" = "$ownpgid" ] && return 0
+  # issue #332: the self-check above is not enough. This runs NESTED (the
+  # suite invokes the gate, which invokes the gate), so the group that must
+  # never be signalled is usually an ANCESTOR's, not our own -- signalling it
+  # kills the test runner and the whole suite dies mid-run with no summary.
+  # Walk our parent chain and refuse if $pgid belongs to any ancestor.
+  anc=$$
+  while [ -n "$anc" ] && [ "$anc" -gt 1 ] 2>/dev/null; do
+    if [ "$pgid" = "$(ps -o pgid= -p "$anc" 2>/dev/null | tr -d ' ')" ]; then
+      echo "fwf#332: refusing to signal pgid $pgid -- it is an ANCESTOR's process group (pid $anc); signalling it would kill this process tree" >&2
+      return 0
+    fi
+    anc="$(ps -o ppid= -p "$anc" 2>/dev/null | tr -d ' ')"
+  done
   # issue #195 AC(h): the recorded PGID leader can be DEAD with its ID
   # already reused by an unrelated, newer process (PID space wraps under
   # load) -- signalling that reused ID would TERM/KILL an innocent
@@ -1831,14 +1862,30 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
   # than guess. `ps -o etimes=` (elapsed seconds) is used instead of
   # `lstart` specifically because a formatted timestamp is locale-
   # dependent and this comparison must be a plain integer one.
-  # `etimes` returning EMPTY (pid not found at all -- the common, expected
-  # case: the holder is simply gone) skips this check entirely and falls
-  # through to the kill below, which is a safe no-op against a dead pgid.
+  # issue #332: `ps -o etimes=` is a GNU procps EXTENSION and does not exist
+  # on BSD/macOS (`ps: etimes: keyword not found`), so this read was ALWAYS
+  # empty there, always took the fall-through branch, and always reaped --
+  # the guard was structurally impossible on macOS and failed OPEN into a
+  # SIGKILL. Use `etime` (the POSIX-ish [[DD-]HH:]MM:SS form, present on
+  # both) and parse it to seconds ourselves.
+  #
+  # The two cases below used to share one branch and must not: "the pid is
+  # ABSENT" (holder genuinely gone -> reaping is a safe no-op) is a
+  # different fact from "elapsed time could not be determined" (-> we do
+  # not know whether this is reuse, so we must REFUSE). Failing open on an
+  # unanswered question is #211's defect with a kill attached.
   if [ -n "$acquired" ]; then
-    etimes="$(ps -o etimes= -p "$pgid" 2>/dev/null | tr -d ' ')"
-    case "$etimes" in
-      ''|*[!0-9]*) : ;;   # not found, or unparseable -- can't confirm reuse either way; proceed
-      *)
+    if ! ps -o pid= -p "$pgid" >/dev/null 2>&1; then
+      : # pid absent: the holder is gone, the kill below is a safe no-op
+    else
+      elapsed="$(_fwf_ps_elapsed_secs "$pgid")"
+      case "$elapsed" in
+        ''|*[!0-9]*)
+          echo "fwf#332: refusing to signal pgid $pgid -- it is LIVE but its elapsed time could not be determined, so PID/PGID reuse cannot be ruled out (failing closed)" >&2
+          return 0
+          ;;
+        *)
+          etimes="$elapsed"
         now="$(date +%s)"
         start_epoch=$(( now - etimes ))
         if [ "$start_epoch" -gt "$acquired" ]; then
@@ -1846,7 +1893,8 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
           return 0
         fi
         ;;
-    esac
+      esac
+    fi
   fi
   echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
   kill -KILL -"$pgid" 2>/dev/null
@@ -2808,7 +2856,15 @@ fwf_subscription_usage_read() {
   session_pct="$(printf '%s' "$line" | cut -f1)"
   weekly_pct="$(printf '%s' "$line" | cut -f2)"
   as_of="$(printf '%s' "$line" | cut -f3)"
-  as_of_epoch="$(date -d "$as_of" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$as_of" +%s 2>/dev/null || true)"
+  # issue #337: BOTH branches must be -u. `as_of` is an ISO-8601 UTC stamp
+  # ending in Z; without -u the BSD `date -j -f` branch parses it as LOCAL
+  # time, so every reading looks (UTC-offset) seconds into the future. On a
+  # PDT box that is 25200s, which trips the fail-closed clock-skew guard and
+  # parks the floor UNKNOWN on every poll -- the #149 subscription brake
+  # never functions on macOS. A UTC CI runner has offset 0, so this was
+  # invisible on Linux. The same conversion is already done correctly with
+  # -u at the `_fwf_iso_to_epoch` site below; keep the two in agreement.
+  as_of_epoch="$(date -u -d "$as_of" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$as_of" +%s 2>/dev/null || true)"
   if [ -z "$as_of_epoch" ]; then
     printf 'malformed-schema (as_of not a parseable timestamp)'
     return 1

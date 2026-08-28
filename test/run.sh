@@ -5951,7 +5951,12 @@ if [ -n "$G195D_PORT" ] && _fwf195_port_listening "$G195D_PORT"; then
   assert_contains "AC(g): stdout passes through untouched" "$G195D_OUT" "stdout line one"
   assert_contains "AC(g): the ORIGINAL stderr line still appears (not swallowed)" "$(cat "$TMP/fwf195d-stderr.log")" "EADDRINUSE"
   assert_contains "AC(d): the occupant's PID is named" "$(cat "$TMP/fwf195d-stderr.log")" "PID $G195D_OCC_PID"
-  assert_contains "AC(d): the occupant's command is named" "$(cat "$TMP/fwf195d-stderr.log")" "python3"
+  # issue #337: assert on the WORKLOAD, not the interpreter's binary name.
+  # "python3" is Linux-specific -- on macOS the same process reports as
+  # "Python" (lsof) or a Python.framework path (ps), and the literal string
+  # "python3" appears nowhere. "http.server" is in the command line on both
+  # platforms, and identifying the workload is the stronger assertion anyway.
+  assert_contains "AC(d): the occupant's command is named" "$(cat "$TMP/fwf195d-stderr.log")" "http.server"
   assert_contains "AC(d): it is framed as a lock-protocol violation, not an environment problem" "$(cat "$TMP/fwf195d-stderr.log")" "lock-protocol violation"
   if kill -0 "$G195D_OCC_PID" 2>/dev/null; then
     ok "AC(d): the diagnosed occupant is left running -- never killed"
@@ -6383,7 +6388,12 @@ assert_eq "AC repro (2), FIXED: impl re-checks-out its own branch with zero coll
 # holds qa1/review-9 (its own branch) while idle -- that is correct and
 # expected, never a collision target for anything impl needs.
 F177_WT_LIST="$(git -C "$F177/main" worktree list --porcelain)"
-F177_QA_BRANCH_LINE="$(printf '%s\n' "$F177_WT_LIST" | awk -v p="$F177/qa1-wt" '$0=="worktree "p{f=1} f&&/^branch /{print; exit} f&&/^detached/{print "detached"; exit}')"
+# issue #337: `git worktree list` prints the RESOLVED path. On macOS /tmp is a
+# symlink to /private/tmp, so an exact match against the unresolved $F177 path
+# never fires and this assertion read as a failure on every macOS run. Compare
+# resolved-to-resolved.
+F177_QA_REAL="$(cd "$F177/qa1-wt" && pwd -P)"
+F177_QA_BRANCH_LINE="$(printf '%s\n' "$F177_WT_LIST" | awk -v p="$F177_QA_REAL" '$0=="worktree "p{f=1} f&&/^branch /{print; exit} f&&/^detached/{print "detached"; exit}')"
 assert_eq "Hardening: qa1's worktree holds ONLY its own branch (never impl1's) while idle-waiting" \
   "branch refs/heads/qa1/review-9" "$F177_QA_BRANCH_LINE"
 
@@ -9820,6 +9830,117 @@ assert_eq "AC1: the final summary format names a skipped count, not just passed/
 # exactly how #242 happened, and how two real failures shipped green. An
 # explicit `exit` cannot be shadowed by an append, only preceded by one, and
 # the section above fails loudly if someone tries.
+
+# ---------------------------------------------------------------------------
+# issue #337 / #332: GNU-only constructs on portability-critical paths.
+#
+# Every macOS-only defect found on 2026-08-28 was a GNU extension that a
+# Linux runner cannot observe in either direction: the code works there, so
+# no behavioural test on Linux can go red. These guards CAN go red on Linux,
+# which is the point -- they assert the construct is absent rather than
+# waiting for a Mac to notice. Each names the defect it prevents.
+section "portability (#337): no GNU-only constructs on kill / cache / time paths"
+
+PORT_FILES="$ROOT/lib.sh $ROOT/fwf-gate.sh $ROOT/fwf-ghcache.sh"
+# Match only LIVE code, never comments. Deliberately POSIX: an earlier version
+# of this very guard used `grep -v '^\s*#'`, and \s is itself a GNU extension --
+# a portability check that was not portable. awk strips "file:line:" then any
+# leading blanks and drops the line if what remains starts with '#'.
+port_live() { # $1=pattern
+  grep -n "$1" $PORT_FILES 2>/dev/null | awk '{ l=$0
+      sub(/^[^:]*:[0-9]+:/, "", l); sub(/^[ \t]+/, "", l)
+      if (substr(l,1,1) != "#") print }'
+}
+
+# #332: `ps -o etimes` is GNU procps only. On BSD it yields nothing, the
+# reuse guard failed OPEN, and the gate SIGKILLed the test runner's own
+# process group -- the suite could not complete on macOS at all.
+PORT_ETIMES="$(port_live 'ps -o etimes' || true)"
+[ -z "$PORT_ETIMES" ] \
+  && ok "no live 'ps -o etimes' (#332: GNU-only; failed OPEN into a SIGKILL on macOS)" \
+  || bad "no live 'ps -o etimes' (#332)" "$PORT_ETIMES"
+
+# #337 Group D: gawk's IGNORECASE is silently ignored by BSD awk, so the
+# ETag was never captured and every post-TTL poll was a charged 200.
+PORT_IGN="$(port_live 'IGNORECASE' || true)"
+[ -z "$PORT_IGN" ] \
+  && ok "no awk IGNORECASE (#337 D: gawk-only; ETag never captured on BSD)" \
+  || bad "no awk IGNORECASE (#337 D)" "$PORT_IGN"
+
+# #337 Group A: `date -j -f` without -u parses a UTC stamp as LOCAL time.
+# On a PDT box that is +25200s, which tripped the fail-closed skew guard and
+# meant #149's usage brake never engaged on macOS.
+PORT_DATEJ="$(port_live 'date -j -f' | grep -v 'date -u -j -f' || true)"
+[ -z "$PORT_DATEJ" ] \
+  && ok "every 'date -j -f' carries -u (#337 A: UTC stamp parsed as local otherwise)" \
+  || bad "every 'date -j -f' carries -u (#337 A)" "$PORT_DATEJ"
+
+# ---------------------------------------------------------------------------
+section "portability (#332): _fwf_ps_elapsed_secs + the fail-CLOSED split"
+
+# Behavioural, and platform-neutral: `ps -o etime=` exists on GNU and BSD.
+PORT_EL_LIVE="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs \$\$")"
+case "$PORT_EL_LIVE" in
+  ''|*[!0-9]*) bad "elapsed-secs of a LIVE pid is numeric" "got [$PORT_EL_LIVE]";;
+  *) ok "elapsed-secs of a LIVE pid is numeric (portable 'ps -o etime=' parse)";;
+esac
+PORT_EL_DEAD="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs 999999999")"
+[ -z "$PORT_EL_DEAD" ] \
+  && ok "elapsed-secs of a DEAD pid is EMPTY, never a fabricated 0 (#211)" \
+  || bad "elapsed-secs of a DEAD pid is EMPTY" "got [$PORT_EL_DEAD]"
+
+# The load-bearing #332 change: a LIVE pgid whose elapsed time cannot be
+# determined must REFUSE, not reap. Driven with a `ps` stub that answers the
+# pid-exists probe but returns junk for etime -- the exact shape BSD produced
+# when `etimes` was passed. Goes RED against the pre-fix code on Linux too:
+# pre-fix, an unparseable value fell through to `kill -KILL`.
+PORT_STUB="$TMP/port332-stub"; mkdir -p "$PORT_STUB"
+# The stub MUST branch on the pid actually queried, not merely on the presence
+# of an -o flag. A first version returned the canned pgid for EVERY query, so
+# `ps -o pgid= -p $$` (the function's own-pgid self-check, which runs FIRST)
+# also returned 4242 -- the self-check matched, the function returned silently,
+# and the test never reached the elapsed-time branch it exists to exercise.
+# It produced empty output and matched neither case arm. Caught by qa4 on
+# review; the same "#275: a test that cannot fail is worth nothing" trap the
+# construct guards above were written to avoid, recurring one level up.
+PORT_TARGET_PGID=4242
+cat > "$PORT_STUB/ps" <<'PSEOF'
+#!/bin/sh
+# Canned answers ONLY for the target pgid; anything else (self, ancestors)
+# delegates to the real ps so the self-check and ancestor-walk see truth.
+want=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "-p" ] && want="$a"
+  prev="$a"
+done
+if [ "$want" != "$FWF_STUB_PGID" ]; then
+  exec /bin/ps "$@"
+fi
+for a in "$@"; do
+  case "$a" in
+    pid=)   echo "$FWF_STUB_PGID"; exit 0;;   # the pid EXISTS
+    etime=) echo "not-a-time";        exit 0;;   # ...but elapsed is unparseable
+    pgid=)  echo "$FWF_STUB_PGID"; exit 0;;
+  esac
+done
+exec /bin/ps "$@"
+PSEOF
+chmod +x "$PORT_STUB/ps"
+# The stub's env var is deliberately named differently from the shell variable
+# expanded below: assigning and expanding the SAME name in one command line is
+# SC2097/SC2098 (the expansion would not see the assignment).
+PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" FWF_STUB_PGID="$PORT_TARGET_PGID" \
+  bash -c "source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 $PORT_TARGET_PGID \$(( \$(date +%s) - 9999 ))" 2>&1)"
+case "$PORT_REFUSE" in
+  '') bad "#332 fail-CLOSED: the stub must REACH the elapsed-time branch" "empty output -- the self-check or ancestor-walk short-circuited; the test is vacuous";;
+  *"refusing to signal"*) ok "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES (never reaps)";;
+  *) bad "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES" "got [$PORT_REFUSE]";;
+esac
+case "$PORT_REFUSE" in
+  *"SIGKILL group"*) bad "#332: it must NOT reap on an unanswered question" "$PORT_REFUSE";;
+  *) ok "#332: no SIGKILL is emitted when elapsed time is unknown";;
+esac
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1
 exit "$_rc"
