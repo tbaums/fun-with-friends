@@ -9640,22 +9640,41 @@ PORT_EL_DEAD="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs 999999999")
 # when `etimes` was passed. Goes RED against the pre-fix code on Linux too:
 # pre-fix, an unparseable value fell through to `kill -KILL`.
 PORT_STUB="$TMP/port332-stub"; mkdir -p "$PORT_STUB"
+# The stub MUST branch on the pid actually queried, not merely on the presence
+# of an -o flag. A first version returned the canned pgid for EVERY query, so
+# `ps -o pgid= -p $$` (the function's own-pgid self-check, which runs FIRST)
+# also returned 4242 -- the self-check matched, the function returned silently,
+# and the test never reached the elapsed-time branch it exists to exercise.
+# It produced empty output and matched neither case arm. Caught by qa4 on
+# review; the same "#275: a test that cannot fail is worth nothing" trap the
+# construct guards above were written to avoid, recurring one level up.
+PORT_TARGET_PGID=4242
 cat > "$PORT_STUB/ps" <<'PSEOF'
 #!/bin/sh
-# -o pid= : the pid EXISTS. -o etime= : unparseable (the BSD 'etimes' shape).
+# Canned answers ONLY for the target pgid; anything else (self, ancestors)
+# delegates to the real ps so the self-check and ancestor-walk see truth.
+want=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "-p" ] && want="$a"
+  prev="$a"
+done
+if [ "$want" != "$PORT_TARGET_PGID" ]; then
+  exec /bin/ps "$@"
+fi
 for a in "$@"; do
   case "$a" in
-    pid=)   echo 4242; exit 0;;
-    etime=) echo "not-a-time"; exit 0;;
-    pgid=)  echo 4242; exit 0;;
-    ppid=)  echo 1; exit 0;;
+    pid=)   echo "$PORT_TARGET_PGID"; exit 0;;   # the pid EXISTS
+    etime=) echo "not-a-time";        exit 0;;   # ...but elapsed is unparseable
+    pgid=)  echo "$PORT_TARGET_PGID"; exit 0;;
   esac
 done
-exit 0
+exec /bin/ps "$@"
 PSEOF
 chmod +x "$PORT_STUB/ps"
-PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" bash -c "source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 4242 \$(( \$(date +%s) - 9999 ))" 2>&1)"
+PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" PORT_TARGET_PGID="$PORT_TARGET_PGID" \
+  bash -c "source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 $PORT_TARGET_PGID \$(( \$(date +%s) - 9999 ))" 2>&1)"
 case "$PORT_REFUSE" in
+  '') bad "#332 fail-CLOSED: the stub must REACH the elapsed-time branch" "empty output -- the self-check or ancestor-walk short-circuited; the test is vacuous";;
   *"refusing to signal"*) ok "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES (never reaps)";;
   *) bad "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES" "got [$PORT_REFUSE]";;
 esac
