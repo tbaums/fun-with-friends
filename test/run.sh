@@ -711,7 +711,7 @@ ul 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_ti
 assert_contains "a failed read appends the reader name"        "$(cat "$ULOG")" "fwf_tick_read"
 assert_contains "  ...and the role it failed for"              "$(cat "$ULOG")" "role=badrole"
 assert_contains "  ...and a real UTC timestamp (this year)"    "$(cat "$ULOG")" "$(date -u +%Y)-"
-LINES1="$(wc -l < "$ULOG")"
+LINES1="$(wc -l < "$ULOG" | tr -d ' ')"
 [ "$LINES1" -ge 1 ] && ok "log grew by at least one line" || bad "log grew by at least one line" "got $LINES1"
 
 # Bounded: repeated failures never grow the log past FWF_UNKNOWN_LOG_MAX_LINES.
@@ -719,8 +719,24 @@ ul2() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run2" FWF_UNKNOWN_LOG_MAX_LINES=5 b
 ul2 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"
   for i in 1 2 3 4 5 6 7 8 9 10; do fwf_tick_read badrole >/dev/null; done'
 BOUNDED_LOG="$UL/run2/state/example/unknown-reads.log"
-BOUNDED_LINES="$(wc -l < "$BOUNDED_LOG")"
+BOUNDED_LINES="$(wc -l < "$BOUNDED_LOG" | tr -d ' ')"
 assert_eq "log is bounded at FWF_UNKNOWN_LOG_MAX_LINES even after 10 failures" "5" "$BOUNDED_LINES"
+
+# Portable BSD-shape regression (#284): BSD/macOS wc(1) pads its count with
+# leading spaces ("      10"); GNU wc does not. Stub a padding wc onto PATH
+# for the duration of this case so the assertion exercises the BSD shape on
+# ANY platform (including this Linux CI runner), rather than relying on the
+# host's own wc behavior.
+PADWC="$UL/padbin"; mkdir -p "$PADWC"
+REALWC="$(command -v wc)"
+printf '#!/bin/sh\nexec printf "%%10s\\n" "$(%s "$@" | tr -d "[:space:]")"\n' "$REALWC" > "$PADWC/wc"
+chmod +x "$PADWC/wc"
+ul3() { PATH="$PADWC:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$UL/runpad" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/lib.sh'; $1"; }
+ul3 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"
+  for i in 1 2 3 4 5 6 7 8 9 10; do fwf_tick_read badrole >/dev/null; done'
+PAD_LOG="$UL/runpad/state/example/unknown-reads.log"
+assert_eq "bound still fires when wc pads its count (BSD shape, #284)" \
+  "5" "$(wc -l < "$PAD_LOG" | tr -d ' ')"
 
 # issue #211 AC (f0), the load-bearing assertion: the LOG ITSELF is a write
 # that can fail, and that failure must NEVER touch the reader's own answer
