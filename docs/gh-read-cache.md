@@ -108,6 +108,76 @@ Consumers, and whether a degraded (unconfirmed) read is tolerable for each:
   the moment it starts occasionally seeing `2` where it used to always see
   `0`.
 
+## Budget observability (issue #239)
+
+Individually, `#140`'s per-tick rehydration scan, `#146`'s per-tick worktree
+fetch, and `#147`'s per-tick liveness check are each cheap. **Nobody owned
+the sum**, and every seat shares the owner's GitHub account, so the floor is
+one consumer that looks like a dozen — the account that fails when the
+budget runs out. A `gh` call failing for rate-limit reasons doesn't surface
+as "I could not read the world"; without this section's mechanisms it
+surfaces as an empty result, which every reader downstream would treat as
+an authoritative "there is nothing in flight" (the same defect shape as
+`#211` and `#193`).
+
+**Per-role, per-tick, measured (not estimated):**
+
+| Caller | Reads/tick | Scales with |
+|---|---|---|
+| `#140` rehydration scan | 1 `gh pr list` | 1 per role |
+| `#146` worktree refresh | 1 `git fetch` (not `gh`, no quota cost) | 1 per role |
+| `#147` liveness check | 1 `gh issue list`/`gh pr list` (`fwf_build_plane_blocked`/`fwf_pm_plane_blocked`, `lib.sh`) | 1 per role |
+| `fwf-dash-data.sh` | ~1 `gh issue/pr view` per **open, gated** issue (`decisions_json`'s GV-signoff check) | the **open gated backlog**, not `FWF_PAIRS` or the tick interval |
+
+The dash term is the one that does not shrink with a healthy floor and does
+not show up in a per-role accounting — it scales on the backlog, which can
+double while every other term stays flat. All four terms are collapsed by
+this cache's TTL/ETag machinery (above) to a small fraction of their raw
+call count; **it is the CHARGED (200) rate that matters, never the raw call
+count**, which is why the metrics below count responses, not requests.
+
+**Measuring spend, not requests** (`fwf-ghcache.sh metrics [window-seconds]`,
+default window `3600`): `N` identical polls inside the TTL window collapse
+to one fetch, and an unchanged poll returns a free `304` — a call-site
+counter would measure requests, which differs from spend by the hit rate,
+and on a dozen roles polling the same coordination bus the hit rate **is**
+the design. Three counts, recorded as a bounded rolling log at the actual
+REST+ETag branch points (the canonical list fetch and the per-resource view
+fetch — this cache's two dominant, documented consumers):
+
+- `hit` — served from the TTL window, zero upstream cost.
+- `revalidated` — an upstream `304`, zero primary-quota cost.
+- `charged` — a genuine `200`, the only kind that spends quota.
+
+```
+$ fwf-ghcache.sh metrics 3600
+hit=42 revalidated=8 charged=3 window=3600s
+```
+
+A burst of identical polls shows up entirely as `hit`, never as spend —
+that is the property worth checking after any change near this cache.
+
+**Headroom** (`fwf-ghcache.sh headroom`) reports `gh api rate_limit`'s
+`remaining`/`limit`/`reset`, cached on the **same TTL** as every other read
+here — headroom must not become a fourth per-tick call. On any failure
+(network, auth, the rate limit itself being exhausted, `/rate_limit`'s own
+secondary-limit cost) it prints the literal string `UNKNOWN` and exits
+non-zero — never a guessed number. `fwf doctor` surfaces this alongside the
+observed `charged` rate over the last hour and an estimated time-to-
+exhaustion (`_doctor_api_budget_check`); like every other `doctor` sub-check
+it is informational and never fails `doctor` overall.
+
+**The dash renders exhaustion as a NAMED element** (`fwf-dash-data.sh`'s
+`api_budget_json`, consumed by the Rust dash's `ApiBudget`/
+`render_api_budget_banner`): a full-width red banner reading `API BUDGET
+EXHAUSTED`, shown whenever the headroom read reports zero remaining **or**
+could not complete at all — both mean "do not trust the read layer right
+now" from an operator's chair, and both get the same visible alarm (the
+banner text still says which one it is). This is deliberately a specific,
+assertable string rather than "an operator could probably notice the dash
+looks emptier than usual" — the latter is unfalsifiable, and it was this
+requirement's own rejected first draft.
+
 ## Tuning
 
 - `FWF_GHCACHE_TTL` — cache freshness window in seconds (default `60`). Lower = fresher,

@@ -8705,6 +8705,80 @@ G239_DOCTOR_UNKNOWN_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAI
 assert_contains "fwf doctor's api budget degrades to UNKNOWN under a forced failure" "$G239_DOCTOR_UNKNOWN_OUT" "api budget : UNKNOWN"
 
 # --------------------------------------------------------------------------
+section "drift guard: a per-tick gh call count is asserted, not assumed (issue #239)"
+# AC: "a test asserts the per-tick call count for at least one role, so
+# adding a fourth per-tick call to the loop is a visible change rather than
+# a silent one." fwf_build_plane_blocked (#147) is the deterministic,
+# code-level (not prose-rendered) case: a call-counting gh stub proves it
+# makes EXACTLY two gh calls in its worst case (pr-count check, then the
+# claim-window scan once pr-count comes back 0) -- a THIRD call silently
+# added later must turn this red, not pass unnoticed.
+# Needs an ISOLATED git fixture where staging == integration -- with the
+# real worktree's own repo, whether the pr-count==0 path reaches the
+# claim-scan gh call depends on whether staging happens to be ahead of
+# integration RIGHT NOW (a live, time-varying fact having nothing to do
+# with this test), which would make the call count flaky by environment.
+G239DRIFT_GITROOT="$TMP/g239-drift-repo"; mkdir -p "$G239DRIFT_GITROOT"
+G239DRIFT_ORIGIN="$TMP/g239-drift-origin.git"; git init -q --bare "$G239DRIFT_ORIGIN"
+( cd "$G239DRIFT_GITROOT" && git init -q . && git config user.email t@t.com && git config user.name t \
+  && echo a > f.txt && git add f.txt && git commit -q -m init && git branch -M staging && git branch integration \
+  && git remote add origin "$G239DRIFT_ORIGIN" && git push -q origin staging integration )
+G239DRIFT_LOG="$TMP/g239-drift-calllog"
+G239DRIFT_STUB="$TMP/g239-drift-stub"; mkdir -p "$G239DRIFT_STUB"
+cat > "$G239DRIFT_STUB/gh" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$G239DRIFT_LOG"
+case "\$1 \$2" in
+  "pr list") echo 0 ;;
+  "issue list") echo "" ;;
+  *) echo 0 ;;
+esac
+EOF
+chmod +x "$G239DRIFT_STUB/gh"
+rm -f "$G239DRIFT_LOG"
+( export PATH="$G239DRIFT_STUB:$PATH"
+  FWF_PROFILE=example FWF_REPO="$G239DRIFT_GITROOT" bash -c "source '$ROOT/lib.sh'; fwf_build_plane_blocked" >/dev/null 2>&1 )
+assert_eq "AC(drift): fwf_build_plane_blocked makes exactly 2 gh calls per tick in its worst case (pr-count + claim scan) -- change this number only deliberately" \
+  "2" "$(wc -l < "$G239DRIFT_LOG" | tr -d ' ')"
+assert_eq "the FIRST call is the pr-count check" "pr list" \
+  "$(head -1 "$G239DRIFT_LOG" | cut -d' ' -f1-2)"
+assert_eq "the SECOND call is the claim-window scan" "issue list" \
+  "$(sed -n '2p' "$G239DRIFT_LOG" | cut -d' ' -f1-2)"
+
+# --------------------------------------------------------------------------
+section "consumers hold position under a failed gh read (issue #239: '#140/#147 do not conclude nothing in flight')"
+# fwf_build_plane_blocked/fwf_pm_plane_blocked (#147) already fail closed --
+# written that way when #147 landed -- but nothing asserted it against a
+# GENUINELY FAILING gh (as opposed to gh succeeding with a stubbed count).
+# This closes exactly the AC #239 names: "each consumer holds position
+# under UNKNOWN, asserted per consumer" -- a shared UNKNOWN type that
+# individual call sites still coerce to empty is the defect, not the fix,
+# so this tests the CALL SITES, not just fwf-ghcache.sh's own exit code.
+G239FAIL_STUB="$TMP/g239-consumer-failgh"; mkdir -p "$G239FAIL_STUB"
+cat > "$G239FAIL_STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "simulated: rate limit exceeded" >&2
+exit 1
+EOF
+chmod +x "$G239FAIL_STUB/gh"
+
+G239BUILD_OUT="$(PATH="$G239FAIL_STUB:$PATH" FWF_PROFILE=example FWF_REPO="$ROOT" bash -c "source '$ROOT/lib.sh'; fwf_build_plane_blocked")"
+assert_contains "AC: fwf_build_plane_blocked (#147) does NOT conclude 'nothing in flight' when gh genuinely fails -- it reports blocked" \
+  "$G239BUILD_OUT" "could not query open PRs"
+case "$G239BUILD_OUT" in
+  "") bad "fwf_build_plane_blocked must not return the EMPTY (safe-to-idle) string when gh failed" ;;
+  *) ok "fwf_build_plane_blocked returns a non-empty (blocked) reason under a failed gh read, never the empty/safe string" ;;
+esac
+
+G239PM_OUT="$(PATH="$G239FAIL_STUB:$PATH" FWF_PROFILE=example FWF_ISSUES=gh bash -c "source '$ROOT/lib.sh'; fwf_pm_plane_blocked")"
+assert_contains "AC: fwf_pm_plane_blocked (#147) does NOT conclude 'nothing in flight' when gh genuinely fails -- it reports blocked" \
+  "$G239PM_OUT" "could not query"
+case "$G239PM_OUT" in
+  "") bad "fwf_pm_plane_blocked must not return the EMPTY (safe-to-idle) string when gh failed" ;;
+  *) ok "fwf_pm_plane_blocked returns a non-empty (blocked) reason under a failed gh read, never the empty/safe string" ;;
+esac
+
+# --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
 # A bash script's status is that of its LAST executed command, so the gate
