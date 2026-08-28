@@ -3128,7 +3128,10 @@ mod tests {
     #[test]
     fn dead_board_tabs_show_unknown_not_zero() {
         let mut app = test_app();
-        app.feed = Feed::Err("data provider exited 126: jq: Argument list too long".into(), None);
+        app.feed = Feed::Err(
+            "data provider exited 126: jq: Argument list too long".into(),
+            None,
+        );
         let area = Rect::new(0, 0, 90, 1);
         let buf = render_buffer(area.width, area.height, |f| render_tabs(f, area, &app));
         let text = buffer_to_text(&buf);
@@ -3152,7 +3155,10 @@ mod tests {
         let area = Rect::new(0, 0, 90, 1);
         let buf = render_buffer(area.width, area.height, |f| render_tabs(f, area, &app));
         let text = buffer_to_text(&buf);
-        assert!(!text.contains("(0)"), "loading tabs must never render a confident zero count: {text}");
+        assert!(
+            !text.contains("(0)"),
+            "loading tabs must never render a confident zero count: {text}"
+        );
     }
 
     #[test]
