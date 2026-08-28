@@ -3548,29 +3548,42 @@ assert_eq "local backend: never-gated issue still resolves HELD (fail-closed, no
 assert_contains "local backend: the fail-closed default is EXPLAINED as the known limitation" \
   "$(AZ215L "$N_NG_LOCAL" 2>&1)" "local issues backend"
 
-# --- gh backend: build a fake `gh` on PATH answering ONLY the label-history
-# events read (issue #150-era ghcache has no events cache, so this call is
-# direct); the existing ghcache-served issue/comments fixtures (AZGROOT-style)
-# still cover current labels + the sentinel thread, untouched.
+# --- gh backend: build a fake `gh` on PATH answering ONLY the two #215
+# direct (uncached) reads -- the PR-vs-issue check and the label-history
+# events read (issue #150-era ghcache has no events cache, so these calls
+# are direct); the existing ghcache-served issue/comments fixtures
+# (AZGROOT-style) still cover current labels + the sentinel thread,
+# untouched. Anything else -- including fwf-ghcache.sh's OWN fallback-to-
+# real-gh path on a cache miss -- must fail loudly here, never quietly
+# "succeed" with the wrong shape of data standing in for a different read:
+# that would let an unfixtured issue number slip past the intended
+# INDETERMINATE, exactly the collapse issue #211 warns against.
 AZ215GHBIN="$TMP/az215ghbin"; mkdir -p "$AZ215GHBIN"
 cat > "$AZ215GHBIN/gh" <<'STUB'
 #!/usr/bin/env bash
-# Only answers the #215 label-history read (`gh api .../issues/N/events`).
-# Anything else -- including fwf-ghcache.sh's OWN fallback-to-real-gh path
-# on a cache miss -- must fail loudly here, never quietly "succeed" with
-# events-shaped data standing in for an issue/comments read: that would let
-# an unfixtured issue number slip past the intended INDETERMINATE and into
-# a false HELD, exactly the collapse issue #211 warns against.
+printf '%s\n' "$*" >> "${AZ215_CALL_LOG:?}"
 case "$*" in
-  *"/events"*) : ;;
+  *"/events"*)
+    if [ "${AZ215_EVENTS_FAIL:-0}" = 1 ]; then
+      echo "gh: simulated api failure" >&2; exit 1
+    fi
+    cat "${AZ215_EVENTS_FILE:?}"
+    ;;
+  *"api repos/"*"/issues/"*)
+    # The PR-vs-issue check (#215 QA fix) -- default "definitely an issue,
+    # not a PR" (pull_request: null) unless a test opts into simulating a
+    # PR number or an unreadable check.
+    if [ "${AZ215_PRCHECK_FAIL:-0}" = 1 ]; then
+      echo "gh: simulated api failure" >&2; exit 1
+    fi
+    if [ "${AZ215_IS_PR:-0}" = 1 ]; then
+      echo 'true'
+    else
+      echo 'false'
+    fi
+    ;;
   *) echo "az215-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
 esac
-printf '%s\n' "$*" >> "${AZ215_CALL_LOG:?}"
-if [ "${AZ215_EVENTS_FAIL:-0}" = 1 ]; then
-  echo "gh: simulated api failure" >&2
-  exit 1
-fi
-cat "${AZ215_EVENTS_FILE:?}"
 STUB
 chmod +x "$AZ215GHBIN/gh"
 
@@ -3645,11 +3658,36 @@ printf '[{"event":"labeled","created_at":"2026-08-01T00:00:00Z","label":{"name":
 AZ215_EVENTS_FILE="$TMP/az215-events-506.json"
 assert_eq "AC(h): otherwise-identical POST-cutoff un-gate episode -> HELD, not NOT-GATED" "10" "$(az215Grc 506)"
 
-# Edge case (cross-ref #189): a number with no ghcache fixture at all (proxy
-# for "a PR number, or anything this reader can't resolve as an issue") must
-# NOT silently produce NOT-GATED -- it has to fail closed to INDETERMINATE
-# (no labels, no comments -- both reads fail), same as before this ticket.
+# Edge case (cross-ref #189): a number with no ghcache fixture at all (a
+# genuinely unresolvable read) must NOT silently produce NOT-GATED -- it has
+# to fail closed to INDETERMINATE (no labels, no comments -- both reads
+# fail), same as before this ticket.
 assert_eq "edge: an unresolvable number never reaches NOT-GATED (fails closed to INDETERMINATE)" "2" "$(az215Grc 987654)"
+
+# Edge case (cross-ref #189, QA-caught #300 review): a REAL PR number --
+# resolvable, empty labels, empty label history (near-total for PRs, which
+# are essentially never product-wip-labeled) -- must NOT resolve NOT-GATED.
+# Before the PR-check this fixture reproduced a live bug: `fwf authz 297`
+# and `fwf authz 295` (real merged PRs) both returned NOT-GATED, "safe to
+# proceed", a human-independent go-ahead on a PR number that was never a
+# valid authorization-check input at all.
+az215_set_labels 507 '[]'; az215_set_comments 507
+printf '[]' > "$TMP/az215-events-507.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-507.json"
+AZ215_IS_PR=1
+export AZ215_IS_PR
+assert_eq "edge: a PR number never resolves NOT-GATED -- falls closed to HELD" "10" "$(az215Grc 507)"
+assert_contains "edge: the output names it as a PR, not a plain never-gated issue" \
+  "$(AZ215G 507 2>&1)" "PULL REQUEST"
+unset AZ215_IS_PR
+
+# ...and the mirror: the PR-check read itself failing must ALSO fail closed
+# (never treat an unreadable is-it-a-PR check as "must be a plain issue").
+az215_set_labels 508 '[]'; az215_set_comments 508
+AZ215_PRCHECK_FAIL=1
+export AZ215_PRCHECK_FAIL
+assert_eq "edge: an unreadable PR-check fails closed to HELD, not NOT-GATED" "10" "$(az215Grc 508)"
+unset AZ215_PRCHECK_FAIL
 
 unset AZ215_EVENTS_FILE AZ215_CALL_LOG
 

@@ -128,6 +128,27 @@ if [ "$currently_gated" = 0 ]; then
     # correct and honest, never a guess from current state.
     history_unreadable_note=" (label history is unavailable on the local issues backend — issue #215's stated known limitation; defaulting to was-gated)"
   else
+    # QA-caught (#215 review): a PR number shares the issue-number space and
+    # `gh issue view`/ghcache's issue-shaped fetch above silently succeeds
+    # on one too (empty labels, empty label history for the near-totality
+    # of PRs, since PRs are essentially never `product-wip`-labeled) -- so
+    # without this check, EVERY PR number would resolve NOT-GATED, "safe to
+    # proceed", handing a human-independent go-ahead to whatever reads it
+    # (issue #215's own edge case; cross-ref #189, where an issue/PR mixup
+    # cost a month of silently wrong output). The REST issue resource
+    # carries `pull_request` (non-null) only when the number is a PR --
+    # checked directly (uncached; only reached in the not-currently-gated
+    # path, same cost shape as the events read just below) BEFORE the
+    # history read, so a PR never even reaches label-history logic.
+    pr_check="$(gh api "repos/$(fwf_repo_slug)/issues/$num" --jq '.pull_request != null' 2>/dev/null)"
+    pr_check_rc=$?
+    if [ "$pr_check_rc" != 0 ] || { [ "$pr_check" != true ] && [ "$pr_check" != false ]; }; then
+      history_unreadable_note=" (could not confirm this number is an issue rather than a PR; defaulting to was-gated)"
+    elif [ "$pr_check" = true ]; then
+      history_unreadable_note=" (this number is a PULL REQUEST, not an issue -- #215's NOT-GATED determination never applies to PR numbers; defaulting to was-gated)"
+    fi
+  fi
+  if [ "$FWF_ISSUES" != "local" ] && [ -z "$history_unreadable_note" ]; then
     # REST Issue Events API — labeled/unlabeled events, each with a
     # created_at, are exactly the label HISTORY this determination needs
     # (issue #150-era gates predate this ticket and were never cached by
