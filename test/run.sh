@@ -3977,6 +3977,17 @@ printf '%s' '[{"id":223,"user":{"login":"ops"},"author_association":"OWNER","bod
 touch "$AZGROOT/x__y/views/40-comments.ts"
 assert_eq "authz (gh, #218): mid-line mention -> HELD, not AUTHORIZED" "10" "$(azgrc 40)"
 
+# issue #265 AC4/AC6: no cache layer means both directions land on the VERY
+# NEXT call, no sleep -- the stub `gh` here always serves whatever the
+# fixture file currently holds, so this is a direct structural test of
+# "does authz re-read every time", not a timing-window reproduction.
+printf '%s' '[]' > "$AZGROOT/x__y/views/40-comments.json"; touch "$AZGROOT/x__y/views/40-comments.ts"
+assert_eq "AC4 setup: no sentinel yet -> HELD" "10" "$(azgrc 40)"
+printf '%s' '[{"id":224,"user":{"login":"ops"},"author_association":"OWNER","body":"**OPERATOR-UNGATE #40** — approved","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:00:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-224"}]' > "$AZGROOT/x__y/views/40-comments.json"
+assert_eq "AC4: a freshly-posted sentinel is visible on the VERY NEXT call, no sleep, no invalidate" "0" "$(azgrc 40)"
+printf '%s' '[{"id":224,"user":{"login":"ops"},"author_association":"OWNER","body":"~~OPERATOR-UNGATE #40~~ retracted, wrong ticket","created_at":"2026-01-04T00:00:00Z","updated_at":"2026-01-04T00:05:00Z","html_url":"https://github.com/x/y/issues/40#issuecomment-224"}]' > "$AZGROOT/x__y/views/40-comments.json"
+assert_eq "AC6: a sentinel REMOVED by a comment edit no longer produces AUTHORIZED on the very next call (the #247 direction: false AUTHORIZED, silent and unearned)" "10" "$(azgrc 40)"
+
 # --------------------------------------------------------------------------
 # fwf authz (#218): anchoring — column 0, per comment, fence-stripped. A
 # separate local-backend store per fixture keeps issue numbers small/legible
