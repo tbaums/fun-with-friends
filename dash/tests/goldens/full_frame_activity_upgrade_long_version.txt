@@ -2,7 +2,7 @@
 │profile fwf-self  ·  dev  ● running  · fwf vX.Y.Z (built YYYY-MM-DD)                             │
 │prod https://example.test/prod   pipeline staging → integration → main   [status.json]   ⟳ 2026-01│
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-  1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)    5 Usage (0)
+  1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)    5 Usage (?)
  ⬆ fwf v0.22.0-rc.1+cafef00d available (running 0.21.3-dev.20260710+deadbeef) — run 'fwf upgrade'
 ┌ Activity — factory motion ─────────────┐┌ Detail · loading PR… ──────────────────────────────────┐
 │▌BUILDING                               ││PR #101  → staging                                      │
