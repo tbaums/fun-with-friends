@@ -6886,6 +6886,54 @@ rm -f "$TMP/gh-calls.log"
 FCG 9 --role qa2 --reason "PR needs a rebase call" >/dev/null
 assert_contains "PR number routes through 'gh pr', not 'gh issue'" "$(cat "$TMP/gh-calls.log")" "gh pr edit 9 --add-label needs-captain"
 
+section "fwf flag-captain sweep (#291): a failed gh read fails CLOSED, never renders as an empty sweep (AC a/d)"
+# gh_ fails outright here (simulating the real incident: jq exiting 126 on
+# ARG_MAX, or any other gh read failure) -- the sweep must exit non-zero and
+# say so, never silently fall through to "no needs-captain flags open",
+# which is indistinguishable from a genuinely empty sweep.
+FCG_FAILED_READ() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_() { return 126; }
+    main sweep
+  " fcg-failread-harness
+}
+SWEEP_FAIL_RC=0
+SWEEP_FAIL_OUT="$(FCG_FAILED_READ 2>"$TMP/fcg-failread.err")" || SWEEP_FAIL_RC=$?
+[ "$SWEEP_FAIL_RC" -ne 0 ] && ok "AC(a): a failed gh read makes the sweep exit non-zero" \
+  || bad "AC(a): sweep exited 0 on a failed gh read" "rc=$SWEEP_FAIL_RC"
+assert_not_contains "AC(a)/(d): a failed read must NOT render as an empty sweep" \
+  "$SWEEP_FAIL_OUT" "no needs-captain flags open"
+assert_contains "AC(a): the failure is named on stderr (UNKNOWN, not silently empty)" \
+  "$(cat "$TMP/fcg-failread.err")" "UNKNOWN"
+
+section "fwf flag-captain sweep (#291 AC c): only NEEDS-CAPTAIN(-CLEARED) comments survive into the sweep payload"
+# A flagged item's thread can carry long, unrelated comments (un-gate
+# rationales, triage write-ups) that dwarf the actual marker lines -- those
+# are exactly what blew ARG_MAX in the real incident. gh_flagged_items must
+# drop everything except the marker comments before jq ever sees the payload.
+FCG_MARKERS_ONLY() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_() {
+      case \"\$*\" in
+        'issue list --state open --label needs-captain --json number,createdAt,comments')
+          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"comments\":[
+            {\"body\":\"a very long unrelated operator write-up, not a marker, imagine this is huge\",\"createdAt\":\"2026-01-01T00:01:00Z\"},
+            {\"body\":\"NEEDS-CAPTAIN: [impl1] blocked on base\",\"createdAt\":\"2026-01-01T00:02:00Z\"}
+          ]}]' ;;
+        'pr list --state open --label needs-captain --json number,createdAt,comments') printf '%s' '[]' ;;
+      esac
+    }
+    gh_flagged_items
+  " fcg-markersonly-harness
+}
+MARKERS_OUT="$(FCG_MARKERS_ONLY)"
+assert_eq "AC(c): non-marker comments are dropped from the payload" "1" \
+  "$(printf '%s' "$MARKERS_OUT" | jq '.[0].comments | length')"
+assert_contains "AC(c): the surviving comment is the actual marker" \
+  "$(printf '%s' "$MARKERS_OUT" | jq -r '.[0].comments[0].body')" "NEEDS-CAPTAIN: [impl1]"
+
 # --------------------------------------------------------------------------
 # fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed
 # from FAKE Claude Code project dirs — never touches the real

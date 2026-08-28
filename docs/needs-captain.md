@@ -63,6 +63,18 @@ path (`gh label create ... --force`) create-if-absents it inline, and `fwf
 provision` also pre-creates it at setup time (belt-and-suspenders) — a raise
 against a fresh repo/tracker never fails on a missing label.
 
+### Sweep failure semantics (issue #291)
+
+A sweep that cannot actually enumerate flags — a failed `gh` read, or the
+combined comment payload blowing `ARG_MAX` — **exits non-zero and says why on
+stderr**; it never falls through to `no needs-captain flags open`, which
+would be indistinguishable from a genuinely empty sweep and is exactly how a
+flag went missing on 2026-08-28. The GitHub-backend reader also drops every
+comment on a flagged item that isn't itself a `NEEDS-CAPTAIN`/
+`NEEDS-CAPTAIN-CLEARED` line before combining issues and PRs — the sweep
+only ever needs those marker lines, and keeping the rest of a long thread
+around is what pushed the payload over `ARG_MAX` in the first place.
+
 ## Both trackers, one command
 
 `fwf-issues.sh` (the local-issues store used with `--issues local`) already
