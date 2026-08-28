@@ -72,6 +72,55 @@ assert_log_eventually_contains() {
 }
 section() { printf '\n# %s\n' "$1"; }
 
+section "test suite tmux isolation invariants (issue #226 AC e/f/g)"
+# AC(e): the isolation invariant itself, asserted ONCE, suite-wide, right
+# here -- not per-case (every one of the 86+ bare `tmux` call sites below
+# would otherwise need its own copy, and a per-case assertion is exactly the
+# kind of thing that silently stops being true when the isolation moves,
+# per AC(d)'s own lesson).
+case "$TMUX_TMPDIR" in
+  "$TMP"/*) ok "AC(e): \$TMUX_TMPDIR is inside this run's own \$TMP (never a shared/system path)";;
+  *) bad "AC(e): \$TMUX_TMPDIR is inside this run's own \$TMP" "TMUX_TMPDIR=$TMUX_TMPDIR TMP=$TMP";;
+esac
+if [ -z "${TMUX:-}" ]; then ok "AC(e): \$TMUX is unset (no inherited pane socket)"; else bad "AC(e): \$TMUX is unset" "TMUX=$TMUX"; fi
+
+# AC(f): the CLASS guard -- no case may override TMUX_TMPDIR or leak a
+# persisting re-set of $TMUX into the suite's own shell. Deliberately NOT a
+# grep for bare `tmux`: under TMUX_TMPDIR, bare `tmux` is the correct idiom
+# every case uses to reach the isolated server, and flagging it would push
+# toward per-call `-L`/`-S` flags that FRAGMENT the isolation this section
+# just centralised one invariant for. A handful of tests below DO write
+# `TMUX='...' some-command` as a one-shot env PREFIX to test some OTHER
+# function's own socket-resolution logic (fwf_tmux_socket_value, roles_json)
+# against a fabricated value -- that scopes to the one command and never
+# reaches this shell's own $TMUX (still unset per AC(e) above), so it is not
+# an instance of what this guard exists to catch.
+assert_eq "AC(f): \$TMUX_TMPDIR is assigned in EXACTLY one place (the setup above)" "1" \
+  "$(grep -c '^export TMUX_TMPDIR=' "$ROOT/test/run.sh")"
+assert_eq "AC(f): the persisting 'unset TMUX' appears in EXACTLY one place" "1" \
+  "$(grep -c '^unset TMUX$' "$ROOT/test/run.sh")"
+
+# AC(g): teardown invariant (cheap form -- no fault injection: this proves
+# the trap's OWN mechanism actually clears the isolated server and its temp
+# dir, since asserting AFTER a real process exit isn't possible from inside
+# that same process). A throwaway session on the isolated server, then the
+# exact commands the EXIT trap above runs.
+F226_TEARDOWN_PROBE="fwf-selftest-226-teardown-$$"
+tmux new-session -d -s "$F226_TEARDOWN_PROBE" 2>/dev/null
+F226_TEARDOWN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test226-teardown.XXXXXX")"
+touch "$F226_TEARDOWN_DIR/marker"
+tmux kill-server 2>/dev/null; rm -rf "$F226_TEARDOWN_DIR"
+if tmux has-session -t "$F226_TEARDOWN_PROBE" 2>/dev/null; then
+  bad "AC(g): the teardown mechanism leaves no fwf-selftest-* session on the isolated server"
+else
+  ok "AC(g): the teardown mechanism leaves no fwf-selftest-* session on the isolated server"
+fi
+if [ -e "$F226_TEARDOWN_DIR" ]; then
+  bad "AC(g): the teardown mechanism removes its temp dir"
+else
+  ok "AC(g): the teardown mechanism removes its temp dir"
+fi
+
 # Build a git fixture repo: mkfix <name> then drop files into $FIX.
 mkfix() { FIX="$TMP/$1"; mkdir -p "$FIX"; ( cd "$FIX" && git init -q && git config user.email t@t.co && git config user.name t ); }
 commitfix() { ( cd "$FIX" && git add -A && git commit -qm init ); }
@@ -1762,13 +1811,32 @@ EOS
   section "agent panes reliably get FWF_PANE_ENV-forwarded vars, even on a pre-existing tmux server (issue #143)"
   # The whole point of the bug: a NEW pane inherits the tmux SERVER's env from
   # whenever the server itself first started, not the shell that just ran
-  # `fwf up` — so this uses the shared default-socket server (already running
-  # on this box from earlier tests, i.e. genuinely pre-existing), never a
-  # freshly-started one, or the test would pass by accident.
+  # `fwf up`. "pre-existing" here means a PRIVATE server this suite itself
+  # started before `fwf-up.sh` runs (this file's own throwaway TMUX_TMPDIR,
+  # set at the top -- every bare `tmux` call in the suite, this one included,
+  # resolves there, never the real default socket) -- ordering and CONTENTS
+  # are what "pre-existing" tests, not sharedness with anything else on the
+  # box. (Corrected 2026-08-28, issue #226 AC(d): this used to describe an
+  # actual shared default-socket server, which stopped being true the moment
+  # issue #198 centralised suite-wide isolation at :22-24 -- a comment
+  # describing a fixture's isolation is load-bearing documentation, and when
+  # the isolation moves out from under it, the comment becomes a lie the
+  # next reader believes.)
+  #
+  # issue #226 AC(0): reproduced under real floor load, 20 iterations of this
+  # exact chain (fwf-up.sh -> fwf_find_pane -> pane_pid -> pgrep -P, fresh
+  # FWF_SESSION/FWF_RUN_DIR each time) -- 18/20 found, 2/20 missed, and BOTH
+  # misses were at the LAST step only (pgrep -P), never at fwf_find_pane or
+  # pane_pid. Branch 1 (intermittent -> race): the claude stub is `exec sleep
+  # 300`, forked by the pane's shell AFTER fwf-up.sh already returns
+  # (FWF_SKIP_BOOT_GATE=1 is deliberate here -- see the edge-case note below);
+  # pgrep can genuinely run before that fork lands. AC(b): bounded retry on
+  # JUST that step (the only one that raced), diagnostic message names WHICH
+  # step actually came up empty on the (now rare) case it still times out.
   F143WT="$TMP/wt143"; mkdir -p "$F143WT/ex-impl1" "$F143WT/ex-qa1" "$F143WT/ex-conductor" "$F143WT/ex-pm" "$F143WT/ex-gv" "$F143WT/ex-captain"
   F143RUN="$TMP/run143"; mkdir -p "$F143RUN/state/example"
   F143SESS="fwf-selftest-143-$$"
-  F143_SECRET="shh-$$-$(date +%N 2>/dev/null || echo x)"; export F143_SECRET   # a value the ambient server never saw
+  F143_SECRET="shh-$$-$(date +%N 2>/dev/null || echo x)"; export F143_SECRET   # a value the private server never saw
   env FWF_PROFILE=example FWF_RUN_DIR="$F143RUN" FWF_SESSION="$F143SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F143WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F143_SECRET \
@@ -1779,12 +1847,31 @@ EOS
   # by that shell's own later `export`, so the sourced var only shows up on
   # the CHILD it forks (the claude stub) — walk to that child.
   SHELL_PID="$([ -n "$IMPL1_PANE" ] && tmux display -p -t "$IMPL1_PANE" '#{pane_pid}' 2>/dev/null || true)"
-  IMPL1_PID="$([ -n "$SHELL_PID" ] && pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
+  # AC(b): bounded retry -- ONLY on pgrep, the single step AC(0) showed racing.
+  # Up to ~1s total (5 x 0.2s); FWF_SKIP_BOOT_GATE=1 stays in effect above, so
+  # this retry lives in the test's own polling, never fwf's boot gate.
+  IMPL1_PID=""
+  if [ -n "$SHELL_PID" ]; then
+    for _f226_try in 1 2 3 4 5; do
+      IMPL1_PID="$(pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
+      [ -n "$IMPL1_PID" ] && break
+      sleep 0.2
+    done
+  fi
   if [ -n "$IMPL1_PID" ]; then
     assert_contains "FWF_PANE_ENV var reaches the pane's actual process env" \
       "$(ps eww "$IMPL1_PID" 2>/dev/null)" "F143_SECRET=$F143_SECRET"
   else
-    bad "FWF_PANE_ENV var reaches the pane's actual process env" "could not find impl1 pane pid"
+    # AC(b): name WHICH of the three steps actually came up empty, instead of
+    # collapsing all three into one string (the exact thing that made #226's
+    # incident hard to read).
+    if [ -z "$IMPL1_PANE" ]; then
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "fwf_find_pane returned empty -- the impl1 pane itself was never found"
+    elif [ -z "$SHELL_PID" ]; then
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "tmux pane_pid returned empty for pane $IMPL1_PANE"
+    else
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "pgrep -P $SHELL_PID returned empty after 5 retries (~1s) -- the pane's child process never forked in time"
+    fi
   fi
   assert_eq "pane-env file is chmod 600" "600" \
     "$(stat -c '%a' "$F143RUN/state/example/pane-env.sh" 2>/dev/null || stat -f '%Lp' "$F143RUN/state/example/pane-env.sh" 2>/dev/null)"
