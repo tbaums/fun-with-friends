@@ -1000,7 +1000,25 @@ $text"
   # --tip-ancestry, so `fwf-gate.sh`'s relaxation stays inert for it even
   # though the script itself is live the moment it merges (templates only
   # take effect on respawn) — no cross-file coordination required.
-  text="${text//__PROMOTE_GATE__/fwf gate $role_tag --e2e$_fwf_e2e_cargo_flag --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") --tip-ancestry -- bash -c $(printf '%q' "$E2E_CMD")}"
+  # issue #276: unlike __GATE__/__E2E__ above (deliberately the bare `fwf
+  # gate` dispatcher -- an implementer's/qa's own self-verification is
+  # SUPPOSED to run the installed, shared gate binary), __PROMOTE_GATE__
+  # invokes `./fwf-gate.sh` directly. The conductor's step 2 does an
+  # IN-PLACE detached checkout of the promote candidate in its own
+  # worktree (no cd), so a RELATIVE path here is resolved by the
+  # conductor's shell at STEP 3 EXECUTION time -- i.e. always AFTER that
+  # checkout, in the SAME worktree it just moved -- never baked to an
+  # absolute path at prompt-render time (which could predate any given
+  # tick's checkout entirely). The bare `fwf gate` dispatcher, by
+  # contrast, always resolves fwf-gate.sh relative to ITSELF ($FWF_HOME
+  # when installed), so a promote gated that way asserts a property of
+  # the PREVIOUSLY-RELEASED gate wrapper, not of the tree under test --
+  # exactly the deadlock this ticket is named for (a gate fix on
+  # `staging` cannot promote itself until released, and cannot release
+  # until promoted). fwf-gate.sh already resolves lib.sh/config.sh
+  # relative to its OWN invocation path (fwf-gate.sh's own DIR=... line),
+  # so no new plumbing is needed for this to pick up the right tree.
+  text="${text//__PROMOTE_GATE__/./fwf-gate.sh $role_tag --e2e$_fwf_e2e_cargo_flag --tip-cmd $(printf '%q' "git rev-parse origin/$STAGING_BRANCH") --tip-ancestry -- bash -c $(printf '%q' "$E2E_CMD")}"
   text="${text//__LOCK__/$E2E_LOCK}"
   text="${text//__DEVUI__/$devui}"
   text="${text//__UT_APP_URL__/$(fwf_ut_app_url "$id")}"   # user-testing: this persona's UAT/scratch app (per-persona override aware)

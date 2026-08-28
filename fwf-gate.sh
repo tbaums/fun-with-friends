@@ -147,6 +147,17 @@ if [ "${FWF_GATE_PGLEADER_ENABLE:-1}" = 1 ] && [ "${_FWF_GATE_PGLEADER_PID:-}" !
   fi
 fi
 
+# issue #276 AC4: name which tree this gate binary itself lives in, in every
+# run's own output. #276's incident cost 4h45m because a wrapper/tree
+# mismatch (the INSTALLED gate silently gating a DIFFERENT, already-fixed
+# checkout) was invisible until a /proc/<pid>/environ read on the live
+# process settled it. Unconditional and purely factual -- not a "mismatch
+# detected" heuristic, which would either miss cases or false-positive on
+# every ordinary `fwf gate <role> -- ...` self-verification call (those
+# deliberately run the shared installed binary against a DIFFERENT
+# worktree, by design, and that is correct, not a defect to flag).
+echo "fwf-gate.sh: running from $DIR" >&2
+
 # --- issue #175: do not leak OUR profile resolution into the wrapped command --
 # Sourcing lib.sh below resolves a profile — we need it, for the lock paths —
 # and in doing so SETS FWF_PROFILE/FWF_PAIRS/FWF_REPO in this shell. Those

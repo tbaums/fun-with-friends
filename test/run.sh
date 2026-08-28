@@ -8979,22 +8979,91 @@ assert_contains "dev conductor template's promote gate watches origin/staging" "
 # keeps the script-side relaxation deployment-safe without cross-file coordination.
 assert_contains "dev conductor template's promote gate takes --tip-ancestry" "$RENDERED" "--tip-ancestry"
 assert_not_contains "dev conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED" "__PROMOTE_GATE__"
+
+# issue #276 AC1: __PROMOTE_GATE__ invokes the LOCAL checkout's own
+# fwf-gate.sh (a relative path), never the bare `fwf gate` dispatcher --
+# which always resolves fwf-gate.sh relative to ITSELF ($FWF_HOME once
+# installed), so a promote gated that way asserts a property of the
+# PREVIOUSLY-RELEASED gate wrapper, not of the tree actually being
+# promoted. #276's own incident: a gate fix merged to staging could not
+# promote itself until released, and could not release until promoted.
+assert_contains "AC1: promote gate invokes the LOCAL checkout's fwf-gate.sh, not the installed dispatcher" \
+  "$RENDERED" "./fwf-gate.sh conductor"
+# AC5 regression: pins AC1 so a future refactor cannot quietly revert to
+# the bare dispatcher form (the __GATE__/__E2E__ macros correctly DO use
+# it -- an implementer's/qa's own self-verification is supposed to run the
+# shared installed binary -- so this checks the PROMOTE macro specifically,
+# not "fwf gate" anywhere in the rendered prompt).
+case "$RENDERED" in
+  *"fwf gate conductor --e2e"*"--tip-ancestry"*)
+    bad "AC5 regression: __PROMOTE_GATE__ reverted to the bare 'fwf gate' dispatcher (resolves \$FWF_HOME, not the tree being promoted)" ;;
+  *) ok "AC5: __PROMOTE_GATE__ never emits the bare dispatcher form" ;;
+esac
+# issue #276 AC2: the RELATIVE path is what enforces post-checkout
+# resolution -- an ABSOLUTE path baked in at prompt-RENDER time would
+# freeze whatever tree existed then, which can predate this tick's own
+# checkout entirely; a bare "./fwf-gate.sh" instead stays unresolved until
+# the conductor's OWN shell runs step 3, always after step 2's checkout in
+# the same worktree (no cd between them). Assert no absolute path was
+# baked in for this macro.
+assert_not_contains "AC2: promote gate command names no absolute path (resolution deferred to conductor execution time, i.e. post-checkout)" \
+  "$RENDERED" "$ROOT/fwf-gate.sh"
+
+section "promote gate wraps the tree under test, not the installed binary (issue #276)"
+# AC3: the floor-wide e2e lock (E2E_LOCK, config.sh) derives from
+# $FWF_RUN -- an environment value, not $DIR -- so it must exclude a
+# GENUINELY SEPARATE fwf-gate.sh copy (not a symlink back to $ROOT, which
+# would prove nothing about $DIR-independence) the same way it excludes
+# the original. Pre-stamp the lock as LIVE-held (mirrors the #65/#196
+# "live" test above) rather than racing a real background holder --
+# deterministic, no timing margin to get wrong.
+F276_RUN="$TMP/gate276-e2e"; mkdir -p "$F276_RUN/state/example"
+F276_E2E_LOCK="$(FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$E2E_LOCK\"")"
+mkdir -p "$F276_E2E_LOCK"
+printf 'role=selfheld\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
+  "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 9999 ))" > "$F276_E2E_LOCK/owner"
+
+F276_COPY="$TMP/gate276-worktree-copy"; mkdir -p "$F276_COPY/lib" "$F276_COPY/profiles"
+cp "$ROOT/fwf-gate.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F276_COPY/"
+cp "$ROOT"/lib/*.sh "$F276_COPY/lib/"
+cp "$ROOT/profiles/example.sh" "$F276_COPY/profiles/"
+ln -sf "$ROOT/templates" "$F276_COPY/templates"
+
+F276_RC=0
+FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 \
+  "$F276_COPY/fwf-gate.sh" f276waiter --e2e -- bash -c true >/dev/null 2>&1 || F276_RC=$?
+assert_eq "AC3: a genuinely SEPARATE fwf-gate.sh copy still excludes against a lock LIVE-held under the SAME \$FWF_RUN" "75" "$F276_RC"
+
+# AC4: fwf-gate.sh names its own resolved tree in every run's output --
+# unconditional and purely factual, so it can never miss a real mismatch
+# and never false-positives on the ordinary case (an implementer's/qa's
+# `fwf gate <role> -- ...` legitimately runs the INSTALLED binary against
+# their OWN, different worktree -- that is correct, not a defect).
+F276_DIAG="$(FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f276diag -- bash -c true 2>&1 1>/dev/null)"
+assert_contains "AC4: the run names which tree fwf-gate.sh itself resolved to" "$F276_DIAG" "fwf-gate.sh: running from $ROOT"
+
 RENDERED_REFACTOR="$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/conductor.tmpl' ''" 2>&1)"
 assert_contains "refactor conductor template's promote gate takes --tip-cmd" "$RENDERED_REFACTOR" "--tip-cmd"
 assert_contains "refactor conductor template's promote gate takes --tip-ancestry" "$RENDERED_REFACTOR" "--tip-ancestry"
 assert_not_contains "refactor conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED_REFACTOR" "__PROMOTE_GATE__"
+assert_contains "AC1: refactor conductor template's promote gate also invokes the LOCAL fwf-gate.sh" \
+  "$RENDERED_REFACTOR" "./fwf-gate.sh conductor"
 
 section "promote gate refuses a wrong tree, silent when correct (issue #278)"
 # AC(b2): the invocation under test is EXTRACTED from $RENDERED (computed
 # above from the real conductor.tmpl through fwf_render), never hand-built —
 # asserting against a hand-built call would only prove the mechanism works,
 # not that anything actually uses it (the exact gap that let #278's step 2
-# go unperformed for ten hours). "fwf gate" is replaced with this worktree's
-# own fwf-gate.sh so the test exercises the code under review, not whatever
-# is installed on the box.
-F278_PROMOTE_CMD="$(printf '%s' "$RENDERED" | grep -oE 'fwf gate conductor[^:]*--tip-ancestry -- bash -c [^ ]+' | head -1)"
-assert_contains "issue #278 test setup: promote command extracted from the rendered prompt" "$F278_PROMOTE_CMD" "fwf gate conductor"
-F278_PROMOTE_CMD_LOCAL="${F278_PROMOTE_CMD/#fwf gate/$ROOT\/fwf-gate.sh}"
+# go unperformed for ten hours). issue #276 changed the rendered prefix from
+# "fwf gate" to "./fwf-gate.sh" (a relative path, resolved by the conductor's
+# OWN worktree at execution time -- see lib.sh's __PROMOTE_GATE__ comment);
+# these fixtures below are bare throwaway git repos with no fwf-gate.sh of
+# their own, so the relative form is substituted for an ABSOLUTE path to
+# THIS worktree's real script -- same trick as before, updated prefix.
+F278_PROMOTE_CMD="$(printf '%s' "$RENDERED" | grep -oE '\./fwf-gate\.sh conductor[^:]*--tip-ancestry -- bash -c [^ ]+' | head -1)"
+assert_contains "issue #278 test setup: promote command extracted from the rendered prompt" "$F278_PROMOTE_CMD" "./fwf-gate.sh conductor"
+F278_PROMOTE_CMD_LOCAL="${F278_PROMOTE_CMD/#.\/fwf-gate.sh/$ROOT\/fwf-gate.sh}"
 
 F278="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278.XXXXXX")"
 ( cd "$F278" && git init -q -b main \
