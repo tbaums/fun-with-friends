@@ -1462,11 +1462,29 @@ assert_eq "AC(d): session visible, no pane at all -> impl1 genuinely DOWN" "down
 assert_eq "AC(d): ...and the coord role too" "down" \
   "$(printf '%s' "$D193_D_OUT" | jq -r '.[] | select(.role=="pm") | .state')"
 
+# Portable "set a file's mtime to now+offset seconds" (issue #304): BSD/macOS
+# `touch` has no `-d` (GNU-only) -- it silently failed here with no file
+# created, and the assertions below were blaming roles_json for a fixture
+# that was never built. `touch -t` is the portable form, but it needs a
+# formatted timestamp, and FORMATTING an epoch has the same GNU (`date -d
+# @epoch`) / BSD (`date -r epoch`) split -- try both, matching the fallback
+# shape lib.sh's fwf_file_mtime already uses for the read side. Neither half
+# is allowed to fail silently (#304 AC a1): a formatting or touch failure
+# exits loudly instead of leaving a missing/untouched file for the next
+# assertion to misdiagnose, exactly as happened here.
+touch_at_offset() { # $1=file $2=offset-seconds (may be negative)
+  local file="$1" offset="$2" epoch fmt
+  epoch=$(( $(date +%s) + offset ))
+  fmt="$(date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null)" \
+    || { echo "fixture: could not format an epoch->touch -t timestamp on this platform" >&2; exit 1; }
+  touch -t "$fmt" "$file" || { echo "fixture: touch -t $fmt $file failed" >&2; exit 1; }
+}
+
 # --- AC(a)/(b): a STALE heartbeat, session visible, no pane -> STALE with age;
 # newest_heartbeat_age is populated even though nothing here is down/unknown.
 D193_A_RUN="$TMP/d193-a"; mkdir -p "$D193_A_RUN/state/example/heartbeat"
 echo default > "$D193_A_RUN/state/example/tmux_socket"
-touch -d "@$(( $(date +%s) - 7200 ))" "$D193_A_RUN/state/example/heartbeat/impl1"
+touch_at_offset "$D193_A_RUN/state/example/heartbeat/impl1" -7200
 D193_A_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
 assert_eq "AC(a): stale heartbeat + visible session + no pane -> STALE, never DOWN" "stale" \
   "$(printf '%s' "$D193_A_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
@@ -1487,7 +1505,7 @@ chmod 644 "$D193_A_RUN/state/example/heartbeat/impl1"
 # a negative age or a false-fresh reading -- the file's mere existence still
 # means STALE (real evidence this role ran here), but its age is UNKNOWN,
 # never a fabricated negative number.
-touch -d "@$(( $(date +%s) + 3600 ))" "$D193_A_RUN/state/example/heartbeat/impl1"
+touch_at_offset "$D193_A_RUN/state/example/heartbeat/impl1" 3600
 D193_A_SKEW="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
 assert_eq "clock skew: state stays STALE (the file is real evidence), not a fabricated DOWN" "stale" \
   "$(printf '%s' "$D193_A_SKEW" | jq -r '.[] | select(.role=="impl1") | .state')"
