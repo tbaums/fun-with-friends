@@ -8519,6 +8519,22 @@ else
 fi
 
 # --------------------------------------------------------------------------
+section "gate-revoke: the CLI wiring for AC (k2) (issue #237)"
+_g237_fixture G237P8
+G237P8_ROOT="$TMP/gate237p8-state"; mkdir -p "$G237P8_ROOT/state/example"
+FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  fwf_gate_tip_record g237p8 '$G237P8_STAGING_SHA' green
+  fwf_gate_verdict_record '$G237P8_STAGING_SHA' g237p8 green '' cliroundtripfp
+"
+FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example bash "$ROOT/fwf-gate-revoke.sh" cliroundtripfp "test: cli round-trip" >/dev/null 2>&1
+G237P8_OUT="$(cd "$G237P8_CONDUCTOR" && FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p8 integration 2>&1)"
+assert_eq "fwf gate-revoke's CLI-written revocation is honoured by gate-promote (rc 1)" "1" "$?"
+assert_contains "the CLI round-trip refuses as REVOKED, same as the direct lib.sh path" "$G237P8_OUT" "REVOKED"
+assert_eq "fwf-gate-revoke.sh with no fingerprint argument is a usage error (rc 2), distinct from a refusal" \
+  "2" "$(bash "$ROOT/fwf-gate-revoke.sh" >/dev/null 2>&1; echo $?)"
+
+# --------------------------------------------------------------------------
 section "gate-promote: adoption in the same PR (issue #237 AC g)"
 assert_not_contains "dev conductor template no longer has the raw, unguarded promote sequence" \
   "$(cat "$ROOT/templates/dev/conductor.tmpl")" 'git merge --ff-only "$(fwf gate-tip'

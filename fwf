@@ -303,6 +303,14 @@ UTILITIES
                          (never a re-resolved ref) into <target-branch> and
                          pushes, as ONE operation -- the check and the push
                          are never separable in a caller's prompt.
+  gate-revoke <fingerprint> [reason]
+                         List <fingerprint> at
+                         $FWF_STATE_DIR/gate-revoked-fingerprints (issue
+                         #237 AC k2) -- every subsequent `gate-promote`
+                         refuses any green record carrying it. Idempotent.
+                         Populating this list is a governance decision
+                         (a human or the captain, after an investigation)
+                         this command does not make on its own.
   gate-rust-scope --against BRANCH [--safe GLOB]... [--log FILE]
                     [--full-suite-secs N]
                          SHADOW classifier for whether a profile's Rust suite
@@ -933,6 +941,7 @@ case "$cmd" in
   gate)      engine fwf-gate.sh "$@";;
   gate-tip)  engine fwf-gate-tip.sh "$@";;
   gate-promote) engine fwf-gate-promote.sh "$@";;
+  gate-revoke) engine fwf-gate-revoke.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   auth)      engine fwf-auth.sh "$@";;
