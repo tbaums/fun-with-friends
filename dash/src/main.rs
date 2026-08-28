@@ -828,6 +828,17 @@ fn ui(f: &mut Frame, app: &mut App) {
         .dashboard()
         .map(|d| data::running_binary_stale(&d.installed.version))
         .unwrap_or(false);
+    // Issue #239: rate-limit exhaustion (or a read that couldn't complete at
+    // all, treated the same way — see ApiBudget's own doc comment) takes
+    // every role's read layer out at once, one account, one budget. This is
+    // the operator-facing end of that chain: the state actually reaching a
+    // human looking at the board, as a NAMED banner, not left to "an
+    // operator could probably notice the dash looks emptier than usual".
+    let api_budget_exhausted = app
+        .feed
+        .dashboard()
+        .map(|d| d.api_budget.status == "EXHAUSTED")
+        .unwrap_or(false);
 
     let mut constraints = vec![
         Constraint::Length(4), // header
@@ -841,6 +852,9 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
     if stale_dash {
         constraints.push(Constraint::Length(1)); // stale-dash restart banner
+    }
+    if api_budget_exhausted {
+        constraints.push(Constraint::Length(1)); // API budget exhausted banner
     }
     if upgrade {
         constraints.push(Constraint::Length(1)); // upgrade-available banner
@@ -867,6 +881,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
     if stale_dash {
         render_stale_dash_banner(f, chunks[i], app);
+        i += 1;
+    }
+    if api_budget_exhausted {
+        render_api_budget_banner(f, chunks[i], app);
         i += 1;
     }
     if upgrade {
@@ -983,6 +1001,55 @@ fn render_stale_dash_banner(f: &mut Frame, area: Rect, app: &App) {
     let para = Paragraph::new(text).style(
         Style::default()
             .bg(Color::Magenta)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_widget(para, area);
+}
+
+/// The API-budget-exhausted banner (issue #239) — shown only when
+/// `api_budget.status == "EXHAUSTED"` (a real 0-remaining reading, or the
+/// headroom read itself couldn't complete — both mean the read layer
+/// cannot be trusted right now). Red/white, deliberately loud: this is the
+/// one failure mode most likely to look like "the factory is calm, nothing
+/// in flight" from every OTHER banner's perspective, so it must not read
+/// as calmer than it is.
+fn render_api_budget_banner(f: &mut Frame, area: Rect, app: &App) {
+    let budget = app.feed.dashboard().map(|d| d.api_budget.clone());
+    let label = budget
+        .as_ref()
+        .map(|b| b.label.clone())
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| "API BUDGET EXHAUSTED".to_string());
+    // remaining/limit are only Some when the headroom read itself actually
+    // completed (a genuine 0-remaining reading) — None means the read
+    // couldn't complete at all, which is the OTHER way into this same
+    // EXHAUSTED status (see ApiBudget's own doc comment). Naming the
+    // number when it's known is strictly more useful; omitting it rather
+    // than printing "0/0" is what keeps the two causes told apart.
+    let detail = match budget.as_ref().and_then(|b| b.remaining.zip(b.limit)) {
+        Some((remaining, limit)) => {
+            let reset_in = budget.as_ref().and_then(|b| b.reset).and_then(|reset| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs() as i64;
+                let secs = reset - now;
+                (secs > 0).then_some(secs)
+            });
+            match reset_in {
+                Some(secs) => format!(" ({remaining}/{limit} remaining, resets in {secs}s)"),
+                None => format!(" ({remaining}/{limit} remaining)"),
+            }
+        }
+        None => " (headroom read failed — network/auth/rate-limited)".to_string(),
+    };
+    let text = format!(
+        " ⚠ {label}{detail} — reads may be stale or refused; hold position, do not conclude \"nothing in flight\" "
+    );
+    let para = Paragraph::new(text).style(
+        Style::default()
+            .bg(Color::Red)
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     );
@@ -2863,6 +2930,7 @@ mod tests {
             floor_idle: data::FloorIdle::default(),
             upgrade: data::UpgradeAvailable::default(),
             installed: data::InstalledVersion::default(),
+            api_budget: data::ApiBudget::default(),
         }
     }
 
@@ -3036,6 +3104,64 @@ mod tests {
             render_upgrade_banner(f, area, &app)
         });
         assert_golden("upgrade_banner", &buffer_to_text(&buf));
+    }
+
+    // issue #239: the API-budget-exhausted banner, genuine 0-remaining case
+    // (a real headroom read completed and came back empty). `reset` is
+    // deliberately left unset so the golden text is time-independent —
+    // "resets in Ns" would make every run's golden differ.
+    #[test]
+    fn golden_api_budget_banner_remaining_known() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.api_budget = data::ApiBudget {
+                status: "EXHAUSTED".into(),
+                label: "API BUDGET EXHAUSTED".into(),
+                remaining: Some(0),
+                limit: Some(5000),
+                reset: None,
+            };
+        }
+        let area = Rect::new(0, 0, 100, 1);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_api_budget_banner(f, area, &app)
+        });
+        assert_golden("api_budget_banner_remaining_known", &buffer_to_text(&buf));
+    }
+
+    // issue #239: the SAME banner/status, but the headroom read itself
+    // could not complete (network/auth/rate-limited) — remaining/limit are
+    // both None, so the banner must say so distinctly rather than a
+    // fabricated "0/0 remaining".
+    #[test]
+    fn golden_api_budget_banner_read_failed() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.api_budget = data::ApiBudget {
+                status: "EXHAUSTED".into(),
+                label: "API BUDGET EXHAUSTED".into(),
+                remaining: None,
+                limit: None,
+                reset: None,
+            };
+        }
+        let area = Rect::new(0, 0, 100, 1);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_api_budget_banner(f, area, &app)
+        });
+        assert_golden("api_budget_banner_read_failed", &buffer_to_text(&buf));
+    }
+
+    // issue #239: the banner must NOT render when status is empty/OK —
+    // the mirror of every other banner's "does not fire when inactive" test.
+    #[test]
+    fn api_budget_banner_absent_when_status_not_exhausted() {
+        let app = golden_app(Tab::Activity);
+        assert_eq!(
+            app.feed.dashboard().unwrap().api_budget.status,
+            "",
+            "fixture default must not already be EXHAUSTED"
+        );
     }
 
     // issue #153: the stale-dash restart banner — running-vs-installed drift,

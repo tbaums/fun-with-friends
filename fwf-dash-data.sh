@@ -291,6 +291,37 @@ installed_version_json() {
   jq -n --arg v "$cur" '{version: $v}'
 }
 
+# --- API budget headroom, rendered as a NAMED, assertable element (#239) ----
+# A correlated failure (rate-limit exhaustion) takes every role's read layer
+# out AT ONCE — every seat shares one account, one budget — which is exactly
+# when a false-confident "nothing in flight" is most damaging. This is the
+# OPERATOR-FACING end of that chain: not just that a read returns UNKNOWN
+# (fwf-ghcache.sh's own job, already covered), but that the state actually
+# reaches a human looking at the board, as a specific string this file's own
+# tests can assert on — never left to "an operator could probably notice
+# the dash looks emptier than usual", which is unfalsifiable and was this
+# AC's own prior, rejected wording.
+api_budget_json() {
+  local hr remaining limit reset label status
+  hr="$("$DIR/fwf-ghcache.sh" headroom 2>/dev/null)" || true
+  if [ "$hr" = "UNKNOWN" ] || [ -z "$hr" ]; then
+    jq -n '{status:"EXHAUSTED", label:"API BUDGET EXHAUSTED", remaining:null, limit:null, reset:null}'
+    return 0
+  fi
+  remaining="$(printf '%s' "$hr" | grep -oE 'remaining=[0-9]+' | cut -d= -f2)"
+  limit="$(printf '%s' "$hr" | grep -oE 'limit=[0-9]+' | cut -d= -f2)"
+  reset="$(printf '%s' "$hr" | grep -oE 'reset=[0-9]+' | cut -d= -f2)"
+  if [ -z "$remaining" ] || [ -z "$limit" ]; then
+    jq -n '{status:"EXHAUSTED", label:"API BUDGET EXHAUSTED", remaining:null, limit:null, reset:null}'
+    return 0
+  fi
+  status="OK"; label="API BUDGET OK"
+  if [ "$remaining" -le 0 ] 2>/dev/null; then status="EXHAUSTED"; label="API BUDGET EXHAUSTED"; fi
+  jq -n --argjson remaining "$remaining" --argjson limit "$limit" --argjson reset "${reset:-0}" \
+    --arg status "$status" --arg label "$label" \
+    '{status:$status, label:$label, remaining:$remaining, limit:$limit, reset:$reset}'
+}
+
 # --- issues + decisions -----------------------------------------------------
 # All open issues, with bodies + labels, in one backend call (gh and the local
 # store share the --json field names even though their plain columns differ).
@@ -565,6 +596,7 @@ main() {
   installed="$(installed_version_json)"
   unrouted_prs="$(unrouted_prs_json "$roles")"
   visibility="$(visibility_json)"
+  api_budget="$(api_budget_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
@@ -573,11 +605,11 @@ main() {
     --argjson roles "$roles" --argjson decisions "$decisions" --argjson issues "$issues" \
     --argjson activity "$activity" --argjson needs_you "$needs_you" \
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
-    --argjson unrouted_prs "$unrouted_prs" --argjson visibility "$visibility" \
+    --argjson unrouted_prs "$unrouted_prs" --argjson visibility "$visibility" --argjson api_budget "$api_budget" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
       activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
-      installed:$installed, unrouted_prs:$unrouted_prs, visibility:$visibility}'
+      installed:$installed, unrouted_prs:$unrouted_prs, visibility:$visibility, api_budget:$api_budget}'
   rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
 

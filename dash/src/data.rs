@@ -35,6 +35,8 @@ pub struct Dashboard {
     pub installed: InstalledVersion,
     #[serde(default)]
     pub visibility: Visibility,
+    #[serde(default)]
+    pub api_budget: ApiBudget,
 }
 
 /// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
@@ -92,6 +94,32 @@ pub struct UpgradeAvailable {
 pub struct InstalledVersion {
     #[serde(default)]
     pub version: String,
+}
+
+/// GitHub API budget headroom (issue #239). A correlated failure — one
+/// shared account, one budget — takes every role's read layer out AT ONCE,
+/// which is exactly when a false-confident "nothing in flight" is most
+/// damaging. `status` is `"EXHAUSTED"` both when a genuine 0-remaining
+/// reading comes back AND when the headroom read itself could not
+/// complete (network/auth/rate-limited) — from the operator's chair, "we
+/// cannot tell how much budget is left" and "budget is gone" both mean
+/// "do not trust the read layer right now", and both get the same visible
+/// alarm. `#[serde(default)]` on every field means a `fwf-dash-data.sh`
+/// too old to emit this key at all renders as `status: ""`, never as a
+/// fabricated "EXHAUSTED" or "OK" — `default()` below is deliberately
+/// empty/false, not "OK", so an absent field can never read as reassuring.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ApiBudget {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub remaining: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub reset: Option<i64>,
 }
 
 /// This RUNNING process's own version + build date, embedded at compile time

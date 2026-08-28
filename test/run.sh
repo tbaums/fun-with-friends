@@ -4100,6 +4100,55 @@ assert_eq "the real worktree's VERSION file is untouched by the unreadable-fixtu
 assert_contains "dashboard_json includes the top-level 'installed' key" \
   "$(grep -n 'installed:\$installed' "$DD")" "installed:\$installed"
 
+section "dash data: api_budget_json renders visibly under a forced rate-limit failure (issue #239 AC)"
+assert_contains "dashboard_json includes the top-level 'api_budget' key" \
+  "$(grep -n 'api_budget:\$api_budget' "$DD")" "api_budget:\$api_budget"
+
+DD239_OKGH="$TMP/dd239-okgh.sh"
+cat > "$DD239_OKGH" <<'OKEOF'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [ "$2" = "rate_limit" ]; then
+  printf '{"resources":{"core":{"remaining":123,"limit":5000,"reset":9999999999}}}\n'
+  exit 0
+fi
+exit 1
+OKEOF
+chmod +x "$DD239_OKGH"
+DD239_CACHE="$TMP/dd239-cache"
+DD239_OK_OUT="$(FWF_REAL_GH="$DD239_OKGH" FWF_GHCACHE_DIR="$DD239_CACHE" FWF_GHCACHE_REPO=owner/dd239 FWF_PROFILE=example bash -c "source '$DD'; api_budget_json")"
+assert_eq "a healthy read reports status OK, not EXHAUSTED" "OK" "$(printf '%s' "$DD239_OK_OUT" | jq -r '.status')"
+assert_eq "a healthy read carries the real remaining/limit" "123 5000" \
+  "$(printf '%s' "$DD239_OK_OUT" | jq -r '"\(.remaining) \(.limit)"')"
+
+DD239_FAILGH="$TMP/dd239-failgh.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$DD239_FAILGH"
+chmod +x "$DD239_FAILGH"
+DD239_FAIL_CACHE="$TMP/dd239-fail-cache"
+DD239_FAIL_OUT="$(FWF_REAL_GH="$DD239_FAILGH" FWF_GHCACHE_DIR="$DD239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/dd239fail FWF_PROFILE=example bash -c "source '$DD'; api_budget_json")"
+assert_eq "AC: under a forced rate-limit/network failure, the dash's OWN data layer reports status EXHAUSTED" \
+  "EXHAUSTED" "$(printf '%s' "$DD239_FAIL_OUT" | jq -r '.status')"
+assert_eq "AC: the label is the SPECIFIC, named string the Rust side renders verbatim (assert_golden covers the render itself)" \
+  "API BUDGET EXHAUSTED" "$(printf '%s' "$DD239_FAIL_OUT" | jq -r '.label')"
+assert_eq "a failed read reports remaining/limit as null, never a fabricated number" "null null" \
+  "$(printf '%s' "$DD239_FAIL_OUT" | jq -r '"\(.remaining) \(.limit)"')"
+
+DD239_ZEROGH="$TMP/dd239-zerogh.sh"
+cat > "$DD239_ZEROGH" <<'ZEROEOF'
+#!/usr/bin/env bash
+if [ "$1" = "api" ] && [ "$2" = "rate_limit" ]; then
+  printf '{"resources":{"core":{"remaining":0,"limit":5000,"reset":9999999999}}}\n'
+  exit 0
+fi
+exit 1
+ZEROEOF
+chmod +x "$DD239_ZEROGH"
+DD239_ZERO_CACHE="$TMP/dd239-zero-cache"
+DD239_ZERO_OUT="$(FWF_REAL_GH="$DD239_ZEROGH" FWF_GHCACHE_DIR="$DD239_ZERO_CACHE" FWF_GHCACHE_REPO=owner/dd239zero FWF_PROFILE=example bash -c "source '$DD'; api_budget_json")"
+assert_eq "a genuine 0-remaining reading is ALSO status EXHAUSTED, distinct from a read that never completed" \
+  "EXHAUSTED" "$(printf '%s' "$DD239_ZERO_OUT" | jq -r '.status')"
+assert_eq "...but a genuine 0-remaining reading STILL carries the real numbers, unlike the failed-read case above" \
+  "0 5000" "$(printf '%s' "$DD239_ZERO_OUT" | jq -r '"\(.remaining) \(.limit)"')"
+
 section "dash data: captain_sequences_releases keys off the template (#51)"
 assert_eq "refactor → captain-sequenced" "yes" \
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; captain_sequences_releases && echo yes || echo no")"
