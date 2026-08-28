@@ -534,7 +534,18 @@ if [ -n "${GATE_CASE_EXTRACTOR:-}" ]; then
     _fwf227_saw_case=1
     fwf_gate_history_report_case "$_fwf227_case_id" "$_fwf227_status" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "per-case (GATE_CASE_EXTRACTOR)"
   done < <(bash -c "$GATE_CASE_EXTRACTOR" < "$wrapped_out_capture" 2>/dev/null)
-  if [ "$_fwf227_saw_case" != 1 ] && [ "$rc" -ne 0 ]; then
+  # issue #227 (qa2 review): this fallback must NOT be conditioned on
+  # `$rc` -- an extractor that matches zero lines on a PASSING run used to
+  # record nothing at all (neither the per-case loop above, which had
+  # nothing to iterate, nor this fallback, gated on `rc != 0`, ever ran),
+  # silently dropping every one of that run's green results from history.
+  # That is AC (i)'s own warned-against failure mode in miniature: with
+  # only the FAILING runs' SUITE-level fallback still recording, a
+  # misconfigured/intermittently-missing extractor would skew a case's
+  # history toward failure for reasons having nothing to do with the case.
+  # Always fall back to a SUITE-level record of the run's ACTUAL outcome
+  # (rc) when the extractor produced nothing, pass or fail alike.
+  if [ "$_fwf227_saw_case" != 1 ]; then
     echo "fwf gate [#227]: GATE_CASE_EXTRACTOR is declared but produced no PASS/FAIL lines for this run — falling back to SUITE-level" >&2
     fwf_gate_history_report_case SUITE "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "SUITE-level (extractor produced nothing)"
   fi

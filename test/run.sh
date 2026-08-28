@@ -8190,6 +8190,32 @@ assert_eq "AC(h): a green run's exit code is untouched by the history feature" "
   "$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
      "$ROOT/fwf-gate.sh" g227erole4 -- bash "$G227E_OK" >/dev/null 2>&1; echo $?)"
 
+# AC (i) regression (qa2 review on this PR): a declared extractor that
+# matches ZERO lines on a PASSING run must still fall back to a SUITE-level
+# record of the run's actual (green) outcome -- not silently record
+# nothing. The bug this guards: the fallback used to be conditioned on
+# `rc != 0`, so a misconfigured/mismatched extractor's every PASSING run
+# vanished from history while its FAILING runs still got recorded via the
+# same fallback, systematically skewing a case's history toward failure.
+G227E_UNMATCHED_STUB="$TMP/gate227-unmatched-stub.sh"
+printf '#!/usr/bin/env bash\nprintf "totally unmatched output format\\n"\nexit 0\n' > "$G227E_UNMATCHED_STUB"
+chmod +x "$G227E_UNMATCHED_STUB"
+G227E_NEVER_MATCHES='grep -oE "^NEVERMATCHES.*"'
+G227E_ROOT2="$TMP/gate227-e2e-acifix"; mkdir -p "$G227E_ROOT2/state/example"
+G227E_OUT5="$(FWF_RUN_DIR="$G227E_ROOT2" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_NEVER_MATCHES" \
+  "$ROOT/fwf-gate.sh" g227erole5 -- bash "$G227E_UNMATCHED_STUB" 2>&1)"
+assert_eq "AC(i) regression: a passing run whose extractor matches nothing still exits 0 (the wrapped command's own outcome is untouched)" \
+  "0" "$(FWF_RUN_DIR="$G227E_ROOT2" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_NEVER_MATCHES" \
+     "$ROOT/fwf-gate.sh" g227erole6 -- bash "$G227E_UNMATCHED_STUB" >/dev/null 2>&1; echo $?)"
+assert_contains "AC(i) regression: the run still names the SUITE-level fallback (diagnostic honesty, even on a pass)" \
+  "$G227E_OUT5" "falling back to SUITE-level"
+G227E_HISTDIR="$G227E_ROOT2/state/example/gate-history"
+if [ -d "$G227E_HISTDIR" ] && [ -n "$(ls -A "$G227E_HISTDIR" 2>/dev/null)" ]; then
+  ok "AC(i) regression: the passing run's SUITE-level outcome WAS recorded to gate-history, not silently dropped"
+else
+  bad "AC(i) regression: a passing run with an unmatched extractor recorded NOTHING to gate-history -- the exact bug qa2 caught"
+fi
+
 # --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
