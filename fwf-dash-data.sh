@@ -187,11 +187,18 @@ roles_json() {
       cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
       case "$cmd" in bash|zsh|sh|fish|"") state="idle";; *) state="live";; esac
       hb_age="$(_fwf193_heartbeat_age "$role")"
-    elif [ "$role" != "captain" ] && [ "$fi_active" = "true" ]; then
+    elif { case "$role" in impl*|qa*|conductor) true;; *) false;; esac; } && [ "$fi_active" = "true" ]; then
       # No pane + a logged floor-down with no later floor-up = deliberately
-      # idled by --floor-only, not crashed. The captain is the one role
-      # --floor-only never tears down, so it's excluded from this state —
-      # a captain with no pane is always a real "down".
+      # idled by --floor-only, not crashed. floor_idle is a BUILD-plane-only
+      # concept (issue #85/#105 — this surface stays plane-agnostic and
+      # reads only the build plane) — issue #193 AC (e2) requires pm/gv/
+      # captain to keep rendering their REAL state even while the build
+      # floor is legitimately idled, never floor_idle, since --floor-only
+      # never tears any of the three coord roles down. Excluding only
+      # "captain" (pre-#193) left pm/gv able to render a false floor_idle
+      # whenever their own pane merely wasn't found for any other reason —
+      # pm/gv/captain with no pane are always their real state, never a
+      # fabricated "floor_idle".
       state="floor_idle"
     elif ! fwf_role_session_visible "$role" 2>/dev/null; then
       # issue #193 (AC c/e): we cannot even confirm the SESSION this role's

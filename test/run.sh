@@ -1336,6 +1336,113 @@ assert_eq "floor_idle_json.active" "true"  "$(printf '%s' "$F85TOP" | jq -r '.ac
 assert_eq "floor_idle_json.actor"  "human" "$(printf '%s' "$F85TOP" | jq -r '.actor')"
 assert_eq "floor_idle_json.reason" "manual test" "$(printf '%s' "$F85TOP" | jq -r '.reason')"
 
+section "fwf dash data: UNKNOWN/BUSY/STALE role states + visibility (issue #193)"
+# A db-driven stub tmux, keyed per-SOCKET and per-SESSION, so a fixture can
+# make one session visible and the other not (issue #193's whole point is
+# that build/coord are independent sessions -- AC e2/g). Sessions with no
+# entry under sessions/<key>/<name> are genuinely absent; a session that
+# exists but is listed in panes/<key>/<name> with NO lines has no pane.
+D193_DB="$TMP/d193db"; mkdir -p "$D193_DB/sessions/default" "$D193_DB/panes/default" "$D193_DB/labels" "$D193_DB/cmds"
+D193_TMUX="$TMP/d193tmuxbin"; mkdir -p "$D193_TMUX"
+cat > "$D193_TMUX/tmux" <<'STUB'
+#!/usr/bin/env bash
+db="${FAKE_TMUX_DB:?}"
+sock=""
+if [ "$1" = "-S" ]; then sock="$2"; shift 2; fi
+key="$(printf '%s' "${sock:-default}" | tr -c 'A-Za-z0-9_' '_')"
+case "$1" in
+  has-session)      [ -f "$db/sessions/$key/$3" ] && exit 0 || exit 1 ;;
+  list-panes)       cat "$db/panes/$key/$3" 2>/dev/null; exit 0 ;;
+  show)             cat "$db/labels/$4" 2>/dev/null; exit 0 ;;
+  display-message)  cat "$db/cmds/$4" 2>/dev/null; exit 0 ;;
+  capture-pane)      exit 0 ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$D193_TMUX/tmux"
+d193_session() { : > "$D193_DB/sessions/default/$1"; : > "$D193_DB/panes/default/$1"; }   # $1=session name, no panes yet
+# --- AC(d): session genuinely visible, no pane, no lock, no heartbeat -> DOWN
+D193_D_RUN="$TMP/d193-d"; mkdir -p "$D193_D_RUN/state/example"
+echo default > "$D193_D_RUN/state/example/tmux_socket"
+d193_session friends-build; d193_session friends-coord
+D193_D_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_D_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(d): session visible, no pane at all -> impl1 genuinely DOWN" "down" \
+  "$(printf '%s' "$D193_D_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "AC(d): ...and the coord role too" "down" \
+  "$(printf '%s' "$D193_D_OUT" | jq -r '.[] | select(.role=="pm") | .state')"
+
+# --- AC(a)/(b): a STALE heartbeat, session visible, no pane -> STALE with age;
+# newest_heartbeat_age is populated even though nothing here is down/unknown.
+D193_A_RUN="$TMP/d193-a"; mkdir -p "$D193_A_RUN/state/example/heartbeat"
+echo default > "$D193_A_RUN/state/example/tmux_socket"
+touch -d "@$(( $(date +%s) - 7200 ))" "$D193_A_RUN/state/example/heartbeat/impl1"
+D193_A_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(a): stale heartbeat + visible session + no pane -> STALE, never DOWN" "stale" \
+  "$(printf '%s' "$D193_A_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "AC(a): heartbeat_age is reported alongside the STALE state" "true" \
+  "$(printf '%s' "$D193_A_OUT" | jq -r '.[] | select(.role=="impl1") | (.heartbeat_age > 7000)')"
+D193_B_VIS="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; visibility_json")"
+assert_eq "AC(b): visibility_json.newest_heartbeat_age is populated on a fully-healthy-otherwise fixture" "true" \
+  "$(printf '%s' "$D193_B_VIS" | jq -r '.newest_heartbeat_age != null')"
+# AC(c): heartbeat file present but UNREADABLE never crashes/misreads as DOWN
+# -- roles_json only ever consults mtime (stat), never content, of this file.
+chmod 000 "$D193_A_RUN/state/example/heartbeat/impl1"
+D193_A_UNREAD="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(c): an unreadable (but present) heartbeat file still reads STALE, not a fabricated DOWN" "stale" \
+  "$(printf '%s' "$D193_A_UNREAD" | jq -r '.[] | select(.role=="impl1") | .state')"
+chmod 644 "$D193_A_RUN/state/example/heartbeat/impl1"
+
+# --- AC(c)/(e): NO session visible anywhere -> every role UNKNOWN, banner data
+D193_E_RUN="$TMP/d193-e"; mkdir -p "$D193_E_RUN/state/example"
+echo default > "$D193_E_RUN/state/example/tmux_socket"
+D193_EMPTYDB="$TMP/d193dbempty"; mkdir -p "$D193_EMPTYDB/sessions/default" "$D193_EMPTYDB/panes/default" "$D193_EMPTYDB/labels" "$D193_EMPTYDB/cmds"
+D193_E_OUT="$(env FAKE_TMUX_DB="$D193_EMPTYDB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E_RUN" bash -c "source '$DD85'; roles_json")"
+case "$(printf '%s' "$D193_E_OUT" | jq -c '[.[] | .state] | unique')" in
+  '["unknown"]') ok "AC(e): no factory visible anywhere -> EVERY role reads unknown, never down" ;;
+  *) bad "AC(e): expected every role unknown when no session resolves at all, got $(printf '%s' "$D193_E_OUT" | jq -c '[.[] | .state] | unique')" ;;
+esac
+D193_E_VIS="$(env FAKE_TMUX_DB="$D193_EMPTYDB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E_RUN" bash -c "source '$DD85'; visibility_json")"
+assert_eq "AC(e): visibility_json.factory_visible is false, naming the whole-factory case" "false" \
+  "$(printf '%s' "$D193_E_VIS" | jq -r '.factory_visible')"
+assert_eq "AC(e): visibility_json names the state dir being read (banner needs this to be diagnosable)" "$D193_E_RUN/state/example" \
+  "$(printf '%s' "$D193_E_VIS" | jq -r '.state_dir')"
+
+# --- AC(e2): coord visible, build absent, floor-down logged -> build roles
+# floor_idle (not unknown -- the log wins ahead of the session check), coord
+# roles their REAL state (down here, not unknown), no whole-factory banner.
+D193_E2_RUN="$TMP/d193-e2"; mkdir -p "$D193_E2_RUN/state/example"
+echo default > "$D193_E2_RUN/state/example/tmux_socket"
+printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty\tbuild\n' > "$D193_E2_RUN/state/example/floor-events.log"
+D193_E2DB="$TMP/d193dbe2"; mkdir -p "$D193_E2DB/sessions/default" "$D193_E2DB/panes/default" "$D193_E2DB/labels" "$D193_E2DB/cmds"
+: > "$D193_E2DB/sessions/default/friends-coord"; : > "$D193_E2DB/panes/default/friends-coord"   # coord up, no panes
+D193_E2_ROLES="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_RUN" bash -c "source '$DD85'; roles_json \"\$(floor_idle_json)\"")"
+D193_E2_VIS="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_RUN" bash -c "source '$DD85'; visibility_json")"
+assert_eq "AC(e2): build role reads floor_idle (log wins over the absent build session)" "floor_idle" \
+  "$(printf '%s' "$D193_E2_ROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "AC(e2): coord role (pm) reads its REAL state, never unknown, while coord is visible" "down" \
+  "$(printf '%s' "$D193_E2_ROLES" | jq -r '.[] | select(.role=="pm") | .state')"
+assert_eq "AC(e2): captain is excluded from floor_idle even here -> real down" "down" \
+  "$(printf '%s' "$D193_E2_ROLES" | jq -r '.[] | select(.role=="captain") | .state')"
+assert_eq "AC(e2): factory_visible stays true (coord alone is enough) -- no whole-factory banner" "true" \
+  "$(printf '%s' "$D193_E2_VIS" | jq -r '.factory_visible')"
+# ...and supervise agrees: the coord role's session IS visible, so it must
+# NOT be muted to SESSION_UNKNOWN just because the build plane is down. This
+# is also AC(g)'s cross-reader agreement, exercised on the coord-plane side.
+D193_E2_SVRUN="$TMP/d193-e2-sv"; mkdir -p "$D193_E2_SVRUN/state/example"
+echo default > "$D193_E2_SVRUN/state/example/tmux_socket"
+D193_E2_SVOUT="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_not_contains "AC(e2)/(g): supervise does not mute the visible coord role to SESSION_UNKNOWN" "$D193_E2_SVOUT" "$(printf '%-10s SESSION_UNKNOWN' pm)"
+D193_E2_SVOUT_BUILD="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/fwf-supervise.sh" impl1 2>&1)"
+assert_contains "AC(g): the ABSENT build session DOES read SESSION_UNKNOWN on the supervise side (agrees with dash's 'unknown' for the same fixture)" \
+  "$D193_E2_SVOUT_BUILD" "SESSION_UNKNOWN"
+
+# --- AC(i): holding the gate lock is BUSY, even with no pane / no heartbeat
+D193_I_RUN="$TMP/d193-i"; mkdir -p "$D193_I_RUN/state/example/gate-lock/impl1"
+echo default > "$D193_I_RUN/state/example/tmux_socket"
+D193_I_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_I_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(i): a role holding its own gate lock reads BUSY, not stale/down" "busy" \
+  "$(printf '%s' "$D193_I_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+
 section "fwf_write_pane_env: malformed FWF_PANE_ENV entries are skipped, not sourced (issue #181 review)"
 # The written file is SOURCED by every pane (fwf_claude_cmd) — a name that
 # only passes a first-char check (the original bug) would let an embedded
