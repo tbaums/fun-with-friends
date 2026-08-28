@@ -11,6 +11,15 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-28
+
+### Added
+- **Every state-advancing transition now honors CI** (#220, code 8753e14, docs 8753e14) — merge, promote and release could all advance while CI was red, because nothing obliged them to look. That is not hypothetical: on 2026-08-27 three PRs merged against a red suite in a single evening, and the red was a real release blocker (#286) that the pipeline could not distinguish from noise. Each state-advancing transition now consults CI rather than assuming it.
+
+### Fixed
+- **The dash distinguishes UNKNOWN and STALE from DOWN, and reports positive liveness** (#193, code e4f93b7, docs e4f93b7) — a role that was merely BUSY, or whose state simply could not be read, rendered identically to a role that had crashed. The operator could not tell "this seat is dead" from "I could not find out", which is the collapsing-read defect of #211 surfacing in the one view the operator actually steers from. Read-failure and busy now render as their own states, backed by a positive liveness signal.
+- **e2e lock leases are resource-keyed, with a hard lane cap** (#205, code f720c43, docs f720c43) — the lock was globally keyed, so two runs that shared nothing still serialized on each other. Leases are now keyed by the resources actually contended (port + data dir) and bounded by an explicit lane cap, so independent work runs concurrently while genuine conflicts still block.
+
 ## [0.34.0] - 2026-08-28
 
 ### Added
