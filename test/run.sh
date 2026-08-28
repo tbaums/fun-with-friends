@@ -5776,7 +5776,12 @@ if [ -n "$G195D_PORT" ] && _fwf195_port_listening "$G195D_PORT"; then
   assert_contains "AC(g): stdout passes through untouched" "$G195D_OUT" "stdout line one"
   assert_contains "AC(g): the ORIGINAL stderr line still appears (not swallowed)" "$(cat "$TMP/fwf195d-stderr.log")" "EADDRINUSE"
   assert_contains "AC(d): the occupant's PID is named" "$(cat "$TMP/fwf195d-stderr.log")" "PID $G195D_OCC_PID"
-  assert_contains "AC(d): the occupant's command is named" "$(cat "$TMP/fwf195d-stderr.log")" "python3"
+  # issue #337: assert on the WORKLOAD, not the interpreter's binary name.
+  # "python3" is Linux-specific -- on macOS the same process reports as
+  # "Python" (lsof) or a Python.framework path (ps), and the literal string
+  # "python3" appears nowhere. "http.server" is in the command line on both
+  # platforms, and identifying the workload is the stronger assertion anyway.
+  assert_contains "AC(d): the occupant's command is named" "$(cat "$TMP/fwf195d-stderr.log")" "http.server"
   assert_contains "AC(d): it is framed as a lock-protocol violation, not an environment problem" "$(cat "$TMP/fwf195d-stderr.log")" "lock-protocol violation"
   if kill -0 "$G195D_OCC_PID" 2>/dev/null; then
     ok "AC(d): the diagnosed occupant is left running -- never killed"
@@ -6203,7 +6208,12 @@ assert_eq "AC repro (2), FIXED: impl re-checks-out its own branch with zero coll
 # holds qa1/review-9 (its own branch) while idle -- that is correct and
 # expected, never a collision target for anything impl needs.
 F177_WT_LIST="$(git -C "$F177/main" worktree list --porcelain)"
-F177_QA_BRANCH_LINE="$(printf '%s\n' "$F177_WT_LIST" | awk -v p="$F177/qa1-wt" '$0=="worktree "p{f=1} f&&/^branch /{print; exit} f&&/^detached/{print "detached"; exit}')"
+# issue #337: `git worktree list` prints the RESOLVED path. On macOS /tmp is a
+# symlink to /private/tmp, so an exact match against the unresolved $F177 path
+# never fires and this assertion read as a failure on every macOS run. Compare
+# resolved-to-resolved.
+F177_QA_REAL="$(cd "$F177/qa1-wt" && pwd -P)"
+F177_QA_BRANCH_LINE="$(printf '%s\n' "$F177_WT_LIST" | awk -v p="$F177_QA_REAL" '$0=="worktree "p{f=1} f&&/^branch /{print; exit} f&&/^detached/{print "detached"; exit}')"
 assert_eq "Hardening: qa1's worktree holds ONLY its own branch (never impl1's) while idle-waiting" \
   "branch refs/heads/qa1/review-9" "$F177_QA_BRANCH_LINE"
 

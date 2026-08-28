@@ -295,7 +295,7 @@ _fwf_gate_diagnose_port_collision() {
   # addresses win over an unrelated earlier number.
   port="$(printf '%s' "$line" | grep -oE ':[0-9]{2,5}([^0-9]|$)' | tail -1 | tr -dc '0-9')"
   [ -n "$port" ] || return 0
-  occ_pid=""; occ_cmd=""
+  occ_pid=""; occ_cmd=""; occ_args=""
   if command -v ss >/dev/null 2>&1; then
     occ_raw="$(ss -H -lptn "sport = :$port" 2>/dev/null | head -1)"
     occ_pid="$(printf '%s' "$occ_raw" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)"
@@ -305,6 +305,15 @@ _fwf_gate_diagnose_port_collision() {
     occ_raw="$(lsof -iTCP:"$port" -sTCP:LISTEN -n -P -F pc 2>/dev/null)"
     occ_pid="$(printf '%s' "$occ_raw" | grep '^p' | head -1 | cut -c2-)"
     occ_cmd="$(printf '%s' "$occ_raw" | grep '^c' | head -1 | cut -c2-)"
+  fi
+  # issue #337: prefer the occupant's FULL command line over the short name
+  # ss/lsof report. On macOS `lsof -F c` yields the framework binary name
+  # ("Python"), which tells an operator nothing about what is actually
+  # holding the port; `ps -o args=` yields "... -m http.server 0 --bind ..."
+  # on both platforms. Falls back to the ss/lsof name if ps says nothing.
+  if [ -n "$occ_pid" ]; then
+    occ_args="$(ps -o args= -p "$occ_pid" 2>/dev/null | head -1)"
+    [ -n "$occ_args" ] && occ_cmd="$occ_args"
   fi
   if [ -n "$occ_pid" ]; then
     echo "fwf gate: port $port is held by PID $occ_pid (${occ_cmd:-unknown}), which is NOT in this lock's recorded process group — this is a lock-protocol violation, not an environment problem (see issue #195). The occupant is left running; it is never killed by this diagnostic." >&2
