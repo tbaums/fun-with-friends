@@ -405,7 +405,17 @@ not a per-role copy:
     also covering the per-role gate lock and the e2e lease. A recorded
     group whose id has since been reused by an unrelated, NEWER process
     (checked against the lock's own acquisition timestamp) is named as a
-    refusal and left alone, never guessed at.
+    refusal and left alone, never guessed at. The reuse check reads the
+    candidate's elapsed run time via the POSIX-portable `ps -o etime=`
+    (issue #332 — the GNU-only `etimes=` this used to read is unsupported
+    on macOS/BSD `ps` and silently produced no output there, which used
+    to be misread as "holder genuinely gone" and reaped instead of
+    refused); if that elapsed time still can't be determined for a
+    PRESENT process, the reap is refused rather than guessed at, the same
+    as a confirmed reuse. This same signal is also never sent to `fwf
+    gate`'s own process group **or any of its ancestors'** (a nested
+    harness — a gate run inside a conductor inside CI — means the
+    dangerous group isn't always literally `$$`'s own).
   - **Trap teardown is the fast, polite path** — the wrapped command runs
     in its own process group (separate from `fwf gate`'s own), so on a
     clean exit OR a trappable `HUP`/`TERM`/`INT`, that group is TERMed,

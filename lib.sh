@@ -1795,14 +1795,86 @@ FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 # that is neither 1 nor OUR OWN group is ever signalled — signalling a
 # non-leader's group could take out an unrelated tmux pane shell, and a
 # non-pgleader holder's group is left for ground-truth measurement to absorb.
+# issue #332: `ps`'s `etimes` keyword (raw integer elapsed seconds) is a
+# GNU/procps extension -- macOS/BSD `ps` doesn't recognize it at all ("ps:
+# etimes: keyword not found") and prints nothing, which is INDISTINGUISHABLE
+# at the call site from "pid not found". `etime=` (formatted
+# [[dd-]hh:]mm:ss) is the POSIX-portable one and works on both, so parse
+# THAT instead. Echoes elapsed seconds on success; prints nothing (caller
+# must treat that as "undeterminable", NEVER as "pid absent" -- those are
+# different facts with different safe actions, see _fwf_kill_orphan_group).
+_fwf_ps_etime_secs() { # $1=pid -> stdout: elapsed seconds, or nothing
+  local pid="$1" raw days=0 hh=0 mm ss rest
+  raw="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')"
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    *-*) days="${raw%%-*}"; rest="${raw#*-}" ;;
+    *)   rest="$raw" ;;
+  esac
+  case "$rest" in
+    *:*:*) hh="${rest%%:*}"; rest="${rest#*:}"; mm="${rest%%:*}"; ss="${rest#*:}" ;;
+    *:*)   mm="${rest%%:*}"; ss="${rest#*:}" ;;
+    *) return 1 ;;
+  esac
+  ss="${ss%%.*}"   # strip fractional seconds some ps builds append
+  case "$days" in ''|*[!0-9]*) return 1;; esac
+  case "$hh" in ''|*[!0-9]*) return 1;; esac
+  case "$mm" in ''|*[!0-9]*) return 1;; esac
+  case "$ss" in ''|*[!0-9]*) return 1;; esac
+  printf '%s' $(( days*86400 + hh*3600 + mm*60 + ss ))
+}
+
+# issue #332: a harness runs nested (gate inside conductor inside CI's own
+# process tree), so the group that must NEVER be signalled can be an
+# ANCESTOR's group, not just our own immediate one -- a same-pgid check on
+# $$ alone missed that. Walks the parent chain from the caller's own pid;
+# stdout is "self" or "ancestor" on a match (rc0), nothing on rc1 (walked
+# the whole chain, matches none of them) or rc2 (the walk itself could not
+# be completed -- a `ps` read failed partway). Callers MUST treat rc2 as
+# "cannot rule it out", never as rc1 (#211: unreadable must not collapse
+# into a confident answer, including a confident "safe").
+_fwf_pgid_is_self_or_ancestor() { # $1=target pgid -> stdout "self"/"ancestor" + rc0/1/2, see above
+  local target="$1" pid="$$" pgid ppid seen="" hops=0
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
+    hops=$((hops + 1))
+    case " $seen " in *" $pid "*) break;; esac   # cycle guard
+    seen="$seen $pid"
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    case "$pgid" in ''|*[!0-9]*) return 2;; esac
+    if [ "$pgid" = "$target" ]; then
+      if [ "$hops" = 1 ]; then printf 'self'; else printf 'ancestor'; fi
+      return 0
+    fi
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    case "$ppid" in ''|*[!0-9]*) return 2;; esac
+    [ "$ppid" = "$pid" ] && break
+    pid="$ppid"
+  done
+  return 1
+}
+
 _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
-  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid etimes now start_epoch
+  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" selfkind selfrc elapsed now start_epoch
   [ "$pgleader" = 1 ] || return 0
   [ "$host" = "$(hostname)" ] || return 0
   case "$pgid" in ''|*[!0-9]*) return 0;; esac
   [ "$pgid" -gt 1 ] || return 0
-  ownpgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-  [ "$pgid" = "$ownpgid" ] && return 0
+  # issue #332: never signal our own group OR an ancestor's (nested-harness
+  # case) -- and if the ancestor walk itself can't be completed, refuse
+  # rather than assume it's safe. The routine "it's our own immediate
+  # group" case stays silent (this runs on every acquire-loop tick); the
+  # rarer, noteworthy ancestor/undeterminable cases are named on stderr —
+  # that's the whole point of this guard: turn a fatal SIGKILL into a
+  # noisy refusal instead.
+  selfkind="$(_fwf_pgid_is_self_or_ancestor "$pgid")"; selfrc=$?
+  if [ "$selfrc" = 0 ]; then
+    [ "$selfkind" = "ancestor" ] && echo "fwf#332: refusing to signal pgid $pgid -- it is an ANCESTOR of this process's own group (nested harness), never a target regardless of what the reuse check below would conclude" >&2
+    return 0
+  fi
+  if [ "$selfrc" = 2 ]; then
+    echo "fwf#332: refusing to signal pgid $pgid -- could not walk the caller's ancestor chain to confirm it isn't our own or an ancestor's group; refusing rather than guessing" >&2
+    return 0
+  fi
   # issue #195 AC(h): the recorded PGID leader can be DEAD with its ID
   # already reused by an unrelated, newer process (PID space wraps under
   # load) -- signalling that reused ID would TERM/KILL an innocent
@@ -1810,25 +1882,26 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
   # process occupying $pgid that started AFTER the lock's own acquisition
   # cannot be the recorded holder's group (it didn't exist yet when the
   # lock was taken) -- that's reuse, so refuse and say so loudly rather
-  # than guess. `ps -o etimes=` (elapsed seconds) is used instead of
-  # `lstart` specifically because a formatted timestamp is locale-
-  # dependent and this comparison must be a plain integer one.
-  # `etimes` returning EMPTY (pid not found at all -- the common, expected
-  # case: the holder is simply gone) skips this check entirely and falls
-  # through to the kill below, which is a safe no-op against a dead pgid.
+  # than guess.
   if [ -n "$acquired" ]; then
-    etimes="$(ps -o etimes= -p "$pgid" 2>/dev/null | tr -d ' ')"
-    case "$etimes" in
-      ''|*[!0-9]*) : ;;   # not found, or unparseable -- can't confirm reuse either way; proceed
-      *)
-        now="$(date +%s)"
-        start_epoch=$(( now - etimes ))
-        if [ "$start_epoch" -gt "$acquired" ]; then
-          echo "fwf#195: refusing to signal pgid $pgid -- it started AFTER this lock's own acquisition (pid start ~$start_epoch > lock acquired $acquired), so it is NOT the recorded holder's group (PID/PGID reuse) — this is a lock-protocol anomaly, not reaped" >&2
-          return 0
-        fi
-        ;;
-    esac
+    elapsed="$(_fwf_ps_etime_secs "$pgid")"
+    if [ -n "$elapsed" ]; then
+      now="$(date +%s)"
+      start_epoch=$(( now - elapsed ))
+      if [ "$start_epoch" -gt "$acquired" ]; then
+        echo "fwf#195: refusing to signal pgid $pgid -- it started AFTER this lock's own acquisition (pid start ~$start_epoch > lock acquired $acquired), so it is NOT the recorded holder's group (PID/PGID reuse) — this is a lock-protocol anomaly, not reaped" >&2
+        return 0
+      fi
+    elif ps -o pid= -p "$pgid" >/dev/null 2>&1; then
+      # issue #332: the leader PID is genuinely PRESENT but its elapsed
+      # start time could not be determined (a portability failure, not a
+      # "not found") -- PID/PGID reuse cannot be ruled out. Fail closed:
+      # refuse rather than treat an unreadable read as a confident "safe".
+      echo "fwf#332: refusing to signal pgid $pgid -- it is present but its elapsed start time could not be determined, so PID/PGID reuse cannot be ruled out; refusing rather than guessing" >&2
+      return 0
+    fi
+    # else: the leader pid is genuinely absent -- the common, expected case
+    # (the holder is simply gone) -- fall through to the safe no-op kill.
   fi
   echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
   kill -KILL -"$pgid" 2>/dev/null

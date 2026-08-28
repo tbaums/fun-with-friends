@@ -5720,6 +5720,86 @@ fi
 kill "$G195H_REUSE_PID" 2>/dev/null; wait "$G195H_REUSE_PID" 2>/dev/null
 fi
 
+section "fwf lib (#332): _fwf_ps_etime_secs parses the POSIX-portable 'ps -o etime=' formats (mm:ss / hh:mm:ss / dd-hh:mm:ss), never the GNU-only etimes= keyword"
+PS332_DIR="$TMP/ps332-parse"; mkdir -p "$PS332_DIR"
+ps332_run() { # $1=fake etime output (or empty for "not found") -> stdout: parsed seconds (or empty)
+  cat > "$PS332_DIR/ps" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *"-o etime="*) printf '%s\n' '$1' ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$PS332_DIR/ps"
+  PATH="$PS332_DIR:$PATH" bash -c "source '$ROOT/lib.sh'; _fwf_ps_etime_secs 12345"
+}
+assert_eq "mm:ss parses"              "754"    "$(ps332_run '  12:34')"
+assert_eq "hh:mm:ss parses"           "3723"   "$(ps332_run ' 01:02:03')"
+assert_eq "dd-hh:mm:ss parses"        "183845" "$(ps332_run '2-03:04:05')"
+assert_eq "not-found (empty) -> empty, never a guessed number" "" "$(ps332_run '')"
+assert_eq "unparseable garbage -> empty, never a guessed number" "" "$(ps332_run 'not-a-time')"
+# The macOS incident itself: BSD ps errors on the GNU-only 'etimes' keyword
+# ("ps: etimes: keyword not found") -- confirm the source no longer
+# constructs that keyword anywhere.
+assert_eq "AC: lib.sh never invokes the GNU-only 'ps -o etimes=' keyword" "0" \
+  "$(grep -c "ps -o etimes=" "$ROOT/lib.sh")"
+
+section "fwf lib (#332): _fwf_kill_orphan_group never signals its OWN process group"
+G332_OWN_PGID="$(ps -o pgid= -p $$ | tr -d ' ')"
+G332_OWN_OUT="$(FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  _fwf_kill_orphan_group \"\$(hostname)\" 1 $G332_OWN_PGID '' 2>&1
+  echo DONE-RC=\$?
+")"
+assert_not_contains "own-group: never even attempts the reap" "$G332_OWN_OUT" "SIGKILL"
+assert_contains "own-group: returns cleanly (rc0), not an error" "$G332_OWN_OUT" "DONE-RC=0"
+
+section "fwf lib (#332): _fwf_kill_orphan_group refuses to signal an ANCESTOR's group too (nested harness), not just its own"
+# A harness runs nested (gate inside conductor inside CI): the dangerous
+# group can be an ancestor's, not $$'s own. Spawn a child in a FRESH
+# process group (same setpgid(0,0) trick as the AC(h) fixture above) whose
+# own PARENT is this test shell -- then, from inside that child, target
+# THIS shell's own pgid (its ancestor) and confirm it's refused.
+G332_ANC_TARGET="$(ps -o pgid= -p $$ | tr -d ' ')"
+G332_ANC_SCRIPT="source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 $G332_ANC_TARGET '' 2>&1; echo DONE-RC=\$?"
+G332_ANC_OUT="$(FWF_ANC332_SCRIPT="$G332_ANC_SCRIPT" perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "bash","-c",$ENV{FWF_ANC332_SCRIPT}' 2>&1)"
+assert_contains "ancestor-group: named as a refusal" "$G332_ANC_OUT" "refusing to signal pgid $G332_ANC_TARGET"
+assert_not_contains "ancestor-group: never even attempts the reap" "$G332_ANC_OUT" "SIGKILL"
+assert_contains "ancestor-group: returns cleanly (rc0), not an error" "$G332_ANC_OUT" "DONE-RC=0"
+
+section "fwf lib (#332): _fwf_kill_orphan_group fails CLOSED when elapsed time cannot be determined -- present-but-unparseable is NOT the same fact as absent"
+# The core #332 defect: on a portability failure, `ps -o etime=` for a
+# LIVE, PRESENT pid can still fail to parse. That must never be treated
+# the same as "pid genuinely not found" (which is the safe, expected,
+# reap-it case) -- it must refuse, loudly, same as the AC(h) reuse case.
+PS332U_DIR="$TMP/ps332-undet"; mkdir -p "$PS332U_DIR"
+PS332U_TARGET=929292
+PS332U_REALPS="$(command -v ps)"
+cat > "$PS332U_DIR/ps" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *"-p $PS332U_TARGET")
+    case "\$*" in
+      *"-o pid="*) printf '%s\n' '$PS332U_TARGET' ;;    # present
+      *"-o etime="*) printf '%s\n' 'garbled-not-a-time' ;;  # undeterminable
+      *"-o pgid="*|*"-o ppid="*) exit 1 ;;                  # never asked this way in this test
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exec "$PS332U_REALPS" "\$@" ;;   # every other -p (the ancestor walk on REAL pids) -> real ps
+esac
+STUB
+chmod +x "$PS332U_DIR/ps"
+G332U_OUT="$(PATH="$PS332U_DIR:$PATH" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  _fwf_kill_orphan_group \"\$(hostname)\" 1 $PS332U_TARGET \$(( \$(date +%s) - 50 )) 2>&1
+  echo DONE-RC=\$?
+")"
+assert_contains "AC: refuses when the leader is present but elapsed time is undeterminable" \
+  "$G332U_OUT" "refusing to signal pgid $PS332U_TARGET"
+assert_not_contains "AC: never falls through to the reap on an undeterminable read" "$G332U_OUT" "SIGKILL"
+assert_contains "AC: returns cleanly (rc0), not an error" "$G332U_OUT" "DONE-RC=0"
+
 section "fwf gate (#195 AC d/g): a foreign port occupant is diagnosed by PID/command, never killed, and output/exit code pass through byte-identical"
 python3 -u -m http.server 0 --bind 127.0.0.1 >"$TMP/fwf195g-occ.log" 2>&1 &   # -u: unbuffered, or the startup line never flushes to a redirected file
 G195D_OCC_PID=$!
