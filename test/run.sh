@@ -9282,6 +9282,19 @@ assert_contains "AC(c): refusal names the sha it would have promoted" "$F278_ERR
 # must pass with NO refusal output, or the check becomes noise and gets
 # worked around (issue #277 (b)'s same argument, cited in this ticket).
 ( cd "$F278" && git checkout -q --detach "$F278_SHA_NEW" )
+# issue #343: #276 AC4 emits an UNCONDITIONAL provenance line
+# ("fwf-gate.sh: running from <dir>") on stderr for every run -- deliberately,
+# because a wrapper/tree mismatch being invisible cost 4h45m, and #276
+# explicitly rejects a "mismatch detected" heuristic as either lossy or
+# false-positive. #278 requires the happy path to be silent. Both are correct;
+# they collided once both landed on one branch.
+#
+# Resolved by asserting "no output OTHER THAN the documented provenance line"
+# rather than total silence. This is NOT the permissive shape #247 (a5) warns
+# about: any refusal text, or any other unexpected stderr, still fails -- only
+# the one documented, purely-factual line is discounted.
+f278_strip_provenance() { grep -v '^fwf-gate\.sh: running from ' || true; }
+
 F278_OK_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example eval "$F278_PROMOTE_CMD_LOCAL" 2>&1 1>/dev/null)"; F278_OK_RC=$?
 assert_eq "AC(d): detached HEAD at the correct sha does not refuse" "0" "$F278_OK_RC"
 # issue #247 AC (a6): legitimately-empty, routed rather than converted -- the
@@ -9289,7 +9302,8 @@ assert_eq "AC(d): detached HEAD at the correct sha does not refuse" "0" "$F278_O
 # title: "silent when correct"), so the sound positive form is assert_eq ""
 # rather than assert_not_contains, which (a5) now correctly refuses to treat
 # an empty haystack as a pass.
-assert_eq "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "" "$F278_OK_ERR"
+assert_eq "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "" \
+  "$(printf '%s' "$F278_OK_ERR" | f278_strip_provenance)"
 
 # AC(d2) -- THE test that would have caught a mis-scoped (a): a NON-promoting
 # role (impl1) on a feature branch, passing --e2e (implementer.tmpl's own
@@ -9300,7 +9314,8 @@ assert_eq "AC(d): detached HEAD at the correct sha produces no #278 refusal text
 F278_D2_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" impl1 --e2e -- bash -c true 2>&1 1>/dev/null)"; F278_D2_RC=$?
 assert_eq "AC(d2): non-promoting role on a feature branch with --e2e does not refuse" "0" "$F278_D2_RC"
 # issue #247 AC (a6): same routing as (d) above -- legitimately empty, not converted.
-assert_eq "AC(d2): non-promoting role produces no #278 refusal text" "" "$F278_D2_ERR"
+assert_eq "AC(d2): non-promoting role produces no #278 refusal text" "" \
+  "$(printf '%s' "$F278_D2_ERR" | f278_strip_provenance)"
 
 # unresolvable target ref -- refuses rather than guessing (never a silent skip).
 F278_NOREF="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278-noref.XXXXXX")"
