@@ -169,7 +169,8 @@ anything. Cut the release manually — same gates, run locally:
    come from the workflow's cross-compile matrix. Either cross-build and upload
    them (plus the checksums file) by hand, or accept that `fwf dash` falls back
    to a local `cargo build` for this release.
-4. Verify with step 7 above.
+4. Verify with the **Verify** step above (re-anchored on its heading text, not
+   a step number, after issue #262 renumbered it once already).
 5. Reconcile. As of #179 this is **no longer only a manual instruction** — the
    `reconcile` job in `.github/workflows/ci.yml` fires on *every* push to `main`,
    tagged or not, so the fallback path is covered even if you skip this step. It

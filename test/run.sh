@@ -7607,6 +7607,18 @@ assert_contains "AC(a2): the runbook contains a pre-tag './fwf reconcile --check
   || bad "AC(a2): the check step PRECEDES the tag step" "check line=$RELEASING_CHECK_LINE tag line=$RELEASING_TAG_LINE"
 assert_contains "AC(a2): the runbook states the stop condition explicitly" "$RELEASING_MD" "STOP — do not tag"
 
+# QA-caught (PR #317): the runbook's OWN cross-reference to the Verify step,
+# in the "When GitHub Actions is unavailable" fallback section, still named
+# it by the OLD step number (7) after this ticket's renumbering moved it to
+# 9 -- test/run.sh's own AC(g) fixture was re-anchored on the step's heading
+# text for exactly this reason, but the doc's own prose reference was missed.
+# Assert the fallback section names it by TEXT, never a bare digit, so a
+# future renumbering can't silently strand this cross-reference again.
+assert_not_contains "the Actions-unavailable fallback never cites the Verify step by a bare step number" \
+  "$RELEASING_MD" "Verify with step"
+assert_contains "the Actions-unavailable fallback cites the Verify step by its heading text" \
+  "$RELEASING_MD" "Verify with the **Verify** step above"
+
 # AC (d): once release-induced divergence is impossible, every remaining
 # check-diverged genuinely needs a human -- the existing wording stays true
 # and must be RETAINED, not deleted along with the fix. Asserted directly
