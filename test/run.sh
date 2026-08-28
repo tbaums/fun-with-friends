@@ -8039,6 +8039,158 @@ case "$(cat "$ROOT/.github/workflows/ci.yml")" in
 esac
 
 # --------------------------------------------------------------------------
+section "gate history: flake-vs-broken discrimination, storage layer (issue #227)"
+G227_ROOT="$TMP/gate227-lib"; mkdir -p "$G227_ROOT/state/example"
+G227_SETUP="$TMP/gate227-setup.sh"
+cat > "$G227_SETUP" <<SETUPEOF
+set -uo pipefail
+FWF_RUN_DIR="$G227_ROOT" FWF_PROFILE=example
+export FWF_RUN_DIR FWF_PROFILE
+# shellcheck source=/dev/null
+source "$ROOT/lib.sh"
+
+echo "TAG_UNKNOWN_SUMMARY_RC:\$(fwf_gate_history_summary g227-never-seen main >/dev/null 2>&1; echo \$?)"
+echo "TAG_UNKNOWN_BASELINE:\$(fwf_gate_history_baseline g227-never-seen deadbeef)"
+
+for v in PASS FAIL PASS PASS FAIL PASS; do
+  fwf_gate_history_record g227-flaky "\$v" impl2/g227branch shaFLAKY
+done
+G227_SUM="\$(fwf_gate_history_summary g227-flaky impl2/g227branch)"
+echo "TAG_FLAKY_TOTAL:\$(printf '%s\n' "\$G227_SUM" | grep '^total=')"
+echo "TAG_FLAKY_FAILED:\$(printf '%s\n' "\$G227_SUM" | grep '^failed=')"
+
+FWF_GATE_HISTORY_WINDOW=3
+export FWF_GATE_HISTORY_WINDOW
+for v in PASS PASS FAIL PASS FAIL; do
+  fwf_gate_history_record g227-window "\$v" b s
+done
+G227_WSUM="\$(fwf_gate_history_summary g227-window b)"
+echo "TAG_WINDOW_TOTAL:\$(printf '%s\n' "\$G227_WSUM" | grep '^total=')"
+unset FWF_GATE_HISTORY_WINDOW
+
+fwf_gate_history_record g227-broken FAIL b shaBASE
+fwf_gate_history_record g227-broken FAIL b shaBASE2
+echo "TAG_FLAKY_OUT_BEGIN"
+fwf_gate_history_report_case g227-flaky FAIL impl2/g227branch shaNEW "" "per-case (GATE_CASE_EXTRACTOR)" 2>&1
+echo "TAG_FLAKY_OUT_END"
+echo "TAG_BROKEN_OUT_BEGIN"
+fwf_gate_history_report_case g227-broken FAIL b shaNEW2 "" "per-case (GATE_CASE_EXTRACTOR)" 2>&1
+echo "TAG_BROKEN_OUT_END"
+
+fwf_gate_history_record g227-baseline-known FAIL other-branch shaEXACT
+echo "TAG_BASELINE_KNOWN_OUT_BEGIN"
+fwf_gate_history_report_case g227-baseline-known FAIL b shaNEW3 shaEXACT "per-case (GATE_CASE_EXTRACTOR)" 2>&1
+echo "TAG_BASELINE_KNOWN_OUT_END"
+echo "TAG_BASELINE_UNKNOWN_OUT_BEGIN"
+fwf_gate_history_report_case g227-baseline-known FAIL b shaNEW4 shaNEVERSEEN "per-case (GATE_CASE_EXTRACTOR)" 2>&1
+echo "TAG_BASELINE_UNKNOWN_OUT_END"
+
+echo "TAG_PASS_OUT_BEGIN"
+fwf_gate_history_report_case g227-flaky PASS impl2/g227branch shaGREEN "" "per-case (GATE_CASE_EXTRACTOR)" 2>&1
+echo "TAG_PASS_OUT_END"
+SETUPEOF
+G227_RESULT="$(bash "$G227_SETUP")"
+G227_BETWEEN() { printf '%s\n' "$G227_RESULT" | sed -n "/^TAG_${1}_BEGIN\$/,/^TAG_${1}_END\$/p" | sed '1d;$d'; }
+
+# AC (e): a never-recorded case is UNKNOWN, never a fabricated 0%.
+assert_eq "AC(e): an unrecorded case's summary reports rc!=0 (UNKNOWN), not a fabricated 0%" \
+  "TAG_UNKNOWN_SUMMARY_RC:1" "$(printf '%s\n' "$G227_RESULT" | grep '^TAG_UNKNOWN_SUMMARY_RC:')"
+assert_eq "AC(e): an unrecorded case's baseline lookup is UNKNOWN, never PASS/FAIL" \
+  "TAG_UNKNOWN_BASELINE:UNKNOWN" "$(printf '%s\n' "$G227_RESULT" | grep '^TAG_UNKNOWN_BASELINE:')"
+
+# AC (i): green runs ARE the denominator -- both sides of the count matter.
+assert_eq "AC(i): total recorded includes BOTH passes and fails" \
+  "TAG_FLAKY_TOTAL:total=6" "$(printf '%s\n' "$G227_RESULT" | grep '^TAG_FLAKY_TOTAL:')"
+assert_eq "AC(i): the failed count alone is not the whole denominator" \
+  "TAG_FLAKY_FAILED:failed=2" "$(printf '%s\n' "$G227_RESULT" | grep '^TAG_FLAKY_FAILED:')"
+
+# AC (f): bounded rolling window -- self-trims to N on every write.
+assert_eq "AC(f): the rolling window is bounded to FWF_GATE_HISTORY_WINDOW, not the full append history" \
+  "TAG_WINDOW_TOTAL:total=3" "$(printf '%s\n' "$G227_RESULT" | grep '^TAG_WINDOW_TOTAL:')"
+
+G227_FLAKY_OUT="$(G227_BETWEEN FLAKY_OUT)"
+G227_BROKEN_OUT="$(G227_BETWEEN BROKEN_OUT)"
+
+# AC (a)/(g) RED-first: a case with a mix of recent passes/fails is reported
+# distinctly from one that has never passed recently.
+assert_contains "AC(g)/(b): a case with recent passes is called out as FLAKY" \
+  "$G227_FLAKY_OUT" "==> FLAKY"
+assert_contains "AC(g)/(b): a case with zero recent passes is called out as CONSISTENTLY FAILING, distinctly from FLAKY" \
+  "$G227_BROKEN_OUT" "==> CONSISTENTLY FAILING"
+case "$G227_BROKEN_OUT" in
+  *"==> FLAKY"*) bad "AC(b): the consistently-failing case must never ALSO be labeled FLAKY" ;;
+  *) ok "AC(b): the two verdicts are mutually exclusive, never both printed for one case" ;;
+esac
+
+# AC (a): across-branches count leads, branch-scoped count is alongside it.
+assert_contains "AC(a): the across-branches history line is present and labeled as such" \
+  "$G227_FLAKY_OUT" "ALL branches"
+assert_contains "AC(a): the branch-scoped history line is present and separately labeled" \
+  "$G227_FLAKY_OUT" "this branch"
+
+# AC (c): last-green reported when it exists; its absence stated explicitly.
+assert_contains "AC(c): a case with a recorded green run states how long ago it was green" \
+  "$G227_FLAKY_OUT" "last green"
+assert_contains "AC(c): a case with NO recorded green run says so explicitly, not blank" \
+  "$G227_BROKEN_OUT" "no recorded green run"
+
+# AC (a): baseline verdict resolved from an earlier recorded run at that
+# exact sha -- never a new gate invocation of its own.
+assert_contains "AC(a): a case previously recorded FAIL at the merge-base sha is reported as also failing there" \
+  "$(G227_BETWEEN BASELINE_KNOWN_OUT)" "also FAILS on merge base"
+assert_contains "AC(a)/(e): a merge-base sha never recorded for this case reports UNKNOWN, not a guess" \
+  "$(G227_BETWEEN BASELINE_UNKNOWN_OUT)" "UNKNOWN on merge base"
+
+# AC (h): a PASS verdict must produce ZERO diagnostic output.
+assert_eq "AC(h): a passing case/run prints nothing at all" "" "$(G227_BETWEEN PASS_OUT)"
+
+# --------------------------------------------------------------------------
+section "gate history: end-to-end through fwf-gate.sh (issue #227)"
+G227E_ROOT="$TMP/gate227-e2e"; mkdir -p "$G227E_ROOT/state/example"
+G227E_STUB="$TMP/gate227-stub.sh"
+cat > "$G227E_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '  ok   case one\n'
+printf '  FAIL case two: something broke\n'
+printf '         details line\n'
+printf '  ok   case three\n'
+exit 1
+STUBEOF
+chmod +x "$G227E_STUB"
+G227E_EXTRACTOR='awk "/^  ok   / { print \"PASS \" substr(\$0,8) } /^  FAIL / { print \"FAIL \" substr(\$0,8) }"'
+
+# AC (d): per-case mode is used and NAMED when an extractor is declared.
+G227E_OUT1="$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
+  "$ROOT/fwf-gate.sh" g227erole -- bash "$G227E_STUB" 2>&1)"
+assert_contains "AC(d): per-case mode is named in the output when GATE_CASE_EXTRACTOR is declared" \
+  "$G227E_OUT1" "per-case (GATE_CASE_EXTRACTOR)"
+assert_contains "AC(d): the specific FAILING case's own label is what gets reported, not a generic suite line" \
+  "$G227E_OUT1" "case two: something broke"
+assert_contains "stdout still carries the wrapped command's own ok/FAIL lines untouched" \
+  "$G227E_OUT1" "  ok   case one"
+
+# AC (d): SUITE-level mode is used and NAMED when no extractor is declared.
+G227E_OUT2="$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example \
+  "$ROOT/fwf-gate.sh" g227erole2 -- bash "$G227E_STUB" 2>&1)"
+assert_contains "AC(d): SUITE-level mode is named in the output when no extractor is declared" \
+  "$G227E_OUT2" "SUITE-level (no GATE_CASE_EXTRACTOR declared)"
+
+# AC (h): a fully green run, WITH an extractor declared, prints no #227
+# diagnostic at all -- passing changes nothing about the output.
+G227E_OK="$TMP/gate227-stub-ok.sh"
+printf '#!/usr/bin/env bash\nprintf "  ok   all good\\n"\nexit 0\n' > "$G227E_OK"
+chmod +x "$G227E_OK"
+G227E_OUT3="$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
+  "$ROOT/fwf-gate.sh" g227erole3 -- bash "$G227E_OK" 2>&1)"
+case "$G227E_OUT3" in
+  *"fwf gate [#227"*) bad "AC(h): a green run must never print the #227 diagnostic" ;;
+  *) ok "AC(h): a green run, extractor declared, prints zero #227 diagnostic output" ;;
+esac
+assert_eq "AC(h): a green run's exit code is untouched by the history feature" "0" \
+  "$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
+     "$ROOT/fwf-gate.sh" g227erole4 -- bash "$G227E_OK" >/dev/null 2>&1; echo $?)"
+
+# --------------------------------------------------------------------------
 section "the suite's own exit gate cannot be shadowed by an append (#242)"
 # f03d78f (#179) appended a section BELOW the terminal `[ "$FAIL" -eq 0 ]`.
 # A bash script's status is that of its LAST executed command, so the gate
