@@ -4473,6 +4473,70 @@ assert_contains "captain lists impl9 in deep sweep" "$(DEEPR 'fwf_render "$(fwf_
 assert_contains "researcher reads 9 streams (deep)" "$(DEEPR 'fwf_render "$(fwf_tmpl_path pm)" ""')" "9 streams"
 
 # --------------------------------------------------------------------------
+section "captain roster is single-sourced from FWF_PAIRS, not hardcoded impl1-3/qa1-3 (issue #221)"
+CAPR() { FWF_PAIRS="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''"; }
+
+# AC(a): the live bug, RED first against a hardcoded template -- FWF_PAIRS=2
+# must name NO impl3/qa3 anywhere in the rendered prompt.
+CAPR2="$(CAPR 2)"
+assert_not_contains "AC(a): FWF_PAIRS=2 -> rendered captain prompt names NO impl3" "$CAPR2" "impl3"
+assert_not_contains "AC(a): FWF_PAIRS=2 -> rendered captain prompt names NO qa3"   "$CAPR2" "qa3"
+
+# AC(b): today's default (3) is preserved EXACTLY.
+CAPR3="$(CAPR 3)"
+assert_contains "AC(b): FWF_PAIRS=3 -> floor description names impl1-3/qa1-3, unchanged" "$CAPR3" "(impl1-3, qa1-3, conductor)"
+assert_contains "AC(b): FWF_PAIRS=3 -> team bullet names impl1-3" "$CAPR3" "- impl1-3 — claim any OPEN issue"
+assert_contains "AC(b): FWF_PAIRS=3 -> team bullet names qa1-3"   "$CAPR3" "- qa1-3 — review + merge"
+
+# AC(c): singular reads as prose ("impl1"), never "impl1-1".
+CAPR1="$(CAPR 1)"
+assert_contains "AC(c): FWF_PAIRS=1 -> floor description reads singular impl1/qa1" "$CAPR1" "(impl1, qa1, conductor)"
+assert_not_contains "AC(c): FWF_PAIRS=1 -> never renders impl1-1" "$CAPR1" "impl1-1"
+assert_not_contains "AC(c): FWF_PAIRS=1 -> never renders qa1-1"   "$CAPR1" "qa1-1"
+
+# AC(d): the status table's Owner column is generated from the SAME roster,
+# checked at two different FWF_PAIRS values.
+assert_contains "AC(d): Owner column at FWF_PAIRS=1" "$CAPR1" "Owner (impl1/qa1/pm/gv/conductor/you)"
+assert_contains "AC(d): Owner column at FWF_PAIRS=3" "$CAPR3" "Owner (impl1-3/qa1-3/pm/gv/conductor/you)"
+
+# AC(e): no dev/dev-sre template still hardcodes a seat range or a bare seat
+# name outside a substituted placeholder -- broader than the range fixed
+# here on purpose (the ticket's own point: the range is today's shape, a
+# bare seat name is the next instance of the same class).
+E221_HITS="$(grep -EHn '\bimpl[0-9]\b|\bqa[0-9]\b' "$ROOT"/templates/dev/*.tmpl "$ROOT"/templates/dev-sre/*.tmpl 2>/dev/null || true)"
+assert_eq "AC(e): no dev/dev-sre template hardcodes a bare seat name or range" "" "$E221_HITS"
+
+# AC(g), the load-bearing one: the roster string in the RENDERED PROMPT
+# equals the roster INDEPENDENTLY DERIVED from fwf_all_roles's actual line
+# output (not from the same _fwf_roster_range function the renderer calls --
+# that would test the function against itself and pass even if the renderer
+# used a wholly different, coincidentally-agreeing string builder). Checked
+# at three FWF_PAIRS values, per the AC's own requirement.
+_fwf221_expected_range() { # $1=prefix $2=FWF_PAIRS -> "prefixN-M" or "prefixN", built from fwf_all_roles output alone
+  local prefix="$1" pairs="$2" ids id first="" last=""
+  ids="$(FWF_PAIRS="$pairs" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep "^${prefix}[0-9][0-9]*\$" | sed "s/^$prefix//" | sort -n)"
+  for id in $ids; do [ -n "$first" ] || first="$id"; last="$id"; done
+  [ -n "$first" ] || return 0
+  if [ "$first" = "$last" ]; then printf '%s%s' "$prefix" "$first"; else printf '%s%s-%s' "$prefix" "$first" "$last"; fi
+}
+for _e221_n in 1 2 3; do
+  _e221_expect_impl="$(_fwf221_expected_range impl "$_e221_n")"
+  _e221_expect_qa="$(_fwf221_expected_range qa "$_e221_n")"
+  _e221_rendered="$(CAPR "$_e221_n")"
+  assert_contains "AC(g): FWF_PAIRS=$_e221_n -- rendered impl roster equals fwf_all_roles-derived roster ($_e221_expect_impl)" \
+    "$_e221_rendered" "($_e221_expect_impl, $_e221_expect_qa, conductor)"
+done
+
+# The two OTHER templates the ticket names as hit sites: dev-sre/captain.tmpl
+# (a genuinely separate file, not an override) and dev/pm.tmpl.
+SRECAPR2="$(FWF_PAIRS=2 FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev-sre/captain.tmpl' ''")"
+assert_contains "dev-sre/captain.tmpl: FWF_PAIRS=2 floor description uses the live roster" "$SRECAPR2" "(impl1-2, qa1-2, conductor)"
+assert_not_contains "dev-sre/captain.tmpl: FWF_PAIRS=2 names no impl3" "$SRECAPR2" "impl3"
+PMR2="$(FWF_PAIRS=2 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+assert_contains "dev/pm.tmpl: FWF_PAIRS=2 uses the live impl roster" "$PMR2" "impl1-2 don't collide"
+assert_contains "dev/pm.tmpl: FWF_PAIRS=2 handoff line uses the live impl roster" "$PMR2" "impl1-2 claim it next cycle"
+
+# --------------------------------------------------------------------------
 # e2e lock (#65): liveness-aware acquire/release, shared by every role (not
 # just the conductor). No real processes are killed here — a "dead" holder is
 # simulated with a PID number no OS actually hands out, and a "live" holder is

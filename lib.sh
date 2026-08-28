@@ -741,6 +741,31 @@ fwf_ut_guard_target() {
   return "$rc"
 }
 
+# $1 = seat prefix ("impl" or "qa") -> a prose range string ("impl1-3",
+# "impl1-2", or singular "impl1"), derived from the SAME PAIRS +
+# fwf_role_suppressed primitives fwf_all_roles/fwf_qa_roster use below —
+# never re-derived by independent string arithmetic (issue #221 AC g: the
+# bug being fixed IS a divergence between two sources of truth, so the fix
+# must be structurally incapable of drifting from fwf_all_roles, not merely
+# happen to agree with it today). Empty if every seat at this prefix is
+# suppressed. PAIRS is contiguous 1..N by construction and per-numbered-seat
+# suppression is not a mechanism this codebase has, so first/last brackets
+# every non-suppressed id without needing to handle a middle gap.
+_fwf_roster_range() {
+  local prefix="$1" first="" last="" id
+  for id in "${PAIRS[@]}"; do
+    fwf_role_suppressed "$prefix$id" && continue
+    [ -n "$first" ] || first="$id"
+    last="$id"
+  done
+  [ -n "$first" ] || return 0
+  if [ "$first" = "$last" ]; then
+    printf '%s%s' "$prefix" "$first"
+  else
+    printf '%s%s-%s' "$prefix" "$first" "$last"
+  fi
+}
+
 # The canonical set of looped roles, one per line, in launch/arm order. Single
 # source of truth — fwf-up delivers prompts to these and fwf-resume re-arms them.
 fwf_all_roles() {
@@ -890,6 +915,17 @@ $text"
   case "$text" in *__CREDIT__*) text="${text//__CREDIT__/$(fwf_credit_block)}";; esac
   text="${text//__COORD_SESSION__/$COORD_SESSION}"
   text="${text//__BUILD_SESSION__/$BUILD_SESSION}"
+  # Issue #221: the captain's (and any other template's) belief about the
+  # floor's seat count comes from the SAME roster the real floor is built
+  # from (PAIRS + suppression), never a hardcoded "impl1-3"/"qa1-3" that
+  # silently goes stale on any FWF_PAIRS != 3 -- and pre-assigns work to
+  # seats that will never claim it.
+  local _fwf221_impl _fwf221_qa
+  _fwf221_impl="$(_fwf_roster_range impl)"
+  _fwf221_qa="$(_fwf_roster_range qa)"
+  text="${text//__IMPL_ROSTER__/$_fwf221_impl}"
+  text="${text//__QA_ROSTER__/$_fwf221_qa}"
+  text="${text//__OWNER_ROSTER__/$_fwf221_impl/$_fwf221_qa/pm/gv/conductor/you}"
   text="${text//__REPO__/$(basename "$FWF_REPO")}"
   # Issue #123: every rendered __GATE__/__E2E__ routes through the shared
   # guarded launcher (fwf-gate.sh) instead of the raw command string, so the
