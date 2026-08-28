@@ -847,6 +847,20 @@ fwf_role_tag_for_tmpl() { # $1=template-file $2=id (may be empty)
   esac
 }
 
+# issue #255: one-line, human-readable reason a survey excludes $1 (a label
+# value) -- keyed off the SAME config vars the exclusion sets are built from,
+# so the eligibility PROSE fwf_render composes below is generated from the
+# same source as the search flags, never a second independent enumeration.
+_fwf_survey_reason() { # $1=label -> reason
+  case "$1" in
+    "$WIP_LABEL")       printf 'a PM draft' ;;
+    "$HOLD_LABEL")      printf 'held for a future release -- a freeze is on' ;;
+    "$IDEA_LABEL")       printf 'a parked idea -- skip until the human removes the label to activate it' ;;
+    "$TRACKING_LABEL")  printf 'a living coordination document, not buildable work' ;;
+    *)                  printf 'excluded by survey configuration' ;;
+  esac
+}
+
 # Render a prompt template into a single line, substituting placeholders.
 # Uses bash substitution (not sed) so command strings with && / are safe.
 #
@@ -898,6 +912,25 @@ $text"
   text="${text//__UNGATE_SENTINEL__/$OPERATOR_UNGATE_SENTINEL}"
   text="${text//__HOLD_LABEL__/$HOLD_LABEL}"
   text="${text//__DISCOVERY_LABEL__/$DISCOVERY_LABEL}"
+  # issue #255: __SURVEY_EXCLUDE__ (the -label: flags) and __SURVEY_EXCLUDE_PROSE__
+  # (the matching human-readable "NOT X (reason)" eligibility text) are BOTH
+  # generated from the same per-role label set in one pass -- never two
+  # independent restatements that can drift the way the six-times, two-styles
+  # version did. Role-aware on the same axis as the auth-channel split above:
+  # implementers must never see a parked "idea"; captain/pm must (the PM is
+  # instructed to watch for one being activated), so their sets differ.
+  local _fwf_survey_set _fwf_survey_flags="" _fwf_survey_prose="" _fwf_lbl
+  case "$role_tag" in
+    impl*)           _fwf_survey_set="$SURVEY_EXCLUDE_IMPL" ;;
+    captain|pm)      _fwf_survey_set="$SURVEY_EXCLUDE_COORD" ;;
+    *)                _fwf_survey_set="" ;;
+  esac
+  for _fwf_lbl in $_fwf_survey_set; do
+    _fwf_survey_flags="$_fwf_survey_flags -label:$_fwf_lbl"
+    _fwf_survey_prose="${_fwf_survey_prose}NOT \"$_fwf_lbl\" ($(_fwf_survey_reason "$_fwf_lbl")), "
+  done
+  text="${text//__SURVEY_EXCLUDE__/${_fwf_survey_flags# }}"
+  text="${text//__SURVEY_EXCLUDE_PROSE__/${_fwf_survey_prose%, }}"
   text="${text//__NEEDS_CAPTAIN_LABEL__/$NEEDS_CAPTAIN_LABEL}"
   text="${text//__PM_INTERVAL__/$PM_INTERVAL}"
   text="${text//__STOPFILE__/$STOP_FILE}"
