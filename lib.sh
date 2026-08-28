@@ -1469,6 +1469,8 @@ _fwf_e2e_lane_dir() { # $1=lane number -> lock dir path
   if [ "$1" = 1 ]; then printf '%s' "$E2E_LOCK"; else printf '%s.lane%s' "$E2E_LOCK" "$1"; fi
 }
 
+fwf_e2e_lock_owner_path() { printf '%s/owner' "$(_fwf_e2e_lane_dir "$1")"; } # $1=lane number
+
 # $1 = holder label (e.g. "conductor", "impl2") -> on success, echoes
 # "<lane> <port> <data_dir>" to stdout and returns 0; ALWAYS pair with
 # fwf_e2e_lock_release "$lane" in a trap so a killed/failed holder never
@@ -1675,6 +1677,27 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
   echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
   kill -KILL -"$pgid" 2>/dev/null
   return 0
+}
+
+# issue #195: a lock is acquired BEFORE the wrapped command (and its own
+# isolated child process group) exists, so its owner file initially records
+# the ACQUIRING process's own group -- correct for the cargo-build slot and
+# mem-admit token (which run their guarded work IN that same group), but not
+# for fwf-gate.sh's per-role/e2e locks once the wrapped command gets its OWN
+# separate group (so a graceful TERM/grace/KILL teardown can complete lock
+# release afterward -- see fwf-gate.sh). This re-stamps pgid/pgleader IN
+# PLACE once the real child group is known, leaving every other field
+# (role/pid/host/acquired/...) untouched, so acquire-side reconciliation
+# later reaps the group that's ACTUALLY holding the resource.
+_fwf_owner_restamp_pgid() { # $1=owner-file $2=pgid $3=pgleader
+  local f="$1" pgid="$2" pgleader="$3" tmp
+  [ -f "$f" ] || return 0
+  tmp="$f.tmp.$$"
+  awk -F= -v pgid="$pgid" -v pgleader="$pgleader" '
+    $1=="pgid" { print "pgid=" pgid; next }
+    $1=="pgleader" { print "pgleader=" pgleader; next }
+    { print }
+  ' "$f" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f"
 }
 
 # $1 = holder label (e.g. "impl2", "conductor"). On success, echoes the

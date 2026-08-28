@@ -202,11 +202,57 @@ e2e_port=""
 e2e_data_dir=""
 cargo_build_slot=""
 mem_token=""
+# issue #195: the wrapped command's OWN process group, once it's launched
+# (see the exec further down) -- separate from fwf-gate.sh's own pgleader
+# group specifically so it can be torn down BEFORE any lock is released,
+# while fwf-gate.sh itself survives to actually release it. A named
+# constant (not a literal) since the value is admittedly arbitrary.
+FWF_GATE_TEARDOWN_GRACE_SECS="${FWF_GATE_TEARDOWN_GRACE_SECS:-5}"
+wrapped_pgid=""
+teardown_done=0
+release_done=0
+
+# issue #195: releasing the lock(s) while the server the wrapped command
+# spawned is still holding its port is the exact incident this exists to
+# fix ("the lock is a lie"). Graceful, not the old self-inclusive KILL:
+# TERM the child group, give it FWF_GATE_TEARDOWN_GRACE_SECS to exit on its
+# own (a wrapped command that traps TERM and lingers gets the hard path,
+# named in the log), then KILL. A no-op if the group is already gone
+# (`kill -0` fails) -- teardown never fails this run.
+_fwf_gate_teardown_wrapped() {
+  [ -n "$wrapped_pgid" ] || return 0
+  kill -0 -"$wrapped_pgid" 2>/dev/null || return 0
+  kill -TERM -"$wrapped_pgid" 2>/dev/null
+  local waited=0
+  while [ "$waited" -lt "$FWF_GATE_TEARDOWN_GRACE_SECS" ]; do
+    kill -0 -"$wrapped_pgid" 2>/dev/null || return 0
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+  echo "fwf gate: wrapped command's process group ($wrapped_pgid) still alive after ${FWF_GATE_TEARDOWN_GRACE_SECS}s TERM grace — SIGKILL (issue #195)" >&2
+  kill -KILL -"$wrapped_pgid" 2>/dev/null
+}
+
 # Only release the #123 per-role gate lock if WE currently hold it. During the
 # admission wait (below) we deliberately drop it and a sibling tick may take it;
 # an unconditional release here would then rm the sibling's lock. gate_lock_held
 # is the guard.
+#
+# issue #195: teardown THEN release, in that order — the ordering that makes
+# the lock honest. Both idempotency guards matter: teardown_done stops a
+# signal that arrives mid-grace-window from re-entering the teardown loop
+# (this function is re-entrant-unsafe by construction, e.g. two overlapping
+# TERM->KILL escalations); release_done stops a double-release if this ever
+# runs twice in one process (it shouldn't, given the trap discipline below,
+# but the ticket asks for idempotency to be an assertable property, not an
+# assumption).
 _fwf_gate_release() {
+  if [ "$teardown_done" != 1 ]; then
+    teardown_done=1
+    _fwf_gate_teardown_wrapped
+  fi
+  [ "$release_done" = 1 ] && return 0
+  release_done=1
   [ "$gate_lock_held" = 1 ] && fwf_gate_lock_release "$role"
   [ "$e2e_held" = 1 ] && fwf_e2e_lock_release "$e2e_lane"
   fwf_cargo_build_slot_release "$cargo_build_slot"
@@ -214,16 +260,19 @@ _fwf_gate_release() {
 }
 trap _fwf_gate_release EXIT
 
-# issue #156 hole #1: on a TRAPPABLE kill, release the lock(s) AND take the
-# whole process group (cargo included) down WITH it — never leave cargo orphaned
-# building while the lock is gone. Only meaningful when we're the pgleader; the
-# single `kill -KILL -$$` is one syscall that reaps the whole group atomically
-# (us included), so locks are released FIRST. An untrappable SIGKILL bypasses
-# this entirely — that path is covered by the admission reaper, not here.
+# issue #195 (supersedes #156 hole #1's self-inclusive kill): the wrapped
+# command now runs in its OWN process group (see the exec further down), so
+# a trappable signal to fwf-gate.sh no longer needs to take fwf-gate.sh's
+# OWN group down to reach it — _fwf_gate_release's teardown already targets
+# the child directly and completes BEFORE releasing the lock(s), which a
+# self-inclusive KILL could never do (an unblockable signal to your own
+# group ends you mid-cleanup, lock still held). An untrappable SIGKILL to
+# fwf-gate.sh itself bypasses this trap entirely — that path is covered by
+# acquire-side reconciliation on the NEXT acquire (lib.sh's
+# _fwf_kill_orphan_group), not here.
 _fwf_gate_signal_cleanup() {
   trap - TERM INT HUP EXIT
   _fwf_gate_release
-  [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && kill -KILL -"$$" 2>/dev/null
   exit 143
 }
 trap _fwf_gate_signal_cleanup TERM INT HUP
@@ -348,7 +397,29 @@ if [ "$want_e2e" = 1 ]; then
 fi
 
 rc=0
-"$@" || rc=$?
+if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
+  # issue #195: run the wrapped command in its OWN process group, separate
+  # from fwf-gate.sh's own (the outer pgleader re-exec at the top of this
+  # file) -- setpgid(0,0) makes the perl child (then whatever it execs
+  # into) a NEW group leader, its own pid becoming that group's pgid, so
+  # _fwf_gate_teardown_wrapped can TERM/KILL just it without also ending
+  # fwf-gate.sh before the lock(s) are released.
+  perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$@" &
+  wrapped_pgid=$!
+  # Re-stamp the lock(s)' owner file(s) with the REAL child group now that
+  # it exists -- acquired with fwf-gate.sh's OWN group recorded (the only
+  # one that existed at acquire time). Acquire-side reconciliation on a
+  # future acquire must reap the group actually holding the resource.
+  _fwf_owner_restamp_pgid "$(fwf_gate_lock_dir "$role")/owner" "$wrapped_pgid" 1
+  [ "$e2e_held" = 1 ] && _fwf_owner_restamp_pgid "$(fwf_e2e_lock_owner_path "$e2e_lane")" "$wrapped_pgid" 1
+  wait "$wrapped_pgid" || rc=$?
+  # The group is gone (wait returned) -- clear the handle so a later
+  # teardown call is a correct no-op, and so a reused pid can never be
+  # mistaken for this run's own child.
+  wrapped_pgid=""
+else
+  "$@" || rc=$?
+fi
 
 if [ "$want_e2e" = 1 ]; then
   unset FWF_E2E_PORT FWF_E2E_DATA_DIR
