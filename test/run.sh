@@ -9658,20 +9658,23 @@ for a in "$@"; do
   [ "$prev" = "-p" ] && want="$a"
   prev="$a"
 done
-if [ "$want" != "$PORT_TARGET_PGID" ]; then
+if [ "$want" != "$FWF_STUB_PGID" ]; then
   exec /bin/ps "$@"
 fi
 for a in "$@"; do
   case "$a" in
-    pid=)   echo "$PORT_TARGET_PGID"; exit 0;;   # the pid EXISTS
+    pid=)   echo "$FWF_STUB_PGID"; exit 0;;   # the pid EXISTS
     etime=) echo "not-a-time";        exit 0;;   # ...but elapsed is unparseable
-    pgid=)  echo "$PORT_TARGET_PGID"; exit 0;;
+    pgid=)  echo "$FWF_STUB_PGID"; exit 0;;
   esac
 done
 exec /bin/ps "$@"
 PSEOF
 chmod +x "$PORT_STUB/ps"
-PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" PORT_TARGET_PGID="$PORT_TARGET_PGID" \
+# The stub's env var is deliberately named differently from the shell variable
+# expanded below: assigning and expanding the SAME name in one command line is
+# SC2097/SC2098 (the expansion would not see the assignment).
+PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" FWF_STUB_PGID="$PORT_TARGET_PGID" \
   bash -c "source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 $PORT_TARGET_PGID \$(( \$(date +%s) - 9999 ))" 2>&1)"
 case "$PORT_REFUSE" in
   '') bad "#332 fail-CLOSED: the stub must REACH the elapsed-time branch" "empty output -- the self-check or ancestor-walk short-circuited; the test is vacuous";;
