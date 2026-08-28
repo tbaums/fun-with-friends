@@ -425,6 +425,33 @@ not a per-role copy:
   `_fwf_gate_teardown_wrapped` / `_fwf_gate_diagnose_port_collision` in
   `fwf-gate.sh`.)
 
+- **A failing case reports flake-vs-broken, not just red** (issue #227) — a
+  case that fails on the merge base too used to be read as one fact
+  ("pre-existing environmental breakage") when it is actually two: broken,
+  or flaky. On any FAILING case, `fwf gate` now reports, on stderr,
+  whether it also failed at the merge-base commit — resolved opportunistically
+  from whatever earlier run already recorded that exact case at that exact
+  sha, never by triggering a new gate run of its own — and how often it has
+  failed recently, both across all branches (leads, since it's the
+  discriminating fact — a fresh branch's own count is `n<=1` on day one)
+  and on this branch alone, plus the last recorded green run or an explicit
+  "no recorded green run". Per-CASE when the profile declares
+  `GATE_CASE_EXTRACTOR` (a shell command read on the wrapped command's
+  captured stdout, emitting `PASS <case-id>` / `FAIL <case-id>` lines);
+  SUITE-level (one case, `SUITE`, this run's own exit code) otherwise —
+  the output always names which mode produced it. A PASSING case/run is
+  completely unaffected: nothing extra prints, though it is still recorded
+  (green runs are the denominator a pass rate needs). History is a bounded,
+  self-trimming rolling window (`FWF_GATE_HISTORY_WINDOW`, default 20 runs
+  per case) under `$FWF_STATE_DIR/gate-history/` — per-profile and, because
+  `$FWF_RUN` is a per-box run directory never shared or synced, per-box; an
+  unrecorded case reports UNKNOWN, never a fabricated 0%.
+  (`fwf_gate_history_record` / `fwf_gate_history_summary` /
+  `fwf_gate_history_baseline` / `fwf_gate_history_report_case` in `lib.sh`;
+  wired in right after the wrapped command exits in `fwf-gate.sh`. See
+  `GATE_CASE_EXTRACTOR` in `profiles/example.sh` for the config knob and a
+  reference extractor for fwf's own `test/run.sh` output convention.)
+
 - **The caller's environment, not the gate's** (issue #175) — `fwf gate`
   resolves a profile of its own to build those lock paths, and doing so sets
   `FWF_PROFILE`/`FWF_PAIRS`/`FWF_REPO` in its shell. Those values are the
