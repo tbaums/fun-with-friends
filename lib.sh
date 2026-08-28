@@ -2838,7 +2838,15 @@ fwf_subscription_usage_read() {
   session_pct="$(printf '%s' "$line" | cut -f1)"
   weekly_pct="$(printf '%s' "$line" | cut -f2)"
   as_of="$(printf '%s' "$line" | cut -f3)"
-  as_of_epoch="$(date -d "$as_of" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$as_of" +%s 2>/dev/null || true)"
+  # issue #337: BOTH branches must be -u. `as_of` is an ISO-8601 UTC stamp
+  # ending in Z; without -u the BSD `date -j -f` branch parses it as LOCAL
+  # time, so every reading looks (UTC-offset) seconds into the future. On a
+  # PDT box that is 25200s, which trips the fail-closed clock-skew guard and
+  # parks the floor UNKNOWN on every poll -- the #149 subscription brake
+  # never functions on macOS. A UTC CI runner has offset 0, so this was
+  # invisible on Linux. The same conversion is already done correctly with
+  # -u at the `_fwf_iso_to_epoch` site below; keep the two in agreement.
+  as_of_epoch="$(date -u -d "$as_of" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$as_of" +%s 2>/dev/null || true)"
   if [ -z "$as_of_epoch" ]; then
     printf 'malformed-schema (as_of not a parseable timestamp)'
     return 1
