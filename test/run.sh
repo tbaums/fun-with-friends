@@ -3529,6 +3529,130 @@ for fx in 179-captain-1650-denial.txt 179-captain-1655-denial.txt 179-pm-1720-re
   assert_eq "static fixture $fx -> HELD, not AUTHORIZED" "10" "$(az2rc "$N_FX")"
 done
 
+# fwf authz (#215): NOT-GATED — an issue that never carried $WIP_LABEL has
+# nothing to un-gate, so a false HELD refusal must not strand it. Determined
+# from label HISTORY, never current state alone (AC c's discriminating test).
+section "fwf authz (#215): NOT-GATED for never-gated issues, distinct from AUTHORIZED"
+EX_NOT_GATED_CONST="$(grep -oE 'EX_NOT_GATED=[0-9]+' "$ROOT/fwf-authz.sh" | head -1 | cut -d= -f2)"
+CUTOFF_EPOCH_CONST="$(grep -oE 'FWF_AUTHZ_SENTINEL_CUTOFF_EPOCH=[0-9]+' "$ROOT/fwf-authz.sh" | head -1 | cut -d= -f2)"
+
+# --- local backend: no label history at all (Known limitation) -> ALWAYS
+# falls through to was-gated, even for an issue never labeled -- correct and
+# honest, never a guess from current state.
+AZ215I() { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+AZ215L() { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+az215Lrc() { local rc=0; AZ215L "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+AZ215I create --title "never-gated local ticket" >/dev/null
+N_NG_LOCAL="$(AZ215I list --json number --jq '.[-1].number' 2>/dev/null)"
+assert_eq "local backend: never-gated issue still resolves HELD (fail-closed, not NOT-GATED)" "10" "$(az215Lrc "$N_NG_LOCAL")"
+assert_contains "local backend: the fail-closed default is EXPLAINED as the known limitation" \
+  "$(AZ215L "$N_NG_LOCAL" 2>&1)" "local issues backend"
+
+# --- gh backend: build a fake `gh` on PATH answering ONLY the label-history
+# events read (issue #150-era ghcache has no events cache, so this call is
+# direct); the existing ghcache-served issue/comments fixtures (AZGROOT-style)
+# still cover current labels + the sentinel thread, untouched.
+AZ215GHBIN="$TMP/az215ghbin"; mkdir -p "$AZ215GHBIN"
+cat > "$AZ215GHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+# Only answers the #215 label-history read (`gh api .../issues/N/events`).
+# Anything else -- including fwf-ghcache.sh's OWN fallback-to-real-gh path
+# on a cache miss -- must fail loudly here, never quietly "succeed" with
+# events-shaped data standing in for an issue/comments read: that would let
+# an unfixtured issue number slip past the intended INDETERMINATE and into
+# a false HELD, exactly the collapse issue #211 warns against.
+case "$*" in
+  *"/events"*) : ;;
+  *) echo "az215-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
+esac
+printf '%s\n' "$*" >> "${AZ215_CALL_LOG:?}"
+if [ "${AZ215_EVENTS_FAIL:-0}" = 1 ]; then
+  echo "gh: simulated api failure" >&2
+  exit 1
+fi
+cat "${AZ215_EVENTS_FILE:?}"
+STUB
+chmod +x "$AZ215GHBIN/gh"
+
+AZ215GROOT="$TMP/az215-gh"; mkdir -p "$AZ215GROOT/x__y/views"
+az215_set_labels() { # $1=issue-num  $2=jq-array-of-label-names e.g. '[]' or '["product-wip"]'
+  printf '{"number":%s,"title":"t","body":"","state":"open","html_url":"https://github.com/x/y/issues/%s","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"alice"},"labels":[%s],"assignees":[]}' \
+    "$1" "$1" "$(printf '%s' "$2" | jq -r '.[] | "{\"name\":\"" + . + "\"}"' | paste -sd, -)" > "$AZ215GROOT/x__y/views/issue-$1.json"
+  touch "$AZ215GROOT/x__y/views/issue-$1.ts"
+}
+az215_set_comments() { # $1=issue-num  $2=comments-json-array (default empty)
+  printf '%s' "${2:-[]}" > "$AZ215GROOT/x__y/views/$1-comments.json"
+  touch "$AZ215GROOT/x__y/views/$1-comments.ts"
+}
+AZ215G() { PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+az215Grc() { local rc=0; AZ215G "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+
+# (a) never carried the label at all -> NOT-GATED.
+az215_set_labels 501 '[]'; az215_set_comments 501
+CALLLOG501="$TMP/az215-calllog-501"; : > "$CALLLOG501"
+EVFILE_EMPTY="$TMP/az215-events-empty.json"; printf '[]' > "$EVFILE_EMPTY"
+AZ215_EVENTS_FILE="$EVFILE_EMPTY" AZ215_CALL_LOG="$CALLLOG501"
+export AZ215_EVENTS_FILE AZ215_CALL_LOG
+assert_eq "AC(a)/(f): never-gated issue -> NOT-GATED, its own distinct exit code" "$EX_NOT_GATED_CONST" "$(az215Grc 501)"
+assert_contains "AC(a)/(g): NOT-GATED says no signal required, actionable (safe to proceed)" \
+  "$(AZ215G 501 2>&1)" "No authorization signal is required"
+assert_contains "NOT-GATED explicitly disclaims being the same as AUTHORIZED" \
+  "$(AZ215G 501 2>&1)" "NOT the same as AUTHORIZED"
+case "$EX_NOT_GATED_CONST" in
+  0) bad "AC(f): NOT-GATED's exit code must differ from AUTHORIZED's (0)" ;;
+  *) ok "AC(f): NOT-GATED's exit code ($EX_NOT_GATED_CONST) differs from AUTHORIZED's (0)" ;;
+esac
+
+# (b) currently gated -> unchanged (HELD absent a signal), and the history
+# read is NEVER even attempted (AC b: no history read needed when gated now).
+az215_set_labels 502 '["product-wip"]'; az215_set_comments 502
+CALLLOG502="$TMP/az215-calllog-502"; : > "$CALLLOG502"
+AZ215_CALL_LOG="$CALLLOG502"
+assert_eq "AC(b): currently-gated issue behaves unchanged -- HELD absent a signal" "10" "$(az215Grc 502)"
+assert_eq "AC(b): the label-history events read is never invoked when currently gated" "" "$(cat "$CALLLOG502")"
+
+# (c) THE DISCRIMINATING TEST: was gated, then un-gated (on/after the cutoff),
+# currently NOT gated -> must still require the signal (HELD), never NOT-GATED.
+az215_set_labels 503 '[]'; az215_set_comments 503
+printf '[{"event":"labeled","created_at":"2026-08-20T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"2026-08-21T00:00:00Z","label":{"name":"product-wip"}}]' > "$TMP/az215-events-503.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-503.json"
+assert_eq "AC(c): was-gated-then-ungated (post-cutoff) still resolves HELD, not NOT-GATED" "10" "$(az215Grc 503)"
+
+# (d) label history unreadable -> fail closed to was-gated (HELD), and the
+# output SAYS the history read failed (never silently absorbed).
+az215_set_labels 504 '[]'; az215_set_comments 504
+AZ215_EVENTS_FAIL=1
+export AZ215_EVENTS_FAIL
+assert_eq "AC(d): unreadable label history fails closed to HELD" "10" "$(az215Grc 504)"
+assert_contains "AC(d): the read failure is reported, not silently absorbed" \
+  "$(AZ215G 504 2>&1)" "label history read failed"
+unset AZ215_EVENTS_FAIL
+
+# (h) pre-sentinel: an episode whose UN-GATE predates the cutoff -> NOT-GATED
+# with the pre-sentinel reason named; an otherwise-identical post-cutoff
+# episode -> HELD. Both asserted against the constant, not a hardcoded date.
+PRE_TS="$(date -u -d "@$(( CUTOFF_EPOCH_CONST - 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+POST_TS="$(date -u -d "@$(( CUTOFF_EPOCH_CONST + 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+az215_set_labels 505 '[]'; az215_set_comments 505
+printf '[{"event":"labeled","created_at":"2026-08-01T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"%s","label":{"name":"product-wip"}}]' "$PRE_TS" > "$TMP/az215-events-505.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-505.json"
+assert_eq "AC(h): pre-sentinel-cutoff un-gate episode -> NOT-GATED" "$EX_NOT_GATED_CONST" "$(az215Grc 505)"
+assert_contains "AC(h): pre-sentinel reason is named, distinct from a plain never-gated verdict" \
+  "$(AZ215G 505 2>&1)" "predates the operator-sentinel mechanism"
+
+az215_set_labels 506 '[]'; az215_set_comments 506
+printf '[{"event":"labeled","created_at":"2026-08-01T00:00:00Z","label":{"name":"product-wip"}},{"event":"unlabeled","created_at":"%s","label":{"name":"product-wip"}}]' "$POST_TS" > "$TMP/az215-events-506.json"
+AZ215_EVENTS_FILE="$TMP/az215-events-506.json"
+assert_eq "AC(h): otherwise-identical POST-cutoff un-gate episode -> HELD, not NOT-GATED" "10" "$(az215Grc 506)"
+
+# Edge case (cross-ref #189): a number with no ghcache fixture at all (proxy
+# for "a PR number, or anything this reader can't resolve as an issue") must
+# NOT silently produce NOT-GATED -- it has to fail closed to INDETERMINATE
+# (no labels, no comments -- both reads fail), same as before this ticket.
+assert_eq "edge: an unresolvable number never reaches NOT-GATED (fails closed to INDETERMINATE)" "2" "$(az215Grc 987654)"
+
+unset AZ215_EVENTS_FILE AZ215_CALL_LOG
+
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51

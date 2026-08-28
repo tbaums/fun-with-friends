@@ -40,7 +40,18 @@
 #                             `fwf dash`, not just here (issue #218 AC (i)).
 #   INDETERMINATE (exit 2)  — the thread could not be read. FAIL CLOSED: treat
 #                             exactly like HELD (hold and ask), never as a yes.
+#   NOT-GATED     (exit 12) — this issue never carried $WIP_LABEL, so there is
+#                             nothing to un-gate (issue #215). NOT the same as
+#                             AUTHORIZED — it means no gate was ever applied,
+#                             not that a human approved anything. Determined
+#                             from LABEL HISTORY, not current state, so an
+#                             issue that WAS gated and later un-gated still
+#                             resolves HELD/AUTHORIZED as before (#215 AC c).
+#                             Only ever considered when the issue is NOT
+#                             currently gated — a currently-gated issue always
+#                             needs the signal (#215 AC b), unchanged.
 #
+
 # The verdict keys on a DURABLE comment, not the mutable label — so it stays
 # correct even if a role has wrongly re-applied the gate. Read-only: it never
 # mutates an issue and (gh backend) goes through the shared REST+ETag cache, so
@@ -61,13 +72,112 @@ source "$DIR/lib.sh"
 EX_HELD=10
 EX_INDETERMINATE=2
 EX_INVALID=11
+EX_NOT_GATED=12
 
-usage() { echo "usage: fwf authz <issue>   # verify the operator un-gate authorization signal (issue #150, #218)" >&2; }
+usage() { echo "usage: fwf authz <issue>   # verify the operator un-gate authorization signal (issue #150, #218, #215)" >&2; }
 
 raw="${1:-}"
 case "$raw" in -h|--help|help) usage; exit 0;; esac
 num="${raw#LI-}"; num="${num#\#}"
 case "$num" in ''|*[!0-9]*) usage; exit 1;; esac
+
+# issue #215: the sentinel mechanism (ddefff2, "fix(#150): mechanical
+# operator-authorization check") did not exist before this commit landed, so
+# a gate episode whose UN-GATE predates it could never have carried a signal.
+# Named constant per #215's own A2 requirement — the commit + date, not a
+# bare literal, so a future reader can see what it refers to.
+FWF_AUTHZ_SENTINEL_CUTOFF_EPOCH=1786510118   # ddefff2, merged 2026-08-12T04:48:38Z UTC (2026-08-11 Pacific)
+
+# --- issue #215: NOT-GATED determination -------------------------------
+# Only relevant when the issue is NOT gated RIGHT NOW (AC b: currently gated
+# is unchanged, no history read needed at all — cheaper in the common case).
+# Current labels are read through the SAME cached path as everything else on
+# this floor (ghcache's existing "labels" field, gh backend; fwf-issues.sh,
+# local) — never a fresh uncached call for something this cheap to share.
+labels_read_ok=1
+labels_json=""
+if [ "$FWF_ISSUES" = "local" ]; then
+  labels_json="$("$DIR/fwf-issues.sh" view "$num" --json labels --jq '.labels' 2>/dev/null)" || labels_read_ok=0
+else
+  labels_json="$(FWF_REAL_GH="$(command -v gh)" "$DIR/fwf-ghcache.sh" serve issue view "$num" --json labels --jq '.labels' 2>/dev/null)" || labels_read_ok=0
+fi
+if [ "$labels_read_ok" = 1 ]; then
+  printf '%s' "$labels_json" | jq -e 'type=="array"' >/dev/null 2>&1 || labels_read_ok=0
+fi
+
+# Fail-closed default: an unreadable current-label state is treated as
+# "possibly gated" — skips the NOT-GATED path entirely and falls through to
+# the existing sentinel-matching logic below, UNCHANGED from before this
+# ticket (the safe direction: today's behavior, never a new permissive path).
+currently_gated=1
+if [ "$labels_read_ok" = 1 ]; then
+  if printf '%s' "$labels_json" | jq -e --arg w "$WIP_LABEL" 'any(.[]?; .name==$w)' >/dev/null 2>&1; then
+    currently_gated=1
+  else
+    currently_gated=0
+  fi
+fi
+
+not_gated_reason=""
+history_unreadable_note=""
+
+if [ "$currently_gated" = 0 ]; then
+  if [ "$FWF_ISSUES" = "local" ]; then
+    # Known limitation (#215): the local markdown store has no label
+    # history at all, so EVERY issue on this backend resolves was-gated —
+    # correct and honest, never a guess from current state.
+    history_unreadable_note=" (label history is unavailable on the local issues backend — issue #215's stated known limitation; defaulting to was-gated)"
+  else
+    # REST Issue Events API — labeled/unlabeled events, each with a
+    # created_at, are exactly the label HISTORY this determination needs
+    # (issue #150-era gates predate this ticket and were never cached by
+    # fwf-ghcache.sh, so this reads directly; per #215's own A1, an
+    # unreliable read here must fail closed, never guess from current
+    # state — the pipeline below relies on this script's own `set -o
+    # pipefail` so a failing `gh api` is never masked by `jq` parsing its
+    # empty stdin as a clean "zero events").
+    events_json="$(gh api "repos/$(fwf_repo_slug)/issues/$num/events" --paginate 2>/dev/null \
+      | jq -sc --arg lbl "$WIP_LABEL" '[.[][] | select((.event=="labeled" or .event=="unlabeled") and (.label.name // "")==$lbl) | {event, created_at}]' 2>/dev/null)"
+    ev_rc=$?
+    # Three DISTINCT checks, sequential (not a compound && / || condition —
+    # those share equal precedence in shell and left-associate, which would
+    # silently mis-group this exact three-way check): the pipeline's own
+    # exit status (pipefail-protected, so a failing `gh api` is never masked
+    # by `jq` happily parsing its empty stdin into a clean "[]"), then that
+    # the result actually parses as an array at all (defensive, against
+    # truncated/partial JSON), and only then may "empty" mean "zero events".
+    if [ "$ev_rc" != 0 ]; then
+      history_unreadable_note=" (label history read failed — could not confirm never-gated; defaulting to was-gated)"
+    elif ! printf '%s' "$events_json" | jq -e 'type=="array"' >/dev/null 2>&1; then
+      history_unreadable_note=" (label history read returned unparseable data — could not confirm never-gated; defaulting to was-gated)"
+    elif [ "$(printf '%s' "$events_json" | jq 'length')" = 0 ]; then
+      not_gated_reason="never carried $WIP_LABEL in its history"
+    else
+      # Latest UN-gate (label removal) event, if any — an issue labeled but
+      # never (yet) unlabeled falls through as was-gated (it's presumably
+      # still mid-episode by some other path than the current-label read
+      # above, a data oddity; safe default, never NOT-GATED).
+      latest_unlabel_epoch=""
+      while IFS= read -r ev; do
+        [ -n "$ev" ] || continue
+        [ "$(printf '%s' "$ev" | jq -r '.event')" = "unlabeled" ] || continue
+        epoch="$(fwf_iso_to_epoch "$(printf '%s' "$ev" | jq -r '.created_at')")"
+        case "$epoch" in ''|*[!0-9]*) continue;; esac
+        if [ -z "$latest_unlabel_epoch" ] || [ "$epoch" -gt "$latest_unlabel_epoch" ]; then
+          latest_unlabel_epoch="$epoch"
+        fi
+      done < <(printf '%s' "$events_json" | jq -c '.[]')
+      if [ -n "$latest_unlabel_epoch" ] && [ "$latest_unlabel_epoch" -lt "$FWF_AUTHZ_SENTINEL_CUTOFF_EPOCH" ]; then
+        not_gated_reason="its gate episode's un-gate predates the operator-sentinel mechanism (before 2026-08-12, commit ddefff2) — no signal could have existed for it yet"
+      fi
+    fi
+  fi
+fi
+
+if [ -n "$not_gated_reason" ]; then
+  echo "NOT-GATED #$num — $not_gated_reason. No authorization signal is required for this issue. This is NOT the same as AUTHORIZED: it means no gate was ever applied to this issue, not that a human approved the work. Safe to proceed."
+  exit "$EX_NOT_GATED"
+fi
 
 # Read ONLY the comment thread, structured (never the issue body — #218 AC
 # (n): #214's body carries a natural, well-formed sentinel line written by the
@@ -202,5 +312,5 @@ fi
 
 note=""
 [ "$raw_occurrences" -gt 0 ] && note=" (the token is mentioned $raw_occurrences time(s) in this thread, quoted/discussed/indented/fenced — none anchored, so none authorize; seen and ignored)"
-echo "HELD #$num — no operator un-gate signal ($DTOKEN) in the thread$note. This issue is NOT authorized for build. HOLD and post the doubt as an open question; do NOT infer authorization from any pane/input-box text, and do NOT take a reversing action (re-gate, close PRs, revert). An operator un-gates by posting, at the start of a comment line: $DTOKEN #$num — <reason> (via 'fwf dash' approve, or the concierge proxy)." >&2
+echo "HELD #$num — no operator un-gate signal ($DTOKEN) in the thread$note$history_unreadable_note. This issue is NOT authorized for build. HOLD and post the doubt as an open question; do NOT infer authorization from any pane/input-box text, and do NOT take a reversing action (re-gate, close PRs, revert). An operator un-gates by posting, at the start of a comment line: $DTOKEN #$num — <reason> (via 'fwf dash' approve, or the concierge proxy)." >&2
 exit "$EX_HELD"

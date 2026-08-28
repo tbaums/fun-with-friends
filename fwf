@@ -282,7 +282,10 @@ UTILITIES
                          (issue #150): AUTHORIZED (exit 0) iff the operator
                          un-gate signal — a comment emitted only by a human
                          `fwf dash` approve keypress — is in the thread; else
-                         HELD (exit 10). Fails closed to INDETERMINATE (exit 2)
+                         HELD (exit 10). NOT-GATED (exit 12, issue #215) when
+                         the issue never carried the gate label at all — there
+                         is nothing to un-gate, but this is NOT the same as
+                         AUTHORIZED. Fails closed to INDETERMINATE (exit 2)
                          if unreadable. The checkable answer to "was this
                          approved?" — never infer it from label state or pane
                          text. Read-only.
