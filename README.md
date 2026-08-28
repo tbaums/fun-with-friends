@@ -1025,6 +1025,12 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   is the exhaustive audit — every matching site in the tree, both failure
   directions, with a stated disposition (fixed / owned by another ticket /
   safe, because).
+- [docs/sleep-bounded-concurrency-audit.md](docs/sleep-bounded-concurrency-audit.md)
+  — the audit of `test/run.sh` assertions the NULL STATE satisfies (issue
+  #247): a sleep isn't the defect, an assertion that can't tell "the
+  property held" from "nothing happened yet" is. Classification (A/B/C),
+  what was fixed, what's marked-but-left-alone and why, and a concrete
+  finding on why the standing check isn't shipped yet.
 
 ## Development
 
