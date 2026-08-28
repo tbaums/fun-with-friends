@@ -86,6 +86,15 @@
 #              how __GATE__/__E2E__/__PROMOTE_GATE__ render it — see
 #              lib.sh's fwf_render).
 #
+# PROMOTE-TREE PRECONDITION (issue #278): when <role> is the literal
+# "conductor" (never keyed on --e2e, which implementers also pass — see the
+# check itself for why), this refuses UNLESS the caller's own worktree is a
+# DETACHED HEAD at exactly origin/$STAGING_BRANCH's current SHA — the tree a
+# promote gate is supposed to be asserting about. A non-conductor role, or a
+# conductor whose worktree is already correctly positioned, is unaffected
+# and silent. Exit 1 on refusal; not a new verdict class (AC e), just a
+# precondition before the suite is ever launched.
+#
 # Exit codes: the wrapped command's own exit code on a real run; 75 (the
 # traditional EX_TEMPFAIL) when this tick was SKIPPED — a prior gate for this
 # role is still running, a --e2e run found the floor-wide lock busy, a
@@ -197,6 +206,40 @@ done
 [ "${1:-}" = "--" ] || { usage; exit 1; }
 shift
 [ $# -gt 0 ] || { echo "fwf gate: no command given after --" >&2; usage; exit 1; }
+
+# issue #278 (AC a): the PROMOTE gate must run against the exact tree it
+# would advance, or a promote decision rests on a suite run against a stale
+# SHA with nothing noticing (measured: a conductor worktree left on a local
+# `integration` branch, five commits behind the `staging` it was told to
+# check out). Keyed on the literal role tag "conductor", never on --e2e —
+# `--e2e` is not the conductor's alone: implementer.tmpl also passes it for
+# an impl's own e2e self-verification, run FROM A FEATURE BRANCH by design
+# (AC d2), and that population must never trip this. A literal role-tag
+# check is fine (lib.sh:260's FWF_SEAT_ROLES already treats role tags as
+# literals); the target REF must not be — it is derived from $STAGING_BRANCH
+# (lib/profile.sh), the same variable __PROMOTE_GATE__'s own rendering uses
+# (lib.sh:970), never a hardcoded "origin/staging" (a second floor with a
+# differently-named staging branch is measured in the ticket). Checked
+# BEFORE the lock is taken, same reasoning as --tip-cmd below: a gate that
+# is going to refuse should never contend for it first.
+if [ "$role" = conductor ]; then
+  _fwf278_target_sha="$(git rev-parse "origin/$STAGING_BRANCH" 2>/dev/null)" || {
+    echo "fwf gate: could not resolve origin/$STAGING_BRANCH — refusing to guess the promote target (issue #278)" >&2
+    exit 1
+  }
+  _fwf278_head_sha="$(git rev-parse HEAD 2>/dev/null)" || {
+    echo "fwf gate: could not resolve this worktree's HEAD — refusing to guess the promote target (issue #278)" >&2
+    exit 1
+  }
+  # AC (d): a detached HEAD at the correct SHA is the normal, intended
+  # state and must pass with NO output — a check that speaks on the happy
+  # path becomes noise and gets tuned out (issue #277 (b)'s same argument).
+  if ! { ! git symbolic-ref -q HEAD >/dev/null 2>&1 && [ "$_fwf278_head_sha" = "$_fwf278_target_sha" ]; }; then
+    echo "fwf gate: promote gate is not at the ref it would advance — this worktree is at $_fwf278_head_sha, origin/$STAGING_BRANCH is $_fwf278_target_sha. Refusing to gate the wrong tree (issue #278)." >&2
+    exit 1
+  fi
+  unset _fwf278_target_sha _fwf278_head_sha
+fi
 
 # --tip-cmd (issue #202): decide BEFORE the lock is ever taken, so a tick that
 # finds nothing new to gate never contends for it.

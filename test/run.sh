@@ -8078,6 +8078,64 @@ assert_contains "refactor conductor template's promote gate takes --tip-cmd" "$R
 assert_contains "refactor conductor template's promote gate takes --tip-ancestry" "$RENDERED_REFACTOR" "--tip-ancestry"
 assert_not_contains "refactor conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED_REFACTOR" "__PROMOTE_GATE__"
 
+section "promote gate refuses a wrong tree, silent when correct (issue #278)"
+# AC(b2): the invocation under test is EXTRACTED from $RENDERED (computed
+# above from the real conductor.tmpl through fwf_render), never hand-built —
+# asserting against a hand-built call would only prove the mechanism works,
+# not that anything actually uses it (the exact gap that let #278's step 2
+# go unperformed for ten hours). "fwf gate" is replaced with this worktree's
+# own fwf-gate.sh so the test exercises the code under review, not whatever
+# is installed on the box.
+F278_PROMOTE_CMD="$(printf '%s' "$RENDERED" | grep -oE 'fwf gate conductor[^:]*--tip-ancestry -- bash -c [^ ]+' | head -1)"
+assert_contains "issue #278 test setup: promote command extracted from the rendered prompt" "$F278_PROMOTE_CMD" "fwf gate conductor"
+F278_PROMOTE_CMD_LOCAL="${F278_PROMOTE_CMD/#fwf gate/$ROOT\/fwf-gate.sh}"
+
+F278="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278.XXXXXX")"
+( cd "$F278" && git init -q -b main \
+    && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c0 )
+F278_SHA_OLD="$(cd "$F278" && git rev-parse HEAD)"
+( cd "$F278" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1 )
+F278_SHA_NEW="$(cd "$F278" && git rev-parse HEAD)"
+( cd "$F278" && git update-ref refs/remotes/origin/staging "$F278_SHA_NEW" )
+F278_RUN="$TMP/gate278"; mkdir -p "$F278_RUN/state/example"
+
+# AC(b)/(b2): on a BRANCH (not detached), pinned at a SUPERSEDED sha -- the
+# ticket's own measured incident shape (a local branch left behind by a
+# prior cycle, matching neither ref it could plausibly be tracking).
+( cd "$F278" && git checkout -q -b integration "$F278_SHA_OLD" )
+F278_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example eval "$F278_PROMOTE_CMD_LOCAL" 2>&1 1>/dev/null)"; F278_RC=$?
+assert_eq "AC(b): stale-tree conductor promote refuses (nonzero exit)" "1" "$F278_RC"
+# AC(c): the refusal names BOTH shas -- what the tree is at, and what it
+# would have promoted -- diagnosable at a glance, never a bare "wrong tree".
+assert_contains "AC(c): refusal names the worktree's actual sha" "$F278_ERR" "$F278_SHA_OLD"
+assert_contains "AC(c): refusal names the sha it would have promoted" "$F278_ERR" "$F278_SHA_NEW"
+
+# AC(d): a detached HEAD at the CORRECT sha is the normal, intended state --
+# must pass with NO refusal output, or the check becomes noise and gets
+# worked around (issue #277 (b)'s same argument, cited in this ticket).
+( cd "$F278" && git checkout -q --detach "$F278_SHA_NEW" )
+F278_OK_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example eval "$F278_PROMOTE_CMD_LOCAL" 2>&1 1>/dev/null)"; F278_OK_RC=$?
+assert_eq "AC(d): detached HEAD at the correct sha does not refuse" "0" "$F278_OK_RC"
+assert_not_contains "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "$F278_OK_ERR" "issue #278"
+
+# AC(d2) -- THE test that would have caught a mis-scoped (a): a NON-promoting
+# role (impl1) on a feature branch, passing --e2e (implementer.tmpl's own
+# self-verification path), must pass through silently -- (d) alone only
+# proves the promoting role's good case, not that a non-promoting role is
+# left alone.
+( cd "$F278" && git checkout -q -b "impl1/issue-9-slug" "$F278_SHA_OLD" )
+F278_D2_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" impl1 --e2e -- bash -c true 2>&1 1>/dev/null)"; F278_D2_RC=$?
+assert_eq "AC(d2): non-promoting role on a feature branch with --e2e does not refuse" "0" "$F278_D2_RC"
+assert_not_contains "AC(d2): non-promoting role produces no #278 refusal text" "$F278_D2_ERR" "issue #278"
+
+# unresolvable target ref -- refuses rather than guessing (never a silent skip).
+F278_NOREF="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278-noref.XXXXXX")"
+( cd "$F278_NOREF" && git init -q -b main \
+    && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c0 )
+F278_NOREF_RC=0
+( cd "$F278_NOREF" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" conductor -- bash -c true ) >/dev/null 2>&1 || F278_NOREF_RC=$?
+assert_eq "unresolvable origin/\$STAGING_BRANCH refuses, never guesses" "1" "$F278_NOREF_RC"
+
 # (qa2 adversarial, issue #202): if --tip-cmd cannot be RE-READ after the
 # wrapped command exits (the ref it names becomes transiently unreadable —
 # e.g. a concurrent prune/repack, a momentarily-missing ref), fwf-gate.sh
