@@ -5864,6 +5864,112 @@ assert_not_contains "the old unconditional branch-prefix survey line is gone" "$
   'Keep only PRs whose headRefName starts with "impl1/" AND isDraft is false.'
 
 # --------------------------------------------------------------------------
+section "qa review checkout no longer contends for impl's own branch ref (issue #177)"
+
+# AC: every qa.tmpl variant's review checkout uses a UNIQUE per-PR branch
+# (`qa<ID>/review-<num>`, --force-reset each cycle), never impl's own named
+# branch, and never a bare --detach either (QA-caught on PR #318: a raw
+# --detach reads "HEAD" for #227's per-branch gate-history diagnostic,
+# pooling every qa gate ever run into one indistinguishable bucket --
+# qa<ID>/review-<num> restores real per-PR granularity while remaining
+# impossible to collide with impl's branch, since the names never match).
+for QA_VARIANT in dev refactor ideation defect-report consulting validate; do
+  QA_TMPL_SRC="$(cat "$ROOT/templates/$QA_VARIANT/qa.tmpl")"
+  assert_not_contains "$QA_VARIANT/qa.tmpl: the old bare named-branch checkout is gone" \
+    "$QA_TMPL_SRC" 'gh pr checkout <num>   (in this worktree)'
+  assert_not_contains "$QA_VARIANT/qa.tmpl: the old bare named-branch checkout (semicolon form) is gone" \
+    "$QA_TMPL_SRC" 'gh pr checkout <num>;'
+  assert_not_contains "$QA_VARIANT/qa.tmpl: no bare --detach (QA-caught: breaks #227's per-branch diagnostic)" \
+    "$QA_TMPL_SRC" 'gh pr checkout <num> --detach'
+  case "$QA_TMPL_SRC" in
+    *'gh pr checkout <num> --branch qa__ID__/review-<num> --force'*) ok "$QA_VARIANT/qa.tmpl: review checkout uses a unique per-PR branch";;
+    *) bad "$QA_VARIANT/qa.tmpl: review checkout uses a unique per-PR branch" "not found";;
+  esac
+done
+# dev/qa.tmpl's SECOND call site (the #82 re-review handoff) is the other
+# half of the deadlock (direction 2) -- assert it separately, since a fix
+# to only the first call site would leave the re-review path re-acquiring
+# the named branch and reopening the exact collision this ticket closes.
+# Reuses $DEVQA_194, already rendered fresh above for the #194 section.
+assert_contains "dev/qa.tmpl: the re-review handoff ALSO uses the unique per-PR branch (closes direction 2)" \
+  "$DEVQA_194" 'RE-REVIEW NOW: `gh pr checkout <num> --branch qa1/review-<num> --force`'
+
+# --- real git-worktree mechanism, not just template text ------------------
+# `gh pr checkout <num>` itself can't be exercised against a real PR in this
+# suite (it calls the GitHub API), so this reproduces the underlying git
+# primitive the fix relies on: "a branch can only be checked out in ONE
+# worktree at a time" -- the ticket's own stated root cause -- using plain
+# git worktrees standing in for impl1's and qa1's real ones. `gh pr checkout
+# --branch X --force` is equivalent to `git checkout -B X <sha>`, exercised
+# directly here for the same reason gh itself can't be.
+F177="$TMP/wt177"; mkdir -p "$F177/main"
+( cd "$F177/main" && git init -q -b main \
+    && git config user.email t@t.co && git config user.name t \
+    && echo a > f && git add -A && git commit -qm c1 \
+    && git branch impl1/issue-9-x )
+F177_SHA="$(cd "$F177/main" && git rev-parse impl1/issue-9-x)"
+# impl1's worktree: parked on its own named branch, awaiting review (the
+# NORMAL, correct state -- issue #177's own "out of scope" note: this
+# parking policy itself is fine once qa no longer contends for the ref).
+git -C "$F177/main" worktree add -q "$F177/impl1-wt" impl1/issue-9-x
+# qa1's worktree: starts detached (its own initial state, unrelated to the
+# named branch it will check out for review).
+git -C "$F177/main" worktree add -q "$F177/qa1-wt" --detach
+
+# Repro, direction 1 (the OLD `gh pr checkout <num>` shape): qa tries to
+# check out impl's SAME named branch -- git structurally refuses. This is
+# the exact failure this ticket's fix removes.
+rc=0; F177_ERR="$(cd "$F177/qa1-wt" && git checkout impl1/issue-9-x 2>&1)" || rc=$?
+assert_eq       "AC repro (1): OLD named-branch checkout contends while impl holds the ref" "128" "$rc"
+assert_contains "AC repro (1): git names it as already-held-by-worktree" "$F177_ERR" "already used by worktree"
+
+# The FIX: qa checks out its OWN unique per-PR branch (qa1/review-9),
+# force-reset to the PR head sha -- no exclusive lock on impl's branch
+# needed, so it succeeds with impl's worktree untouched throughout.
+rc=0; ( cd "$F177/qa1-wt" && git checkout -q -B qa1/review-9 "$F177_SHA" ) 2>&1 || rc=$?
+assert_eq "AC repro (1), FIXED: qa1/review-9 checkout succeeds while impl holds impl1/issue-9-x" "0" "$rc"
+assert_eq "impl's worktree is untouched by qa's checkout" "impl1/issue-9-x" \
+  "$(git -C "$F177/impl1-wt" symbolic-ref -q --short HEAD)"
+assert_eq "qa's worktree is on ITS OWN branch, never impl's" "qa1/review-9" \
+  "$(git -C "$F177/qa1-wt" symbolic-ref -q --short HEAD)"
+
+# Repro, direction 2: qa finished reviewing and requested changes; under the
+# FIX qa never held impl1/issue-9-x in the first place (it holds its own
+# qa1/review-9 instead), so impl can immediately re-checkout its own branch
+# to apply the fix -- no collision, no manual captain rescue.
+rc=0; ( cd "$F177/impl1-wt" && git checkout -q impl1/issue-9-x ) 2>&1 || rc=$?
+assert_eq "AC repro (2), FIXED: impl re-checks-out its own branch with zero collision" "0" "$rc"
+
+# Hardening: with the fix in place, impl1/issue-9-x is FREE the whole time
+# qa is reviewing/idle-waiting -- assert directly against `git worktree
+# list`, not just "the checkout command succeeded" (a transient success
+# could still leave the ref held afterward). qa's own worktree legitimately
+# holds qa1/review-9 (its own branch) while idle -- that is correct and
+# expected, never a collision target for anything impl needs.
+F177_WT_LIST="$(git -C "$F177/main" worktree list --porcelain)"
+F177_QA_BRANCH_LINE="$(printf '%s\n' "$F177_WT_LIST" | awk -v p="$F177/qa1-wt" '$0=="worktree "p{f=1} f&&/^branch /{print; exit} f&&/^detached/{print "detached"; exit}')"
+assert_eq "Hardening: qa1's worktree holds ONLY its own branch (never impl1's) while idle-waiting" \
+  "branch refs/heads/qa1/review-9" "$F177_QA_BRANCH_LINE"
+
+# End-to-end: a second impl push (simulating IMPL-ADDRESSED) moves the PR
+# head; qa re-reviews at the NEW sha via --force (reusing the SAME
+# qa1/review-9 branch -- stable per-PR identity across re-reviews, the
+# property the raw --detach form would have lost), still zero contention
+# with impl's worktree, which never had to give up its branch at any point
+# in the whole ready -> review -> changes-requested -> re-edit -> re-review
+# cycle.
+( cd "$F177/impl1-wt" && echo b >> f && git commit -qam c2 )
+F177_SHA2="$(cd "$F177/impl1-wt" && git rev-parse HEAD)"
+rc=0; ( cd "$F177/qa1-wt" && git checkout -q -B qa1/review-9 "$F177_SHA2" ) 2>&1 || rc=$?
+assert_eq "End-to-end: re-review at the new sha succeeds with impl still on its branch" "0" "$rc"
+assert_eq "End-to-end: the re-review reused the SAME qa1/review-9 branch (stable per-PR identity)" "qa1/review-9" \
+  "$(git -C "$F177/qa1-wt" symbolic-ref -q --short HEAD)"
+assert_eq "End-to-end: qa's checkout landed on the NEW sha, not the old one" "$F177_SHA2" \
+  "$(git -C "$F177/qa1-wt" rev-parse HEAD)"
+assert_eq "End-to-end: impl's worktree branch is unchanged across the whole cycle" "impl1/issue-9-x" \
+  "$(git -C "$F177/impl1-wt" symbolic-ref -q --short HEAD)"
+
+# --------------------------------------------------------------------------
 # fwf-branch-policy.sh (issue #220): is the committed .github/branch-policy.json
 # actually LIVE on GitHub? Read-only diff checker -- never mutates. Real
 # policy-diff logic driven with stubbed gh_branch_protection fixtures (never
