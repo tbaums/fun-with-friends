@@ -994,6 +994,39 @@ assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (rol
 SV2OUT_VISIBLE="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
 assert_not_contains "a visible session never gets the SESSION_UNKNOWN verdict" "$SV2OUT_VISIBLE" "SESSION_UNKNOWN"
 
+section "fwf supervise: AC(f2) — the mirror of (f)/(d), a genuinely WEDGED+readable role IS reaped"
+# (f)/(h) above prove supervise never reaps on an UNREADABLE input. Without
+# this test, a supervisor that silently never reaps ANYTHING would also
+# pass those -- (f2) is what makes it a real discrimination: a role with a
+# VISIBLE session and READABLE, genuinely-flat tick/token samples across a
+# full FWF_WEDGE_MIN_SECS window must still classify WEDGED and still get
+# respawned. Real fwf-pane-liveness.sh classifier (not stubbed) so the
+# WEDGED verdict is earned, not asserted by fiat; only fwf-respawn.sh itself
+# is stubbed, since actually hot-swapping a tmux pane is out of scope here.
+F2ISO="$TMP/f2iso"; mkdir -p "$F2ISO/lib" "$F2ISO/profiles"
+cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F2ISO/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F2ISO/lib/"
+cp "$ROOT/profiles/example.sh" "$F2ISO/profiles/"
+ln -sf "$ROOT/templates" "$F2ISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
+ln -sf "$ROOT/fwf-pane-liveness.sh" "$F2ISO/fwf-pane-liveness.sh"
+ln -sf "$ROOT/fwf-usage-data.sh" "$F2ISO/fwf-usage-data.sh"
+F2RESPAWN_LOG="$TMP/f2iso-respawn.log"
+cat > "$F2ISO/fwf-respawn.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$F2RESPAWN_LOG"
+exit 0
+EOF
+chmod +x "$F2ISO/fwf-respawn.sh"
+F2_RUN="$TMP/f2run"; mkdir -p "$F2_RUN/state/example/tick-watch" "$F2_RUN/state/example/usage-cache"
+printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F2_RUN/state/example/tick-watch/f2wedged"
+printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+  "$(( $(date -u +%s) - 3600 ))" > "$F2_RUN/state/example/usage-cache/f2wedged.json"
+F2OUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F2_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 bash "$F2ISO/fwf-supervise.sh" f2wedged 2>&1)"
+assert_contains "AC(f2): genuinely wedged (readable, static past the window) -> WEDGED" "$F2OUT" "$(printf '%-10s WEDGED' f2wedged)"
+assert_contains "AC(f2): ...and IS respawned (the discrimination this AC exists to prove)" "$F2OUT" "WEDGED -> respawning"
+assert_eq "AC(f2): fwf-respawn.sh was actually invoked, exactly once, for the right role" "f2wedged" \
+  "$(cat "$F2RESPAWN_LOG" 2>/dev/null)"
+
 section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
 # Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
 # out. FWF_LANE_STALE_MULT pinned so the threshold is deterministic
