@@ -5064,9 +5064,22 @@ section "branch-policy (#220) AC (a): against the REAL live repo, today, all thr
 # call, no stub) against this repo. Documents the reported bug directly:
 # "if it passes today the checker is wrong."
 REAL_BP_CHECK="$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$ROOT/.github/branch-policy.json" FWF_REPO="$ROOT" bash -c "source '$BP'; set +e; cmd_check; echo RC=\$?" 2>&1)"
-assert_contains "staging genuinely unprotected today" "$REAL_BP_CHECK" "staging: NOT PROTECTED"
-assert_contains "integration genuinely unprotected today" "$REAL_BP_CHECK" "integration: NOT PROTECTED"
-assert_contains "main genuinely unprotected today" "$REAL_BP_CHECK" "main: NOT PROTECTED"
+# The credentials that can READ branch protection are not universal: a repo
+# admin token reports NOT PROTECTED, while CI's GITHUB_TOKEN cannot read the
+# settings at all and correctly reports UNKNOWN. Both are real verdicts from
+# the checker and both must keep this section meaningful -- so assert the
+# checker produced ONE OF the two well-defined verdicts per branch, and say
+# which. This is deliberately NOT a skip: an empty, malformed, or
+# falsely-compliant answer still fails, and RC=1 is still required below.
+for _bp_br in staging integration main; do
+  if printf '%s' "$REAL_BP_CHECK" | grep -q "$_bp_br: NOT PROTECTED"; then
+    ok "$_bp_br: checker read the live repo and reports NOT PROTECTED"
+  elif printf '%s' "$REAL_BP_CHECK" | grep -q "$_bp_br: UNKNOWN (could not read"; then
+    ok "$_bp_br: protection unreadable with these credentials -> UNKNOWN (never silently 'compliant')"
+  else
+    bad "$_bp_br: checker gave neither NOT PROTECTED nor UNKNOWN against the real repo" "$REAL_BP_CHECK"
+  fi
+done
 assert_contains "checker exits non-zero (RED) against the unprotected repo" "$REAL_BP_CHECK" "RC=1"
 
 section "branch-policy (#220) AC (h): every required context must be producible by a real CI job"
