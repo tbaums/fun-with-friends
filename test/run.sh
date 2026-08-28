@@ -52,7 +52,26 @@ assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got
 # assert_contains <label> <haystack> <needle>
 assert_contains() { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "[$2] did not contain [$3]";; esac; }
 # assert_not_contains <label> <haystack> <needle>
-assert_not_contains() { case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contained [$3]";; *) ok "$1";; esac; }
+# issue #247 AC (a5): an EMPTY haystack takes the `*)` branch below and
+# reports ok -- so "the bad string is absent" also passes when there is no
+# output at all (the command failed, the path was wrong, the render
+# produced nothing). A genuinely-empty-and-that's-correct claim is NOT this
+# helper's job (AC a6): it has its own sound, non-vacuous form already,
+# `assert_eq "" "$VAR"` -- so failing here on empty never collides with a
+# legitimate use, it only catches call sites that were silently relying on
+# the vacuous pass.
+assert_not_contains() {
+  [ -n "$2" ] || { bad "$1" "haystack is EMPTY -- the assertion is vacuous, not passing"; return; }
+  case "$2" in *"$3"*) bad "$1" "[$2] unexpectedly contained [$3]";; *) ok "$1";; esac
+}
+# AC (a5) demonstration: invoked inside $(...) so its own PASS/FAIL mutation
+# happens in a subshell and never leaks into the real counters above --
+# proving the guard fires (not just exists) without a synthetic call
+# polluting this run's actual pass/fail total.
+AC_A5_DEMO_EMPTY="$(assert_not_contains "demo" "" "needle")"
+assert_contains "AC(#247 a5): assert_not_contains itself goes RED on an EMPTY haystack (not vacuously ok)" "$AC_A5_DEMO_EMPTY" "FAIL"
+AC_A5_DEMO_REAL="$(assert_not_contains "demo" "haystack with real content" "absent-needle")"
+assert_contains "AC(#247 a5): ...and stays GREEN on a non-empty haystack that genuinely lacks the needle" "$AC_A5_DEMO_REAL" "ok"
 # assert_log_eventually_contains <label> <logfile> <needle> [timeout-secs]
 # Bounded wait-for-condition, for asserting on an async log append (issue
 # #185) instead of a single fixed-time read that can sample before the append
@@ -8794,7 +8813,12 @@ assert_contains "AC(c): refusal names the sha it would have promoted" "$F278_ERR
 ( cd "$F278" && git checkout -q --detach "$F278_SHA_NEW" )
 F278_OK_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example eval "$F278_PROMOTE_CMD_LOCAL" 2>&1 1>/dev/null)"; F278_OK_RC=$?
 assert_eq "AC(d): detached HEAD at the correct sha does not refuse" "0" "$F278_OK_RC"
-assert_not_contains "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "$F278_OK_ERR" "issue #278"
+# issue #247 AC (a6): legitimately-empty, routed rather than converted -- the
+# happy path is defined to produce NO stderr at all (this section's own
+# title: "silent when correct"), so the sound positive form is assert_eq ""
+# rather than assert_not_contains, which (a5) now correctly refuses to treat
+# an empty haystack as a pass.
+assert_eq "AC(d): detached HEAD at the correct sha produces no #278 refusal text" "" "$F278_OK_ERR"
 
 # AC(d2) -- THE test that would have caught a mis-scoped (a): a NON-promoting
 # role (impl1) on a feature branch, passing --e2e (implementer.tmpl's own
@@ -8804,7 +8828,8 @@ assert_not_contains "AC(d): detached HEAD at the correct sha produces no #278 re
 ( cd "$F278" && git checkout -q -b "impl1/issue-9-slug" "$F278_SHA_OLD" )
 F278_D2_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" impl1 --e2e -- bash -c true 2>&1 1>/dev/null)"; F278_D2_RC=$?
 assert_eq "AC(d2): non-promoting role on a feature branch with --e2e does not refuse" "0" "$F278_D2_RC"
-assert_not_contains "AC(d2): non-promoting role produces no #278 refusal text" "$F278_D2_ERR" "issue #278"
+# issue #247 AC (a6): same routing as (d) above -- legitimately empty, not converted.
+assert_eq "AC(d2): non-promoting role produces no #278 refusal text" "" "$F278_D2_ERR"
 
 # unresolvable target ref -- refuses rather than guessing (never a silent skip).
 F278_NOREF="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278-noref.XXXXXX")"
