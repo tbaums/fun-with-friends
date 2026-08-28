@@ -347,16 +347,32 @@ not a per-role copy:
   past `FWF_GATE_LOCK_MAX_RUN_SECS` (default 1800s) is treated as wedged and
   reaped, so a crashed gate can never wedge the role permanently
   (`fwf_gate_lock_acquire` / `fwf_gate_lock_release` in `lib.sh`).
-- **Floor-wide e2e lock** (`~/.fun-with-friends/e2e.lock`, atomic `mkdir`,
-  issue #65) — taken ADDITIONALLY when `fwf gate` is called with `--e2e`
-  (every `__E2E__` render; `__GATE__` does not need it, since the fast gate
-  isn't meant to share ports with anything). Serializes e2e-class runs across
-  DIFFERENT roles so a single-port harness never collides — conductor's
-  promotion e2e and an implementer's own local e2e self-verification (before
-  marking a PR ready) share this same lock. The lock dir carries a
-  holder-identity stamp (role/PID/host/worktree/timestamp) so a role that
-  dies mid-hold is recovered automatically — a live holder is never reclaimed
-  no matter how long it runs, only a confirmed-dead one is broken immediately
+- **e2e lease, RESOURCE-keyed** (`~/.fun-with-friends/e2e.lock`, atomic
+  `mkdir`; issue #205, was a single floor-wide mutex, issue #65) — taken
+  ADDITIONALLY when `fwf gate` is called with `--e2e` (every `__E2E__`
+  render; `__GATE__` does not need it, since the fast gate isn't meant to
+  share ports with anything). The contended resource is the concrete
+  **port + data dir**, not "e2e" abstractly: up to `FWF_E2E_MAX_LANES`
+  leases are held at once (default **1** — a strict no-op, byte-identical
+  to the pre-#205 single mutex, until a consumer profile opts in and the
+  cap is deliberately raised), each on port `FWF_E2E_PORT_BASE`+(lane-1)
+  and a data dir under `FWF_E2E_DATA_BASE` that is FRESH on every lease
+  (never reused across generations, even for two leases on the same port —
+  reuse there is a hazard, not a feature). `fwf gate --e2e` exports
+  `FWF_E2E_PORT` / `FWF_E2E_DATA_DIR` into the wrapped command's
+  environment ONLY — never `tmux set-environment`, never a pane-env file,
+  never persisted past that one command — so a profile's `E2E_CMD` reads
+  those instead of a hardcoded port/data dir to actually get concurrent
+  lanes; `fwf doctor` warns (never refuses) if it looks like `E2E_CMD`
+  hardcodes either. Conductor's promotion e2e and an implementer's own
+  local e2e self-verification (before marking a PR ready) share this same
+  lease pool, so a local run structurally cannot bind a port a sibling's
+  live run holds (subsumes issue #65's implementer-bypass concern —
+  meaningful only once the cap is raised above 1). Each lane's lock dir
+  carries a holder-identity stamp (role/PID/host/worktree/timestamp/
+  port/data_dir) so a role that dies mid-hold is recovered automatically —
+  a live holder is never reclaimed no matter how long it runs, only a
+  confirmed-dead one is broken immediately
   (`fwf_e2e_lock_acquire` / `fwf_e2e_lock_release` in `lib.sh`).
   A queued waiter's stderr (issue #196) names the holder's role/PID/host,
   its hold age, its liveness class (live / indeterminate), and the waiter's

@@ -29,8 +29,14 @@
 # Usage: fwf gate <role> [--e2e] [--cargo-build] [--tip-cmd 'CMD'] -- <command> [args...]
 #   <role>     the per-role lock key (e.g. impl2, qa2, conductor) — the
 #              literal role tag used elsewhere (heartbeat path, etc).
-#   --e2e      ALSO take the floor-wide e2e lock. Use for an E2E_CMD-class
-#              run; omit for the fast GATE_CMD (see above).
+#   --e2e      ALSO take a resource-keyed e2e lease (issue #205; was a single
+#              floor-wide mutex, issue #65). Use for an E2E_CMD-class run;
+#              omit for the fast GATE_CMD (see above). Exports FWF_E2E_PORT
+#              and FWF_E2E_DATA_DIR into the wrapped command's environment
+#              ONLY (never persisted elsewhere) -- a profile's E2E_CMD reads
+#              those instead of hardcoding a port/data dir to actually get
+#              concurrent lanes once FWF_E2E_MAX_LANES is raised above its
+#              default of 1 (a strict no-op until then).
 #   --cargo-build  ALSO take a cargo-build concurrency slot (see above).
 #   --tip-cmd  Make this gate TIP-triggered, not just timer-triggered (issue
 #              #202): CMD is evaluated (via `eval`, in the caller's cwd) to
@@ -191,6 +197,9 @@ fwf_gate_lock_acquire "$role" || exit "$EX_SKIPPED"
 gate_lock_held=1   # issue #156 BLOCKER 2: tracked so the release trap never rm's
 
 e2e_held=0
+e2e_lane=""
+e2e_port=""
+e2e_data_dir=""
 cargo_build_slot=""
 mem_token=""
 # Only release the #123 per-role gate lock if WE currently hold it. During the
@@ -199,7 +208,7 @@ mem_token=""
 # is the guard.
 _fwf_gate_release() {
   [ "$gate_lock_held" = 1 ] && fwf_gate_lock_release "$role"
-  [ "$e2e_held" = 1 ] && fwf_e2e_lock_release
+  [ "$e2e_held" = 1 ] && fwf_e2e_lock_release "$e2e_lane"
   fwf_cargo_build_slot_release "$cargo_build_slot"
   fwf_mem_admit_release "$mem_token"
 }
@@ -220,8 +229,9 @@ _fwf_gate_signal_cleanup() {
 trap _fwf_gate_signal_cleanup TERM INT HUP
 
 if [ "$want_e2e" = 1 ]; then
-  fwf_e2e_lock_acquire "$role" || { echo "fwf gate: e2e lock busy, deferring" >&2; exit "$EX_SKIPPED"; }
+  e2e_lease="$(fwf_e2e_lock_acquire "$role")" || { echo "fwf gate: e2e lock busy, deferring" >&2; exit "$EX_SKIPPED"; }
   e2e_held=1
+  read -r e2e_lane e2e_port e2e_data_dir <<<"$e2e_lease"
 fi
 
 # issue #156 BLOCKER 2 (SHARED hand-off): run a BLOCKING resource wait WITHOUT
@@ -329,8 +339,20 @@ fwf_cargo_isolate "$want_cargo_build" || { echo "fwf gate: could not isolate car
 # Deliberately after fwf_cargo_isolate, which still needs our resolution.
 _fwf_gate_env_restore
 
+# issue #205 AC(g3): the allocation is exported to THE GATED COMMAND'S
+# PROCESS ONLY -- set immediately before the exec, unset immediately after.
+# Never tmux set-environment, never a pane-env file, never persisted
+# anywhere (the #175/#182/#217 lesson this repo has been bitten by 3 times).
+if [ "$want_e2e" = 1 ]; then
+  export FWF_E2E_PORT="$e2e_port" FWF_E2E_DATA_DIR="$e2e_data_dir"
+fi
+
 rc=0
 "$@" || rc=$?
+
+if [ "$want_e2e" = 1 ]; then
+  unset FWF_E2E_PORT FWF_E2E_DATA_DIR
+fi
 
 # issue #220 AC (r)/(r0): record a SHA-keyed, reviewer-readable verdict --
 # see fwf_gate_verdict_record's own doc comment (lib.sh) for why this is a

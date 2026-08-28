@@ -4008,6 +4008,170 @@ case "$(grep '^pid=' "$E196_PIN/e2e.lock/owner" 2>/dev/null)" in
 esac
 
 # --------------------------------------------------------------------------
+section "e2e lock: RESOURCE-KEYED LEASES (issue #205) -- port + data dir, not a single global mutex"
+# AC(d)/(i): the shipped default is a strict no-op -- lane 1 IS $E2E_LOCK,
+# unchanged, so every pre-#205 test above (symmetry/dead/live/AC a-e) already
+# proves byte-identical behavior at the default. This section covers what's
+# NEW: disjoint concurrency, same-port serialization, cap enforcement, fresh-
+# per-generation data dirs, and the exported-env contract.
+E205RUN="$TMP/e205"
+mkdir -p "$E205RUN"
+assert_eq "AC(i): FWF_E2E_MAX_LANES ships at 1 (strict no-op default)" "1" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$E205RUN/default" bash -c "source '$ROOT/lib.sh'; echo \$FWF_E2E_MAX_LANES")"
+assert_eq "lane 1's dir IS \$E2E_LOCK itself (AC d: same path, no new nesting)" "" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$E205RUN/default" bash -c "source '$ROOT/lib.sh'; [ \"\$(_fwf_e2e_lane_dir 1)\" = \"\$E2E_LOCK\" ] || echo MISMATCH")"
+
+cat > "$TMP/e205-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  lease)
+    lease="$(fwf_e2e_lock_acquire "$2")" || { echo "RC=$?"; exit 0; }
+    printf '%s\n' "$lease" > "$3"
+    echo "LEASE=$lease"
+    ;;
+  release)
+    read -r n p d < "$2"
+    fwf_e2e_lock_release "$n"
+    ;;
+esac
+EOSCRIPT
+
+# AC(a): two disjoint allocations both hold leases AT THE SAME TIME (overlap
+# in time, not merely "both eventually finish" -- the ticket's own bar). A
+# holds its lease across a real sleep; B's acquire runs in the FOREGROUND
+# right after, so the overlap check happens the instant B succeeds -- not
+# after a `wait` for both, which would trivially find A finished by then.
+E205A="$E205RUN/aca"; mkdir -p "$E205A"
+FWF_RUN_DIR="$E205A" FWF_PROFILE=example FWF_E2E_MAX_LANES=2 ROOT_PATH="$ROOT" bash -c '
+  source "$ROOT_PATH/lib.sh"
+  ( leaseA="$(fwf_e2e_lock_acquire holderA)"; read -r nA _ _ <<<"$leaseA"
+    touch "'"$E205A"'/A-start"; sleep 1.5; touch "'"$E205A"'/A-done"; fwf_e2e_lock_release "$nA" ) &
+  pidA=$!
+  sleep 0.3
+  leaseB="$(fwf_e2e_lock_acquire holderB)"; read -r nB pB dB <<<"$leaseB"
+  [ -f "'"$E205A"'/A-done" ] && echo OVERLAP_FAILED > "'"$E205A"'/overlap" || echo OVERLAP_OK > "'"$E205A"'/overlap"
+  printf "%s %s\n" "$pB" "$dB" > "'"$E205A"'/B-lease"
+  fwf_e2e_lock_release "$nB"
+  wait "$pidA"
+'
+assert_contains "AC(a): disjoint lease B acquired WHILE lease A was still held (real time overlap, not sequential)" "$(cat "$E205A/overlap" 2>/dev/null)" "OVERLAP_OK"
+assert_contains "AC(a): the two disjoint leases got DIFFERENT ports" "$(cat "$E205A/B-lease" 2>/dev/null)" "3941"
+
+# AC(b) -- the DISCRIMINATING test: two requests for the SAME resource (both
+# at cap=1, i.e. only lane 1/port FWF_E2E_PORT_BASE exists) still serialize
+# exactly like today. Without this, (a) would pass trivially by removing
+# the lock outright.
+E205B="$E205RUN/acb"; mkdir -p "$E205B"
+FWF_RUN_DIR="$E205B" FWF_PROFILE=example ROOT_PATH="$ROOT" bash -c '
+  source "$ROOT_PATH/lib.sh"
+  lease1="$(fwf_e2e_lock_acquire holderA)"; read -r n1 _ _ <<<"$lease1"
+  rc=0; out="$(FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 fwf_e2e_lock_acquire holderB 2>&1)" || rc=$?
+  printf "%s\n" "$out" > "'"$E205B"'/out"
+  echo "RC=$rc" >> "'"$E205B"'/out"
+  fwf_e2e_lock_release "$n1"
+'
+assert_contains "AC(b): a same-resource request still BLOCKS (cap=1, only one port exists)" "$(cat "$E205B/out")" "held by holderA"
+assert_contains "AC(b): the blocked request times out rather than being silently admitted" "$(cat "$E205B/out")" "RC=1"
+
+# AC(c): the concurrency cap is enforced by the lease layer itself -- at
+# MAX_LANES=2, a third disjoint request queues and is never admitted
+# concurrently with the first two.
+E205C="$E205RUN/acc"; mkdir -p "$E205C"
+FWF_RUN_DIR="$E205C" FWF_PROFILE=example FWF_E2E_MAX_LANES=2 ROOT_PATH="$ROOT" bash -c '
+  source "$ROOT_PATH/lib.sh"
+  ( leaseA="$(fwf_e2e_lock_acquire holderA)"; read -r nA _ _ <<<"$leaseA"; sleep 2; fwf_e2e_lock_release "$nA" ) &
+  ( leaseB="$(fwf_e2e_lock_acquire holderB)"; read -r nB _ _ <<<"$leaseB"; sleep 2; fwf_e2e_lock_release "$nB" ) &
+  sleep 0.5
+  rc=0; out="$(FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 fwf_e2e_lock_acquire holderC 2>&1)" || rc=$?
+  echo "RC=$rc" > "'"$E205C"'/out"
+  printf "%s\n" "$out" >> "'"$E205C"'/out"
+  wait
+'
+assert_contains "AC(c): with both lanes busy, a third disjoint request is REFUSED (queues), not admitted" "$(cat "$E205C/out")" "RC=1"
+assert_contains "AC(c): the queue message reports a busy holder, not a phantom free lane" "$(cat "$E205C/out")" "held by holder"
+
+# AC(g2): the data dir has a stated lifecycle -- FRESH per lease generation,
+# never reused, even for two SEQUENTIAL leases on the exact same port.
+E205G2="$E205RUN/acg2"; mkdir -p "$E205G2"
+FWF_RUN_DIR="$E205G2" FWF_PROFILE=example ROOT_PATH="$ROOT" bash -c '
+  source "$ROOT_PATH/lib.sh"
+  lease1="$(fwf_e2e_lock_acquire holderA)"; read -r n1 p1 d1 <<<"$lease1"
+  touch "$d1/artifact-from-run1"
+  fwf_e2e_lock_release "$n1"
+  lease2="$(fwf_e2e_lock_acquire holderB)"; read -r n2 p2 d2 <<<"$lease2"
+  {
+    echo "PORT1=$p1 PORT2=$p2"
+    echo "DIR1=$d1 DIR2=$d2"
+    [ -f "$d2/artifact-from-run1" ] && echo LEAKED || echo CLEAN
+  } > "'"$E205G2"'/out"
+  fwf_e2e_lock_release "$n2"
+'
+assert_contains "AC(g2): two sequential leases on the SAME port"      "$(cat "$E205G2/out")" "PORT1=3940 PORT2=3940"
+assert_not_contains "AC(g2): ...receive DIFFERENT data dirs (reused would show DIR1=DIR2)" \
+  "$(grep '^DIR1=' "$E205G2/out" | sed 's/DIR1=\(.*\) DIR2=\1$/SAME/')" "SAME"
+assert_contains "AC(g2): the second lease sees NO artifact written by the first (fresh, not reused)" "$(cat "$E205G2/out")" "CLEAN"
+
+# AC(f): the lease record carries port+data_dir ALONGSIDE the pre-existing
+# shared record format (role/pid/host/worktree/acquired) -- one format, not
+# two competing ones.
+E205F="$E205RUN/acf"; mkdir -p "$E205F"
+FWF_RUN_DIR="$E205F" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  fwf_e2e_lock_acquire pinrole
+"   # deliberately no release
+for f in role pid host worktree acquired port data_dir; do
+  grep -q "^$f=" "$E205F/e2e.lock/owner" 2>/dev/null \
+    && ok "AC(f): lease record carries field '$f'" \
+    || bad "AC(f): lease record carries field '$f'" "not found in $E205F/e2e.lock/owner"
+done
+assert_eq "AC(f): the recorded port matches FWF_E2E_PORT_BASE for lane 1" "port=3940" "$(grep '^port=' "$E205F/e2e.lock/owner")"
+
+# AC(g): a killed holder's PORT (not just its lock dir) is reclaimed -- the
+# next acquirer gets the SAME port back, not a permanently-stuck lane.
+E205G="$E205RUN/acg"; mkdir -p "$E205G"
+FWF_RUN_DIR="$E205G" FWF_PROFILE=example bash -c "
+  source '$ROOT/lib.sh'
+  mkdir -p \"\$E2E_LOCK\"
+  printf 'role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\nport=3940\ndata_dir=/nowhere\n' \
+    \"\$(hostname)\" \"\$(( \$(date +%s) - 9999 ))\" > \"\$E2E_LOCK/owner\"
+  lease=\"\$(fwf_e2e_lock_acquire impl9)\"
+  echo \"\$lease\"
+" > "$E205G/out" 2>&1
+assert_contains "AC(g): a dead holder's port is reclaimed and reissued (not left stuck)" "$(cat "$E205G/out")" "1 3940"
+
+# --------------------------------------------------------------------------
+section "e2e lease export contract (issue #205 AC g3): the gated command's process only"
+# Real fwf-gate.sh run (--e2e) whose wrapped command dumps FWF_E2E_PORT/
+# FWF_E2E_DATA_DIR -- proves both are present INSIDE the gated command, and
+# that acquiring/releasing never leaks them into this test's OWN shell.
+E205GATE_REPO="$TMP/e205-gate-repo"; mkdir -p "$E205GATE_REPO"
+git -C "$E205GATE_REPO" init -q
+git -C "$E205GATE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+E205GATE_RUN="$TMP/e205-gate-run"; mkdir -p "$E205GATE_RUN"
+unset FWF_E2E_PORT FWF_E2E_DATA_DIR 2>/dev/null || true
+E205GATE_OUT="$(cd "$E205GATE_REPO" && FWF_RUN_DIR="$E205GATE_RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" e205gate --e2e -- bash -c 'echo "PORT=$FWF_E2E_PORT DATA=$FWF_E2E_DATA_DIR"' 2>&1)"
+assert_contains "AC(g3): FWF_E2E_PORT is present in the gated command's env" "$E205GATE_OUT" "PORT=3940"
+assert_contains "AC(g3): FWF_E2E_DATA_DIR is present in the gated command's env" "$E205GATE_OUT" "DATA=$E205GATE_RUN/e2e-data/lane-1/gen-"
+{ [ -z "${FWF_E2E_PORT:-}" ] && [ -z "${FWF_E2E_DATA_DIR:-}" ]; } \
+  && ok "AC(g3): neither var leaked into the CALLING shell (never persisted outside the one gated command)" \
+  || bad "AC(g3): the allocation must not leak past the one gated command" "FWF_E2E_PORT=${FWF_E2E_PORT:-unset} FWF_E2E_DATA_DIR=${FWF_E2E_DATA_DIR:-unset}"
+
+# --------------------------------------------------------------------------
+section "AC(h): fwf doctor warns (never refuses) on an E2E_CMD that hardcodes what it should read from the env"
+H1="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --bind 127.0.0.1:3940'")"
+assert_contains "a literal port with no \$FWF_E2E_PORT reference is warned" "$H1" "hardcode a port"
+H2="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --bind 127.0.0.1:\$FWF_E2E_PORT --data \$FWF_E2E_DATA_DIR'")"
+assert_eq "a command that reads both exported vars is NOT warned" "" "$H2"
+H3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'true'")"
+assert_eq "the shipped no-op default (E2E_CMD=true) is NOT warned" "" "$H3"
+H4="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --data /tmp/transom-e2e-XXXX'")"
+assert_contains "a literal data-dir path with no \$FWF_E2E_DATA_DIR reference is warned" "$H4" "hardcode a data dir"
+assert_eq "the warn function never refuses -- always returns 0" "0" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'anything' >/dev/null; echo \$?")"
+
+# --------------------------------------------------------------------------
 section "cargo build concurrency SEMAPHORE (issue #138 piece C): N slots, not a mutex"
 CBRUN="$TMP/cargobuild138"
 cat > "$TMP/cargo-build-drive.sh" <<'EOSCRIPT'

@@ -115,6 +115,17 @@ FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
 # $FWF_WORKSPACE_BASE/<name>/repo and puts that profile's worktrees alongside.
 FWF_WORKSPACE_BASE="${FWF_WORKSPACE_BASE:-$FWF_RUN/workspaces}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
+# Resource-keyed e2e leases (issue #205): the contended resource is the
+# concrete port + data dir, not "e2e" abstractly. Up to FWF_E2E_MAX_LANES
+# leases are held at once, each on port FWF_E2E_PORT_BASE+(lane-1) and a
+# freshly-generated data dir under FWF_E2E_DATA_BASE — see lib.sh's
+# fwf_e2e_lock_acquire. Ships at MAX_LANES=1 (a strict no-op: identical
+# behavior to the single global lock this replaces, AC d/i) until a consumer
+# (transom) reads FWF_E2E_PORT/FWF_E2E_DATA_DIR and the cap is deliberately
+# raised in a separate, observable step.
+FWF_E2E_MAX_LANES="${FWF_E2E_MAX_LANES:-1}"
+FWF_E2E_PORT_BASE="${FWF_E2E_PORT_BASE:-3940}"
+FWF_E2E_DATA_BASE="${FWF_E2E_DATA_BASE:-$FWF_RUN/e2e-data}"
 # Floor-wide cargo build concurrency bound (issue #138 piece C): a SEMAPHORE
 # (not a mutex like E2E_LOCK above) — up to this many roles may hold a build
 # slot at once via fwf_cargo_build_slot_acquire; the (N+1)th waits. N~1-2

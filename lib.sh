@@ -1255,7 +1255,7 @@ fwf_pm_plane_blocked() {
   printf ''
 }
 
-# --- e2e lock (issue #65) ----------------------------------------------------
+# --- e2e lock: resource-keyed leases (issue #205, was a single mutex #65) ---
 # Serializes EVERY e2e-equivalent run across the whole floor — not just
 # conductor-vs-conductor, but implementer self-verification too — since most
 # e2e harnesses bind fixed, single ports and fwf runs N parallel worktrees on
@@ -1381,48 +1381,104 @@ _fwf_e2e_owner_liveness() { # $1=owner-file
   return 1
 }
 
-# $1 = holder label (e.g. "conductor", "impl2") → rc 0 acquired, 1 timed out.
-# ALWAYS pair with a trap to fwf_e2e_lock_release so a killed/failed holder
-# never leaves the lock behind: trap 'fwf_e2e_lock_release' EXIT
+# Lane N's lock dir. Lane 1 IS $E2E_LOCK itself, unchanged from pre-#205 --
+# issue #196's owner-record path ($E2E_LOCK/owner) is a pinned test/tooling
+# contract, and AC(d) requires FWF_E2E_MAX_LANES=1 (the shipped default) to
+# reproduce today's behavior exactly, not merely equivalently. Lane 2+ is a
+# SIBLING dir (never nested under $E2E_LOCK), so an older `rm -rf "$E2E_LOCK"`
+# from anywhere else can never take a live lane 2+ down with it.
+_fwf_e2e_lane_dir() { # $1=lane number -> lock dir path
+  if [ "$1" = 1 ]; then printf '%s' "$E2E_LOCK"; else printf '%s.lane%s' "$E2E_LOCK" "$1"; fi
+}
+
+# $1 = holder label (e.g. "conductor", "impl2") -> on success, echoes
+# "<lane> <port> <data_dir>" to stdout and returns 0; ALWAYS pair with
+# fwf_e2e_lock_release "$lane" in a trap so a killed/failed holder never
+# leaves its lease behind. Returns 1 on timeout (all lanes busy).
 #
-# Issue #196: poll cadence (FWF_E2E_LOCK_POLL), timeout (FWF_E2E_LOCK_TIMEOUT),
-# dead-PID break, and the indeterminate-liveness backstop (FWF_E2E_LOCK_STALE_SECS)
-# are all UNCHANGED (AC f) -- only what gets REPORTED, and how often, changes.
+# Issue #205: the contended resource is the concrete port + data dir, not
+# "e2e" abstractly (was issue #65's single global mutex). Up to
+# FWF_E2E_MAX_LANES leases are held at once -- disjoint lanes never wait on
+# each other -- each keyed to port FWF_E2E_PORT_BASE+(lane-1) and a
+# freshly-generated (AC g2: never reused across lease generations) data dir.
+# Per-lane liveness/reap/backstop mechanics are otherwise UNCHANGED from
+# issue #196 (AC f): dead-PID break is immediate, indeterminate liveness
+# falls back to the FWF_E2E_LOCK_STALE_SECS age backstop, and at the shipped
+# default FWF_E2E_MAX_LANES=1 there is exactly one lane -- $E2E_LOCK itself
+# -- so this reproduces pre-#205 behavior byte-for-byte (AC d).
 fwf_e2e_lock_acquire() {
-  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" owner="$E2E_LOCK/owner" waited=0 rc ts now holder pid host
-  local qstart missing=0 last_report
-  mkdir -p "$(dirname "$E2E_LOCK")" 2>/dev/null   # so a missing $FWF_RUN can't masquerade as "lock held"
+  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" waited=0 n lane owner rc ts now holder pid host
+  local qstart missing=0 last_report port gen genfile data_dir
+  local busy_rc="" busy_holder="" busy_pid="" busy_host="" busy_ts="" busy_missing=0
   qstart="$(date +%s)"
   last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 ))   # force the FIRST report immediate (point 2)
   while true; do
-    if mkdir "$E2E_LOCK" 2>/dev/null; then
-      printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
-        "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" > "$owner"
-      return 0
-    fi
-    holder="$(_fwf_e2e_owner_field role "$owner")"
-    pid="$(_fwf_e2e_owner_field pid "$owner")"
-    host="$(_fwf_e2e_owner_field host "$owner")"
-    ts="$(_fwf_e2e_owner_field acquired "$owner")"
-    if [ -z "$holder" ] && [ -z "$pid" ]; then missing=$(( missing + 1 )); else missing=0; fi
-    _fwf_e2e_owner_liveness "$owner"; rc=$?
-    if [ "$rc" = 1 ]; then
-      echo "fwf: e2e lock held by dead PID ${pid:-unknown} (${holder:-unknown}) — breaking it" >&2
-      rm -rf "$E2E_LOCK"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0; continue
-    elif [ "$rc" = 2 ]; then
-      now="$(date +%s)"
-      if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
-        echo "fwf: e2e lock indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
-        rm -rf "$E2E_LOCK"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0; continue
+    for n in $(seq 1 "$FWF_E2E_MAX_LANES"); do
+      lane="$(_fwf_e2e_lane_dir "$n")"
+      mkdir -p "$(dirname "$lane")" 2>/dev/null   # so a missing $FWF_RUN can't masquerade as "lock held"
+      if mkdir "$lane" 2>/dev/null; then
+        port=$(( FWF_E2E_PORT_BASE + n - 1 ))
+        genfile="${lane}.gen"
+        gen="$(cat "$genfile" 2>/dev/null)"; case "$gen" in ''|*[!0-9]*) gen=0;; esac
+        gen=$(( gen + 1 ))
+        printf '%s\n' "$gen" > "$genfile"
+        data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
+        mkdir -p "$data_dir" 2>/dev/null
+        printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
+          "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
+        printf '%s %s %s\n' "$n" "$port" "$data_dir"
+        return 0
       fi
-    fi
+      owner="$lane/owner"
+      holder="$(_fwf_e2e_owner_field role "$owner")"
+      pid="$(_fwf_e2e_owner_field pid "$owner")"
+      host="$(_fwf_e2e_owner_field host "$owner")"
+      ts="$(_fwf_e2e_owner_field acquired "$owner")"
+      if [ -z "$holder" ] && [ -z "$pid" ]; then missing=$(( missing + 1 )); else missing=0; fi
+      _fwf_e2e_owner_liveness "$owner"; rc=$?
+      if [ "$rc" = 1 ]; then
+        echo "fwf: e2e lane $n held by dead PID ${pid:-unknown} (${holder:-unknown}) — breaking it" >&2
+        rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
+      elif [ "$rc" = 2 ]; then
+        now="$(date +%s)"
+        if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
+          echo "fwf: e2e lane $n indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
+          rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
+        fi
+      fi
+      if [ ! -d "$lane" ]; then
+        # just broken above -- retry THIS lane immediately, same as the
+        # pre-#205 single-lock loop's `continue` back to its own top.
+        if mkdir "$lane" 2>/dev/null; then
+          port=$(( FWF_E2E_PORT_BASE + n - 1 ))
+          genfile="${lane}.gen"
+          gen="$(cat "$genfile" 2>/dev/null)"; case "$gen" in ''|*[!0-9]*) gen=0;; esac
+          gen=$(( gen + 1 ))
+          printf '%s\n' "$gen" > "$genfile"
+          data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
+          mkdir -p "$data_dir" 2>/dev/null
+          printf 'role=%s\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
+            "$label" "$$" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
+          printf '%s %s %s\n' "$n" "$port" "$data_dir"
+          return 0
+        fi
+        # lost the immediate re-acquire race to another contender -- fall
+        # through and report on it as busy, like any other occupied lane.
+        holder="$(_fwf_e2e_owner_field role "$owner")"
+        pid="$(_fwf_e2e_owner_field pid "$owner")"
+        host="$(_fwf_e2e_owner_field host "$owner")"
+        ts="$(_fwf_e2e_owner_field acquired "$owner")"
+        _fwf_e2e_owner_liveness "$owner"; rc=$?
+      fi
+      busy_rc="$rc"; busy_holder="$holder"; busy_pid="$pid"; busy_host="$host"; busy_ts="$ts"; busy_missing="$missing"
+    done
     now="$(date +%s)"
     if [ "$waited" -ge "$FWF_E2E_LOCK_TIMEOUT" ]; then
-      printf '%s\n' "$(_fwf_e2e_lock_timeout_line "$label" "$FWF_E2E_LOCK_TIMEOUT" "$rc" "$holder" "$pid" "$host" "$ts" "$now" "$FWF_E2E_LOCK_STALE_SECS")" >&2
+      printf '%s\n' "$(_fwf_e2e_lock_timeout_line "$label" "$FWF_E2E_LOCK_TIMEOUT" "$busy_rc" "$busy_holder" "$busy_pid" "$busy_host" "$busy_ts" "$now" "$FWF_E2E_LOCK_STALE_SECS")" >&2
       return 1
     fi
     if [ $(( now - last_report )) -ge "$FWF_E2E_LOCK_REPORT_SECS" ]; then
-      printf '%s\n' "$(_fwf_e2e_lock_queued_line "$label" "$rc" "$holder" "$pid" "$host" "$ts" "$missing" "$qstart" "$now")" >&2
+      printf '%s\n' "$(_fwf_e2e_lock_queued_line "$label" "$busy_rc" "$busy_holder" "$busy_pid" "$busy_host" "$busy_ts" "$busy_missing" "$qstart" "$now")" >&2
       last_report="$now"
     fi
     sleep "$FWF_E2E_LOCK_POLL"
@@ -1430,8 +1486,29 @@ fwf_e2e_lock_acquire() {
   done
 }
 
+# $1 = the lane number fwf_e2e_lock_acquire echoed (defaults to 1 -- the
+# only lane that exists at the shipped FWF_E2E_MAX_LANES=1 default, and the
+# pre-#205 call convention every existing caller/test still uses).
 fwf_e2e_lock_release() {
-  rm -rf "$E2E_LOCK"
+  rm -rf "$(_fwf_e2e_lane_dir "${1:-1}")"
+}
+
+# AC(h): fwf owns the profile, so warn (never refuse -- fwf cannot know a
+# profile's migration state) when E2E_CMD looks like it hardcodes the port
+# or data dir instead of reading the exported FWF_E2E_PORT/FWF_E2E_DATA_DIR
+# (issue #205). A consumer that ignores the allocation silently re-serializes
+# its own lane -- every test still passes, the feature just does nothing --
+# and this grep is the only signal fwf can give about that from its own side.
+# Prints one line per finding to stdout; always returns 0.
+_fwf_e2e_cmd_hardcoded_warn() { # $1=E2E_CMD string
+  local cmd="$1"
+  if printf '%s' "$cmd" | grep -Eq '[0-9]{4,5}' && ! printf '%s' "$cmd" | grep -q 'FWF_E2E_PORT'; then
+    echo "E2E_CMD appears to hardcode a port number instead of reading \$FWF_E2E_PORT (issue #205) -- a hardcoded port defeats resource-keyed leasing and silently re-serializes this lane"
+  fi
+  if printf '%s' "$cmd" | grep -Eq -- '(--data[= ]|/tmp/[A-Za-z0-9_./-]+)' && ! printf '%s' "$cmd" | grep -q 'FWF_E2E_DATA_DIR'; then
+    echo "E2E_CMD appears to hardcode a data dir instead of reading \$FWF_E2E_DATA_DIR (issue #205) -- leases silently re-serialize without it, and reused state across runs can mask real failures"
+  fi
+  return 0
 }
 
 # --- floor-wide cargo build concurrency bound (issue #138 piece C) ----------
