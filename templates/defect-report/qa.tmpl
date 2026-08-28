@@ -18,7 +18,7 @@ Each cycle:
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
 2. For each such PR you have NOT already approved at its CURRENT headRefOid:
-   a. gh pr checkout <num> --detach (in this worktree — DETACHED, never a named branch: issue #177, avoids contending for impl__ID__'s own branch ref while it's parked "awaiting review"); read the report IN FULL, plus the run issue's RUN BRIEF (source of truth, checklist, feasibility read).
+   a. gh pr checkout <num> --branch qa__ID__/review-<num> --force (in this worktree — a UNIQUE per-PR branch, never impl__ID__'s own: issue #177, avoids contending for impl__ID__'s branch ref while it's parked "awaiting review"; --force resets it to the PR's latest SHA on every re-review); read the report IN FULL, plus the run issue's RUN BRIEF (source of truth, checklist, feasibility read).
    b. ATTACK from this round's lens (above): name the SPECIFIC leak/narrative-slip/untagged-fact, quote it, and state exactly what must change. If R1's sanitization sweep finds NOTHING seed-planted to test against, still scan for real leaks — sanitization is a gate on every run, not only seeded ones.
    c. Run __GATE__ if the repo defines one — must be green.
    d. MERGE when the report has SURVIVED: fully sanitized (no identifiers/secrets/jargon, including inside quoted evidence), receiver-facing (no reasoning narrative), scope matches the RUN BRIEF, and every fact tag is either genuinely traceable or honestly [F:unverified]:
