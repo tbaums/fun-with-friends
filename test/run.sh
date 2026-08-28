@@ -2105,16 +2105,53 @@ EOS
     fwf_respawn_breaker_check r1; echo \$?
   " | tail -1)"
   assert_eq "AT FWF_RESPAWN_BREAKER_MAX (3 fails): breaker OPEN, blocked" "1" "$ATMAX_RC"
+  # issue #327: "blocks immediately" and "allows again after backoff" used to
+  # share ONE bash -c and one FWF_RESPAWN_BREAKER_BASE_SECS=1 -- but they want
+  # OPPOSITE margins from that single knob (blocked wants the window LARGE, so
+  # real execution latency between the fail/check calls can never cross it;
+  # allowed wants it SMALL, so a short sleep can outlast it). Any one value is
+  # wrong for one of them: at BASE_SECS=1, a sub-second delay between the two
+  # `date +%s` reads (bash startup, sourcing lib.sh -- nothing platform-
+  # specific) can straddle a second boundary and flip IMMEDIATE_BLOCKED to
+  # IMMEDIATE_ALLOWED, which is exactly what red on macOS's slower CI runners
+  # was. Split into two invocations so each gets the margin it actually needs.
+  F217BRK_BLOCK="$TMP/run217brk-block"; mkdir -p "$F217BRK_BLOCK"
+  BLOCK_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BLOCK" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
+  ")"
+  assert_contains "breaker blocks immediately after crossing the threshold" "$BLOCK_OUT" "IMMEDIATE_BLOCKED"
+
   F217BRK_EXPIRE="$TMP/run217brk-expire"; mkdir -p "$F217BRK_EXPIRE"
   EXPIRE_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_EXPIRE" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1 bash -c "
     source '$ROOT/lib.sh'
     fwf_respawn_breaker_fail r1
-    fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
     sleep 2
     fwf_respawn_breaker_check r1 && echo AFTER_ALLOWED || echo AFTER_BLOCKED
   ")"
-  assert_contains "breaker blocks immediately after crossing the threshold" "$EXPIRE_OUT" "IMMEDIATE_BLOCKED"
   assert_contains "breaker allows again once its backoff window elapses" "$EXPIRE_OUT" "AFTER_ALLOWED"
+
+  # issue #327 AC(1)/(2c)/(3a): the PRIMARY evidence, not a green sample. This
+  # reproduces the exact mechanism (a real bash-startup/lib.sh-sourcing delay
+  # between the fail and check calls, injected here as a stand-in for the
+  # slower-runner latency that flips the race on macOS) and asserts the
+  # REPAIRED window survives it. RED against the pre-#327 code: at
+  # BASE_SECS=1 this same 0.9s delay flips IMMEDIATE_BLOCKED to
+  # IMMEDIATE_ALLOWED (reproduced locally on Linux -- no BSD/GNU involved).
+  # The margin is stated by arithmetic, not observed luck: BASE_SECS=1000
+  # exceeds the ~0.9s worst-observed latency by three orders of magnitude,
+  # matching the BASE_SECS=1000 idiom this section already uses five other
+  # places for the identical "not the value under test" purpose.
+  F217BRK_LATENCY="$TMP/run217brk-latency"; mkdir -p "$F217BRK_LATENCY"
+  LATENCY_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_LATENCY" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
+    source '$ROOT/lib.sh'
+    fwf_respawn_breaker_fail r1
+    sleep 0.9
+    fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
+  ")"
+  assert_contains "AC(1)/(2c)/(3a): a 0.9s injected delay (the reproduced flake mechanism) does not flip the repaired (BASE_SECS=1000) window" \
+    "$LATENCY_OUT" "IMMEDIATE_BLOCKED"
   F217BRK_RESET="$TMP/run217brk-reset"; mkdir -p "$F217BRK_RESET"
   RESET_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_RESET" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
     source '$ROOT/lib.sh'
