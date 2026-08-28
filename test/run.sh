@@ -7553,6 +7553,91 @@ assert_eq       "AC3: the artifact was actually closed" "1" "$(gh_calls 'issue c
 assert_eq       "AC3: a clean run files nothing" "0" "$(gh_calls 'issue create')"
 
 # --------------------------------------------------------------------------
+section "release cut can no longer manufacture DIVERGED (issue #262)"
+
+# AC (a) -- THE DISCRIMINATING TEST. Simulate the FIXED procedure: the version
+# bump lands on staging (RELEASING.md step 2/3), promotes to main by fast-
+# forward ONLY (step 5 -- never a new commit on main), and THEN an unrelated
+# PR merges to staging during the release-workflow window (the actual race
+# this ticket exists to close). Against the OLD procedure (a fresh commit
+# made directly on main) this reproduces the v0.30.0/v0.30.2 DIVERGED failure
+# -- reproduced structurally here by NOT giving main its own commit, which is
+# exactly the difference the fix makes.
+rec_setup relorder-a
+rec_advance staging                                    # the version-bump commit, on staging only
+BUMP_SHA="$(rec_sha staging)"
+# "fast-forward main to integration's tip" (step 5) -- a real ref move, no
+# new commit, so main's history stays a strict subset of staging's.
+git -C "$REC_ORIGIN" update-ref refs/heads/main "$BUMP_SHA"
+rec_advance staging                                    # the async merge DURING the release window
+rc=0; LINE="$(rec_run 'fwf_reconcile_check_branch staging main')" || rc=$?
+assert_eq       "AC(a): reordered procedure -- pre-publish check does NOT diverge" "0" "$rc"
+assert_contains "AC(a): staging classifies AHEAD/EQUAL/BEHIND (check-ok), never check-diverged" "$LINE" "check-ok"
+
+# AC (b) -- a GENUINE divergence, unrelated to the release procedure, still
+# refuses. Without this, (a) would be satisfiable by weakening the check
+# itself rather than fixing the procedure that feeds it -- this ticket
+# touches ONLY RELEASING.md, never fwf_reconcile_check_branch, so this is a
+# regression guard on code this diff does not modify, asserted under this
+# ticket's own number rather than inherited invisibly from #179.
+rec_setup relorder-b
+rec_advance main
+rec_fork staging "$(rec_sha staging)"                  # forks staging off the OLD common base, independent of main's new commit
+rc=0; LINE="$(rec_run 'fwf_reconcile_check_branch staging main')" || rc=$?
+assert_eq       "AC(b): a genuine divergence still refuses (nonzero exit)" "1" "$rc"
+assert_contains "AC(b): still reports check-diverged, never silently weakened" "$LINE" "check-diverged"
+
+# AC (c): the runbook no longer commits the bump directly to main -- the old
+# step's exact command is gone from the file, not just reworded near it.
+RELEASING_MD="$(cat "$ROOT/RELEASING.md")"
+assert_not_contains "AC(c): 'git commit -am \"Release' no longer appears anywhere in the runbook" \
+  "$RELEASING_MD" 'git commit -am "Release'
+assert_contains "AC(c): the runbook states the bump rides staging -> integration -> main" "$RELEASING_MD" "never committed directly to"
+
+# AC (a2): a pre-tag check step exists, PRECEDES the tag step, and states the
+# stop condition explicitly (on check-diverged the cut does not proceed).
+# Parsed positionally (line numbers), not just "both strings appear somewhere
+# in the file" -- the ordering is the point: a check nobody is obliged to
+# consult before tagging is decoration, not a guard.
+RELEASING_CHECK_LINE="$(grep -n '\./fwf reconcile --check' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
+RELEASING_TAG_LINE="$(grep -n '^   git tag vX\.Y\.Z' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
+assert_contains "AC(a2): the runbook contains a pre-tag './fwf reconcile --check' step" "$RELEASING_MD" './fwf reconcile --check'
+{ [ -n "$RELEASING_CHECK_LINE" ] && [ -n "$RELEASING_TAG_LINE" ] && [ "$RELEASING_CHECK_LINE" -lt "$RELEASING_TAG_LINE" ]; } \
+  && ok "AC(a2): the check step PRECEDES the tag step (positionally, in the runbook)" \
+  || bad "AC(a2): the check step PRECEDES the tag step" "check line=$RELEASING_CHECK_LINE tag line=$RELEASING_TAG_LINE"
+assert_contains "AC(a2): the runbook states the stop condition explicitly" "$RELEASING_MD" "STOP — do not tag"
+
+# QA-caught (PR #317): the runbook's OWN cross-reference to the Verify step,
+# in the "When GitHub Actions is unavailable" fallback section, still named
+# it by the OLD step number (7) after this ticket's renumbering moved it to
+# 9 -- test/run.sh's own AC(g) fixture was re-anchored on the step's heading
+# text for exactly this reason, but the doc's own prose reference was missed.
+# Assert the fallback section names it by TEXT, never a bare digit, so a
+# future renumbering can't silently strand this cross-reference again.
+assert_not_contains "the Actions-unavailable fallback never cites the Verify step by a bare step number" \
+  "$RELEASING_MD" "Verify with step"
+assert_contains "the Actions-unavailable fallback cites the Verify step by its heading text" \
+  "$RELEASING_MD" "Verify with the **Verify** step above"
+
+# AC (d): once release-induced divergence is impossible, every remaining
+# check-diverged genuinely needs a human -- the existing wording stays true
+# and must be RETAINED, not deleted along with the fix. Asserted directly
+# against the source, not re-derived from a fixture (that message is already
+# exercised end-to-end by #179's own AC2 test above and by AC(b) here).
+LIB_SRC="$(cat "$ROOT/lib.sh")"
+assert_contains "AC(d): check-diverged's message is retained verbatim" "$LIB_SRC" \
+  "a genuine DIVERGED needs a human decision, NOT a rerun"
+
+# AC (e): the post-publish reconcile still runs and still no-ops cleanly when
+# there is nothing to merge back (the ordinary case now that main never gets
+# ahead) -- reusing the #114 EQUAL/AHEAD fixtures already proven not to
+# mutate or fail.
+rec_setup relorder-e
+rc=0; LINE="$(rec_run 'fwf_reconcile_branch staging main')" || rc=$?
+assert_eq       "AC(e): post-publish reconcile no-ops cleanly on an EQUAL branch" "0" "$rc"
+assert_contains "AC(e): reported as normal, not an error" "$LINE" "no-op"
+
+# --------------------------------------------------------------------------
 section "scripts/assert-release-assets.sh (issue #209): the release's published asset set, asserted exactly"
 # Every fixture below drives the REAL, standalone script (AC i) via a stubbed
 # gh (ASSERT_RELEASE_GH) and/or a throwaway manifest (ASSERT_RELEASE_MANIFEST)
@@ -7717,16 +7802,19 @@ REL_PUBLISH_LINE="$(grep -n -- '--draft=false' "$ROOT/.github/workflows/release.
   && ok "AC(h): ordering is draft-create < assert < publish" \
   || bad "AC(h): ordering is draft-create < assert < publish" "lines: create=$REL_DRAFT_LINE assert=$REL_ASSERT_LINE publish=$REL_PUBLISH_LINE"
 
-# AC (g): RELEASING.md step 7 names the automatic assertion -- scoped to
-# step 7's own text (between its "7." heading and the next numbered/section
-# heading), not just "the word 'automatically' appears somewhere in the
-# file" (it already did, unrelated, before this ticket -- a whole-file grep
-# would pass without step 7 ever being touched).
-RELEASING_STEP7="$(awk '/^7\. \*\*Verify\*\*/{p=1} p; /^## /{if (p && !/^7\./) exit}' "$ROOT/RELEASING.md")"
-assert_contains "AC(g): step 7 exists and was captured for this check" "$RELEASING_STEP7" "Verify"
-assert_contains "AC(g): step 7 now names scripts/assert-release-assets.sh" "$RELEASING_STEP7" "assert-release-assets.sh"
-assert_contains "AC(g): step 7 says the workflow asserts this automatically" "$RELEASING_STEP7" "automatically"
-assert_contains "AC(g): step 7 frames itself as a confirmation, not the only defence" "$RELEASING_STEP7" "not the only line"
+# AC (g): RELEASING.md's Verify step names the automatic assertion -- scoped
+# to that step's own text (between its numbered heading and the next
+# numbered/section heading), not just "the word 'automatically' appears
+# somewhere in the file" (it already did, unrelated, before this ticket -- a
+# whole-file grep would pass without the step ever being touched). Matched by
+# the "**Verify**" bold text, not a hardcoded step number -- issue #262
+# renumbered this step (7 -> 9) when it inserted new steps earlier in the
+# list, and a number-anchored pattern would have silently stopped matching.
+RELEASING_STEP_VERIFY="$(awk '/^[0-9]+\. \*\*Verify\*\*/{p=1} p; /^## /{if (p) exit}' "$ROOT/RELEASING.md")"
+assert_contains "AC(g): the Verify step exists and was captured for this check" "$RELEASING_STEP_VERIFY" "Verify"
+assert_contains "AC(g): the Verify step now names scripts/assert-release-assets.sh" "$RELEASING_STEP_VERIFY" "assert-release-assets.sh"
+assert_contains "AC(g): the Verify step says the workflow asserts this automatically" "$RELEASING_STEP_VERIFY" "automatically"
+assert_contains "AC(g): the Verify step frames itself as a confirmation, not the only defence" "$RELEASING_STEP_VERIFY" "not the only line"
 
 # AC (i): fixture tests exercise the script directly, never a real tag/release
 # -- true by construction of everything above (no `gh release create`/`git
