@@ -9,7 +9,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test.XXXXXX")"
 
 # Isolate every tmux fixture onto a THROWAWAY tmux server. Without this the
@@ -47,6 +47,15 @@ trap 'tmux kill-server 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '         %s\n' "$2"; }
+# skip <label> [count] -- issue #275: a gated branch (usually `command -v
+# <tool>` absent) that runs no assertions used to be INVISIBLE to the
+# summary line -- "1421 passed, 0 failed" reads identical whether every
+# section ran or a whole one silently didn't. $2 is how many assertions
+# the branch would have produced were it not gated (default 1); a section
+# that skips N assertions must count as N, not one skip event, or the
+# tally itself becomes a second copy of the same "not run" rendered as
+# "ran fine" defect this ticket exists to close.
+skip() { local n="${2:-1}"; SKIP=$((SKIP+n)); printf '  skip %s\n' "$1"; }
 # assert_eq <label> <expected> <actual>
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected [$2] got [$3]"; fi; }
 # assert_contains <label> <haystack> <needle>
@@ -918,7 +927,7 @@ if command -v jq >/dev/null 2>&1; then
   assert_eq "tick advanced + untrustworthy token read -> still HEALTHY, tokens irrelevant" \
     "HEALTHY" "$(pl plrole5)"
 else
-  printf '  skip jq-dependent #211 token-collapse tests (jq not installed)\n'
+  skip "jq-dependent #211 token-collapse tests (jq not installed)" 3
 fi
 
 section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-liveness.sh)"
@@ -2188,7 +2197,7 @@ EOF
   tmux kill-session -t "${F146SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F146SESS}-build" 2>/dev/null
 else
-  printf '  skip real-tmux floor-lifecycle wiring tests (tmux not installed)\n'
+  skip "real-tmux floor-lifecycle wiring tests (tmux not installed)" 60
 fi
 
 section "floor-down cooldown guard (issue #88, per-plane by #105): fwf_plane_last_up_epoch / fwf_plane_cooldown_remaining"
@@ -2494,7 +2503,7 @@ EOS
   tmux kill-session -t "${F88SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F88SESS}-build" 2>/dev/null
 else
-  printf '  skip real-tmux floor-down cooldown tests (tmux not installed)\n'
+  skip "real-tmux floor-down cooldown tests (tmux not installed)" 52
 fi
 
 section "disk-pressure guard — refuses below the free-space floor"
@@ -2822,7 +2831,7 @@ if command -v jq >/dev/null 2>&1; then
   assert_eq "labels json shape" "product-wip" "$(ISS view 1 --json labels --jq '.labels[0].name')"
   assert_eq "list json titles" "Dark mode" "$(ISS list --json number,title --jq '.[1].title')"
 else
-  printf '  skip jq-dependent assertions (jq not installed)\n'
+  skip "jq-dependent assertions (jq not installed)" 3
 fi
 # edit/close/reopen/export
 ISS edit 1 --remove-label product-wip --add-label approved >/dev/null
@@ -4575,7 +4584,7 @@ mkdir -p "$DREL/v$DVER"; mkdashbin "$DREL/v$DVER/$DASSET" downloaded
 drun() { env -i HOME="$TMP/dhome" PATH="$DBIN:/usr/bin:/bin" TMPDIR="$TMP" FWF_PROFILE=example "$@" bash "$ROOT/fwf-dash.sh" 2>&1; }
 
 if [ -z "$DSLUG" ]; then
-  printf '  skip dash resolver (unsupported host arch)\n'
+  skip "dash resolver (unsupported host arch)" 15
 else
   # 1. FWF_DASH_BIN wins verbatim — no download, no cache written.
   mkdashbin "$TMP/dexplicit" explicit
@@ -5788,7 +5797,7 @@ else
   bad "edge: setup failed -- the TERM-ignoring server never started listening"
 fi
 else
-  printf '  skip fwf gate (#195) subprocess/port tests (python3 not installed)\n'
+  skip "fwf gate (#195) subprocess/port tests (python3 not installed)" 26
 fi
 
 # --------------------------------------------------------------------------
@@ -7607,7 +7616,7 @@ if command -v sccache >/dev/null 2>&1; then
   assert_eq "sccache auto-config composes with target isolation (target dropped)" "UNSET"   "$(ci_f 1 "$R2")"
   assert_eq "  ...and sccache still auto-configured"                              "sccache" "$(ci_f 4 "$R2")"
 else
-  echo "  skip sccache auto-configure positive tests (sccache not installed on this box)"
+  skip "sccache auto-configure positive tests (sccache not installed on this box)" 5
 fi
 
 # H. sccache NOT installed -> no forced tooling, unchanged from today (fail-open).
@@ -7620,6 +7629,8 @@ assert_eq "  ...and isolate still succeeds"                 "0"     "$(printf '%
 if command -v sccache >/dev/null 2>&1; then
   R="$(ci_run 'export RUSTC_WRAPPER=some-other-wrapper')"
   assert_eq "an explicit non-sccache RUSTC_WRAPPER is never overridden" "some-other-wrapper" "$(ci_f 4 "$R")"
+else
+  skip "explicit-RUSTC_WRAPPER-never-overridden test (sccache not installed on this box)"
 fi
 
 # J. issue #268: passing configure_sccache=0 skips step (3) entirely, leaving
@@ -7641,6 +7652,8 @@ if command -v sccache >/dev/null 2>&1; then
   R="$(FWF_RUN_DIR="$TMP/ci-sccache-run3" ci_run_noconfigure ':')"
   assert_eq "configure_sccache=0: RUSTC_WRAPPER stays unset even though sccache is installed" "UNSET" "$(ci_f 2 "$R")"
   assert_eq "  ...and isolate still succeeds"                                                  "0"     "$(ci_f 3 "$R")"
+else
+  skip "configure_sccache=0-with-sccache-installed tests (sccache not installed on this box)" 2
 fi
 R="$(ci_run_noconfigure 'export CARGO_TARGET_DIR="$shared"')"
 assert_eq "configure_sccache=0 still composes with target isolation (target dropped)" "UNSET" "$(ci_f 1 "$R")"
@@ -7743,7 +7756,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     bad "shellcheck reported issues"
   fi
 else
-  printf '  skip shellcheck (not installed)\n'
+  skip "shellcheck (not installed)"
 fi
 
 # --------------------------------------------------------------------------
@@ -7805,23 +7818,36 @@ printf 'SCCACHE_DIR=%s
 F268EOF
 chmod +x "$TMP/f268-probe.sh"
 
-if command -v sccache >/dev/null 2>&1; then
-  # (a) ordinary gate, no --cargo-build: the wrapped command must NOT see
-  #     sccache configured, even though it IS installed and would otherwise
-  #     auto-configure (this is the exact repro from #268).
-  env -u RUSTC_WRAPPER -u SCCACHE_DIR FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
-      "$ROOT/fwf-gate.sh" f268a -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
-  assert_contains "no --cargo-build: RUSTC_WRAPPER not configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=<unset>"
-  assert_contains "no --cargo-build: SCCACHE_DIR not configured for wrapped cmd"   "$(cat "$F268REPORT")" "SCCACHE_DIR=<unset>"
+# issue #275 AC3: these three assertions used to be gated on `command -v
+# sccache`, so a runner without it (both CI lanes at the time -- #275's
+# whole motivating incident) skipped this ENTIRE regression section for
+# the leak #268 fixed, and the green "1421 passed, 0 failed" summary gave
+# no sign that had happened. fwf_cargo_isolate never actually INVOKES
+# sccache here -- it only decides whether to export RUSTC_WRAPPER/
+# SCCACHE_DIR based on `command -v sccache` succeeding (lib.sh's own
+# fwf_cargo_configure_sccache: "command -v sccache >/dev/null 2>&1 ||
+# return 0") -- so a do-nothing STUB satisfies that check and makes the
+# "present" branch testable regardless of whether this box happens to
+# have real sccache, exactly mirroring ci_run_nosccache's existing trick
+# for the "absent" branch. No new runner dependency, and never on PATH
+# for anything else in the suite (scoped via a fresh PATH here only).
+F268STUB="$TMP/f268-sccache-stub"; mkdir -p "$F268STUB"
+printf '#!/usr/bin/env bash\ntrue\n' > "$F268STUB/sccache"; chmod +x "$F268STUB/sccache"
+F268PATH="$F268STUB:$PATH"
 
-  # (b) --cargo-build IS passed: the wrapped command still gets sccache, since
-  #     it is actually going to build cargo -- the speed-up #138 piece A intends.
-  env -u RUSTC_WRAPPER -u SCCACHE_DIR FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
-      "$ROOT/fwf-gate.sh" f268b --cargo-build -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
-  assert_contains "--cargo-build: RUSTC_WRAPPER IS configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=sccache"
-else
-  echo "  skip #268 leak tests (sccache not installed on this box)"
-fi
+# (a) ordinary gate, no --cargo-build: the wrapped command must NOT see
+#     sccache configured, even though it IS installed and would otherwise
+#     auto-configure (this is the exact repro from #268).
+env -u RUSTC_WRAPPER -u SCCACHE_DIR PATH="$F268PATH" FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f268a -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+assert_contains "no --cargo-build: RUSTC_WRAPPER not configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=<unset>"
+assert_contains "no --cargo-build: SCCACHE_DIR not configured for wrapped cmd"   "$(cat "$F268REPORT")" "SCCACHE_DIR=<unset>"
+
+# (b) --cargo-build IS passed: the wrapped command still gets sccache, since
+#     it is actually going to build cargo -- the speed-up #138 piece A intends.
+env -u RUSTC_WRAPPER -u SCCACHE_DIR PATH="$F268PATH" FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f268b --cargo-build -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+assert_contains "--cargo-build: RUSTC_WRAPPER IS configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=sccache"
 
 # (c) a caller's own explicit RUSTC_WRAPPER survives regardless of --cargo-build
 #     -- no --cargo-build never touches it, and #138's own no-override rule
@@ -9439,6 +9465,37 @@ assert_eq "the last executable line of test/run.sh is an explicit exit" \
 assert_eq "no bare [ \"\$FAIL\" -eq 0 ] survives as the gate" "0" \
   "$(grep -cE '^\[ "\$FAIL" -eq 0 \]$' "$ROOT/test/run.sh")"
 
+# issue #275 AC5: the #268 leak-test section used to be entirely skippable
+# on a runner without sccache -- exactly the state that let it merge on a
+# green suite containing zero of its own assertions (#274). AC3's stub
+# removed the gate; this asserts it cannot quietly come back, so a future
+# edit that re-wraps the section in `if command -v sccache` is caught here
+# rather than by someone noticing a suspiciously small skip count months
+# later.
+assert_eq "the #268 leak-test section is not gated on sccache being installed (AC3's stub makes it unconditional)" "0" \
+  "$(grep -cE '^  skip #268 leak tests' "$ROOT/test/run.sh")"
+
+# issue #275 AC1/AC2: the skip counter must be REAL, not per-event -- a
+# section that skips N assertions has to move the tally by N, or the fix
+# reproduces this ticket's own defect (a not-run section rendering as if
+# it were smaller/less consequential than it was). Snapshotting $SKIP
+# around a KNOWN-size synthetic skip() call is the discriminating test: a
+# naive "SKIP=$((SKIP+1)) regardless of count" implementation passes every
+# OTHER assertion in this suite but fails this one.
+_skip_before="$SKIP"
+skip "known-size synthetic skip (issue #275 self-test, not a real gap)" 4
+assert_eq "AC2: a single skip() call for a 4-assertion section moves the tally by exactly 4, not 1" \
+  "4" "$((SKIP - _skip_before))"
+_skip_before="$SKIP"
+skip "known-size synthetic skip, default count (issue #275 self-test, not a real gap)"
+assert_eq "AC2: an unspecified count defaults to exactly 1" \
+  "1" "$((SKIP - _skip_before))"
+# AC1: the final summary line names a skipped count at all -- checked
+# against the actual source line (like the #242 exit-gate check above),
+# not a reimplementation, so this can't drift from what really ships.
+assert_eq "AC1: the final summary format names a skipped count, not just passed/failed" "1" \
+  "$(grep -cE "^printf '.*%d skipped" "$ROOT/test/run.sh")"
+
 # --------------------------------------------------------------------------
 # THE PASS/FAIL GATE. It MUST stay last, and it MUST exit explicitly.
 #
@@ -9448,6 +9505,6 @@ assert_eq "no bare [ \"\$FAIL\" -eq 0 ] survives as the gate" "0" \
 # exactly how #242 happened, and how two real failures shipped green. An
 # explicit `exit` cannot be shadowed by an append, only preceded by one, and
 # the section above fails loudly if someone tries.
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1
 exit "$_rc"
