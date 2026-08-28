@@ -289,6 +289,14 @@ UTILITIES
                          if unreadable. The checkable answer to "was this
                          approved?" — never infer it from label state or pane
                          text. Read-only.
+  auth resolve           Re-resolve the claude auth credential (issue #217)
+                         and print its source (env|credentials_file|
+                         keychain), without launching anything — `fwf up`
+                         already does this on every launch; use this to
+                         check what it WOULD resolve to right now.
+  auth clear             Remove the persisted auth sink
+                         (~/.fun-with-friends/auth.env) by hand. `fwf down`'s
+                         full teardown already does this; idempotent.
   reconcile [--check] [--branch NAME ...] [--against BRANCH]
                          Classify staging/integration against main (BEHIND ->
                          fast-forward reconcile / AHEAD -> normal no-op /
@@ -892,6 +900,7 @@ case "$cmd" in
   gate-tip)  engine fwf-gate-tip.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
+  auth)      engine fwf-auth.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
   worktree-refresh) engine fwf-worktree-refresh.sh "$@";;

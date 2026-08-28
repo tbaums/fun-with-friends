@@ -203,10 +203,27 @@ for role in $roles; do
       ;;
   esac
 
-  [ "$verdict" = "WEDGED" ] || continue
+  # issue #217 section 4: a role that just recovered (or was manually fixed)
+  # carries no failure memory forward -- reset here, not only on success
+  # below, so a role that goes WEDGED again after healing starts the breaker
+  # fresh rather than inheriting a stale count from an unrelated incident.
+  if [ "$verdict" != "WEDGED" ]; then
+    fwf_respawn_breaker_reset "$role"
+    continue
+  fi
   if [ "$autorespawn" = "1" ]; then
-    printf 'supervise: %-10s WEDGED -> respawning (FWF_SUPERVISE_AUTORESPAWN=1)\n' "$role"
-    "$DIR/fwf-respawn.sh" "$role" || printf 'supervise: %-10s respawn FAILED\n' "$role" >&2
+    if fwf_respawn_breaker_check "$role"; then
+      printf 'supervise: %-10s WEDGED -> respawning (FWF_SUPERVISE_AUTORESPAWN=1)\n' "$role"
+      if "$DIR/fwf-respawn.sh" "$role"; then
+        fwf_respawn_breaker_reset "$role"
+      else
+        fwf_respawn_breaker_fail "$role"
+        printf 'supervise: %-10s respawn FAILED\n' "$role" >&2
+      fi
+    else
+      printf 'supervise: %-10s WEDGED -> breaker OPEN (>= %s consecutive failed respawns), backing off -- a manual '"'"'fwf respawn %s'"'"' clears it\n' \
+        "$role" "$FWF_RESPAWN_BREAKER_MAX" "$role"
+    fi
   else
     printf 'supervise: %-10s WEDGED -> log-only (dark); set FWF_SUPERVISE_AUTORESPAWN=1 to reap\n' "$role"
   fi

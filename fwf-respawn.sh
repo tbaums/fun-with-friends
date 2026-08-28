@@ -130,7 +130,18 @@ else
   if fwf_verify_respawn_tick "$role" "$arm_epoch" "$window" _fwf_respawn_renudge; then
     echo "$role respawned and armed in $CP after a hard pane relaunch (escalated recovery)"
   else
-    echo "fwf-respawn: $role STILL not ticking after a hard relaunch — the pane is wedged at a deeper level; inspect it manually (tmux attach; pane $CP)" >&2
+    # issue #217 AC(7)/(10): name the unauthenticated case explicitly when
+    # that's what happened, instead of the generic "wedged at a deeper
+    # level" -- and name WHICH source the auth sink was last resolved from
+    # (read-only here — respawn must NEVER re-resolve/rewrite the sink from
+    # its own possibly-wrong environment, e.g. supervise's, which could
+    # silently clobber a good sink with "none"), so the operator can tell
+    # "no credential at all" from "a stale env var in whatever shell last
+    # ran `fwf up` outranking a fresher credentials file" (the precedence
+    # trap this ticket's own edge cases call out).
+    _fwf217_src="$(sed -n 's/^export FWF_AUTH_SOURCE=//p' "$FWF_AUTH_ENV_FILE" 2>/dev/null)"
+    [ -n "$_fwf217_src" ] || _fwf217_src="none (no sink written yet — run 'fwf up' or 'fwf auth resolve')"
+    echo "fwf-respawn: $role STILL not ticking after a hard relaunch — the pane is wedged at a deeper level; inspect it manually (tmux attach; pane $CP). Auth sink last resolved from: $_fwf217_src — if this doesn't match what you expect, 'fwf auth resolve' re-checks and 'unset CLAUDE_CODE_OAUTH_TOKEN' clears a stale shell var before the next 'fwf up'." >&2
     exit 1
   fi
 fi
