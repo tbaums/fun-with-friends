@@ -47,14 +47,19 @@ refuse() { # $1=short-reason  $2=actionable-detail
 rm -f "$FWF_RUN/conductor-last-gated-sha" 2>/dev/null || true
 
 tip_marker="$(fwf_gate_tip_marker_path "$role")"
+# AC (f): an ABSENT record is INDETERMINATE too, not a confident "never
+# gated" — #211's three outcomes, and the ticket's own named incident is
+# exactly a record file being removed/truncated and misread as "not gated"
+# (a confident negative) rather than "unknown" (the record's own contents
+# were destroyed, which says nothing about whether a gate ever ran).
 if [ ! -f "$tip_marker" ]; then
-  refuse "no recorded gate for role '$role'" \
+  refuse "INDETERMINATE — no gate-tip record for role '$role' (never gated, or its record is missing)" \
     "run: fwf gate $role --e2e --tip-cmd '<ref-to-watch>' -- <e2e command>"
 fi
 
 tip="$(_fwf_gate_owner_field tip "$tip_marker")"
 verdict="$(_fwf_gate_owner_field verdict "$tip_marker")"
-# AC (f): present-but-unreadable/malformed is INDETERMINATE, never
+# AC (f): present-but-unreadable/malformed is ALSO INDETERMINATE, never
 # silently read as "not gated" (which would print a wrong, more comforting
 # reason) and never as "gated" either.
 if [ -z "$tip" ] || [ -z "$verdict" ]; then

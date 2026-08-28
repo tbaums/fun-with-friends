@@ -8439,7 +8439,8 @@ G237P1_ROOT="$TMP/gate237p1-state"; mkdir -p "$G237P1_ROOT/state/example"
 G237P1_OUT="$(cd "$G237P1_CONDUCTOR" && FWF_RUN_DIR="$G237P1_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p1 integration 2>&1)"
 G237P1_RC=$?
 assert_eq "AC(f): no recorded gate at all -> refuses (rc 1)" "1" "$G237P1_RC"
-assert_contains "AC(f)/(h): names 'no recorded gate' and the exact command to fix it" "$G237P1_OUT" "no recorded gate for role"
+assert_contains "AC(f): an ABSENT record is INDETERMINATE too (#211's three outcomes), never a confident 'not gated'" "$G237P1_OUT" "INDETERMINATE"
+assert_contains "AC(f)/(h): names the exact command to fix it" "$G237P1_OUT" "fwf gate g237p1"
 assert_contains "AC(h): names the actionable fwf gate command" "$G237P1_OUT" "fwf gate g237p1"
 
 # AC (a)/(b): a RED record refuses; a GREEN record for the SAME sha promotes.
