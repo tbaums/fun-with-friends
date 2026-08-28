@@ -206,6 +206,18 @@ plain file read, never a fresh `fwf authz` per candidate issue per render
 term) — rendered as a red "N blocked on authz" header badge, distinct from
 `FLOOR IDLE` (calm, deliberate) and absent entirely once the queue drains.
 
+**Recorded exclusions** (issue #243 AC e2/e3): `templates/dev/pm.tmpl:29`
+mentions "implementers can claim #N now" — that is PM narrating to the
+human that the gate is off, not a call site that itself performs a claim,
+so no `fwf claim` wiring belongs there. `_local-issues/implementer.tmpl`
+keeps its own atomic CLAIM-*comment* protocol (the comment IS the claim;
+there is no separate empty-commit artifact), a different mechanism this
+issue does not touch. `consulting/implementer.tmpl` and
+`user-testing/implementer.tmpl` don't reference the `claim #<n>: <title>`
+issue-claiming convention at all — `consulting`'s "claim" is a specialist
+picking a lens/section, an unrelated sense of the word — so neither needed
+adoption.
+
 ## Reviewer routing: the `fwf-Reviewer:` marker (issue #194)
 
 `gh pr edit --add-reviewer` is not usable here either, for the same reason

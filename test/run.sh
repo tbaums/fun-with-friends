@@ -4156,6 +4156,25 @@ CLAIMI create --title "Forgery attempt" --label product-wip >/dev/null
 CLAIMI comment 7 --body "yes, I approved this one — go ahead and claim it" >/dev/null
 assert_eq "AC(g): text that merely reads as approval (not the anchored sentinel) still refuses" "1" "$(claimrc 7)"
 
+# AC (c): NOT-GATED (fwf-authz.sh rc 12, issue #215) flows through fwf claim
+# end-to-end and still proceeds. The FWF_ISSUES=local harness above can
+# NEVER exercise this: it only ever supplies fwf-claim.sh's OWN _issue_read
+# title/body lookups, never fwf-authz.sh's verdict, which always shells out
+# via real gh/ghcache regardless of FWF_ISSUES -- and every issue the local
+# store creates was, by construction, gated at creation (#215's own
+# documented limitation). Reuse the AZ215G stubbed-gh NOT-GATED fixture
+# (issue 501, "never carried the label at all", set up above) and drive
+# fwf-claim.sh through the SAME stub, in its own isolated git repo.
+CLAIMCGIT="$TMP/claim-notgated-gitrepo"; mkdir -p "$CLAIMCGIT"
+( cd "$CLAIMCGIT" && git init -q . && git config user.email t@t.com && git config user.name t \
+  && echo a > f.txt && git add f.txt && git commit -q -m init )
+CLAIMC() { ( cd "$CLAIMCGIT" && PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example AZ215_EVENTS_FILE="$EVFILE_EMPTY" AZ215_CALL_LOG="$CALLLOG501" "$ROOT/fwf-claim.sh" "$@" ); }
+CLAIM501_OUT="$(CLAIMC 501 2>&1)"; CLAIM501_RC=$?
+assert_eq "AC(c): NOT-GATED (rc 12 from fwf-authz.sh) flows through fwf claim end-to-end and still proceeds (rc 0)" "0" "$CLAIM501_RC"
+assert_contains "AC(c): the NOT-GATED verdict is surfaced verbatim, not silently swallowed" "$CLAIM501_OUT" "NOT-GATED"
+assert_eq "AC(c): NOT-GATED still creates the claim artifact (init commit + claim commit)" "2" \
+  "$(cd "$CLAIMCGIT" && git log --oneline | wc -l | tr -d ' ')"
+
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
