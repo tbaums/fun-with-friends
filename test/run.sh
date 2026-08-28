@@ -5412,9 +5412,21 @@ set -uo pipefail
 counter_dir="$1"; peaks_file="$2"; hold="$3"
 me="$counter_dir/$$-$RANDOM"
 : > "$me"
+# issue #247 AC (a9-i): sample THROUGHOUT the hold, not once at entry -- a
+# holder that samples only at registration sees the population at exactly
+# one instant, and misses any overlap that exists at other moments during
+# its own presence. Polling repeatedly for the full hold means overlap with
+# a co-holder is observed at SOME point during THIS holder's own window as
+# long as the two windows genuinely intersect at all, regardless of exactly
+# when either holder registered.
+end_epoch=$(( $(date +%s) + hold ))
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
-sleep "$hold"
+while [ "$(date +%s)" -lt "$end_epoch" ]; do
+  n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+  echo "$n" >> "$peaks_file"
+  sleep 0.05
+done
 rm -f "$me"
 echo DONE
 EOSCRIPT
@@ -5490,9 +5502,17 @@ label="$1"; counter_dir="$2"; peaks_file="$3"
 s="$(fwf_cargo_build_slot_acquire "$label")" || { echo "$label TIMEOUT"; exit 0; }
 me="$counter_dir/$$-$RANDOM"
 : > "$me"
+# issue #247 AC (a9-ii): same fix as the cargo-build-harness sampler above --
+# continuous sampling through the hold, not one point sample at entry, so a
+# genuine double-reap overlap is observed regardless of exactly when it lands.
+end_epoch=$(( $(date +%s) + 1 ))
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
-sleep 1
+while [ "$(date +%s)" -lt "$end_epoch" ]; do
+  n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+  echo "$n" >> "$peaks_file"
+  sleep 0.05
+done
 rm -f "$me"
 fwf_cargo_build_slot_release "$s"
 echo "$label GOT=$s"
@@ -5521,9 +5541,15 @@ RACE_PEAK_MAX="$(sort -n "$CBRACE_PEAKS" | tail -1)"
 # legitimately report GOT=1 in the correct, non-buggy case too -- racer-a
 # acquires, holds, releases; racer-b then legitimately acquires the SAME
 # slot number SEQUENTIALLY afterward. That is correct semaphore behavior,
-# not the defect. The peak-concurrency check above is the real assertion:
-# it fails only if both were EVER concurrently inside their hold, which is
-# what the double-reap bug actually produces.
+# not the defect. The peak-concurrency check above is the real assertion --
+# BUT (issue #247 AC a9-ii, corrected here): it is NOT true, as an earlier
+# version of this comment claimed, that it "fails only if both were EVER
+# concurrently inside their hold." It fails only if both were concurrent
+# AND the sampler observed that concurrency -- with the old ONE-SHOT
+# sampler (fixed above to sample continuously), a real overlap that never
+# landed on either racer's single sample instant would pass silently. The
+# fixed sampler above closes that gap for realistic timing, not by
+# strengthening this claim to an unconditional guarantee.
 
 # --------------------------------------------------------------------------
 # per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
