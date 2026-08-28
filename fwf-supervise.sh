@@ -94,13 +94,38 @@ for role in $roles; do
       ;;
   esac
 
-  verdict="$("$DIR/fwf-pane-liveness.sh" "$role")"
+  # issue #193 (f)/(g): fwf-pane-liveness.sh's WEDGED verdict is computed
+  # purely from on-disk tick/token files (fwf_tick_read), independent of
+  # whether this role's tmux SESSION is even visible right now -- a role
+  # whose floor was deliberately brought down, or whose session merely
+  # isn't visible from THIS host/socket, has a tick file that stops
+  # advancing for exactly the same reason a truly wedged role's does.
+  # Unchecked, that ambiguity would eventually auto-respawn a role that
+  # isn't wedged at all, it's just not running. So session visibility is
+  # checked FIRST: an invisible session short-circuits STRAIGHT PAST the
+  # tick/token classifier (which cannot tell the two apart) to a distinct,
+  # never-reaped verdict -- but, unlike genuine UNKNOWN below, it does NOT
+  # skip the worktree-freshness (#146) or lane-stale (#140) checks further
+  # down: those are independent, non-tmux signals that stay just as valid
+  # whether or not THIS host/socket can currently see the role's pane.
+  if fwf_role_session_visible "$role"; then
+    verdict="$("$DIR/fwf-pane-liveness.sh" "$role")"
+  else
+    verdict="SESSION_UNKNOWN"
+  fi
 
   if [ "$verdict" = "UNKNOWN" ]; then
     printf 'supervise: %-10s UNKNOWN (no old-enough baseline yet — will classify on a later call)\n' "$role"
     continue
+  elif [ "$verdict" = "SESSION_UNKNOWN" ]; then
+    if fwf_factory_visible; then
+      printf 'supervise: %-10s SESSION_UNKNOWN role session not visible on the resolved tmux socket though the factory itself is -- cannot distinguish deliberately-down from wrong socket/host; never reaped\n' "$role"
+    else
+      printf 'supervise: %-10s SESSION_UNKNOWN no fwf session visible on the resolved tmux socket at all (floor genuinely down, or supervise cannot see it from this host/socket) -- never reaped\n' "$role"
+    fi
+  else
+    printf 'supervise: %-10s %s\n' "$role" "$verdict"
   fi
-  printf 'supervise: %-10s %s\n' "$role" "$verdict"
 
   # Lane-stale check (issue #140): "idle while lane has open work" is a
   # DIFFERENT failure than a wedge — the role is genuinely ticking (verdict

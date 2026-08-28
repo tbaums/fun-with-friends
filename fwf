@@ -71,6 +71,13 @@ RUN THE FACTORY  (use --profile NAME, or it picks the only profile present)
                          Derived-first, so it works with the factory parked.
                          Downloads a prebuilt binary on first run (needs jq;
                          cargo only as an offline/unsupported-platform fallback).
+                         No built-in remote view (issue #206) -- for a factory
+                         running on another host, `ssh -t <host> fwf dash`
+                         runs it there and streams the TUI back over ssh.
+                         Anything else (a local dash pointed at a remote
+                         profile/state dir) can't tell "no factory here" from
+                         "everything is down" and renders UNKNOWN, not a
+                         false DOWN.
   captain [--print]      Copy the CAPTAIN prompt to the clipboard (or --print it).
   respawn <role>         Hot-swap one pane:
                          implN | qaN | conductor | pm | gv | captain.

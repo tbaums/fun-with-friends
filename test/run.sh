@@ -867,6 +867,19 @@ section "fwf supervise (issue #165, refactored by #147 onto the shared fwf-pane-
 # The loop's own output format is not asserted anywhere pre-#147 (grep
 # confirms it), so this covers the refactored shape directly: one line per
 # role, UNKNOWN gets its own explanatory line, and roles are independent.
+#
+# issue #193: fwf-supervise.sh now checks tmux SESSION visibility before
+# ever calling fwf-pane-liveness.sh (an invisible session short-circuits to
+# SESSION_UNKNOWN instead). This section is about the tick/token classifier
+# ONLY, so a permissive stub `tmux` that always reports every session
+# visible neutralizes that new gate here -- the real SESSION_UNKNOWN
+# behavior gets its own dedicated section below.
+SV_TMUX_UP="$TMP/svtmux-up"; mkdir -p "$SV_TMUX_UP"
+cat > "$SV_TMUX_UP/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SV_TMUX_UP/tmux"
 SV_RUN="$TMP/supervise"; mkdir -p "$SV_RUN/state/example/tick-watch"
 printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-watch/svwedged"
 # issue #211: WEDGED needs a TRUSTED token read too -- see the matching
@@ -876,7 +889,7 @@ printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-wa
 mkdir -p "$SV_RUN/state/example/usage-cache"
 printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
   "$(( $(date -u +%s) - 3600 ))" > "$SV_RUN/state/example/usage-cache/svwedged.json"
-SVOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
+SVOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
 assert_contains "supervise reports a confirmed-old-baseline role's real verdict" "$SVOUT" "svwedged   WEDGED"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
@@ -892,16 +905,127 @@ assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORE
 # into destroyed in-flight work, which is the worse failure.
 mkdir -p "$SV_RUN/state/example/tick"
 echo 5 > "$SV_RUN/state/example/tick/svunknown"
-FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
+PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
 read -r SVU_T SVU_TOK SVU_EP < "$SV_RUN/state/example/tick-watch/svunknown"
 printf '%s %s %s\n' "$SVU_T" "$SVU_TOK" "$(( SVU_EP - 700 ))" > "$SV_RUN/state/example/tick-watch/svunknown"
 printf garbage > "$SV_RUN/state/example/tick/svunknown"   # simulate a tick READ failure
-SVUOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
+SVUOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
 assert_contains "AC(h): a simulated tick-read failure classifies UNKNOWN, not WEDGED" "$SVUOUT" "svunknown  UNKNOWN"
 assert_not_contains "AC(h): supervise does NOT reap -- no respawn attempted even WITH autorespawn=1" "$SVUOUT" "respawning"
 assert_not_contains "AC(h): fwf-respawn.sh is never invoked at all for this role" "$SVUOUT" "respawn FAILED"
 assert_eq "AC(h): the tick counter itself is unmodified by this whole pass (still 'garbage')" "garbage" \
   "$(cat "$SV_RUN/state/example/tick/svunknown")"
+
+section "fwf_tick_read callers are enumerated, none silently collapse (issue #193 AC h1)"
+# #211 already made fwf_tick_read a two-line honest-status reader; #193's own
+# obligation (AC h1) is that its blast radius was actually CHECKED, not
+# assumed, at #193's own claim time -- so this locks the caller list down: a
+# NEW call site that appears here without going through this list is exactly
+# the silent-collapse risk the ticket warns about, and this test goes RED
+# the moment one shows up unaudited.
+TICKREAD_MENTIONS="$(grep -rl 'fwf_tick_read' "$ROOT"/*.sh 2>/dev/null | sort)"
+TICKREAD_EXPECTED="$(printf '%s\n' \
+  "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-supervise.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh" | sort)"
+assert_eq "AC(h1): fwf_tick_read has exactly the known, audited mentions" \
+  "$TICKREAD_EXPECTED" "$TICKREAD_MENTIONS"
+# Each real CALLER checks the exit status explicitly (an `if`/`||` around the
+# call), never a bare `x="$(fwf_tick_read ...)"` that would mask a non-zero
+# status the way issue #211's own lib.sh comment warns against.
+# fwf-supervise.sh only NAMES fwf_tick_read in a comment (explaining why
+# issue #193's session guard exists) -- it never calls it directly, since it
+# gets tick/token state via fwf-pane-liveness.sh instead.
+for _tr_f in "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh"; do
+  case "$(grep -n 'fwf_tick_read' "$_tr_f")" in
+    *'if cur_tick="$(fwf_tick_read'*|*'if ! fwf_tick_read'*|*'if ! cur="$(fwf_tick_read'*)
+      ok "AC(h1): $(basename "$_tr_f") checks fwf_tick_read's exit status" ;;
+    *'fwf_tick_read() {'*) ok "AC(h1): $(basename "$_tr_f") is the definition site, not a caller" ;;
+    *) bad "AC(h1): $(basename "$_tr_f") calls fwf_tick_read without an evident status check" ;;
+  esac
+done
+case "$(grep -n 'fwf_tick_read' "$ROOT/fwf-supervise.sh")" in
+  *'fwf_tick_read'*'if cur_tick'*|*'if ! cur='*) bad "AC(h1): fwf-supervise.sh now calls fwf_tick_read directly -- audit it and add it above" ;;
+  *) ok "AC(h1): fwf-supervise.sh only names fwf_tick_read in a comment, never calls it" ;;
+esac
+
+section "fwf supervise: SESSION_UNKNOWN — session invisibility never reaps (issue #193 f/g)"
+# The tick/token classifier alone can't tell "genuinely wedged" apart from
+# "not running because the floor is down (or supervise can't see it from
+# this host/socket)" -- a stale tick file looks identical either way. These
+# fixtures force each of the two visibility outcomes explicitly via a fake
+# `tmux` on PATH, rather than depending on whatever real session (if any)
+# happens to be reachable from the box running the test.
+SV2_RUN="$TMP/supervise-sessionvis"; mkdir -p "$SV2_RUN/state/example"
+echo default > "$SV2_RUN/state/example/tmux_socket"
+
+# Case 1: NO fwf session visible anywhere -- `tmux has-session` always fails.
+SV_TMUX_DOWN="$TMP/svtmux-down"; mkdir -p "$SV_TMUX_DOWN"
+cat > "$SV_TMUX_DOWN/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$SV_TMUX_DOWN/tmux"
+SV2OUT_NONE="$(PATH="$SV_TMUX_DOWN:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_contains "factory genuinely invisible -> SESSION_UNKNOWN names the whole-floor case" "$SV2OUT_NONE" \
+  "SESSION_UNKNOWN no fwf session visible on the resolved tmux socket at all"
+assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (whole-floor case)" "$SV2OUT_NONE" "respawning"
+
+# Case 2: the FACTORY is visible (BUILD_SESSION exists) but THIS role's own
+# session type (pm -> COORD_SESSION) does not -- distinguished from case 1
+# by matching on the "-build"/"-coord" suffix lib.sh always appends, not a
+# hardcoded full session name.
+SV_TMUX_HALF="$TMP/svtmux-half"; mkdir -p "$SV_TMUX_HALF"
+cat > "$SV_TMUX_HALF/tmux" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *-build) exit 0 ;;
+  esac
+done
+exit 1
+EOF
+chmod +x "$SV_TMUX_HALF/tmux"
+SV2OUT_HALF="$(PATH="$SV_TMUX_HALF:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_contains "factory visible but THIS role's session isn't -> the narrower wording" "$SV2OUT_HALF" \
+  "SESSION_UNKNOWN role session not visible on the resolved tmux socket though the factory itself is"
+assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (role-only case)" "$SV2OUT_HALF" "respawning"
+
+# A role whose session IS visible is unaffected by any of this -- proven by
+# reusing the permissive stub from the classifier tests above.
+SV2OUT_VISIBLE="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_not_contains "a visible session never gets the SESSION_UNKNOWN verdict" "$SV2OUT_VISIBLE" "SESSION_UNKNOWN"
+
+section "fwf supervise: AC(f2) — the mirror of (f)/(d), a genuinely WEDGED+readable role IS reaped"
+# (f)/(h) above prove supervise never reaps on an UNREADABLE input. Without
+# this test, a supervisor that silently never reaps ANYTHING would also
+# pass those -- (f2) is what makes it a real discrimination: a role with a
+# VISIBLE session and READABLE, genuinely-flat tick/token samples across a
+# full FWF_WEDGE_MIN_SECS window must still classify WEDGED and still get
+# respawned. Real fwf-pane-liveness.sh classifier (not stubbed) so the
+# WEDGED verdict is earned, not asserted by fiat; only fwf-respawn.sh itself
+# is stubbed, since actually hot-swapping a tmux pane is out of scope here.
+F2ISO="$TMP/f2iso"; mkdir -p "$F2ISO/lib" "$F2ISO/profiles"
+cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F2ISO/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F2ISO/lib/"
+cp "$ROOT/profiles/example.sh" "$F2ISO/profiles/"
+ln -sf "$ROOT/templates" "$F2ISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
+ln -sf "$ROOT/fwf-pane-liveness.sh" "$F2ISO/fwf-pane-liveness.sh"
+ln -sf "$ROOT/fwf-usage-data.sh" "$F2ISO/fwf-usage-data.sh"
+F2RESPAWN_LOG="$TMP/f2iso-respawn.log"
+cat > "$F2ISO/fwf-respawn.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$F2RESPAWN_LOG"
+exit 0
+EOF
+chmod +x "$F2ISO/fwf-respawn.sh"
+F2_RUN="$TMP/f2run"; mkdir -p "$F2_RUN/state/example/tick-watch" "$F2_RUN/state/example/usage-cache"
+printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F2_RUN/state/example/tick-watch/f2wedged"
+printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+  "$(( $(date -u +%s) - 3600 ))" > "$F2_RUN/state/example/usage-cache/f2wedged.json"
+F2OUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F2_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 bash "$F2ISO/fwf-supervise.sh" f2wedged 2>&1)"
+assert_contains "AC(f2): genuinely wedged (readable, static past the window) -> WEDGED" "$F2OUT" "$(printf '%-10s WEDGED' f2wedged)"
+assert_contains "AC(f2): ...and IS respawned (the discrimination this AC exists to prove)" "$F2OUT" "WEDGED -> respawning"
+assert_eq "AC(f2): fwf-respawn.sh was actually invoked, exactly once, for the right role" "f2wedged" \
+  "$(cat "$F2RESPAWN_LOG" 2>/dev/null)"
 
 section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PURE (count, age, interval) -> verdict (#140)"
 # Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
@@ -1210,7 +1334,14 @@ FI_OFF='{"active":false,"since":"","reason":"","actor":""}'
 NOPANE_TMUX="$TMP/nopane85bin"; mkdir -p "$NOPANE_TMUX"
 cat > "$NOPANE_TMUX/tmux" <<'STUB'
 #!/usr/bin/env bash
-case "$1" in has-session) exit 1;; list-panes) exit 0;; *) exit 1;; esac
+# has-session succeeds (the SESSION is visible -- issue #193 needs that
+# distinguished from "can't tell"); list-panes succeeds but lists nothing
+# (no MATCHING pane), which is the actual "no pane" fixture this section
+# is about. A leading "-S <sock>" (fwf-dash-data.sh's own tmux() wrapper
+# always adds one once a socket resolves, real ambient $TMUX included) is
+# stripped first so it never shadows the real subcommand into the catch-all.
+if [ "$1" = "-S" ]; then shift 2; fi
+case "$1" in has-session) exit 0;; list-panes) exit 0;; *) exit 1;; esac
 STUB
 chmod +x "$NOPANE_TMUX/tmux"
 R85_IDLE="$(PATH="$NOPANE_TMUX:$PATH" FWF_PROFILE=example bash -c "source '$DD85'; roles_json '$FI_ON'")"
@@ -1237,6 +1368,124 @@ F85TOP="$(FWF_RUN_DIR="$F85TOPRUN" FWF_PROFILE=example bash -c "source '$DD85'; 
 assert_eq "floor_idle_json.active" "true"  "$(printf '%s' "$F85TOP" | jq -r '.active')"
 assert_eq "floor_idle_json.actor"  "human" "$(printf '%s' "$F85TOP" | jq -r '.actor')"
 assert_eq "floor_idle_json.reason" "manual test" "$(printf '%s' "$F85TOP" | jq -r '.reason')"
+
+section "fwf dash data: UNKNOWN/BUSY/STALE role states + visibility (issue #193)"
+# A db-driven stub tmux, keyed per-SOCKET and per-SESSION, so a fixture can
+# make one session visible and the other not (issue #193's whole point is
+# that build/coord are independent sessions -- AC e2/g). Sessions with no
+# entry under sessions/<key>/<name> are genuinely absent; a session that
+# exists but is listed in panes/<key>/<name> with NO lines has no pane.
+D193_DB="$TMP/d193db"; mkdir -p "$D193_DB/sessions/default" "$D193_DB/panes/default" "$D193_DB/labels" "$D193_DB/cmds"
+D193_TMUX="$TMP/d193tmuxbin"; mkdir -p "$D193_TMUX"
+cat > "$D193_TMUX/tmux" <<'STUB'
+#!/usr/bin/env bash
+db="${FAKE_TMUX_DB:?}"
+sock=""
+if [ "$1" = "-S" ]; then sock="$2"; shift 2; fi
+key="$(printf '%s' "${sock:-default}" | tr -c 'A-Za-z0-9_' '_')"
+case "$1" in
+  has-session)      [ -f "$db/sessions/$key/$3" ] && exit 0 || exit 1 ;;
+  list-panes)       cat "$db/panes/$key/$3" 2>/dev/null; exit 0 ;;
+  show)             cat "$db/labels/$4" 2>/dev/null; exit 0 ;;
+  display-message)  cat "$db/cmds/$4" 2>/dev/null; exit 0 ;;
+  capture-pane)      exit 0 ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$D193_TMUX/tmux"
+d193_session() { : > "$D193_DB/sessions/default/$1"; : > "$D193_DB/panes/default/$1"; }   # $1=session name, no panes yet
+# --- AC(d): session genuinely visible, no pane, no lock, no heartbeat -> DOWN
+D193_D_RUN="$TMP/d193-d"; mkdir -p "$D193_D_RUN/state/example"
+echo default > "$D193_D_RUN/state/example/tmux_socket"
+d193_session friends-build; d193_session friends-coord
+D193_D_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_D_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(d): session visible, no pane at all -> impl1 genuinely DOWN" "down" \
+  "$(printf '%s' "$D193_D_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "AC(d): ...and the coord role too" "down" \
+  "$(printf '%s' "$D193_D_OUT" | jq -r '.[] | select(.role=="pm") | .state')"
+
+# --- AC(a)/(b): a STALE heartbeat, session visible, no pane -> STALE with age;
+# newest_heartbeat_age is populated even though nothing here is down/unknown.
+D193_A_RUN="$TMP/d193-a"; mkdir -p "$D193_A_RUN/state/example/heartbeat"
+echo default > "$D193_A_RUN/state/example/tmux_socket"
+touch -d "@$(( $(date +%s) - 7200 ))" "$D193_A_RUN/state/example/heartbeat/impl1"
+D193_A_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(a): stale heartbeat + visible session + no pane -> STALE, never DOWN" "stale" \
+  "$(printf '%s' "$D193_A_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "AC(a): heartbeat_age is reported alongside the STALE state" "true" \
+  "$(printf '%s' "$D193_A_OUT" | jq -r '.[] | select(.role=="impl1") | (.heartbeat_age > 7000)')"
+D193_B_VIS="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; visibility_json")"
+assert_eq "AC(b): visibility_json.newest_heartbeat_age is populated on a fully-healthy-otherwise fixture" "true" \
+  "$(printf '%s' "$D193_B_VIS" | jq -r '.newest_heartbeat_age != null')"
+# AC(c): heartbeat file present but UNREADABLE never crashes/misreads as DOWN
+# -- roles_json only ever consults mtime (stat), never content, of this file.
+chmod 000 "$D193_A_RUN/state/example/heartbeat/impl1"
+D193_A_UNREAD="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(c): an unreadable (but present) heartbeat file still reads STALE, not a fabricated DOWN" "stale" \
+  "$(printf '%s' "$D193_A_UNREAD" | jq -r '.[] | select(.role=="impl1") | .state')"
+chmod 644 "$D193_A_RUN/state/example/heartbeat/impl1"
+
+# Edge case: a heartbeat mtime in the FUTURE (clock skew) must never produce
+# a negative age or a false-fresh reading -- the file's mere existence still
+# means STALE (real evidence this role ran here), but its age is UNKNOWN,
+# never a fabricated negative number.
+touch -d "@$(( $(date +%s) + 3600 ))" "$D193_A_RUN/state/example/heartbeat/impl1"
+D193_A_SKEW="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_A_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "clock skew: state stays STALE (the file is real evidence), not a fabricated DOWN" "stale" \
+  "$(printf '%s' "$D193_A_SKEW" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "clock skew: heartbeat_age is null, never a negative number" "null" \
+  "$(printf '%s' "$D193_A_SKEW" | jq -r '.[] | select(.role=="impl1") | .heartbeat_age')"
+
+# --- AC(c)/(e): NO session visible anywhere -> every role UNKNOWN, banner data
+D193_E_RUN="$TMP/d193-e"; mkdir -p "$D193_E_RUN/state/example"
+echo default > "$D193_E_RUN/state/example/tmux_socket"
+D193_EMPTYDB="$TMP/d193dbempty"; mkdir -p "$D193_EMPTYDB/sessions/default" "$D193_EMPTYDB/panes/default" "$D193_EMPTYDB/labels" "$D193_EMPTYDB/cmds"
+D193_E_OUT="$(env FAKE_TMUX_DB="$D193_EMPTYDB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E_RUN" bash -c "source '$DD85'; roles_json")"
+case "$(printf '%s' "$D193_E_OUT" | jq -c '[.[] | .state] | unique')" in
+  '["unknown"]') ok "AC(e): no factory visible anywhere -> EVERY role reads unknown, never down" ;;
+  *) bad "AC(e): expected every role unknown when no session resolves at all, got $(printf '%s' "$D193_E_OUT" | jq -c '[.[] | .state] | unique')" ;;
+esac
+D193_E_VIS="$(env FAKE_TMUX_DB="$D193_EMPTYDB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E_RUN" bash -c "source '$DD85'; visibility_json")"
+assert_eq "AC(e): visibility_json.factory_visible is false, naming the whole-factory case" "false" \
+  "$(printf '%s' "$D193_E_VIS" | jq -r '.factory_visible')"
+assert_eq "AC(e): visibility_json names the state dir being read (banner needs this to be diagnosable)" "$D193_E_RUN/state/example" \
+  "$(printf '%s' "$D193_E_VIS" | jq -r '.state_dir')"
+
+# --- AC(e2): coord visible, build absent, floor-down logged -> build roles
+# floor_idle (not unknown -- the log wins ahead of the session check), coord
+# roles their REAL state (down here, not unknown), no whole-factory banner.
+D193_E2_RUN="$TMP/d193-e2"; mkdir -p "$D193_E2_RUN/state/example"
+echo default > "$D193_E2_RUN/state/example/tmux_socket"
+printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty\tbuild\n' > "$D193_E2_RUN/state/example/floor-events.log"
+D193_E2DB="$TMP/d193dbe2"; mkdir -p "$D193_E2DB/sessions/default" "$D193_E2DB/panes/default" "$D193_E2DB/labels" "$D193_E2DB/cmds"
+: > "$D193_E2DB/sessions/default/friends-coord"; : > "$D193_E2DB/panes/default/friends-coord"   # coord up, no panes
+D193_E2_ROLES="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_RUN" bash -c "source '$DD85'; roles_json \"\$(floor_idle_json)\"")"
+D193_E2_VIS="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_RUN" bash -c "source '$DD85'; visibility_json")"
+assert_eq "AC(e2): build role reads floor_idle (log wins over the absent build session)" "floor_idle" \
+  "$(printf '%s' "$D193_E2_ROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "AC(e2): coord role (pm) reads its REAL state, never unknown, while coord is visible" "down" \
+  "$(printf '%s' "$D193_E2_ROLES" | jq -r '.[] | select(.role=="pm") | .state')"
+assert_eq "AC(e2): captain is excluded from floor_idle even here -> real down" "down" \
+  "$(printf '%s' "$D193_E2_ROLES" | jq -r '.[] | select(.role=="captain") | .state')"
+assert_eq "AC(e2): factory_visible stays true (coord alone is enough) -- no whole-factory banner" "true" \
+  "$(printf '%s' "$D193_E2_VIS" | jq -r '.factory_visible')"
+# ...and supervise agrees: the coord role's session IS visible, so it must
+# NOT be muted to SESSION_UNKNOWN just because the build plane is down. This
+# is also AC(g)'s cross-reader agreement, exercised on the coord-plane side.
+D193_E2_SVRUN="$TMP/d193-e2-sv"; mkdir -p "$D193_E2_SVRUN/state/example"
+echo default > "$D193_E2_SVRUN/state/example/tmux_socket"
+D193_E2_SVOUT="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
+assert_not_contains "AC(e2)/(g): supervise does not mute the visible coord role to SESSION_UNKNOWN" "$D193_E2_SVOUT" "$(printf '%-10s SESSION_UNKNOWN' pm)"
+D193_E2_SVOUT_BUILD="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/fwf-supervise.sh" impl1 2>&1)"
+assert_contains "AC(g): the ABSENT build session DOES read SESSION_UNKNOWN on the supervise side (agrees with dash's 'unknown' for the same fixture)" \
+  "$D193_E2_SVOUT_BUILD" "SESSION_UNKNOWN"
+
+# --- AC(i): holding the gate lock is BUSY, even with no pane / no heartbeat
+D193_I_RUN="$TMP/d193-i"; mkdir -p "$D193_I_RUN/state/example/gate-lock/impl1"
+echo default > "$D193_I_RUN/state/example/tmux_socket"
+D193_I_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_I_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(i): a role holding its own gate lock reads BUSY, not stale/down" "busy" \
+  "$(printf '%s' "$D193_I_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
 
 section "fwf_write_pane_env: malformed FWF_PANE_ENV entries are skipped, not sourced (issue #181 review)"
 # The written file is SOURCED by every pane (fwf_claude_cmd) — a name that
@@ -3537,7 +3786,12 @@ assert_eq "role launched on a non-default socket reads UP once the socket is per
 
 NOFILERUN="$TMP/run62nofile"; mkdir -p "$NOFILERUN"
 NOFILEROLES="$(env $DASHENV FWF_RUN_DIR="$NOFILERUN" bash -c "source '$DD'; roles_json")"
-assert_eq "same fixture with NO persisted socket and no ambient \$TMUX reads DOWN (proves the UP above came from reading the persisted socket, not luck — this is what 'unset TMUX' regresses to)" "down" \
+# issue #193: no persisted socket resolves and no ambient \$TMUX names the
+# fake DB's sessions -> the session itself cannot be confirmed visible, so
+# this is the honest UNKNOWN failure mode, not a fabricated DOWN (proves the
+# UP above came from reading the persisted socket, not luck -- this is what
+# "unset TMUX"/an unresolved socket regresses to).
+assert_eq "same fixture with NO persisted socket and no ambient \$TMUX reads UNKNOWN (session unconfirmed, never a fabricated DOWN)" "unknown" \
   "$(printf '%s' "$NOFILEROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
 
 FALLBACKRUN="$TMP/run62fallback"; mkdir -p "$FALLBACKRUN"

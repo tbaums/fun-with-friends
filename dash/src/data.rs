@@ -33,6 +33,8 @@ pub struct Dashboard {
     pub upgrade: UpgradeAvailable,
     #[serde(default)]
     pub installed: InstalledVersion,
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 /// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
@@ -215,10 +217,40 @@ pub struct ActivityItem {
 pub struct Role {
     pub role: String,
     /// "live" | "idle" | "down" | "floor_idle" (deliberately parked by
-    /// `fwf-down.sh --floor-only`, issue #85 — never a real crash)
+    /// `fwf-down.sh --floor-only`, issue #85 — never a real crash) | "unknown"
+    /// (session not visible from this host/socket — issue #193, never a
+    /// fabricated "down") | "busy" (no pane, but holding its own gate lock —
+    /// #193 AC i) | "stale" (session visible, a heartbeat exists but is aging)
     pub state: String,
     #[serde(default)]
     pub detail: String,
+    /// Seconds since this role's heartbeat last touched (issue #193 AC a/i0)
+    /// — populated alongside `state`, never a substitute for it. `null`/absent
+    /// (older `fwf-dash-data.sh`, or a role with no heartbeat trace at all)
+    /// means "not available", not "zero".
+    #[serde(default)]
+    pub heartbeat_age: Option<i64>,
+}
+
+/// Whole-factory read visibility (issue #193 AC b/e) — always emitted by
+/// `fwf-dash-data.sh`, never only during a failure, so the header's
+/// newest-heartbeat age is something an operator has actually calibrated
+/// before the one incident where it matters. `#[serde(default)]` on the
+/// `Dashboard` field below means an older provider JSON (no `visibility` key
+/// at all) degrades to `factory_visible: false` — the fail-safe direction,
+/// same as every other read in this ticket — never a false "all clear".
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Visibility {
+    #[serde(default)]
+    pub factory_visible: bool,
+    #[serde(default)]
+    pub newest_heartbeat_age: Option<i64>,
+    #[serde(default)]
+    pub state_dir: String,
+    #[serde(default)]
+    pub profile: String,
+    #[serde(default)]
+    pub host: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

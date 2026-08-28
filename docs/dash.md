@@ -80,7 +80,7 @@ a running swarm:
 | Field | Derived from |
 |---|---|
 | activity | open/merged PRs against the integration targets: BUILDING / IN TEST·REVIEW / MERGED (the landing tab) |
-| roles | tmux pane liveness (`@l` label + current command): live / idle / down — or **IDLE (captain)** for a floor role deliberately parked by `fwf-down.sh --floor-only`/`--build-only`, never conflated with a crash (see below) |
+| roles | tmux pane liveness (`@l` label + current command) first, then a chain of positive/negative signals when no pane is found: **live** / **idle** (pane present — always wins, regardless of any other signal) → **floor_idle** (deliberately parked by `fwf-down.sh --floor-only`/`--build-only`) → **unknown** (this role's tmux session itself isn't visible from this host/socket — never rendered as down) → **busy** (no pane, but the role holds its own gate lock — issue #193 AC i) → **stale** (session visible, a heartbeat file exists but is aging) → **down** (session visible, no pane, no lock, no heartbeat trace at all). See issue #193. |
 | pipeline | git branch deltas in the target repo (`staging +N ahead · …`) |
 | decisions | the label protocol: open + `product-wip` + a `GV-SIGNOFF` comment ⇒ awaiting you; also any gated issue carrying an `⚠ INVALID SENTINEL` row (issue #218) — a column-0-anchored but malformed or wrong-issue un-gate attempt, security-relevant regardless of GV sign-off state. See "The operator un-gate authorization signal" in `docs/shared-account.md`. Also two "could not tell" summary rows when the underlying gh read cache served degraded (unconfirmed-fresh) data (issue #266): `⚠ SIGN-OFF UNVERIFIED` names tickets whose sign-off state couldn't be confirmed absent vs. just-unseen, and `⚠ ISSUE LIST UNCONFIRMED` warns the queue itself may be missing a just-filed/just-gated ticket. See `docs/gh-read-cache.md`. |
 | issues | every open issue (gated ones marked 🔒) |
@@ -123,6 +123,23 @@ cooldown.
 
 The header's provenance stamp says where prod/pipeline came from: `status.json`
 (fresh overlay, green), `stale` (overlay too old, amber), or `derived` (gray).
+
+### "No view" is never rendered as "down" (issue #193)
+
+A local dash pointed at the wrong host, the wrong `--profile`, or a factory
+that was never started here reads as **every role UNKNOWN**, plus a header
+banner naming the resolved state dir/profile/host — never a false whole-board
+`down`, which a prior incident showed gets trusted and acted on. The same
+per-session visibility check (build session for `impl*`/`qa*`/`conductor`,
+coord session for `pm`/`gv`/`captain`) is shared with `fwf-supervise.sh`
+(issue #165), so an invisible session is also never auto-respawned there —
+see `SESSION_UNKNOWN` in its own output.
+
+`fwf dash` has no built-in remote view (spun out as issue #206). For a
+factory running on another host, `ssh -t <host> fwf dash` runs the dash
+there and streams the TUI back over ssh — cheaper than teaching the dash a
+transport, and it reads the real local state on that host instead of
+guessing.
 
 ## Keys (no F-keys — the prior-art model)
 
