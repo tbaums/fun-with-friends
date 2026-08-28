@@ -1092,7 +1092,11 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     // only fires on detected drift); this line is unconditional so drift is
     // visible at a glance at all times, per issue #153.
     l1.push(Span::styled(
-        format!(" · fwf v{} (built {})", data::RUNNING_VERSION, data::RUNNING_BUILD_DATE),
+        format!(
+            " · fwf v{} (built {})",
+            data::RUNNING_VERSION,
+            data::RUNNING_BUILD_DATE
+        ),
         dim,
     ));
 
@@ -2120,7 +2124,10 @@ mod tests {
     fn cursor_clamps_to_rows() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             roles: vec![],
             ..Default::default()
         });
@@ -2132,7 +2139,10 @@ mod tests {
     fn selected_id_tracks_tab_and_cursor() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             decisions: vec![data::Decision {
                 id: "337".into(),
                 title: "t".into(),
@@ -2159,7 +2169,10 @@ mod tests {
     fn approve_opens_a_confirm_not_a_fire() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             decisions: vec![data::Decision {
                 id: "337".into(),
                 title: "t".into(),
@@ -2183,7 +2196,10 @@ mod tests {
     fn comment_opens_an_input_field() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             issues: vec![data::Issue {
                 number: 9,
                 title: "i".into(),
@@ -2228,7 +2244,10 @@ mod tests {
     fn reject_opens_a_confirm_not_a_fire() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             decisions: vec![data::Decision {
                 id: "44".into(),
                 title: "t".into(),
@@ -2356,7 +2375,10 @@ mod tests {
     fn cancel_from_confirm_with_n_or_esc_clears_overlay_without_firing() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             decisions: vec![data::Decision {
                 id: "1".into(),
                 title: "t".into(),
@@ -2382,7 +2404,10 @@ mod tests {
     fn cancel_from_input_with_esc_clears_overlay_without_firing() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             issues: vec![data::Issue {
                 number: 3,
                 title: "i".into(),
@@ -2404,7 +2429,10 @@ mod tests {
     fn input_overlay_types_chars_and_backspaces() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             issues: vec![data::Issue {
                 number: 3,
                 title: "i".into(),
@@ -2428,7 +2456,10 @@ mod tests {
     fn input_overlay_enter_with_empty_buffer_is_skipped_not_fired() {
         let mut app = test_app();
         app.feed = Feed::Ok(Dashboard {
-            visibility: data::Visibility { factory_visible: true, ..Default::default() },
+            visibility: data::Visibility {
+                factory_visible: true,
+                ..Default::default()
+            },
             issues: vec![data::Issue {
                 number: 3,
                 title: "i".into(),
@@ -2914,7 +2945,10 @@ mod tests {
         let app = golden_app(Tab::Activity);
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
-        assert_golden("header_running", &normalize_running_version(&buffer_to_text(&buf)));
+        assert_golden(
+            "header_running",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     // #51 pin: at the render level (through the real widget pipeline, not just
@@ -2941,7 +2975,10 @@ mod tests {
         }
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
-        assert_golden("header_parked_stale", &normalize_running_version(&buffer_to_text(&buf)));
+        assert_golden(
+            "header_parked_stale",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     // issue #85: the header's calm FLOOR IDLE badge — running (not parked),
@@ -2959,7 +2996,10 @@ mod tests {
         }
         let area = Rect::new(0, 0, 90, 4);
         let buf = render_buffer(area.width, area.height, |f| render_header(f, area, &app));
-        assert_golden("header_floor_idle", &normalize_running_version(&buffer_to_text(&buf)));
+        assert_golden(
+            "header_floor_idle",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     #[test]
@@ -3090,7 +3130,10 @@ mod tests {
                 "row {i} overflows the 100-col terminal width: {row:?}"
             );
         }
-        assert_golden("full_frame_activity_upgrade_long_version", &normalize_running_version(&text));
+        assert_golden(
+            "full_frame_activity_upgrade_long_version",
+            &normalize_running_version(&text),
+        );
     }
 
     // issue #153: same overflow lesson, for the stale-dash banner — an early
@@ -3139,7 +3182,10 @@ mod tests {
             };
         }
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
-        assert_golden("full_frame_both_banners", &normalize_running_version(&buffer_to_text(&buf)));
+        assert_golden(
+            "full_frame_both_banners",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     // issue #153: all THREE banners at once (needs-you + stale-dash +
@@ -3158,7 +3204,9 @@ mod tests {
                 version: "99.99.99".into(),
             };
         }
-        assert!(data::running_binary_stale(&app.feed.dashboard().unwrap().installed.version));
+        assert!(data::running_binary_stale(
+            &app.feed.dashboard().unwrap().installed.version
+        ));
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
         assert_golden(
             "full_frame_all_three_banners",
@@ -3545,7 +3593,10 @@ mod tests {
     fn golden_full_frame_activity_tab_with_needs_you_banner() {
         let mut app = golden_app(Tab::Activity);
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
-        assert_golden("full_frame_activity_needs_you", &normalize_running_version(&buffer_to_text(&buf)));
+        assert_golden(
+            "full_frame_activity_needs_you",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     #[test]
@@ -3557,7 +3608,10 @@ mod tests {
             d.needs_you.active = false;
         }
         let buf = render_buffer(100, 30, |f| ui(f, &mut app));
-        assert_golden("full_frame_decisions_parked", &normalize_running_version(&buffer_to_text(&buf)));
+        assert_golden(
+            "full_frame_decisions_parked",
+            &normalize_running_version(&buffer_to_text(&buf)),
+        );
     }
 
     // issue #85 (a-appearance): a role with no live pane must render DISTINCTLY
@@ -3578,7 +3632,10 @@ mod tests {
         }
         let idle_buf = render_buffer(100, 30, |f| ui(f, &mut idle_app));
         let idle_text = buffer_to_text(&idle_buf);
-        assert_golden("full_frame_roles_floor_idle", &normalize_running_version(&idle_text));
+        assert_golden(
+            "full_frame_roles_floor_idle",
+            &normalize_running_version(&idle_text),
+        );
 
         let mut crash_app = golden_app(Tab::Roles);
         if let Feed::Ok(d) = &mut crash_app.feed {
@@ -3591,7 +3648,10 @@ mod tests {
         }
         let crash_buf = render_buffer(100, 30, |f| ui(f, &mut crash_app));
         let crash_text = buffer_to_text(&crash_buf);
-        assert_golden("full_frame_roles_down_crash", &normalize_running_version(&crash_text));
+        assert_golden(
+            "full_frame_roles_down_crash",
+            &normalize_running_version(&crash_text),
+        );
 
         assert_ne!(
             idle_text, crash_text,
