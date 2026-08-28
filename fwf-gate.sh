@@ -212,6 +212,48 @@ wrapped_pgid=""
 teardown_done=0
 release_done=0
 
+# issue #195 (AC d/g): when the wrapped command FAILS, translate a bind-
+# collision signature in its own stderr into a lock-protocol error naming
+# the occupying PID/command/port -- the damaging part of this bug is not
+# the stuck process, it's that the failure reads like an environment
+# problem (ports, Playwright, the box) rather than a lock-protocol
+# violation. The occupant is looked up READ-ONLY (ss, falling back to
+# lsof) and is NEVER killed (blast-radius constraint: a port busy but
+# owned by something outside this lock's recorded group must never be
+# touched, only named). An unmatched signature -- no such line in the
+# captured stderr, or a port that can't be parsed out of it -- passes
+# through silently: no message taxonomy, no guessing (signature matching
+# is tool- and locale-dependent; that's an accepted residual, not
+# something to engineer around).
+_fwf_gate_diagnose_port_collision() {
+  local capture="$1" line port occ_raw occ_pid occ_cmd
+  [ -f "$capture" ] || return 0
+  line="$(grep -iE 'address already in use|EADDRINUSE' "$capture" 2>/dev/null | tail -1)"
+  [ -n "$line" ] || return 0
+  # A trailing ":<port>" is how every common runtime renders a bind
+  # address (Node's EADDRINUSE, Python's OSError, Rust's std::net) --
+  # the LAST such match on the matched line, so "0.0.0.0:3940" style
+  # addresses win over an unrelated earlier number.
+  port="$(printf '%s' "$line" | grep -oE ':[0-9]{2,5}([^0-9]|$)' | tail -1 | tr -dc '0-9')"
+  [ -n "$port" ] || return 0
+  occ_pid=""; occ_cmd=""
+  if command -v ss >/dev/null 2>&1; then
+    occ_raw="$(ss -H -lptn "sport = :$port" 2>/dev/null | head -1)"
+    occ_pid="$(printf '%s' "$occ_raw" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)"
+    occ_cmd="$(printf '%s' "$occ_raw" | grep -oE '\("[^"]+"' | head -1 | tr -d '("')"
+  fi
+  if [ -z "$occ_pid" ] && command -v lsof >/dev/null 2>&1; then
+    occ_raw="$(lsof -iTCP:"$port" -sTCP:LISTEN -n -P -F pc 2>/dev/null)"
+    occ_pid="$(printf '%s' "$occ_raw" | grep '^p' | head -1 | cut -c2-)"
+    occ_cmd="$(printf '%s' "$occ_raw" | grep '^c' | head -1 | cut -c2-)"
+  fi
+  if [ -n "$occ_pid" ]; then
+    echo "fwf gate: port $port is held by PID $occ_pid (${occ_cmd:-unknown}), which is NOT in this lock's recorded process group — this is a lock-protocol violation, not an environment problem (see issue #195). The occupant is left running; it is never killed by this diagnostic." >&2
+  else
+    echo "fwf gate: the wrapped command failed with what looks like a bind collision on port $port (Address already in use), but the occupant could not be identified (ss/lsof unavailable, or it already exited) — see issue #195" >&2
+  fi
+}
+
 # issue #195: releasing the lock(s) while the server the wrapped command
 # spawned is still holding its port is the exact incident this exists to
 # fix ("the lock is a lie"). Graceful, not the old self-inclusive KILL:
@@ -221,16 +263,23 @@ release_done=0
 # (`kill -0` fails) -- teardown never fails this run.
 _fwf_gate_teardown_wrapped() {
   [ -n "$wrapped_pgid" ] || return 0
-  kill -0 -"$wrapped_pgid" 2>/dev/null || return 0
-  kill -TERM -"$wrapped_pgid" 2>/dev/null
+  local pgid="$wrapped_pgid"
+  # Clear the handle up front, not at each exit point below -- a signal
+  # arriving mid-grace-window re-enters via a DIFFERENT code path
+  # (_fwf_gate_signal_cleanup), but teardown_done (the caller's guard)
+  # only protects against THIS function running twice, not against
+  # `pgid` still looking "live" to a caller that inspects it meanwhile.
+  wrapped_pgid=""
+  kill -0 -"$pgid" 2>/dev/null || return 0
+  kill -TERM -"$pgid" 2>/dev/null
   local waited=0
   while [ "$waited" -lt "$FWF_GATE_TEARDOWN_GRACE_SECS" ]; do
-    kill -0 -"$wrapped_pgid" 2>/dev/null || return 0
+    kill -0 -"$pgid" 2>/dev/null || return 0
     sleep 1
     waited=$(( waited + 1 ))
   done
-  echo "fwf gate: wrapped command's process group ($wrapped_pgid) still alive after ${FWF_GATE_TEARDOWN_GRACE_SECS}s TERM grace — SIGKILL (issue #195)" >&2
-  kill -KILL -"$wrapped_pgid" 2>/dev/null
+  echo "fwf gate: wrapped command's process group ($pgid) still alive after ${FWF_GATE_TEARDOWN_GRACE_SECS}s TERM grace — SIGKILL (issue #195)" >&2
+  kill -KILL -"$pgid" 2>/dev/null
 }
 
 # Only release the #123 per-role gate lock if WE currently hold it. During the
@@ -396,6 +445,15 @@ if [ "$want_e2e" = 1 ]; then
   export FWF_E2E_PORT="$e2e_port" FWF_E2E_DATA_DIR="$e2e_data_dir"
 fi
 
+# issue #195 (AC d/g): tee the wrapped command's STDERR to a scratch file
+# (via process substitution -- bash manages the reader, no manual FIFO/pid
+# bookkeeping) so a FAILED run can be scanned for a bind-collision
+# signature afterward, WITHOUT touching stdout at all and without
+# buffering/reordering/swallowing anything live callers watch -- the tee
+# writes through to the real stderr in the same instant it writes to the
+# file. Only ever READ after the fact; never influences what streams live.
+wrapped_err_capture="$(mktemp 2>/dev/null || echo "$FWF_STATE_DIR/gate-stderr.$$")"
+
 rc=0
 if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
   # issue #195: run the wrapped command in its OWN process group, separate
@@ -404,7 +462,8 @@ if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
   # into) a NEW group leader, its own pid becoming that group's pgid, so
   # _fwf_gate_teardown_wrapped can TERM/KILL just it without also ending
   # fwf-gate.sh before the lock(s) are released.
-  perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$@" &
+  perl -e 'use POSIX qw(setpgid); setpgid(0,0) or die "setpgid: $!"; exec @ARGV or die "exec: $!"' -- "$@" \
+    2> >(tee "$wrapped_err_capture" >&2) &
   wrapped_pgid=$!
   # Re-stamp the lock(s)' owner file(s) with the REAL child group now that
   # it exists -- acquired with fwf-gate.sh's OWN group recorded (the only
@@ -413,13 +472,23 @@ if [ -n "${_FWF_GATE_IS_PGLEADER:-}" ] && command -v perl >/dev/null 2>&1; then
   _fwf_owner_restamp_pgid "$(fwf_gate_lock_dir "$role")/owner" "$wrapped_pgid" 1
   [ "$e2e_held" = 1 ] && _fwf_owner_restamp_pgid "$(fwf_e2e_lock_owner_path "$e2e_lane")" "$wrapped_pgid" 1
   wait "$wrapped_pgid" || rc=$?
-  # The group is gone (wait returned) -- clear the handle so a later
-  # teardown call is a correct no-op, and so a reused pid can never be
-  # mistaken for this run's own child.
-  wrapped_pgid=""
+  # `wait` returning means the GROUP LEADER exited -- it does NOT mean the
+  # group is empty. A wrapped command that backgrounds a server and then
+  # returns (this ticket's own reported scenario, and reproduced live
+  # while building this fix: a `(server &)` subshell orphans a live
+  # listener the instant its launching subshell exits) leaves that server
+  # alive in the SAME group. wrapped_pgid stays SET here on purpose, so
+  # _fwf_gate_release's teardown (below, always runs next via the EXIT
+  # trap) still has a real group to check/signal -- it clears the handle
+  # itself, only once it has confirmed the group is actually empty.
 else
-  "$@" || rc=$?
+  "$@" 2> >(tee "$wrapped_err_capture" >&2) || rc=$?
 fi
+
+if [ "$rc" -ne 0 ]; then
+  _fwf_gate_diagnose_port_collision "$wrapped_err_capture"
+fi
+rm -f "$wrapped_err_capture"
 
 if [ "$want_e2e" = 1 ]; then
   unset FWF_E2E_PORT FWF_E2E_DATA_DIR

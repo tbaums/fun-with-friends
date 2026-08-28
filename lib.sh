@@ -1490,16 +1490,17 @@ fwf_e2e_lock_acquire() {
   local label="${1:?fwf_e2e_lock_acquire needs a holder label}" waited=0 n lane owner rc ts now holder pid host
   local qstart missing=0 last_report port gen genfile data_dir
   local busy_rc="" busy_holder="" busy_pid="" busy_host="" busy_ts="" busy_missing=0
-  local pgid pgleader
+  local pgid="" pgleader=""
   # issue #195: same kill-safe process-group stamp #156 already gives the
   # cargo-build slot and mem-admit token (_fwf_kill_orphan_group, below) --
   # this lock's own missing half of that pattern. A dead e2e-lock holder's
   # child (the transom-server it started) is reaped through the SAME shared
   # helper before the lane is reclaimed, so releasing the LOCK and freeing
-  # the PORT happen together, never lock-first-port-later.
-  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
-  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
+  # the PORT happen together, never lock-first-port-later. Computed lazily
+  # (only once a lane is actually won, below) -- not upfront -- per #195's
+  # own review finding: a `ps` fork+exec sitting in front of the
+  # race-decisive mkdir measurably widens a real timing-sensitive test
+  # (issue #119's truly-simultaneous-race check, on the sibling gate lock).
   qstart="$(date +%s)"
   last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 ))   # force the FIRST report immediate (point 2)
   while true; do
@@ -1514,6 +1515,9 @@ fwf_e2e_lock_acquire() {
         printf '%s\n' "$gen" > "$genfile"
         data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
         mkdir -p "$data_dir" 2>/dev/null
+        pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+        pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+        case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
         printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
           "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
         printf '%s %s %s\n' "$n" "$port" "$data_dir"
@@ -1554,6 +1558,9 @@ fwf_e2e_lock_acquire() {
           printf '%s\n' "$gen" > "$genfile"
           data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
           mkdir -p "$data_dir" 2>/dev/null
+          pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+          pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+          case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
           printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
             "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
           printf '%s %s %s\n' "$n" "$port" "$data_dir"
@@ -2086,12 +2093,19 @@ fwf_gate_lock_acquire() {
   # this process's group, so reclaiming the LOCK from a dead (or wedged-
   # anomaly) holder without also reaping that group is exactly how the lock
   # says "free" while the port stays held (this ticket's reported incident).
-  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
-  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
+  #
+  # QA-caught (#195 review): computed HERE, unconditionally, before the
+  # race-decisive mkdir below, `ps -o pgid=` measurably widened issue
+  # #119's own truly-simultaneous-race test's failure rate (a real fork+
+  # exec with variable scheduling latency, sitting right in front of the
+  # one instruction whose timing that test depends on) -- computed lazily
+  # instead, ONLY once this call has actually won the lock.
   dir="$(fwf_gate_lock_dir "$role")"; owner="$dir/owner"
   mkdir -p "$(dirname "$dir")" 2>/dev/null
   if mkdir "$dir" 2>/dev/null; then
+    pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+    pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+    case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
     printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$pgid" "$pgleader" "$(hostname)" "$(date +%s)" > "$owner"
     return 0
   fi
@@ -2117,6 +2131,9 @@ fwf_gate_lock_acquire() {
   _fwf_kill_orphan_group "$(_fwf_gate_owner_field host "$owner")" "$(_fwf_gate_owner_field pgleader "$owner")" "$(_fwf_gate_owner_field pgid "$owner")" "$(_fwf_gate_owner_field acquired "$owner")"
   rm -rf "$dir"
   if mkdir "$dir" 2>/dev/null; then
+    pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+    pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+    case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
     printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nacquired=%s\n' "$role" "$$" "$pgid" "$pgleader" "$(hostname)" "$(date +%s)" > "$owner"
     return 0
   fi
