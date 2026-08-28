@@ -5526,13 +5526,23 @@ assert_contains "E2E_CMD with cargo -> --cargo-build auto-appended on __E2E__ to
 # point (proving this is a semaphore, not an accidental mutex-of-1).
 CBGRUN="$TMP/cargobuild-e2e"
 mkdir -p "$CBGRUN"
-CB_COUNTER="$CBGRUN/holders"; CB_PEAKS="$CBGRUN/peaks.log"
-mkdir -p "$CB_COUNTER"; : > "$CB_PEAKS"
+CB_COUNTER="$CBGRUN/holders"; CB_PEAKS="$CBGRUN/peaks.log"; CB_EVIDENCE="$CBGRUN/evidence.log"
+mkdir -p "$CB_COUNTER"; : > "$CB_PEAKS"; : > "$CB_EVIDENCE"
+CB_LOCK_DIR="$(FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CARGO_BUILD_LOCK\"")"
+# issue #292 AC(b): the marker now carries the holder's role/pid and the
+# concurrency it saw (not just an empty touch), so a peak-exceeded run can
+# be diagnosed instead of merely detected -- which of #292's two causes
+# fired (a genuine second slot-holder vs. a corpse marker from a holder
+# that died) is exactly the fact a bare count can't distinguish. The dump
+# happens FROM the poller, in real time, the instant it observes an
+# over-count -- a post-hoc dump (after all three holders have already
+# exited and released) always finds the real slot dir already empty, which
+# is what actually happened chasing this ticket's own evidence.
 cat > "$TMP/cargo-build-harness.sh" <<'EOSCRIPT'
 set -uo pipefail
-counter_dir="$1"; peaks_file="$2"; hold="$3"
+counter_dir="$1"; peaks_file="$2"; hold="$3"; label="$4"; evidence_file="$5"; lock_dir="$6"
 me="$counter_dir/$$-$RANDOM"
-: > "$me"
+printf 'role=%s\npid=%s\nconcurrency=%s\n' "$label" "$$" "${FWF_CARGO_BUILD_CONCURRENCY:-}" > "$me"
 n="$(ls "$counter_dir" | wc -l | tr -d ' ')"
 echo "$n" >> "$peaks_file"
 # issue #247 AC (a9-i): sample THROUGHOUT the hold via a BACKGROUND poller,
@@ -5546,7 +5556,28 @@ echo "$n" >> "$peaks_file"
 # killing it once the fixed `sleep "$hold"` completes keeps the release
 # timing exactly as reliable as the original one-shot version while still
 # sampling many times during the hold.
-( while :; do sleep 0.05; ls "$counter_dir" | wc -l | tr -d ' ' >> "$peaks_file"; done ) &
+( while :; do
+    sleep 0.05
+    cnt="$(ls "$counter_dir" | wc -l | tr -d ' ')"
+    echo "$cnt" >> "$peaks_file"
+    if [ "$cnt" -gt "${FWF_CARGO_BUILD_CONCURRENCY:-2}" ]; then
+      {
+        echo "=== over-admission $cnt observed by $label (pid $$) ==="
+        echo "--- counter dir markers ---"
+        for f in "$counter_dir"/*; do
+          [ -f "$f" ] || continue
+          echo "marker $(basename "$f"):"; sed 's/^/  /' "$f"
+        done
+        echo "--- real slot dir ($lock_dir) ---"
+        for sd in "$lock_dir"/slot-*; do
+          [ -d "$sd" ] || continue
+          echo "$sd/owner:"; sed 's/^/  /' "$sd/owner" 2>/dev/null
+          p="$(awk -F= '$1=="pid"{print $2}' "$sd/owner" 2>/dev/null)"
+          if [ -n "$p" ]; then kill -0 "$p" 2>/dev/null && echo "  -> pid $p ALIVE" || echo "  -> pid $p DEAD"; fi
+        done
+      } >> "$evidence_file" 2>&1
+    fi
+  done ) &
 POLLER=$!
 sleep "$hold"
 kill "$POLLER" 2>/dev/null; wait "$POLLER" 2>/dev/null
@@ -5566,7 +5597,7 @@ EOSCRIPT
 run_cargo_gated() { # $1=role $2=holdsecs
   FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=2 FWF_MEM_ADMIT_ENABLE=0 \
     FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=15 \
-    "$ROOT/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2"
+    "$ROOT/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2" "$1" "$CB_EVIDENCE" "$CB_LOCK_DIR"
 }
 run_cargo_gated cbe2e-a 2 > "$CBGRUN/a.out" 2>&1 & CBA_PID=$!
 run_cargo_gated cbe2e-b 2 > "$CBGRUN/b.out" 2>&1 & CBB_PID=$!
@@ -5593,6 +5624,20 @@ if [ "$CBA_RC" != 0 ] || [ "$CBB_RC" != 0 ] || [ "$CBC_RC" != 0 ] \
     cat "$CBGRUN/$_cbf.out" >&2 2>/dev/null
   done
   echo "## measured runtime state: FWF_MEM_ADMIT_ENABLE=0 (pinned, AC c) FWF_CARGO_BUILD_CONCURRENCY=2 CB_PEAK_MAX=$CB_PEAK_MAX CB_PEAK_REACHED_2=$CB_PEAK_REACHED_2 peaks=[$(tr '\n' ' ' < "$CB_PEAKS")]" >&2
+fi
+# issue #292 AC(b): on an over-admission specifically (peak > concurrency),
+# surface the evidence the harness's poller captured IN REAL TIME (counter
+# markers + the real slot dir's owner files, at the moment of the
+# over-count) -- a post-hoc dump here would always find the real slots
+# already released by the time the three holders have finished and been
+# waited on, which is what actually happened chasing this ticket's own
+# evidence. This is the instrument that discriminates #292's two
+# hypotheses: three markers whose roles/pids all resolve to LIVE real slot
+# owners is a genuine admission defect; a marker with no matching live slot
+# owner is a corpse left by a holder that died mid-hold.
+if [ "$CB_PEAK_MAX" -gt 2 ]; then
+  echo "## issue #292: over-admission evidence (captured in real time by the poller):" >&2
+  cat "$CB_EVIDENCE" >&2 2>/dev/null
 fi
 assert_eq "e2e: holder a completes" "0" "$CBA_RC"
 assert_eq "e2e: holder b completes" "0" "$CBB_RC"

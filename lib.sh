@@ -1881,7 +1881,7 @@ _fwf_owner_restamp_pgid() { # $1=owner-file $2=pgid $3=pgleader
 # callers treat that as a SKIP (defer to next tick), the same as a busy e2e
 # lock, never as a build failure.
 fwf_cargo_build_slot_acquire() {
-  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder reap_reason pid2 pgid pgleader
+  local label="${1:?fwf_cargo_build_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now holder reap_reason pid2 pgid pgleader nonce
   # issue #156 hole #1 (DEFAULT path): stamp the holder's process group so this
   # slot's reaper can take an orphaned build tree down on a single-pid SIGKILL —
   # the same protection the admission path already had, now covering the default.
@@ -1893,10 +1893,29 @@ fwf_cargo_build_slot_acquire() {
     for n in $(seq 1 "$FWF_CARGO_BUILD_CONCURRENCY"); do
       slot="$CARGO_BUILD_LOCK/slot-$n"
       if mkdir "$slot" 2>/dev/null; then
-        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
-          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
-        echo "$n"
-        return 0
+        # issue #292: a `mkdir` "win" on this slot is necessary but NOT
+        # sufficient — measured directly (not inferred): under real
+        # concurrent load, a second, independent contender's `mkdir` on
+        # this identical path can ALSO report success (confirmed via
+        # instrumented repro, ~4-15% of trials, no reap/stale path
+        # involved on either side — two genuinely live processes both
+        # believing they hold the same slot). Write-then-read-back with a
+        # per-attempt nonce turns that ambiguity into a decision: whichever
+        # writer's content a fresh read shows is the true, sole owner; the
+        # other sees a nonce that isn't its own and knows it lost, before
+        # ever launching the wrapped build.
+        nonce="$$-$RANDOM-$RANDOM-$(date +%s%N 2>/dev/null || date +%s)"
+        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nnonce=%s\n' \
+          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$nonce" > "$slot/owner"
+        if [ "$(_fwf_e2e_owner_field nonce "$slot/owner")" = "$nonce" ]; then
+          echo "$n"
+          return 0
+        fi
+        # Lost the race after mkdir reported success for both sides — the
+        # content now on disk is the OTHER winner's, so do NOT rm -rf here
+        # (that would evict a holder who legitimately owns this slot).
+        # Fall through to the next slot / next poll cycle and try again.
+        continue
       fi
       owner="$slot/owner"
       _fwf_e2e_owner_liveness "$owner"; rc=$?
@@ -1939,11 +1958,22 @@ fwf_cargo_build_slot_acquire() {
         "$(_fwf_e2e_owner_field acquired "$owner")"
       rm -rf "$slot"
       if mkdir "$slot" 2>/dev/null; then
-        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
-          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" > "$slot/owner"
+        # issue #292: same write-then-verify as the fresh-mkdir branch above
+        # — the reap path's own exclusive $slot.reap only guards against
+        # another REAPER, not against this recreate racing an entirely
+        # independent top-level acquirer (the comment below already names
+        # that gap), and a bare mkdir "win" is not trustworthy either way.
+        nonce="$$-$RANDOM-$RANDOM-$(date +%s%N 2>/dev/null || date +%s)"
+        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nnonce=%s\n' \
+          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$nonce" > "$slot/owner"
         rmdir "$slot.reap" 2>/dev/null
-        echo "$n"
-        return 0
+        if [ "$(_fwf_e2e_owner_field nonce "$slot/owner")" = "$nonce" ]; then
+          echo "$n"
+          return 0
+        fi
+        # Lost it anyway — back off exactly like the ordinary-race case
+        # below; do NOT rm -rf a slot someone else's content now occupies.
+        continue
       fi
       # The exclusive .reap lock only protects against ANOTHER REAPER racing
       # us to this same stale slot — it does NOT stop an entirely different,
