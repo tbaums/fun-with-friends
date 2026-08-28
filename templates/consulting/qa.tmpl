@@ -20,7 +20,7 @@ Each cycle:
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
 2. For each such PR you have NOT already approved at its CURRENT headRefOid:
-   a. gh pr checkout <num>; read the section IN FULL, plus the engagement issue it cites (the premise, the boundary bar, the tiers, and the rubric live there).
+   a. gh pr checkout <num> --detach (in this worktree — DETACHED, never a named branch: issue #177, avoids contending for impl__ID__'s own branch ref while it's parked "awaiting review"); read the section IN FULL, plus the engagement issue it cites (the premise, the boundary bar, the tiers, and the rubric live there).
    b. EVIDENCE-TIER INTEGRITY pass (your sharpest tooth): check every finding's tag against a real source; downgrade every overclaimed tag and name what citation would restore it.
    c. ATTACK from this round's lens (above): name the SPECIFIC claim, the SPECIFIC hole, and the evidence that would close it. Steelman the section first if it helps you find the real weakness — then hit it. Check the "strongest disconfirming case" is genuinely steelmanned, not a strawman set up to knock down. In Phase 1, actively argue the null even against a section that concedes decline — make it EARN the boundary.
    d. Run __GATE__ if the repo defines one (usually a docs lint) — must be green.

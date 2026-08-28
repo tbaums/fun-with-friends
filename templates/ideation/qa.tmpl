@@ -13,7 +13,7 @@ Each cycle:
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
 2. For each such PR you have NOT already approved at its CURRENT headRefOid:
-   a. gh pr checkout <num>; read every brief in the diff IN FULL, plus the challenge issue it cites (the rubric lives there).
+   a. gh pr checkout <num> --detach (in this worktree — DETACHED, never a named branch: issue #177, avoids contending for impl__ID__'s own branch ref while it's parked "awaiting review"); read every brief in the diff IN FULL, plus the challenge issue it cites (the rubric lives there).
    b. SCORE each brief against the challenge rubric (default lenses if the challenge sets none): NOVELTY (is the prior-art section honest? is the difference real or cosmetic?), FEASIBILITY (is there a smallest-real-version and a testable riskiest assumption — not a vibe?), IMPACT (if it works, does anyone care? does it serve the stated user at the stated moment?), CLARITY (concrete enough to disagree with?). Check the brief follows the template sections and names what it builds on.
    c. DUPLICATE CHECK: against ideas/ on __STAGING__ and the other open idea PRs (gh pr list --state open + gh pr diff). A true duplicate of a merged brief → request changes naming the existing file ("differentiate or drop"). A variant that adds a real twist passes — note the relationship.
    d. Run __GATE__ if the repo defines one (usually a docs lint here) — must be green.

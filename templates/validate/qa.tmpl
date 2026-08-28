@@ -18,7 +18,7 @@ Each cycle:
    Keep only PRs whose headRefName starts with "impl__ID__/" AND isDraft is false.
 
 2. For each such PR you have NOT already approved at its CURRENT headRefOid:
-   a. gh pr checkout <num>; read the section IN FULL, plus the hypothesis issue it cites (the claims, kill criteria, and evidence bar live there).
+   a. gh pr checkout <num> --detach (in this worktree — DETACHED, never a named branch: issue #177, avoids contending for impl__ID__'s own branch ref while it's parked "awaiting review"); read the section IN FULL, plus the hypothesis issue it cites (the claims, kill criteria, and evidence bar live there).
    b. EVIDENCE-TIER INTEGRITY (your sharpest tooth): check every finding's tag. An [E:cited] with no real source → downgrade it and request the citation. An [A:assumption] doing LOAD-BEARING work with no cheapest-disconfirming-test → that is the attack. Confidence dressed up as evidence is the factory's characteristic failure; you are the one who catches it.
    c. ATTACK from this round's lens (above): name the SPECIFIC claim, the SPECIFIC hole, and what evidence would close it. Steelman the section first if it helps you find the real weakness — then hit it. Check the "strongest disconfirming case" is genuinely steelmanned, not a strawman the analyst set up to knock down.
    d. Run __GATE__ if the repo defines one (usually a docs lint) — must be green.
