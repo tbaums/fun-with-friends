@@ -301,6 +301,33 @@ installed_version_json() {
 # tests can assert on — never left to "an operator could probably notice
 # the dash looks emptier than usual", which is unfalsifiable and was this
 # AC's own prior, rejected wording.
+# --- claim refusals, EVENT-SOURCED (issue #243 AC f) ------------------------
+# A refusal must surface as a distinct dash state -- "N items blocked on
+# authz" -- so a human sees a QUEUE, not a floor that has mysteriously gone
+# quiet. The count is a plain read of fwf-claim.sh's own durable rolling
+# log, NEVER recomputed by re-running fwf authz per candidate issue per
+# render: #239 already measured that exact per-render cost as this dash's
+# dominant term, and a second one here would double it before #239 even
+# finished measuring the first. "Recent" is a fixed trailing window
+# (default 24h) so the count reflects an ongoing queue, not all-time noise.
+claim_refusals_json() {
+  local log="$STATE_DIR/claim-refusals.log" window="${FWF_CLAIM_REFUSAL_WINDOW:-86400}" cutoff n
+  if [ ! -f "$log" ]; then
+    jq -n '{count:0}'
+    return 0
+  fi
+  cutoff=$(( $(date +%s) - window ))
+  n="$(awk -v cutoff="$cutoff" '
+    { ts=""
+      for (i=1;i<=NF;i++) if ($i ~ /^ts=/) ts=substr($i,4)
+      if (ts=="" || ts+0 < cutoff) next
+      n++
+    }
+    END { print n+0 }
+  ' "$log")"
+  jq -n --argjson n "${n:-0}" '{count:$n}'
+}
+
 api_budget_json() {
   local hr remaining limit reset label status
   hr="$("$DIR/fwf-ghcache.sh" headroom 2>/dev/null)" || true
@@ -597,6 +624,7 @@ main() {
   unrouted_prs="$(unrouted_prs_json "$roles")"
   visibility="$(visibility_json)"
   api_budget="$(api_budget_json)"
+  claim_refusals="$(claim_refusals_json)"
 
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
@@ -606,10 +634,12 @@ main() {
     --argjson activity "$activity" --argjson needs_you "$needs_you" \
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
     --argjson unrouted_prs "$unrouted_prs" --argjson visibility "$visibility" --argjson api_budget "$api_budget" \
+    --argjson claim_refusals "$claim_refusals" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$roles, decisions:$decisions, issues:$issues,
       activity:$activity, needs_you:$needs_you, floor_idle:$floor_idle, upgrade:$upgrade,
-      installed:$installed, unrouted_prs:$unrouted_prs, visibility:$visibility, api_budget:$api_budget}'
+      installed:$installed, unrouted_prs:$unrouted_prs, visibility:$visibility, api_budget:$api_budget,
+      claim_refusals:$claim_refusals}'
   rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
 

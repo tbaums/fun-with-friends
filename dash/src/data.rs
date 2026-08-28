@@ -37,6 +37,20 @@ pub struct Dashboard {
     pub visibility: Visibility,
     #[serde(default)]
     pub api_budget: ApiBudget,
+    #[serde(default)]
+    pub claim_refusals: ClaimRefusals,
+}
+
+/// A count of RECENT `fwf claim` refusals (issue #243 AC f), event-sourced
+/// from a durable log fwf-claim.sh itself appends to — never recomputed
+/// per render (that would mean one `fwf authz` per candidate issue per
+/// refresh, doubling #239's own already-measured dominant dash term). "N
+/// items blocked on authz" is a QUEUE a human should see, distinct from an
+/// idle floor that has simply gone quiet.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ClaimRefusals {
+    #[serde(default)]
+    pub count: u64,
 }
 
 /// Set when the captain is blocked on a human decision (an in-pane "NEEDS YOU"
