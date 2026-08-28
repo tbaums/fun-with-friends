@@ -4593,6 +4593,52 @@ assert_contains "help mentions branch-policy check" "$("$ROOT/fwf" help)" "branc
 assert_contains "help mentions branch-policy producible" "$("$ROOT/fwf" help)" "branch-policy producible"
 
 # --------------------------------------------------------------------------
+# fwf-pr-checks-honored.sh (issue #220 AC i/o/p): the QA-side ERGONOMIC
+# pre-merge checkpoint. Real jq diff logic driven with stubbed gh_pr_checks/
+# gh_pr_comments fixtures, reproducing instance 2 (the live incident this
+# ticket was filed on) directly: a deterministic red (shellcheck) alongside
+# a genuinely flaky red, with only the flaky one named.
+PCH="$ROOT/fwf-pr-checks-honored.sh"
+pch() { # $1=checks-json $2=comments-json
+  FWF_PROFILE=example bash -c "
+    source '$PCH'
+    gh_pr_checks() { printf '%s' '$1'; }
+    gh_pr_comments() { printf '%s' '$2'; }
+    main 999"
+}
+INST2_CHECKS='[{"name":"shellcheck + syntax","bucket":"fail"},{"name":"functional suite (ubuntu-latest)","bucket":"fail"},{"name":"functional suite (macos-latest)","bucket":"pass"},{"name":"dash crate (rust)","bucket":"pass"}]'
+
+section "pr-checks-honored (#220 AC o): instance 2 reproduced -- naming ONE flaky check never licenses a different deterministic red"
+assert_contains "no discount at all -> both reds refused" "$(pch "$INST2_CHECKS" '[]' 2>/dev/null)" \
+  "REFUSED: shellcheck + syntax"
+NAMED_FLAKY_ONLY='[{"body":"fwf-CI-discount: functional suite (ubuntu-latest)\nknown timing flake (#245), unrelated to this diff"}]'
+DISCRIMINATING="$(pch "$INST2_CHECKS" "$NAMED_FLAKY_ONLY" 2>/dev/null)"
+assert_contains "the discriminating test: shellcheck is STILL refused even with the flaky check discounted" "$DISCRIMINATING" \
+  "REFUSED: shellcheck + syntax"
+assert_not_contains "the discounted flaky check itself is NOT refused" "$DISCRIMINATING" \
+  "REFUSED: functional suite (ubuntu-latest)"
+NAMED_BOTH='[{"body":"fwf-CI-discount: functional suite (ubuntu-latest)"},{"body":"fwf-CI-discount: shellcheck + syntax\nfixed forward in e86bf6a, this run predates it"}]'
+assert_eq "both explicitly named -> honored, nothing refused" "" "$(pch "$INST2_CHECKS" "$NAMED_BOTH" 2>/dev/null)"
+assert_eq "all green, no discount needed -> honored" "" \
+  "$(pch '[{"name":"shellcheck + syntax","bucket":"pass"}]' '[]' 2>/dev/null)"
+
+section "pr-checks-honored (#220 AC p, same defect family as #218/#194's own repro): a discount quoted inside a fence must not count"
+FENCED_DISCOUNT="$(jq -nc --arg b $'Quoting for discussion:\n```\nfwf-CI-discount: shellcheck + syntax\n```\nThat is not a real discount.' '[{body:$b}]')"
+assert_contains "a fenced discount is ignored -- the check is still refused" \
+  "$(pch '[{"name":"shellcheck + syntax","bucket":"fail"}]' "$FENCED_DISCOUNT" 2>/dev/null)" \
+  "REFUSED: shellcheck + syntax"
+
+section "pr-checks-honored (#220): unreadable != empty -- a failed gh read never silently honors"
+UNREADABLE_RC="$(FWF_PROFILE=example bash -c "
+  source '$PCH'
+  gh_pr_checks() { return 1; }
+  main 999" >/dev/null 2>&1; echo $?)"
+assert_eq "a checks-read failure exits 2 (UNKNOWN), never 0 (honored)" "2" "$UNREADABLE_RC"
+
+section "pr-checks-honored (#220): CLI wiring"
+assert_contains "help mentions pr-checks-honored" "$("$ROOT/fwf" help)" "pr-checks-honored <n>"
+
+# --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
 # any role raises on an issue/PR, that the captain's per-tick sweep picks up
 # reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests

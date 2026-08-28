@@ -210,6 +210,17 @@ UTILITIES
                          PR — catches a silently-renamed job or an
                          on.paths-filtered job before either blocks every
                          merge forever with no failing check to point at.
+  pr-checks-honored <n>  The QA-side ERGONOMIC pre-merge checkpoint (issue
+                         #220) — NOT the security control (branch protection
+                         is); every seat can still merge past this with raw
+                         gh. Reads the PR's actual check conclusions: any
+                         FAILURE refuses (prints "REFUSED: <check-name>")
+                         UNLESS a plain PR comment's first line names it
+                         exactly (`fwf-CI-discount: <check-name>`) — naming
+                         one flaky check never licenses advancing past a
+                         DIFFERENT, deterministic red one. Exit 0 = honored;
+                         1 = refused (names which); 2 = checks/comments
+                         unreadable, fails closed, never silently honored.
   pr-context <n> [n...]  Print the sanitized "## Context & rationale" fold for
                          the given issue number(s) — an implementer/QA agent
                          runs this for real when composing a PR/squash-merge
@@ -820,6 +831,7 @@ case "$cmd" in
   pr-reviewer) engine fwf-pr-reviewer.sh "$@";;
   pr-assign-reviewer) engine fwf-pr-assign-reviewer.sh "$@";;
   branch-policy) engine fwf-branch-policy.sh "$@";;
+  pr-checks-honored) engine fwf-pr-checks-honored.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
   flag-captain) engine fwf-flag-captain.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
