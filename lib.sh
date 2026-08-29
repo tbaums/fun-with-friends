@@ -868,6 +868,7 @@ _fwf_survey_reason() { # $1=label -> reason
     "$HOLD_LABEL")      printf 'held for a future release -- a freeze is on' ;;
     "$IDEA_LABEL")       printf 'a parked idea -- skip until the human removes the label to activate it' ;;
     "$TRACKING_LABEL")  printf 'a living coordination document, not buildable work' ;;
+    "$COORD_LABEL")     printf 'still being drafted via the coordination lane idle-backfill (#169) -- not yet ready for a build claim' ;;
     *)                  printf 'excluded by survey configuration' ;;
   esac
 }
@@ -923,6 +924,7 @@ $text"
   text="${text//__UNGATE_SENTINEL__/$OPERATOR_UNGATE_SENTINEL}"
   text="${text//__HOLD_LABEL__/$HOLD_LABEL}"
   text="${text//__DISCOVERY_LABEL__/$DISCOVERY_LABEL}"
+  text="${text//__COORD_LABEL__/$COORD_LABEL}"
   # issue #255: __SURVEY_EXCLUDE__ (the -label: flags) and __SURVEY_EXCLUDE_PROSE__
   # (the matching human-readable "NOT X (reason)" eligibility text) are BOTH
   # generated from the same per-role label set in one pass -- never two

@@ -188,6 +188,21 @@ instead of stalling silently (issue #99).
   upgrade` (then `fwf resume`/`fwf respawn <role>` to re-arm running panes) on
   each machine. `fwf up` also warns automatically if the box is behind the latest
   release, so a stale machine can't silently run the old flow.
+- **Coordination-lane idle-backfill** (`coordination-only` label, issue #169):
+  a doc-only/chunkable ticket or a from-scratch `discovery` proposal can make
+  progress on the (uncapped, often-idle) coordination session instead of
+  consuming a scarce `FWF_PAIRS`-limited build slot for its whole drafting
+  phase. PM chunks doc-only work across idle ticks; GV drafts a from-scratch
+  discovery proposal in one sustained sitting, but only while the build floor
+  is actually down. Both draft entirely as issue comments (`COORD-DRAFT
+  (chunk N): ...`, then `COORD-DRAFT: READY — <path> — ...`) — never a branch
+  or file, since PM/GV stay read-only exactly as always. Hard preemption is
+  by construction: the step is the last thing checked each cycle, so any real
+  PM/GV duty on a later cycle runs first, and a chunk is always complete and
+  posted before the cycle ends, so there is never unpersisted work to lose.
+  An implementer recognizes the `COORD-DRAFT` comments and mechanically
+  assembles them into the target file — fast, since the drafting already
+  happened. See `docs/coordination-idle-backfill.md`.
 - **QA1–3** (paired by branch prefix): review only `implN/*` PRs, run the fast
   gate, and **squash-merge green ones into `staging`** (preserving `Closes #N`);
   they also **request changes on a behavior-changing PR whose diff didn't update
@@ -684,6 +699,7 @@ Generic knobs live in `config.sh` (all `FWF_*` env-overridable): `FWF_SESSION`
 `FWF_QA_INTERVAL`, `FWF_CONDUCTOR_INTERVAL`, `FWF_PM_INTERVAL`, `FWF_GV_INTERVAL`,
 `FWF_CAPTAIN_INTERVAL`, `FWF_IMPL_INTERVAL`, `FWF_WIP_LABEL`, `FWF_HOLD_LABEL`,
 `FWF_DISCOVERY_LABEL` (default `discovery`),
+`FWF_COORD_LABEL` (default `coordination-only`, issue #169),
 `FWF_BOOT_TIMEOUT`, `FWF_CLAUDE_CMD`, `FWF_WORKSPACE_BASE`, colors — plus the
 sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
 `FWF_TEMPLATE`) from the next section. Every seat launches with Claude Code's

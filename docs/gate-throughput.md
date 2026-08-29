@@ -336,6 +336,15 @@ broader list would risk a false SKIP. Shadow mode only — this never actually
 skips the suite; it starts accumulating the would-skip-rate + timing history
 a future flip-or-drop decision needs, exactly as #261 did for the Rust suite.
 
+**Bounded deferral, dated (same discipline as #261's AC (c) above):** revisit
+flipping this classifier to enforcing by **2026-09-28** (30 days from #352's
+PR) or after 20 real CI runs of the `test` job have accumulated in
+`.gate-bash-suite-shadow.log`, whichever comes first. Until then, #169's own
+gate acceptance criterion ("a markdown-only PR does NOT run the full suite")
+is honestly unmet — a doc/proposal PR still pays the full gate; see
+`docs/coordination-idle-backfill.md` for how #169 states this rather than
+claiming it vacuously.
+
 ## Orphan reaping is fail-closed, and portable (#332)
 
 When a gate lock's recorded holder is dead, the gate may reap the orphaned
