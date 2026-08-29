@@ -7011,6 +7011,7 @@ DRIFT_CLEAN="$(_fwf_usage_load_for_test fwf_usage_model_drift 'claude-sonnet-5
 claude-opus-4-8' 'claude-sonnet-5
 claude-haiku-4-5')"; DRIFT_CLEAN_RC=$?
 assert_eq "(e2) every reported+declared model priced -> clean, rc 0" "0" "$DRIFT_CLEAN_RC"
+assert_eq "(e2) a clean run also produces no output" "" "$DRIFT_CLEAN"
 DRIFT_DIRTY="$(_fwf_usage_load_for_test fwf_usage_model_drift 'claude-opus-5' 'claude-sonnet-4-6')"; DRIFT_DIRTY_RC=$?
 assert_eq "(e1) BOTH instances fire: reported+declared each contribute a failure, rc nonzero" "1" "$DRIFT_DIRTY_RC"
 assert_contains "(e1) the REPORTED-side instance (opus-5, live seats) is named" "$DRIFT_DIRTY" "REPORTED model NOT priced: claude-opus-5"
