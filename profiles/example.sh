@@ -38,6 +38,13 @@ DEFAULT_BRANCH="${FWF_DEFAULT_BRANCH:-main}"                # released by you; t
 GATE_CMD='make test'              # fast gate QA runs before merging to staging (tests + typecheck/lint)
 BUILD_CMD='true'                  # warm-build per worktree at provision (use 'true' if none)
 E2E_CMD='true'                    # full e2e the conductor runs before promoting to integration ('true' = none)
+# TIP (issue #385): if your E2E_CMD is the same suite ci.yml already runs on the
+# same SHA, point it at scripts/conductor-e2e.sh instead. That consults ci.yml's
+# verdict for the exact tip SHA first and only re-runs locally when there is no
+# definitive green -- measured: promotion cycles were 17-53min (avg ~36) against
+# a designed 2min cadence, and 3 of 7 verdicts came back STALE because staging
+# moved during the run. Fail-safe: anything other than a definitive green falls
+# through to the full local run.
 E2E_SETUP_CMD=''                  # one-time e2e dep install in the conductor tree (e.g. 'npx playwright install')
 # Reap-scoping warning (issue #65): fwf runs N parallel worktrees on ONE box.
 # If E2E_CMD's harness does its own "reap stale processes" pass at startup
