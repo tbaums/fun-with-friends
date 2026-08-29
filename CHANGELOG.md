@@ -11,6 +11,45 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-28
+
+**The macOS release.** `functional suite (macos-latest)` had been red for days and no macOS run could even *finish* — the gate SIGKILLed its own test runner partway through, so ~500 assertions had never executed on that platform. Fixing that exposed six distinct GNU-vs-BSD defect families, every one of them invisible to a Linux CI runner by construction. All are fixed and verified on a real Darwin box: **2174 passed, 0 failed**.
+
+### Added
+- **`fwf claim`: a fail-fast authorization checkpoint at intent-formation time** (#243, code 65f6d7f, docs 65f6d7f) — authorization was only enforced at the point of action, so a seat could form intent, branch and start work it was never authorized to do, discovering the refusal late.
+- **Per-tick GitHub API volume is measured** (#239, code ce9a7da, docs ce9a7da) — exhaustion previously collapsed into a confident "nothing in flight".
+
+### Fixed — macOS / portability
+- **The gate SIGKILLed its own test runner on macOS** (#332, code 7ae3528, docs fcd2996) — `ps -o etimes` is a GNU procps extension that does not exist on BSD, so the PID/PGID-reuse guard read empty on every macOS invocation and **failed OPEN into `kill -KILL`**. In the harness the group it signalled contained the test runner, so the suite died mid-run with no summary and no exit code — indistinguishable from a slow run. Now uses portable `ps -o etime=`, **fails closed** when elapsed time cannot be determined, and refuses to signal an ancestor's process group.
+- **The subscription usage brake never engaged on macOS** (#337 A, code 06c9a10, docs 06c9a10) — `date -j -f` was called without `-u`, so a UTC `as_of` stamp was parsed as local time: +25200s on a PDT box, tripping the fail-closed clock-skew guard on every poll. #149's brake — the thing that stops a Max-plan operator blowing their usage limit — has not functioned on macOS since it shipped in v0.33.0.
+- **The gh read-cache never sent a conditional request on macOS** (#337 D, code 06c9a10, docs 06c9a10) — `awk BEGIN{IGNORECASE=1}` is a gawk extension BSD awk silently ignores, so `/^etag:/` never matched the real `ETag:` header, the ETag was never stored, and every post-TTL poll was a **charged 200 instead of a free 304**. Fixed at all three copy-pasted sites.
+- **The heartbeat/STALE fixture could not backdate an mtime on BSD** (#304, code e2894d9, docs none — test fixture) — a GNU-only `touch -d` made five liveness assertions fail together. One shared fixture, not five bugs. `fwf dash` could render a merely-STALE role as **DOWN** on the operator's own Mac.
+- **BSD `wc` padding defeated #211's unknown-read log bound** (#284, code fc19d95, docs none — internal) — leading spaces broke the trim arithmetic, so the diagnostic log grew unbounded on macOS.
+- **`authz` pre-sentinel-cutoff verdicts were wrong on macOS** (#328, code db441f7, docs none — internal).
+- **The port-occupant diagnostic named the interpreter, not the workload** (#337 B, code 06c9a10, docs 06c9a10) — `lsof -F c` reports `Python` on macOS; the diagnostic now reports the full `ps -o args=` command line, which is more useful on both platforms.
+- **#276's provenance banner broke #278's silent-when-correct assertions** (#343, code 1621acb, docs none — internal) — both landed correct in isolation and contradicted each other on one branch. Resolved by asserting "no output other than the documented provenance line", preserving #276's unconditional forensic guarantee without weakening #278.
+
+### Fixed — pipeline integrity
+- **`authz` returned a false HELD for issues that were never gated** (#215, code 4a0f62d, docs 4a0f62d) — false refusals stranded fix-forwards and pushed roles toward forging authorizations rather than trusting the oracle.
+- **`authz` bypasses the shared poller cache** (#338, code fb3899a, docs fb3899a) — the oracle was reading a snapshot it could not confirm fresh.
+- **`fwf respawn` launched an UNAUTHENTICATED pane** (#217, code 55f1721, docs 55f1721) — `CLAUDE_CODE_OAUTH_TOKEN` was not re-injected, so a recovered seat came up unable to work; adds a bounded respawn circuit breaker.
+- **`fwf gate --e2e` released its lock while the spawned server still held the ports** (#195, code 331e335, docs 331e335).
+- **The promote gate ran against a stale worktree, and wrapped the installed binary rather than the tree under test** (#278 code f8de96a, #276 code 6adbb82, docs none — internal) — a gate bug could not be fixed through the pipeline it gates.
+- **`integration` could advance without the e2e gate** (#237, code df5fe76, docs df5fe76).
+- **The gate could not distinguish broken from flaky** (#227, code feefc06, docs feefc06).
+- **The release cut no longer manufactures the divergence its own guard refuses** (#262, code f483851, docs none — internal).
+- **QA reviews the PR head on a unique per-PR branch, never the implementer's own** (#177, code 4d7ec19, docs none — internal) — reviewer and implementer contended for one branch ref and deadlocked a pair; observed live.
+- **The PR-body sanitizer no longer substitutes role names inside CLI flags** (#234, code 9cd34c0, docs 9cd34c0) — the table is narrowed to protocol markers, not identifiers.
+- **`test/run.sh` no longer renders skipped sections as passes** (#275, code 5da557d, docs none — internal) — a green suite could contain zero assertions for the fix it was gating.
+- **The suite's #143 case no longer depends on the shared tmux server's ambient env** (#226, code e1eb0b0, docs none — internal).
+- **`reconcile-guard`'s indeterminate streak is CI-durable** (#258, code bb7e8c6, docs none — internal).
+- **The implementer survey's exclusion label set is single-sourced** (#255, code e870466, docs none — internal).
+- **The captain prompt no longer hardcodes impl1-3 regardless of `FWF_PAIRS`** (#221, code 7ee5246, docs none — internal).
+- **The respawn circuit breaker's shared-margin race is split** (#327, code 5ed1db2, docs none — internal).
+- **Sleep-bounded concurrency assertions swept** (#325, code 33c3b38, docs 33c3b38) — they stop testing and keep passing.
+- **`gate-rust-scope`'s SHADOW classifier is wired into a live gate** (#341, code 7dfee9a, docs 7dfee9a).
+- **cargo-build semaphore over-admission investigated** (#292, code 9536af9, docs none — internal).
+
 ## [0.35.0] - 2026-08-28
 
 ### Added
