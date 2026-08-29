@@ -123,9 +123,33 @@ _fwf_pr_ctx_proposal() { # $1=issue-num -> "**Design proposal (...):**\n\n<conte
 
 # --- one ticket's distilled block (unsanitized — caller sanitizes the whole) --
 # $1 = issue number -> "### <title>\n...\n" mechanical distillation.
+# --- self-referential-fold guard (issue #135, hardens the #189 failure mode) --
+# If this is ever fed a PR's own body (the exact confusion #189 fixed at the
+# CALL-SITE level), the PR's own machine trailers / credit line must never
+# survive into the card regardless of which section they land in under
+# fail-open -- unlike heading-level denial, this is line-level so it holds no
+# matter how the content is nested under whatever heading it fell under.
+# stdin -> stdout with those lines removed.
+_fwf_pr_ctx_strip_self_markers() {
+  grep -vE '^fwf-Provenance:|^Co-Authored-By:|^Closes #[0-9]+\.?[[:space:]]*$|🏭 Built with'
+}
+
+# $1 = issue number -> "### <title>\n...\n" mechanical distillation. FAIL-OPEN
+# (issue #135): every substantive section is kept by default and routed to a
+# bucket by heading keyword; only a short, explicit deny-list is dropped. The
+# old fail-closed version silently discarded anything outside five canonical
+# headings -- the better a ticket was written, the emptier its permanent
+# card. A section matching no known bucket lands in "Other context" rather
+# than the void, and a DRIFT notice (never a silent one) is printed to
+# stderr -- "written into the card, it is permanent noise on every commit;
+# printed to stdout during a squash-merge, nobody reads it" (this ticket's
+# own words) -- so the schema gap reaches someone who can act on it, without
+# becoming noise on every clean merge.
 _fwf_pr_ctx_one() {
   local n="$1" json title body rec t lt c
-  local intro="" decisions="" alternatives="" acceptance="" testing=""
+  local intro="" root_cause="" evidence="" constraints="" edge_cases=""
+  local decisions="" alternatives="" acceptance="" testing="" other=""
+  local seen=0 mapped=0 denied=0 other_count=0 other_titles=""
   json="$(fwf_pr_ctx_issue_json "$n")"
   title="$(printf '%s' "$json" | jq -r '.title // ""' 2>/dev/null)"
   body="$(printf '%s' "$json" | jq -r '.body // ""' 2>/dev/null)"
@@ -133,22 +157,46 @@ _fwf_pr_ctx_one() {
   while IFS= read -r -d $'\x1e' rec; do
     t="${rec%%$'\x1f'*}"; c="${rec#*$'\x1f'}"
     lt="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')"
+    c="$(printf '%s' "$c" | _fwf_pr_ctx_strip_self_markers)"
+    [ -n "$(printf '%s' "$c" | tr -d '[:space:]')" ] || continue
+    seen=$((seen + 1))
     case "$lt" in
-      *problem*|*intent*|*proposed\ behavior*|*goal*) intro="$intro$c";;
-      *decision*)                                     decisions="$decisions$c";;
-      *alternative*)                                  alternatives="$alternatives$c";;
-      *acceptance\ criteria*)                         acceptance="$acceptance$c";;
-      *testing*|*testability*)                        testing="$testing$c";;
-      *) : ;; # not a canonical section (e.g. role-coordination headers) — excluded
+      # Deny-list (issue #135's "coordination about the FUTURE, not the
+      # PAST" principle) -- role-coordination noise and, defensively, the
+      # extractor's own output heading, never admitted to any bucket.
+      *"for pm"*|*"for gv"*|*related*|*"context & rationale"*|*"context and rationale"*)
+        denied=$((denied + 1));;
+      *problem*|*intent*|*proposed\ behavior*|*goal*) intro="$intro$c"; mapped=$((mapped + 1));;
+      *root\ cause*)                                  root_cause="$root_cause$c"; mapped=$((mapped + 1));;
+      *evidence*)                                     evidence="$evidence$c"; mapped=$((mapped + 1));;
+      *constraint*|*blast-radius*|*sequencing*|*hard\ prerequisite*)
+                                                        constraints="$constraints$c"; mapped=$((mapped + 1));;
+      *edge\ case*)                                    edge_cases="$edge_cases$c"; mapped=$((mapped + 1));;
+      *decision*)                                      decisions="$decisions$c"; mapped=$((mapped + 1));;
+      *alternative*)                                   alternatives="$alternatives$c"; mapped=$((mapped + 1));;
+      *acceptance\ criteria*)                          acceptance="$acceptance$c"; mapped=$((mapped + 1));;
+      *testing*|*testability*)                         testing="$testing$c"; mapped=$((mapped + 1));;
+      # Fail-open catch-all (A3): an unrecognized-but-substantive section is
+      # kept, in source order, never silently discarded -- and counted, so
+      # the drift report below can name it.
+      *) other="$other$c"; other_count=$((other_count + 1)); other_titles="$other_titles, $t";;
     esac
   done < <(_fwf_pr_ctx_split <<<"$body")
   printf '### %s\n' "$title"
   [ -n "$intro" ] && printf '%s\n' "$(printf '%s' "$intro" | sed -E '/^[[:space:]]*$/d')"
+  [ -n "$root_cause" ] && printf '\n**Root cause:**\n%s\n' "$root_cause"
+  [ -n "$evidence" ] && printf '\n**Evidence:**\n%s\n' "$evidence"
+  [ -n "$constraints" ] && printf '\n**Constraints & sequencing:**\n%s\n' "$constraints"
+  [ -n "$edge_cases" ] && printf '\n**Edge cases:**\n%s\n' "$edge_cases"
   printf '\n**Decisions & tradeoffs:**\n%s\n' "${decisions:-_(none logged)_}"
   printf '\n**Alternatives considered:**\n%s\n' "${alternatives:-_(none logged)_}"
   printf '\n**Acceptance criteria:**\n%s\n' "${acceptance:-_(none logged)_}"
   printf '\n**Testing:**\n%s\n' "${testing:-_(none logged)_}"
+  [ -n "$other" ] && printf '\n**Other context:**\n%s\n' "$other"
   _fwf_pr_ctx_proposal "$n"
+  if [ "$other_count" -gt 0 ]; then
+    echo "fwf pr-context: DRIFT on issue #$n -- $other_count of $seen section(s) landed in 'Other context' (${other_titles#, }); mapped=$mapped denied=$denied. Consider widening the bucket schema or adding a deny-list entry (lib/pr_context.sh)." >&2
+  fi
 }
 
 # --- portable word-bounded substitution -------------------------------------
@@ -249,9 +297,37 @@ fwf_sanitize_pr_text() {
 fwf_pr_body_guard() {
   local text hit
   text="$(cat)"
-  hit="$(printf '%s\n' "$text" | grep -inE \
-    '(^|[^A-Za-z0-9_])(impl[0-9]+|qa[0-9]+|impl__ID__|qa__ID__|captain|conductor|worktree|floor|product-wip|release-hold|LI-[0-9]+|Owner:|WIP|GV-SIGNOFF|GV-CHANGES|QA-APPROVED:|QA-CHANGES-REQUESTED:|IMPL-ADDRESSED:|CLAIM (impl|qa)[0-9]+|ASSIGNED (impl|qa)[0-9]+|FWF_[A-Z_]+|fwf-self-[A-Za-z0-9-]+|staging branch|integration branch|origin/staging|origin/integration|gv|pm)([^A-Za-z0-9_]|$)' \
-    2>/dev/null || true)"
+  # issue #135: this backstop's word-list had drifted from what the
+  # sanitizer above it actually targets. #234 narrowed fwf_sanitize_pr_text
+  # to substitute PROTOCOL MARKERS ONLY -- never a bare role/jargon word a
+  # human legitimately types (this repo is public and ships 31 role-template
+  # files by name) -- but this guard kept blocking those same bare words
+  # (impl[0-9]+, qa[0-9]+, captain, conductor, worktree, floor, gv, pm,
+  # product-wip, release-hold, "*staging branch*"/"*integration branch*"
+  # prose) as if they were unsanitized leaks. A backstop that flags content
+  # its own front-line control was deliberately told to leave alone isn't a
+  # stricter guard, it's a DIFFERENT, un-reviewed policy -- and it made
+  # fail-open's own flagship fixture (#195, whose real body legitimately
+  # says "confirmed in source by GV" and "started under fwf gate --e2e in
+  # one worktree") unsatisfiable: real ticket prose the sanitizer correctly
+  # leaves untouched would still get the whole card refused. Narrowed to
+  # exactly the sanitizer's actual substitution targets above, so this
+  # guard catches a sanitizer GAP (something that should have been
+  # substituted and wasn't), not a policy that never shipped in the
+  # sanitizer to begin with.
+  # Split case-sensitive vs case-insensitive, matching the sanitizer's OWN
+  # per-rule case behavior exactly -- a blanket -i previously matched the
+  # lowercase "wip" inside the legitimate label name "product-wip" against
+  # the bare `WIP` term (whose sanitizer rule is deliberately uppercase-only,
+  # unlike Owner:/CLAIM/GV-SIGNOFF/FWF_*/QA-*, which the sanitizer's own
+  # _fwf_pr_ctx_wordsub does match case-insensitively) -- a false positive on
+  # ordinary ticket prose that a single combined -i pass can't avoid.
+  hit="$( { printf '%s\n' "$text" | grep -nE \
+      '(^|[^A-Za-z0-9_])(LI-[0-9]+|WIP|__PROVENANCE__|__CREDIT__|__CONTEXT__|origin/staging|origin/integration)([^A-Za-z0-9_]|$)|impl[0-9]+/issue-[0-9]+-[a-z0-9-]+|/?\.fun-with-friends/[A-Za-z0-9_./-]*' \
+      2>/dev/null;
+    printf '%s\n' "$text" | grep -inE \
+      '(^|[^A-Za-z0-9_])(impl__ID__|qa__ID__|Owner:|GV-SIGNOFF|GV-CHANGES|QA-APPROVED:|QA-CHANGES-REQUESTED:|IMPL-ADDRESSED:|CLAIM (impl|qa)[0-9]+|ASSIGNED (impl|qa)[0-9]+|FWF_[A-Z_]+|fwf-self-[A-Za-z0-9-]+)([^A-Za-z0-9_]|$)' \
+      2>/dev/null; } || true)"
   if [ -n "$hit" ]; then
     echo "fwf: PR/commit body BLOCKED (issue #106 guard) — fwf-internal token(s) survived sanitization:" >&2
     printf '%s\n' "$hit" >&2
