@@ -32,7 +32,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]   # macOS exercises the bash 3.2 floor path
+        # macOS is NOT run here. GitHub-hosted macOS runners queue unpredictably
+        # -- observed sitting unscheduled for 20+ minutes while the identical
+        # build took 9 seconds on the operator's own Apple Silicon Mac -- and a
+        # macOS job that never starts blocks every merge and every release
+        # behind it. The BSD coverage is not dropped: it moved to
+        # `scripts/mac-ci.sh`, run on real Darwin hardware by the operator, and
+        # that is the oracle for any macOS-only ticket. See docs/macos-ci.md.
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
       - name: Show bash version
