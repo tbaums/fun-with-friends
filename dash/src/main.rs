@@ -1057,6 +1057,28 @@ fn render_api_budget_banner(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
+    render_header_with_version(
+        f,
+        area,
+        app,
+        data::RUNNING_VERSION,
+        data::RUNNING_BUILD_DATE,
+    );
+}
+
+// Issue #307: version/build-date are pulled out as parameters (rather than
+// reading `data::RUNNING_VERSION`/`RUNNING_BUILD_DATE` directly in the body
+// below) purely so golden tests can render under a FABRICATED version —
+// proving a golden survives a version bump, instead of merely happening to
+// pass at whatever version this build was compiled with. Production always
+// goes through `render_header` above, which forwards the real build consts.
+fn render_header_with_version(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    version: &str,
+    build_date: &str,
+) {
     let block = Block::default().borders(Borders::ALL).title(" fwf dash ");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1172,11 +1194,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     // only fires on detected drift); this line is unconditional so drift is
     // visible at a glance at all times, per issue #153.
     l1.push(Span::styled(
-        format!(
-            " · fwf v{} (built {})",
-            data::RUNNING_VERSION,
-            data::RUNNING_BUILD_DATE
-        ),
+        format!(" · fwf v{version} (built {build_date})"),
         dim,
     ));
 
@@ -2796,22 +2814,145 @@ mod tests {
             .join("\n")
     }
 
-    /// Issue #153: the header's running-version line embeds THIS BUILD's
-    /// actual version + date (via build.rs from the top-level VERSION file
-    /// and the build machine's clock), which legitimately differs across
-    /// machines and days. A golden snapshot containing it verbatim would go
-    /// stale on the next rebuild for no reason related to a real render
-    /// change. Replace it with a fixed placeholder before comparing — every
-    /// OTHER pixel of the frame is still caught by the exact-match golden.
+    /// Issue #153 / #307: the header's running-version line embeds THIS
+    /// BUILD's actual version + date (via build.rs from the top-level
+    /// VERSION file and the build machine's clock), which legitimately
+    /// differs across machines and days. A golden snapshot containing it
+    /// verbatim would go stale on the next rebuild for no reason related to
+    /// a real render change. Replace it with a fixed placeholder before
+    /// comparing — every OTHER pixel of the frame is still caught by the
+    /// exact-match golden.
+    ///
+    /// Issue #307: a whole-literal `str::replace` cannot match when the
+    /// frame border TRUNCATES the string mid-date (narrow terminals cut
+    /// `fwf v0.37.0 (built 2026-0` before the closing paren ever renders).
+    /// This version finds the `fwf v{version}` prefix (never truncated —
+    /// it's earlier in the line than the date) and then independently
+    /// consumes only digit/hyphen characters for the date, so a partial
+    /// date at end-of-string still normalizes instead of leaking today's
+    /// date into the golden. If the `fwf v{version}` marker is not present
+    /// at all, the input is returned unchanged — a golden expecting the
+    /// placeholder then correctly still fails to match (issue #307 AC a1).
+    fn normalize_version_and_date(rendered: &str, version: &str) -> String {
+        let marker = format!("fwf v{version}");
+        let Some(start) = rendered.find(&marker) else {
+            return rendered.to_string();
+        };
+        let mut out = String::with_capacity(rendered.len());
+        out.push_str(&rendered[..start]);
+        out.push_str("fwf vX.Y.Z");
+        let after_version = &rendered[start + marker.len()..];
+        let built_open = " (built ";
+        match after_version.strip_prefix(built_open) {
+            Some(after_open) => {
+                out.push_str(built_open);
+                // The date is always replaced wholesale (rather than checked
+                // against `data::RUNNING_BUILD_DATE`) because it legitimately
+                // varies build-to-build; only its EXTENT needs discovering,
+                // and a truncated tail is still all digits/hyphens.
+                let date_len = after_open
+                    .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+                    .unwrap_or(after_open.len());
+                let trailing = &after_open[date_len..];
+                out.push_str("YYYY-MM-DD");
+                out.push_str(trailing);
+            }
+            None => out.push_str(after_version),
+        }
+        out
+    }
+
     fn normalize_running_version(rendered: &str) -> String {
+        normalize_version_and_date(rendered, data::RUNNING_VERSION)
+    }
+
+    /// Issue #307 AC (c): the stale-dash-restart banner names the INSTALLED
+    /// version (`v{X} now installed`), a distinct shape and a distinct
+    /// variable from the header's RUNNING_VERSION line above — it needs its
+    /// own normalization, not a side effect of `normalize_running_version`.
+    /// No-op when `installed_version` is empty (nothing to find), which
+    /// matches how the banner never renders in that case either.
+    fn normalize_installed_version(rendered: &str, installed_version: &str) -> String {
+        if installed_version.is_empty() {
+            return rendered.to_string();
+        }
         rendered.replace(
-            &format!(
-                "fwf v{} (built {})",
-                data::RUNNING_VERSION,
-                data::RUNNING_BUILD_DATE
-            ),
-            "fwf vX.Y.Z (built YYYY-MM-DD)",
+            &format!("v{installed_version} now installed"),
+            "vX.Y.Z now installed",
         )
+    }
+
+    /// Issue #307 AC (e): a hand-rolled semver-shaped scanner (no regex
+    /// dependency) -- finds runs of digits joined by at least two `.`s, e.g.
+    /// `0.37.0`. The normalized placeholders (`X.Y.Z`, `YYYY-MM-DD`) contain
+    /// no digits at all, so they never match; anything this DOES find in a
+    /// checked-in golden is a raw, unnormalized version literal.
+    fn find_semver_like(s: &str) -> Vec<&str> {
+        let bytes = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let start = i;
+                let mut dots = 0;
+                let mut j = i;
+                while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+                    if bytes[j] == b'.' {
+                        dots += 1;
+                    }
+                    j += 1;
+                }
+                if dots >= 2 {
+                    out.push(&s[start..j]);
+                }
+                i = j.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    // Issue #307 AC (e)/(d): the durable output this ticket asks for --
+    // a CHECK, not two repaired files. Any golden containing a raw
+    // version-shaped literal must either route through
+    // `normalize_running_version`/`normalize_installed_version` (leaving no
+    // digits behind), or be a deliberately fixed test FIXTURE explicitly
+    // named here. Adding a new build-coupled golden without wiring up
+    // normalization now fails this test instead of silently going stale on
+    // the next version bump.
+    #[test]
+    fn no_new_unnormalized_build_coupled_golden() {
+        // AC (d): swept and confirmed safe -- these embed a version supplied
+        // BY THE TEST as a fixed fixture, never derived from this build's
+        // own VERSION/build date, so they must NOT be touched or coupled to
+        // the normalizer.
+        const KNOWN_FIXTURE_GOLDENS: &[&str] = &[
+            "upgrade_banner.txt",
+            "full_frame_both_banners.txt",
+            "full_frame_activity_upgrade_long_version.txt",
+            "full_frame_all_three_banners.txt",
+        ];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens");
+        for entry in std::fs::read_dir(&dir).expect("read goldens dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if KNOWN_FIXTURE_GOLDENS.contains(&name.as_str()) {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("read golden");
+            let hits = find_semver_like(&content);
+            assert!(
+                hits.is_empty(),
+                "golden `{name}` contains unnormalized version-shaped literal(s) {hits:?} (issue #307) -- \
+                 route the render through normalize_running_version/normalize_installed_version before \
+                 asserting, or if this is a fixed test fixture never derived from this build, add \
+                 `{name}` to KNOWN_FIXTURE_GOLDENS with a comment explaining why"
+            );
+        }
     }
 
     fn assert_golden(name: &str, rendered: &str) {
@@ -3091,6 +3232,49 @@ mod tests {
         );
     }
 
+    // Issue #307 AC (a)/(a1)/(b): the golden above must survive a version
+    // bump ON ITS OWN, not merely because this build happens to still be at
+    // whatever version last blessed it. Render under a FABRICATED
+    // version/date -- deliberately a different digit-width than any real
+    // build, so the frame truncates at a different column than usual -- and
+    // assert it still matches the SAME golden after normalization. This is
+    // exactly the truncation case (b) describes: the date here is always
+    // cut mid-token by the 90-wide frame border.
+    #[test]
+    fn golden_header_floor_idle_badge_survives_a_fabricated_version_bump() {
+        let mut app = golden_app(Tab::Activity);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.floor_idle = data::FloorIdle {
+                active: true,
+                since: "2026-01-01T00:00:00Z".into(),
+                reason: "queue empty; nothing in flight".into(),
+                actor: "captain".into(),
+            };
+        }
+        let area = Rect::new(0, 0, 90, 4);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_header_with_version(f, area, &app, "9.99.999", "2099-12-31")
+        });
+        assert_golden(
+            "header_floor_idle",
+            &normalize_version_and_date(&buffer_to_text(&buf), "9.99.999"),
+        );
+    }
+
+    // Issue #307 AC (a1): normalization must be a no-op (never a wildcard
+    // match) when the version literal is not present at all -- otherwise a
+    // render that silently dropped the version line would still pass.
+    #[test]
+    fn normalize_version_and_date_does_not_match_when_version_is_absent() {
+        let rendered = "│profile fwf-self  ·  dev  ● running                                    │";
+        assert_eq!(
+            normalize_version_and_date(rendered, "9.99.999"),
+            rendered,
+            "no `fwf v9.99.999` literal is present -- normalization must leave the text untouched \
+             so a golden expecting the placeholder still fails to match"
+        );
+    }
+
     // issue #243 AC (f): "N blocked on authz" is its own distinct badge --
     // never conflated with FLOOR IDLE (calm, deliberate) or PARKED (whole
     // factory).
@@ -3260,17 +3444,18 @@ mod tests {
     #[test]
     fn golden_stale_dash_banner() {
         let mut app = golden_app(Tab::Activity);
+        // A version strictly ahead of RUNNING_VERSION so the banner fires
+        // regardless of what this build's actual VERSION happens to be.
+        let (maj, min, patch) = {
+            let v = data::RUNNING_VERSION;
+            let mut it = v.split('.');
+            let n = |s: Option<&str>| -> u64 { s.unwrap_or("0").parse().unwrap_or(0) };
+            (n(it.next()), n(it.next()), n(it.next()))
+        };
+        let installed_version = format!("{maj}.{min}.{}", patch + 1);
         if let Feed::Ok(d) = &mut app.feed {
-            // A version strictly ahead of RUNNING_VERSION so the banner fires
-            // regardless of what this build's actual VERSION happens to be.
-            let (maj, min, patch) = {
-                let v = data::RUNNING_VERSION;
-                let mut it = v.split('.');
-                let n = |s: Option<&str>| -> u64 { s.unwrap_or("0").parse().unwrap_or(0) };
-                (n(it.next()), n(it.next()), n(it.next()))
-            };
             d.installed = data::InstalledVersion {
-                version: format!("{maj}.{min}.{}", patch + 1),
+                version: installed_version.clone(),
             };
         }
         assert!(
@@ -3283,7 +3468,35 @@ mod tests {
         });
         assert_golden(
             "stale_dash_banner",
-            &normalize_running_version(&buffer_to_text(&buf)),
+            &normalize_installed_version(&buffer_to_text(&buf), &installed_version),
+        );
+    }
+
+    // Issue #307 AC (c)/(a): the installed version is a SECOND, distinct
+    // shape from the header's running-version line (`v{X} now installed`,
+    // not `fwf v{X} (built {Y})`) and a second variable (the INSTALLED
+    // version, not RUNNING_VERSION) -- prove it normalizes independently
+    // under a fabricated value, same as the header case above.
+    #[test]
+    fn golden_stale_dash_banner_survives_a_fabricated_version_bump() {
+        let mut app = golden_app(Tab::Activity);
+        let installed_version = "42.0.7".to_string();
+        if let Feed::Ok(d) = &mut app.feed {
+            d.installed = data::InstalledVersion {
+                version: installed_version.clone(),
+            };
+        }
+        assert!(
+            data::running_binary_stale(&app.feed.dashboard().unwrap().installed.version),
+            "fixture must actually trigger the drift this test renders"
+        );
+        let area = Rect::new(0, 0, 90, 1);
+        let buf = render_buffer(area.width, area.height, |f| {
+            render_stale_dash_banner(f, area, &app)
+        });
+        assert_golden(
+            "stale_dash_banner",
+            &normalize_installed_version(&buffer_to_text(&buf), &installed_version),
         );
     }
 
