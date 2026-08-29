@@ -777,6 +777,10 @@ fwf gate-rust-scope --against BRANCH [--safe GLOB]...  SHADOW classifier for whe
 fwf flag-captain <n> --role R --reason TEXT         raise a persisted "needs-captain" flag on issue/PR
   fwf flag-captain <n> --clear [--note TEXT]        <n> for the captain's per-tick sweep to pick up
   fwf flag-captain sweep                            (issue #113) — see docs/needs-captain.md
+fwf pr-route-check sweep                            flag an open, non-draft, non-implN/* PR stuck at
+                                                    NO_MARKER past FWF_PR_ROUTE_GRACE_SECS (default
+                                                    300s) via flag-captain, auto-clearing once routed
+                                                    (issue #385) — see docs/shared-account.md
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)

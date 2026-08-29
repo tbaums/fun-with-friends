@@ -277,6 +277,15 @@ UTILITIES
                          records what you did in an optional comment).
   flag-captain sweep     List every open needs-captain flag: # · [role] ·
                          reason · age — see docs/needs-captain.md.
+  pr-route-check sweep   Raise a needs-captain flag on an open, non-draft PR
+                         (against the staging branch, not on an implN/*
+                         branch) whose fwf pr-reviewer verdict is NO_MARKER for
+                         longer than FWF_PR_ROUTE_GRACE_SECS (default 300s)
+                         — a PR opened outside the implementer flow that
+                         nothing routes and no seat's queue picks up
+                         (issue #385). Auto-clears once the PR gets an
+                         explicit fwf-Reviewer: marker. Run every captain
+                         tick, same as flag-captain sweep.
   usage [--clear-hold|--clear-unknown-log]
                          Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
@@ -1062,6 +1071,7 @@ case "$cmd" in
   merge)     engine fwf-merge.sh "$@";;
   backfill-context) engine fwf-backfill-context.sh "$@";;
   flag-captain) engine fwf-flag-captain.sh "$@";;
+  pr-route-check) engine fwf-pr-route-check.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
