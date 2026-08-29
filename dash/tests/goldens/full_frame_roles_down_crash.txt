@@ -2,7 +2,7 @@
 │profile fwf-self  ·  dev  ● running  · fwf vX.Y.Z (built YYYY-MM-DD)                             │
 │prod https://example.test/prod   pipeline staging → integration → main   [status.json]   ⟳ 2026-01│
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-  1 Activity (3)    2 Roles (1)    3 Decisions (1)    4 Issues (1)    5 Usage (0)
+  1 Activity (3)    2 Roles (1)    3 Decisions (1)    4 Issues (1)    5 Usage (?)
  ⛔  CAPTAIN NEEDS YOU — decision #101 awaiting you  · attach: tmux attach -t friends-coord
 ┌ Roles ───────────────────────────────────────────────────────────────────────────────────────────┐
 │▌ ○ impl2     down      crashed                                                                   │

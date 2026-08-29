@@ -141,6 +141,24 @@ there and streams the TUI back over ssh — cheaper than teaching the dash a
 transport, and it reads the real local state on that host instead of
 guessing.
 
+### A dead data provider is never rendered as an empty board (issue #291)
+
+The bash data provider (`fwf-dash-data.sh`) can fail outright — most commonly
+`jq: Argument list too long` on a repo with verbose issue/PR comment threads,
+which used to crash the whole provider (exit 126) and take the dash down
+with it. The large JSON blobs (roles/decisions/issues/activity/needs_you/
+unrouted_prs/visibility) are now passed to `jq` via `--slurpfile` (temp
+files), not as command-line arguments, so thread size no longer has an
+`ARG_MAX` ceiling.
+
+If the provider still fails for some other reason (or hasn't produced its
+first snapshot yet), every tab title renders its count as `(?)`, never a
+confident `(0)` — a `(0)` reads as "genuinely empty", which would be a lie
+about a read that never completed. This is the same "never collapse
+can't-tell into a confident value" rule as the whole-board `UNKNOWN` case
+above; the header also shows the raw provider error text in this state (see
+`data provider error` in the top banner).
+
 ## Keys (no F-keys — the prior-art model)
 
 | Key | Action |

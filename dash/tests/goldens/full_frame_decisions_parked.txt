@@ -2,7 +2,7 @@
 │profile fwf-self  ·  dev  ⏸ PARKED  · fwf vX.Y.Z (built YYYY-MM-DD)                              │
 │prod https://example.test/prod   pipeline staging → integration → main   [stale]   ⟳ 2026-01-01 00│
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-  1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)    5 Usage (0)
+  1 Activity (3)    2 Roles (3)    3 Decisions (1)    4 Issues (1)    5 Usage (?)
 ┌ Decisions — awaiting you ──────────────┐┌ Detail · loading thread… ──────────────────────────────┐
 │▌ #101 Adopt golden render tests for the││### Why                                                 │
 │      GATED                             ││Golden tests catch layout drift unit tests miss.        │

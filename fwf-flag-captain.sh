@@ -67,11 +67,34 @@ gh_clear() { # $1=num $2=note (may be empty)
 }
 # -> a single JSON array of {number,createdAt,comments:[{body,createdAt}]},
 # open issues AND open PRs unioned (both carry the same label independently).
+# #291: two defects fixed here, both required.
+# (a) FAIL-CLOSED: a genuine `gh` read failure used to fall back to '[]' --
+# indistinguishable from "no flags open" to the caller, so the sweep silently
+# under-reported. Every read below is checked explicitly and this function
+# returns 1 (prints nothing on stdout) on any failure, so a caller that
+# actually checks $? gets UNKNOWN, never a confident empty list.
+# (b) ARG_MAX: a flagged item's `comments` carries every comment BODY on the
+# thread verbatim, so one item with a long thread (an un-gate rationale, a
+# triage write-up) can push the combined payload past ARG_MAX when passed as
+# --argjson on the command line -- jq then exits 126 and (before fix (a))
+# that got swallowed as "no flags". Route the payload through files
+# (--slurpfile) instead of argv, and (c) drop every comment that isn't an
+# actual NEEDS-CAPTAIN(-CLEARED) marker before it ever reaches jq's argv --
+# the sweep only ever needs the marker lines, not the rest of the thread.
 gh_flagged_items() {
-  local issues prs
-  issues="$(gh_ issue list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments 2>/dev/null || echo '[]')"
-  prs="$(gh_ pr list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments 2>/dev/null || echo '[]')"
-  jq -c -n --argjson a "$issues" --argjson b "$prs" '$a + $b'
+  local issues prs ddir
+  issues="$(gh_ issue list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments)" \
+    || { echo "fwf flag-captain: gh issue list failed (read is UNKNOWN, not empty)" >&2; return 1; }
+  prs="$(gh_ pr list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments)" \
+    || { echo "fwf flag-captain: gh pr list failed (read is UNKNOWN, not empty)" >&2; return 1; }
+  ddir="$(mktemp -d)" || { echo "fwf flag-captain: mktemp failed" >&2; return 1; }
+  trap 'rm -rf "$ddir"' RETURN
+  printf '%s' "$issues" > "$ddir/issues.json"
+  printf '%s' "$prs"    > "$ddir/prs.json"
+  jq -c -n --slurpfile a "$ddir/issues.json" --slurpfile b "$ddir/prs.json" '
+    def only_markers: .comments = [(.comments // [])[] | select((.body // "") | test("^NEEDS-CAPTAIN(-CLEARED)?:"))];
+    ($a[0] + $b[0]) | map(only_markers)
+  ' || { echo "fwf flag-captain: jq combine failed" >&2; return 1; }
 }
 gh_id() { printf '#%s' "$1"; }
 
@@ -136,14 +159,34 @@ JQ
 
 cmd_sweep() {
   local items now rows n id_fn
+  # #291 AC(a)/(d), operator follow-up: the failure must also be visible on
+  # STDOUT, not stderr alone. Returning 1 with an EMPTY stdout is still
+  # "an empty sweep" to anyone reading the output -- the exact shape this
+  # ticket exists to kill -- and it made the AC(a)/(d) assertion vacuous
+  # (#275 (a5) correctly refuses to pass on an empty haystack). Print the
+  # UNKNOWN marker on both streams; still return 1.
+  _sweep_unknown() { # $1=detail
+    echo "UNKNOWN: sweep could not be completed -- $1 (this is NOT an empty sweep)"
+    echo "fwf flag-captain: $1 (UNKNOWN, not empty)" >&2
+    return 1
+  }
   now="$(date -u +%s)"
+  # #291 AC(a): a read/parse failure anywhere in this chain must exit
+  # non-zero and say so on stderr -- NEVER fall through to "no needs-captain
+  # flags open", which is indistinguishable from a genuinely empty sweep.
   if [ "$FWF_ISSUES" = "local" ]; then
-    items="$(local_flagged_items)"; id_fn=local_id
+    items="$(local_flagged_items)" \
+      || { _sweep_unknown "could not enumerate local flags"; return 1; }
+    id_fn=local_id
   else
-    items="$(gh_flagged_items)"; id_fn=gh_id
+    items="$(gh_flagged_items)" \
+      || { _sweep_unknown "could not enumerate flags"; return 1; }
+    id_fn=gh_id
   fi
-  rows="$(jq -c --argjson now "$now" "$SWEEP_FILTER" <<<"$items")"
-  n="$(jq 'length' <<<"$rows")"
+  rows="$(jq -c --argjson now "$now" "$SWEEP_FILTER" <<<"$items")" \
+    || { _sweep_unknown "sweep filter failed"; return 1; }
+  n="$(jq 'length' <<<"$rows")" \
+    || { _sweep_unknown "sweep count failed"; return 1; }
   if [ "$n" = 0 ]; then echo "no needs-captain flags open"; return 0; fi
   jq -r '.[] | "\(.number)\t[\(.role)]\t\(.reason)\t\(.age)"' <<<"$rows" | \
   while IFS=$'\t' read -r num role reason age; do

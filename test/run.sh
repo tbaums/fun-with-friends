@@ -6886,6 +6886,61 @@ rm -f "$TMP/gh-calls.log"
 FCG 9 --role qa2 --reason "PR needs a rebase call" >/dev/null
 assert_contains "PR number routes through 'gh pr', not 'gh issue'" "$(cat "$TMP/gh-calls.log")" "gh pr edit 9 --add-label needs-captain"
 
+section "fwf flag-captain sweep (#291): a failed gh read fails CLOSED, never renders as an empty sweep (AC a/d)"
+# gh_ fails outright here (simulating the real incident: jq exiting 126 on
+# ARG_MAX, or any other gh read failure) -- the sweep must exit non-zero and
+# say so, never silently fall through to "no needs-captain flags open",
+# which is indistinguishable from a genuinely empty sweep.
+FCG_FAILED_READ() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_() { return 126; }
+    main sweep
+  " fcg-failread-harness
+}
+SWEEP_FAIL_RC=0
+SWEEP_FAIL_OUT="$(FCG_FAILED_READ 2>"$TMP/fcg-failread.err")" || SWEEP_FAIL_RC=$?
+[ "$SWEEP_FAIL_RC" -ne 0 ] && ok "AC(a): a failed gh read makes the sweep exit non-zero" \
+  || bad "AC(a): sweep exited 0 on a failed gh read" "rc=$SWEEP_FAIL_RC"
+# Operator follow-up: the UNKNOWN marker now prints on stdout too, not just
+# stderr -- an empty stdout still READS as "an empty sweep" to anyone piping
+# this output, which is the exact shape this ticket exists to kill. Two
+# positive assertions now that stdout has real content (issue #247 a5:
+# assert_not_contains on an expected-empty haystack is vacuous).
+assert_contains "AC(a)/(d): the failure is named on stdout as UNKNOWN, not left empty" \
+  "$SWEEP_FAIL_OUT" "UNKNOWN"
+assert_not_contains "AC(a)/(d): stdout is never the empty-sweep string on a failed read" \
+  "$SWEEP_FAIL_OUT" "no needs-captain flags open"
+assert_contains "AC(a): the failure is also named on stderr (UNKNOWN, not silently empty)" \
+  "$(cat "$TMP/fcg-failread.err")" "UNKNOWN"
+
+section "fwf flag-captain sweep (#291 AC c): only NEEDS-CAPTAIN(-CLEARED) comments survive into the sweep payload"
+# A flagged item's thread can carry long, unrelated comments (un-gate
+# rationales, triage write-ups) that dwarf the actual marker lines -- those
+# are exactly what blew ARG_MAX in the real incident. gh_flagged_items must
+# drop everything except the marker comments before jq ever sees the payload.
+FCG_MARKERS_ONLY() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_() {
+      case \"\$*\" in
+        'issue list --state open --label needs-captain --json number,createdAt,comments')
+          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"comments\":[
+            {\"body\":\"a very long unrelated operator write-up, not a marker, imagine this is huge\",\"createdAt\":\"2026-01-01T00:01:00Z\"},
+            {\"body\":\"NEEDS-CAPTAIN: [impl1] blocked on base\",\"createdAt\":\"2026-01-01T00:02:00Z\"}
+          ]}]' ;;
+        'pr list --state open --label needs-captain --json number,createdAt,comments') printf '%s' '[]' ;;
+      esac
+    }
+    gh_flagged_items
+  " fcg-markersonly-harness
+}
+MARKERS_OUT="$(FCG_MARKERS_ONLY)"
+assert_eq "AC(c): non-marker comments are dropped from the payload" "1" \
+  "$(printf '%s' "$MARKERS_OUT" | jq '.[0].comments | length')"
+assert_contains "AC(c): the surviving comment is the actual marker" \
+  "$(printf '%s' "$MARKERS_OUT" | jq -r '.[0].comments[0].body')" "NEEDS-CAPTAIN: [impl1]"
+
 # --------------------------------------------------------------------------
 # fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed
 # from FAKE Claude Code project dirs — never touches the real
@@ -8115,7 +8170,14 @@ assert_not_contains "AC(b): identical worktree fwf-gate.sh -> silence, no hint" 
 echo "# a local edit to the gate path" >> "$G277_WT/fwf-gate.sh"
 DIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-diff" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
 assert_contains "AC(a1): a content-differing worktree fwf-gate.sh fires the hint" "$DIFF_OUT" "issue #277"
-assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT/fwf-gate.sh\""
+# issue #337 (third occurrence of this class): the hint names the RESOLVED
+# worktree path, because the gate resolves it. On macOS /var is a symlink to
+# /private/var (as /tmp is to /private/tmp), so comparing against the
+# unresolved $G277_WT never matches and this read as a failure on every macOS
+# run. Pre-existing in #277's test, invisible until the suite could finish on
+# macOS. Compare resolved-to-resolved; `pwd -P` is a no-op on Linux.
+G277_WT_REAL="$(cd "$G277_WT" && pwd -P)"
+assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT_REAL/fwf-gate.sh\""
 assert_contains "AC(c): safety-equivalence is stated CONDITIONALLY, never flatly" "$DIFF_OUT" "PROVIDED your diff does not touch the locking path"
 assert_contains "AC(c): names the lock files to verify before trusting the result" "$DIFF_OUT" "gate-lock/<role>/owner"
 assert_contains "AC(d): the wrapped command still ran (hint never gates)"        "$DIFF_OUT" "hi"
