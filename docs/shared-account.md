@@ -12,7 +12,9 @@ explicitly rather than assuming normal multi-user GitHub semantics:
 request changes on your own pull request" whenever the PR's author and the
 reviewer are the same account — which, on a shared account, is *always*.
 qaN's role prompt therefore never calls `gh pr review`; it **merges directly**
-(`gh pr merge --squash --delete-branch`) once its gate is green, and signals
+via `fwf merge <n>` (issue #136 — composes the crafted squash body itself,
+and since #207, also refuses the merge unless every issue the PR closes is
+`fwf authz`-AUTHORIZED or NOT-GATED) once its gate is green, and signals
 "changes requested" as a plain PR comment instead (see below). The formal
 `reviewDecision` / `mergeStateStatus` review fields stay permanently empty on
 this account — no role should ever read them as "no changes requested".
