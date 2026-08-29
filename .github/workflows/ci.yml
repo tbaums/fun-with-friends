@@ -128,7 +128,11 @@ jobs:
             --safe 'lib/*' --safe 'lib.sh' --safe 'fwf' --safe 'fwf-*.sh' \
             --safe 'config.sh' --safe 'profiles/*' --safe 'eval/*' --safe 'install.sh'
         env:
-          FWF_PROFILE: fwf
+          # profiles/example.sh is the ONLY profile that lives in this repo;
+          # 'fwf' is an installed, out-of-tree profile, so naming it here made
+          # the classifier exit 1 on every runner ("unknown profile 'fwf'")
+          # and turned the whole dash job red AFTER the tests had passed.
+          FWF_PROFILE: example
           FWF_RUN_DIR: ${{ runner.temp }}/fwf-run
       - name: "Save #261 shadow-classifier log"
         if: always()
