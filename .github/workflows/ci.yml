@@ -46,7 +46,7 @@ jobs:
         run: bash --version | head -1
       - name: Run functional tests
         run: bash test/run.sh
-      - name: Run #156 memory-admission suite (issue #286 AC d)
+      - name: "Run #156 memory-admission suite (issue #286 AC d)"
         # A SEPARATE step, not folded into test/run.sh: this suite forks real
         # process groups and includes several bounded but real sleeps (orphan
         # reap, gate-lock hand-off), so nesting its ~36 assertions inside
@@ -62,21 +62,80 @@ jobs:
   dash:
     name: dash crate (rust)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dash
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0    # issue #261: the shadow classifier needs a real
+                             # merge-base, not a shallow (depth-1) tip.
+      # issue #261 (#138 phase 2): fwf-gate-rust-scope.sh existed as a
+      # dispatcher verb with NO real call site anywhere (no template, no
+      # config, no CI step ever invoked it) -- so #138's own "every gate
+      # accumulates the would-skip / would-run data" never happened, and
+      # there was no log to read. The step at the end of this job (after
+      # Test) is that call site: SHADOW MODE ONLY (its own exit code is
+      # always 0, and this job runs the full suite unconditionally either
+      # way) -- it exists to start accumulating the real would-skip/would-run
+      # history, WITH timing, a future flip-or-drop decision needs, against
+      # this repo's own actual layout. The safe-path list names everything
+      # OUTSIDE dash/ this repo has today; deliberately NOT exhaustive -- an
+      # unlisted path fails OPEN to a RUN verdict (see
+      # fwf_gate_rust_scope_decide, lib.sh), so an incomplete list only
+      # under-counts SKIP, it can never mis-classify a real dash/ change as
+      # safe. .github/workflows/* is deliberately EXCLUDED from the safe
+      # list -- a CI config change (including to this very job) should
+      # classify as RUN, not SKIP.
+      #
+      # Persistence: GitHub Actions runners are ephemeral, so the log itself
+      # is carried forward across runs via actions/cache's save-with-a-fresh-
+      # key + restore-with-a-prefix idiom (restore-keys matches the most
+      # recent previous run's key) -- a poor man's append-only counter that
+      # needs no external storage.
+      - name: "Restore #261 shadow-classifier log"
+        uses: actions/cache/restore@v4
+        with:
+          path: .gate-rust-shadow.log
+          key: gate-rust-shadow-${{ github.run_id }}
+          restore-keys: |
+            gate-rust-shadow-
       - name: Show toolchain
+        working-directory: dash
         run: cargo --version && rustc --version
       - name: Format check
+        working-directory: dash
         run: cargo fmt --check
       - name: Clippy (fail on warnings)
+        working-directory: dash
         run: cargo clippy --all-targets -- -D warnings
       - name: Build (release)
+        working-directory: dash
         run: cargo build --release --locked
-      - name: Test
-        run: cargo test --locked
+      # issue #261 AC(b): quantify the warm-cache always-on gate time the
+      # A->B decision is compared against -- wall-clock the part #138
+      # actually cares about (build+test, not fmt/clippy lint time), and
+      # feed it back into the SAME log entry so the decision has both
+      # numbers (would-skip rate AND time saved) in one place.
+      - name: "Test (timed, feeds issue #261's measurement)"
+        working-directory: dash
+        run: |
+          start="$(date +%s)"
+          cargo test --locked
+          secs="$(( $(date +%s) - start ))"
+          against="${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}"
+          against="${against:-HEAD^}"
+          bash ../fwf-gate-rust-scope.sh --against "$against" --log ../.gate-rust-shadow.log \
+            --full-suite-secs "$secs" \
+            --safe 'docs/*' --safe '*.md' --safe 'test/*' --safe 'templates/*' \
+            --safe 'lib/*' --safe 'lib.sh' --safe 'fwf' --safe 'fwf-*.sh' \
+            --safe 'config.sh' --safe 'profiles/*' --safe 'eval/*' --safe 'install.sh'
+        env:
+          FWF_PROFILE: fwf
+          FWF_RUN_DIR: ${{ runner.temp }}/fwf-run
+      - name: "Save #261 shadow-classifier log"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gate-rust-shadow.log
+          key: gate-rust-shadow-${{ github.run_id }}
 
   # --------------------------------------------------------------------------
   # Issue #179 Hole 1: the reconcile step lived ONLY in release.yml, which is

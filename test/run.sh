@@ -8230,6 +8230,25 @@ WIREOUT="$(cd "$GTS_DIR" && FWF_RUN_DIR="$GTS_WIRE_RUN" FWF_PROFILE=example "$RO
 assert_contains "AC(261 a1): a REAL 'fwf gate' run still runs the wrapped Rust suite (shadow mode -- verdict never withholds it)" "$WIREOUT" "stub-rust-suite-ran"
 assert_contains "AC(261 a0): ...and that real gate run appends a shadow-log entry (not the classifier called by path)" "$(cat "$GTS_WIRE_LOG" 2>/dev/null)" "decision=SKIP"
 
+# --- issue #261: a SECOND, in-repo call site -- this repo's own ci.yml
+# `dash` job now invokes the classifier for real, on every push/PR, closing
+# the "no template/config/profile ever calls it" gap for THIS repo's own
+# CI (the live GATE_CMD profile wiring above remains a separate, out-of-repo
+# operational step). Static assertions on the checked-in workflow file, same
+# shape as #286's ci.yml-wiring checks above.
+CIYML="$(cat "$ROOT/.github/workflows/ci.yml")"
+assert_contains "ci.yml's dash job invokes fwf-gate-rust-scope.sh for real" "$CIYML" "fwf-gate-rust-scope.sh"
+assert_contains "ci.yml's dash job checkout uses fetch-depth 0 (the classifier needs real ancestry)" "$CIYML" "fetch-depth: 0"
+assert_contains "ci.yml's dash job feeds back the real cargo test wall-clock via --full-suite-secs" "$CIYML" "--full-suite-secs"
+assert_contains "ci.yml's dash job persists the shadow log across ephemeral runners via actions/cache" "$CIYML" "actions/cache/restore"
+assert_contains "ci.yml's dash job saves the shadow log back to cache even on failure (if: always())" "$CIYML" "actions/cache/save"
+# regression guard: .github/workflows/* itself must NOT be on the safe-path
+# list -- a CI config change (including to this job) should classify RUN.
+case "$CIYML" in
+  *"--safe '.github"*) bad "ci.yml's dash job wrongly marks .github/workflows/* as safe-to-skip" ;;
+  *) ok "ci.yml's dash job does not mark .github/workflows/* as safe-to-skip (a CI config change still runs the Rust suite)" ;;
+esac
+
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
