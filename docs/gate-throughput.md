@@ -305,6 +305,37 @@ claimed as fully closed.
   data" is itself a valid outcome per this ticket's own edge-case list, so
   long as the deferral stays dated rather than becoming silent drift.
 
+## Issue #352: a second suite reuses the same classifier
+
+`fwf_gate_rust_scope_decide` (and the `fwf-gate-rust-scope.sh` CLI wrapping
+it) was never actually Rust-specific — the decision is a plain diff-vs-
+safe-glob classification, generic to *any* wrapped suite. #352 is a
+**separate, already-decided** problem from #138/#261 (not a re-litigation of
+the Rust-specific mechanism): this repo's own `bash test/run.sh` — the
+~2000+-assertion functional suite CI runs — pays its full ~13min wall-clock
+on *every* diff today, identically for a doc-only PR and one touching
+`lib.sh`. Same shadow-mode discipline, same tool, reused via a new
+`--suite-name NAME` flag that only changes the echoed `WOULD SKIP`/
+`WOULD RUN` line's wording (default: `"Rust suite"`, unchanged for #261's
+existing wiring):
+
+```sh
+bash fwf-gate-rust-scope.sh --against origin/staging --log .gate-bash-suite-shadow.log \
+  --full-suite-secs "$secs" --suite-name "bash test/run.sh" \
+  --safe 'docs/*' --safe '*.md'
+```
+
+`.github/workflows/ci.yml`'s `test` job now calls this for real, on every
+push/PR, timing the actual `bash test/run.sh` run and persisting its own
+`.gate-bash-suite-shadow.log` (separate from #261's `.gate-rust-shadow.log`)
+across ephemeral runners via `actions/cache` — the same save-with-a-fresh-key
++ restore-with-a-prefix idiom. The safe list is deliberately narrow (`docs/*`,
+`*.md` only, `.github/workflows/*` excluded): per #352's own investigation,
+almost every other path in this repo is exercised by `test/run.sh`, so a
+broader list would risk a false SKIP. Shadow mode only — this never actually
+skips the suite; it starts accumulating the would-skip-rate + timing history
+a future flip-or-drop decision needs, exactly as #261 did for the Rust suite.
+
 ## Orphan reaping is fail-closed, and portable (#332)
 
 When a gate lock's recorded holder is dead, the gate may reap the orphaned

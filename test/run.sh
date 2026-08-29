@@ -9321,6 +9321,44 @@ case "$CIYML" in
 esac
 
 # --------------------------------------------------------------------------
+section "gate-rust-scope --suite-name (issue #352): CLI reused for a second, non-Rust suite"
+
+# --- default text is UNCHANGED (backward compat with #261's existing wiring)
+gts_setup suite-name-default
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
+SNDEFOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-sndef-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
+assert_contains "no --suite-name given -> default 'Rust suite' wording, unchanged" "$SNDEFOUT" "Rust suite WOULD SKIP"
+
+# --- --suite-name customizes the echoed line, for a suite that is not Rust --
+gts_setup suite-name-custom
+( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
+SNOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-sn-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --suite-name "bash test/run.sh")"
+assert_contains "--suite-name replaces the wrapped-suite name in the WOULD SKIP line" "$SNOUT" "bash test/run.sh WOULD SKIP"
+case "$SNOUT" in
+  *"Rust suite"*) bad "--suite-name fully replaces 'Rust suite', no stale fallback text" ;;
+  *) ok "--suite-name fully replaces 'Rust suite', no stale fallback text" ;;
+esac
+
+gts_setup suite-name-custom-run
+( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash && gts_touch dash/x.rs && git add -A && git commit -qm "rust" )
+SNRUNOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-snrun-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --suite-name "bash test/run.sh")"
+assert_contains "--suite-name also replaces the name in the WOULD RUN line" "$SNRUNOUT" "bash test/run.sh WOULD RUN"
+
+# --- issue #352: a SECOND, in-repo call site -- this repo's own ci.yml
+# `test` job now shadow-classifies its OWN bash suite too, on a separate
+# persisted log, same discipline as #261's dash-job wiring above.
+assert_contains "ci.yml's test job also invokes fwf-gate-rust-scope.sh (this repo's own bash suite, #352)" "$CIYML" "--suite-name \"bash test/run.sh\""
+assert_contains "ci.yml's test job checkout uses fetch-depth 0 (the classifier needs real ancestry)" "$CIYML" "issue #352: the shadow classifier needs a real"
+assert_contains "ci.yml's test job feeds back the real bash test/run.sh wall-clock via --full-suite-secs" "$CIYML" "--full-suite-secs \"\$secs\""
+assert_contains "ci.yml's test job uses its OWN shadow log, not #261's dash-job log" "$CIYML" ".gate-bash-suite-shadow.log"
+assert_contains "ci.yml's test job persists its shadow log across ephemeral runners via actions/cache" "$CIYML" "gate-bash-suite-shadow-"
+assert_contains "ci.yml's test job saves its shadow log back to cache even on failure (if: always())" "$CIYML" "Save #352 shadow-classifier log"
+# regression guard: #352's own narrow safe list (docs/*, *.md only) must not
+# grow to include .github/workflows/* -- the file-wide guard above (issue
+# #261) already covers every --safe list in ci.yml, this job's included.
+assert_contains "#352's own step passes exactly the narrow docs/*, *.md safe list" "$CIYML" "--safe 'docs/*' --safe '*.md'"
+
+# --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
   # Policy: fail on warnings + errors; allow info-level style nits (the
