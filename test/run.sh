@@ -3536,7 +3536,26 @@ GHSTUB
   # --- AC(c)/(d2): scale-down REFUSES on a genuinely busy highest-indexed pair,
   # even though it's the only pair besides impl1 -- and it must not remove the
   # LOWER-indexed impl1 instead (contiguity, never a gap).
-  f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1   # back to 2 pairs
+  #
+  # issue #387: this re-scale-up's exit code used to be discarded. When it
+  # silently failed, the fixture was left at 1 pair, so the NEXT call
+  # ("--pairs 1") correctly reported "already at 1 pair(s) -- nothing to do"
+  # and the AC(c)/(d2) busy-refusal path below was never exercised at all --
+  # read as an AC(c) regression instead of the fixture-setup gap it actually
+  # was. Most likely cause: the RAM guardrail tripping on a loaded sandbox's
+  # real, transient free-RAM dip -- a separate gate run against this same
+  # #210 test block independently hit a "only 0G free RAM" refusal from
+  # AC(h2)'s budget-sentinel check further down this same section, caused by
+  # concurrent sibling implementers' gates on this box (not #217-class arm
+  # timing: fwf-scale.sh's create path already passed AC(a) earlier in this
+  # same run, so pane creation/arming itself works). --force bypasses the
+  # RAM/budget guardrails this step is not testing (AC(h) below tests them
+  # deliberately); the assert makes any OTHER failure fail loudly here, at
+  # the right line, instead of masquerading as an AC(c) failure two blocks
+  # down.
+  F210RESCALE_RC=0
+  f210 "$ROOT/fwf-scale.sh" --pairs 2 --force >/dev/null 2>&1 || F210RESCALE_RC=$?   # back to 2 pairs
+  assert_eq "#387: the AC(c) fixture's re-scale-up to 2 pairs succeeds (not silently left at 1)" "0" "$F210RESCALE_RC"
   F210BUSYGHBIN="$TMP/f210busyghbin"; mkdir -p "$F210BUSYGHBIN"
   cat > "$F210BUSYGHBIN/gh" <<'GHSTUB2'
 #!/usr/bin/env bash
