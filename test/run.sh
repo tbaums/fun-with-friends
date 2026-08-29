@@ -7363,6 +7363,80 @@ else
   bad "AC(c): setup failed -- server never started listening"
 fi
 
+# --------------------------------------------------------------------------
+# issue #375: unlike the per-role gate lock (released and RE-acquired around
+# the up-to-900s resource wait, so its own `acquired` is naturally fresh by
+# the time the wrapped group execs -- #195/fa493fa's already-fixed half),
+# the e2e lock is held straight through that wait. Its owner file's
+# `acquired` was the pre-wait mutex-acquisition instant until this fix, so a
+# perfectly legitimate holder whose group started after a real wait looked
+# exactly like PID/PGID reuse to _fwf_kill_orphan_group and was refused --
+# the refused holder's server then survived as a permanent stray even
+# though the lane was freed. A drive script (not a fresh `bash -c` per
+# step) so the SAME shell's live pid stays live throughout "legit", and so
+# both cases share `$E2E_LOCK`/`fwf_e2e_lock_owner_path` instead of
+# hand-guessing the on-disk layout.
+section "e2e lock (#375): 'acquired' is re-stamped alongside pgid, so a legitimate holder whose group started after a long resource wait is REAPED, not refused"
+cat > "$TMP/e2e-375-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  legit)
+    # "acquired" is stamped now -- the mutex taken BEFORE the resource wait.
+    read -r lane port data_dir <<<"$(fwf_e2e_lock_acquire doomedholder)"
+    owner="$(fwf_e2e_lock_owner_path "$lane")"
+    # Simulate the resource wait: the real wrapped process group only comes
+    # into existence some seconds later.
+    sleep 3
+    perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "sleep", "60"' &
+    live_pid=$!
+    sleep 0.3
+    live_pgid="$(ps -o pgid= -p "$live_pid" 2>/dev/null | tr -d ' ')"
+    [ -n "$live_pgid" ] || { echo SETUP-FAILED; exit 0; }
+    _fwf_owner_restamp_pgid "$owner" "$live_pgid" 1
+    # Fake this script's own death from the next acquirer's point of view:
+    # overwrite the recorded pid with a confirmed-dead one, leaving the
+    # freshly restamped pgid/acquired untouched (no sed -i -- BSD/GNU differ).
+    awk -F= '$1=="pid"{print "pid=999999999";next}{print}' "$owner" > "$owner.tmp" && mv -f "$owner.tmp" "$owner"
+    fwf_e2e_lock_acquire freshacquirer >/dev/null
+    sleep 0.3
+    if kill -0 "$live_pid" 2>/dev/null; then echo STILL-ALIVE; else echo REAPED; fi
+    kill -KILL -"$live_pgid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+    ;;
+  reuse)
+    # AC 3: a dead-PID owner record whose recorded pgid points at an
+    # UNRELATED, already-live process that started long before "acquired"
+    # -- must still be refused. The restamp fix must not weaken this.
+    mkdir -p "$E2E_LOCK"
+    perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "sleep", "60"' &
+    reuse_pid=$!
+    sleep 0.3
+    reuse_pgid="$(ps -o pgid= -p "$reuse_pid" 2>/dev/null | tr -d ' ')"
+    [ -n "$reuse_pgid" ] || { echo SETUP-FAILED; exit 0; }
+    printf 'role=zombie375\npid=999999999\npgid=%s\npgleader=1\nhost=%s\nworktree=/nowhere\nacquired=%s\nport=3940\ndata_dir=/nowhere\n' \
+      "$reuse_pgid" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$E2E_LOCK/owner"
+    OUT="$(fwf_e2e_lock_acquire freshacquirer2 2>&1)"
+    printf '%s\n' "$OUT" | grep -q 'refusing to signal pgid' && echo REFUSED
+    if kill -0 "$reuse_pid" 2>/dev/null; then echo UNTOUCHED; else echo KILLED; fi
+    kill -KILL -"$reuse_pgid" 2>/dev/null; wait "$reuse_pid" 2>/dev/null
+    ;;
+esac
+EOSCRIPT
+
+G375_LEGIT_OUT="$(FWF_RUN_DIR="$TMP/gate375-legit" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-375-drive.sh" legit 2>&1)"
+case "$G375_LEGIT_OUT" in
+  *SETUP-FAILED*) bad "#375: test setup failed -- could not start the live fixture group" "$G375_LEGIT_OUT";;
+  *REAPED*) ok "#375: a legitimate e2e holder whose group started after a simulated resource wait is REAPED, not refused";;
+  *) bad "#375: a legitimate e2e holder whose group started after a resource wait must be REAPED, not refused (acquired/pgid-restamp asymmetry)" "$G375_LEGIT_OUT";;
+esac
+
+G375_REUSE_OUT="$(FWF_RUN_DIR="$TMP/gate375-reuse" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-375-drive.sh" reuse 2>&1)"
+case "$G375_REUSE_OUT" in
+  *SETUP-FAILED*) bad "#375 AC3: test setup failed -- could not start the reuse fixture" "$G375_REUSE_OUT";;
+esac
+assert_contains "#375 AC3: the reused pgid is named as a refusal, not silently reaped" "$G375_REUSE_OUT" "REFUSED"
+assert_contains "#375 AC3: the unrelated newer process sharing that pgid is UNTOUCHED (genuine reuse still refused after the acquired-restamp fix)" "$G375_REUSE_OUT" "UNTOUCHED"
+
 section "fwf gate (#195 AC h): a dead PGID leader's id reused by an unrelated NEWER process is never signalled"
 G195H_ROOT="$TMP/gate195-h"; mkdir -p "$G195H_ROOT/state/example/gate-lock/role195h"
 # A long-running, harmless background process stands in for "an unrelated

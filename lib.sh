@@ -2017,16 +2017,34 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
 # for fwf-gate.sh's per-role/e2e locks once the wrapped command gets its OWN
 # separate group (so a graceful TERM/grace/KILL teardown can complete lock
 # release afterward -- see fwf-gate.sh). This re-stamps pgid/pgleader IN
-# PLACE once the real child group is known, leaving every other field
-# (role/pid/host/acquired/...) untouched, so acquire-side reconciliation
-# later reaps the group that's ACTUALLY holding the resource.
+# PLACE once the real child group is known, leaving role/pid/host/... untouched.
+#
+# issue #375: `acquired` IS re-stamped too, to `now`, unlike every other
+# left-alone field. The per-role gate lock's `acquired` already reflects the
+# real group's start time by the time this runs -- it is dropped and
+# re-acquired fresh around the up-to-900s resource wait (fwf-gate.sh's
+# _fwf_gate_locked_wait), so `fwf_gate_lock_acquire`'s own fresh mkdir has
+# already stamped `acquired=now` moments earlier and this second stamp is a
+# sub-second no-op. The e2e lock is NOT released across that same wait (it is
+# a single mutex held for the whole gate, not a per-attempt semaphore), so
+# its `acquired` was otherwise still the PRE-WAIT mutex-acquisition instant --
+# up to 900s stale by the time the real group exists. _fwf_kill_orphan_group's
+# reuse guard compares the group's own start time against `acquired` +
+# _FWF_PGID_START_SLOP; a stale `acquired` made every legitimate e2e holder
+# whose group started after a real wait look like PID/PGID reuse and refuse
+# to be reaped, which is how a dead e2e holder's orphaned server accumulated
+# as a permanent stray. Restamping here brings the e2e lock's `acquired` to
+# parity with the gate lock's -- both now mean "when the CURRENTLY recorded
+# group came to exist", which is the only thing the reuse guard should ever
+# be compared against.
 _fwf_owner_restamp_pgid() { # $1=owner-file $2=pgid $3=pgleader
   local f="$1" pgid="$2" pgleader="$3" tmp
   [ -f "$f" ] || return 0
   tmp="$f.tmp.$$"
-  awk -F= -v pgid="$pgid" -v pgleader="$pgleader" '
+  awk -F= -v pgid="$pgid" -v pgleader="$pgleader" -v acquired="$(date +%s)" '
     $1=="pgid" { print "pgid=" pgid; next }
     $1=="pgleader" { print "pgleader=" pgleader; next }
+    $1=="acquired" { print "acquired=" acquired; next }
     { print }
   ' "$f" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f"
 }
