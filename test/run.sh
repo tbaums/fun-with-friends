@@ -1241,7 +1241,7 @@ section "fwf supervise: AC(f2) — the mirror of (f)/(d), a genuinely WEDGED+rea
 # is stubbed, since actually hot-swapping a tmux pane is out of scope here.
 F2ISO="$TMP/f2iso"; mkdir -p "$F2ISO/lib" "$F2ISO/profiles"
 cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F2ISO/"
-cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F2ISO/lib/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F2ISO/lib/"
 cp "$ROOT/profiles/example.sh" "$F2ISO/profiles/"
 ln -sf "$ROOT/templates" "$F2ISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
 ln -sf "$ROOT/fwf-pane-liveness.sh" "$F2ISO/fwf-pane-liveness.sh"
@@ -2321,7 +2321,7 @@ EOS
   # the breaker every pass would call fwf-respawn.sh again.
   F217ISO="$TMP/f217iso"; mkdir -p "$F217ISO/lib" "$F217ISO/profiles"
   cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F217ISO/"
-  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F217ISO/lib/"
+  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F217ISO/lib/"
   cp "$ROOT/profiles/example.sh" "$F217ISO/profiles/"
   ln -sf "$ROOT/templates" "$F217ISO/templates"
   ln -sf "$ROOT/fwf-usage-data.sh" "$F217ISO/fwf-usage-data.sh"
@@ -3830,7 +3830,7 @@ assert_eq "issue #174 (p1): fwf_write_role_prompt ALSO stamps the commit it rend
 section "fwf_prompt_drift_verdict: CURRENT / STALE / UNKNOWN against fwf's OWN repo state (issue #174)"
 PDISO="$TMP/prompt-drift-iso"; mkdir -p "$PDISO/lib" "$PDISO/profiles"
 cp "$ROOT/config.sh" "$ROOT/lib.sh" "$PDISO/"
-cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$PDISO/lib/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$PDISO/lib/"
 cp "$ROOT/profiles/example.sh" "$PDISO/profiles/"
 ln -s "$ROOT/templates" "$PDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
 printf '%s' "$REALV" > "$PDISO/VERSION"
@@ -4563,7 +4563,7 @@ assert_eq "reports the real tracked VERSION file" "$REALV" \
 # copy, so config.sh's own BASH_SOURCE resolves there instead.
 DDISO="$TMP/dd-isolated-home"; mkdir -p "$DDISO/lib" "$DDISO/profiles"
 cp "$ROOT/config.sh" "$ROOT/lib.sh" "$ROOT/fwf-dash-data.sh" "$DDISO/"
-cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$DDISO/lib/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$DDISO/lib/"
 cp "$ROOT/profiles/example.sh" "$DDISO/profiles/"
 ln -s "$ROOT/templates" "$DDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
 DDISO_DD="$DDISO/fwf-dash-data.sh"
@@ -8156,7 +8156,7 @@ section "fwf-gate.sh (issue #277 AC a1/b/c/d): hints the by-path workaround only
 G277_WT="$TMP/gate277-worktree"; mkdir -p "$G277_WT/lib" "$G277_WT/profiles"
 ( cd "$G277_WT" && git init -q && git config user.email t@t.co && git config user.name t )
 cp "$ROOT/fwf-gate.sh" "$ROOT/lib.sh" "$ROOT/config.sh" "$G277_WT/"
-cp "$ROOT/lib/detect.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile.sh" "$ROOT/lib/version_check.sh" "$G277_WT/lib/"
+cp "$ROOT/lib/detect.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile.sh" "$ROOT/lib/version_check.sh" "$ROOT/lib/profile-sandbox.sh" "$G277_WT/lib/"
 cp "$ROOT/profiles/example.sh" "$G277_WT/profiles/"
 ln -s "$ROOT/templates" "$G277_WT/templates"
 printf '%s' "$(cat "$ROOT/VERSION")" > "$G277_WT/VERSION"
@@ -8191,6 +8191,150 @@ assert_contains "AC(a1): a content-differing worktree lib.sh ALSO fires the hint
 # --- AC(d): exit code and normal behaviour unaffected either way -----------
 ( cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-rc" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "exit 0" >/dev/null 2>&1 )
 assert_eq "AC(d): the hint changes no exit code on success" "0" "$?"
+
+section "repo profiles (issue #188): out-of-tree profile resolution + isolated import"
+
+assert_nonzero_rc() { [ "$2" != "0" ] && ok "$1" || bad "$1" "expected a non-zero exit, got 0"; }
+
+P188="$TMP/p188"; mkdir -p "$P188/fixture-repo/.fwf"
+cat > "$P188/good.sh" <<'EOF'
+FWF_REPO=/some/repo
+GATE_CMD='make test'
+FOO_UNKNOWN=bar
+EOF
+cat > "$P188/deny.sh" <<'EOF'
+FWF_REPO=/x
+FWF_ISSUES=local
+EOF
+cat > "$P188/func_hijack.sh" <<'EOF'
+FWF_REPO=/x
+printf() { command printf 'HIJACKED\n'; }
+EOF
+cat > "$P188/forge.sh" <<'EOF'
+FWF_REPO=/x
+printf 'FWF_ISSUES\0local\0__FWF_OK__\0001\0' > /proc/self/fd/1 2>/dev/null || true
+EOF
+cat > "$P188/hang.sh" <<'EOF'
+FWF_REPO=/x
+sleep 100
+EOF
+cat > "$P188/tmpl.sh" <<'EOF'
+FWF_REPO=/x
+FWF_TEMPLATE="${FWF_TEMPLATE:-ideation}"
+EOF
+cp "$P188/good.sh" "$P188/fixture-repo/.fwf/whatever.sh"
+
+# --- AC(a): regression -- bare in-tree name unchanged -----------------------
+A_OUT="$(cd "$ROOT" && FWF_PROFILE=example bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $GATE_CMD"')"
+assert_eq "AC(a): bare name still resolves in-tree, sourced directly" "in-tree make test" "$A_OUT"
+
+# --- AC(b): explicit path resolves (both forms) -----------------------------
+B1_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/good.sh" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
+assert_eq "AC(b): FWF_PROFILE_PATH resolves out-of-tree" "explicit /some/repo" "$B1_OUT"
+B2_OUT="$(cd "$ROOT" && FWF_PROFILE="$P188/good.sh" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
+assert_eq "AC(b): a path-shaped FWF_PROFILE resolves the same way" "explicit /some/repo" "$B2_OUT"
+
+# --- AC(c): explicit path missing fails loudly, never falls to auto-detect --
+C_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/does-not-exist.sh" FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh' 2>&1)"; C_RC=$?
+assert_contains "AC(c): missing explicit path fails with the pre-existing error quality" "$C_OUT" "fwf: unknown profile 'whatever' (missing $P188/does-not-exist.sh)"
+assert_nonzero_rc "AC(c): missing explicit path is a hard failure (non-zero exit)" "$C_RC"
+assert_not_contains "AC(c): does NOT fall through to auto-detection despite a matching .fwf/whatever.sh existing" "$C_OUT" "auto-detected"
+
+# --- AC(d): auto-detect fires only where fwf would already have errored -----
+D_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
+assert_eq "AC(d): bare name + no in-tree file + repo file present -> auto-detected" "auto-detected $P188/fixture-repo/.fwf/whatever.sh" "$D_OUT"
+cp "$P188/good.sh" "$P188/fixture-repo/.fwf/example.sh"
+COLL_OUT="$(cd "$ROOT" && FWF_PROFILE=example FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
+assert_eq "AC(d): collision (both exist) -- in-tree wins deterministically" "in-tree $ROOT/profiles/example.sh" "$COLL_OUT"
+
+# --- AC(e): a redefined builtin/helper never reaches the parent -------------
+E_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/func_hijack.sh" bash -c '
+  before="$(type printf)"
+  source lib.sh
+  after="$(type printf)"
+  [ "$before" = "$after" ] && echo UNCHANGED || echo HIJACKED
+')"
+assert_eq "AC(e): a profile function redefinition has no effect on the calling process" "UNCHANGED" "$E_OUT"
+
+# --- AC(f0): a forged import channel changes nothing ------------------------
+# lib.sh defaults FWF_ISSUES to 'gh' AFTER profile resolution (line ~112)
+# whether or not anything set it -- so the discriminating check is that the
+# forged 'local' value never took, not that the var stayed unset.
+F0_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/forge.sh" bash -c 'source lib.sh; echo "$FWF_ISSUES"')"
+assert_eq "AC(f0): bytes a profile writes to its own fd never reach the import channel (falls back to the real default, not the forged 'local')" "gh" "$F0_OUT"
+
+# --- AC(f1): profiles are data, not code -------------------------------------
+# Exclude comment lines -- profiles/example.sh documents a commented-out
+# seed_data() example ("# seed_data() { ... }"), which must not itself count
+# as a live function definition.
+EX_FUNCS="$(grep -vE '^[[:space:]]*#' "$ROOT/profiles/example.sh" | grep -c '() {' || true)"
+assert_eq "AC(f1): the tracked example profile defines no LIVE functions (comments don't count)" "0" "$EX_FUNCS"
+
+# --- AC(f): denylisted keys are refused outright, not silently dropped ------
+F_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/deny.sh" bash -c 'source lib.sh' 2>&1)"; F_RC=$?
+assert_contains "AC(f): a profile setting a denylisted name fails loudly" "$F_OUT" "denylisted name FWF_ISSUES"
+assert_nonzero_rc "AC(f): denylist violation is a hard failure" "$F_RC"
+# fwf authz's verdict: a hostile out-of-tree profile can never even reach a
+# verdict computation -- the whole invocation fails closed before that point,
+# which is a strictly stronger guarantee than "the verdict is unchanged".
+AZ188RUN="$TMP/az188run"
+AZ188_OUT="$(FWF_RUN_DIR="$AZ188RUN" FWF_ISSUES=local FWF_PROFILE_PATH="$P188/deny.sh" "$ROOT/fwf-authz.sh" 1 2>&1)"; AZ188_RC=$?
+assert_not_contains "AC(f): fwf authz never reaches/reports AUTHORIZED behind a hostile profile" "$AZ188_OUT" "AUTHORIZED"
+assert_nonzero_rc "AC(f): fwf authz fails closed (non-zero) rather than proceeding" "$AZ188_RC"
+
+# --- AC(g): source-site ordering (the #30/#31 pin) is unmoved ---------------
+G1_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" bash -c 'source lib.sh; echo "$FWF_TEMPLATE"')"
+assert_eq "AC(g): FWF_TEMPLATE persistence via \${FWF_TEMPLATE:-default} still works out-of-tree" "ideation" "$G1_OUT"
+G2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" FWF_TEMPLATE=dev bash -c 'source lib.sh; echo "$FWF_TEMPLATE"')"
+assert_eq "AC(g): explicit env still wins over the profile's own default" "dev" "$G2_OUT"
+
+# --- timeout: a hung profile fails the invocation, never wedges it ----------
+H_START=$(date +%s)
+H_OUT="$(cd "$ROOT" && FWF_PROFILE_EVAL_TIMEOUT_SECS=2 FWF_PROFILE_PATH="$P188/hang.sh" bash -c 'source lib.sh' 2>&1)"; H_RC=$?
+H_ELAPSED=$(( $(date +%s) - H_START ))
+assert_contains "timeout: a hung profile fails loudly naming the timeout" "$H_OUT" "timed out after 2s"
+assert_nonzero_rc "timeout: a hung profile is a hard failure, not a silent hang" "$H_RC"
+[ "$H_ELAPSED" -lt 30 ] && ok "timeout: bounded well under the hang's own 100s sleep (${H_ELAPSED}s elapsed)" \
+  || bad "timeout: took ${H_ELAPSED}s -- the bound did not hold"
+
+# --- AC(h): fwf doctor reports the resolved path/mode + dropped names -------
+H2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/good.sh" ./fwf doctor 2>&1)"
+assert_contains "AC(h): fwf doctor reports the resolution mode" "$H2_OUT" "(explicit) -> $P188/good.sh"
+assert_contains "AC(h): fwf doctor names a dropped (non-allowlisted) name" "$H2_OUT" "ignored: FOO_UNKNOWN"
+
+# --- AC(i): two factories on one box do NOT share each other's state -------
+# Cross-posted from #237 SS5: "one factory's green gate would be readable as
+# another factory's authorization." A single factory made single-tenancy
+# accidentally true; out-of-tree profiles make two factories on one box an
+# ordinary configuration, so this proves whether the isolation actually
+# holds rather than asserting it does. It does NOT, currently -- see
+# docs/repo-profiles.md's "Known gap" section for the deferral (qa2 review
+# on PR #346: verified real, not theoretical, and asked for this pinned
+# rather than papered over).
+I188="$TMP/p188-isolation"; mkdir -p "$I188/repoA/.fwf" "$I188/repoB/.fwf"
+cat > "$I188/repoA/.fwf/laptop.sh" <<'EOF'
+GATE_CMD='true'
+EOF
+cp "$I188/repoA/.fwf/laptop.sh" "$I188/repoB/.fwf/laptop.sh"
+I188_RUN="$TMP/p188-isolation-run"   # the realistic default: no FWF_RUN_DIR override, both factories share $FWF_RUN
+
+# Two DIFFERENT repos, same out-of-tree profile NAME (a likely per-host name
+# under this ticket's own .fwf/<name>.sh convention, e.g. "laptop") ->
+# fwf_gate_tip_marker_path resolves to the SAME path for both, because
+# FWF_STATE_DIR="$FWF_RUN/state/$PROFILE" (lib.sh) keys on the profile NAME
+# only, never on $FWF_REPO.
+I188_PATH_A="$(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_marker_path impl1')"
+I188_PATH_B="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_marker_path impl1')"
+assert_eq "AC(i) KNOWN GAP (pinned, not desired): two different repos sharing a profile NAME resolve the SAME gate-tip state path" \
+  "$I188_PATH_A" "$I188_PATH_B"
+
+# The consequence, end to end: repo A's gate tip becomes readable as repo
+# B's own verified tip via the real `fwf gate-tip` CLI -- a genuine
+# cross-repo false green, not a synthetic path comparison.
+(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_record impl1 sha-from-repoA GREEN')
+I188_READBACK="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" ./fwf-gate-tip.sh impl1 2>&1)"
+assert_eq "AC(i) KNOWN GAP: repo B's 'fwf gate-tip' reads repo A's SHA as its own verified tip (the exact cross-repo false-green #237 SS5 warns about)" \
+  "sha-from-repoA" "$I188_READBACK"
 
 # --------------------------------------------------------------------------
 section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"

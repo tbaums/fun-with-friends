@@ -1041,6 +1041,14 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   property held" from "nothing happened yet" is. Classification (A/B/C),
   what was fixed, what's marked-but-left-alone and why, and a concrete
   finding on why the standing check isn't shipped yet.
+- [docs/repo-profiles.md](docs/repo-profiles.md) — a repo profile can now
+  live **in the target repo** (`$FWF_REPO/.fwf/<name>.sh`), not only
+  untracked inside the fwf checkout (issue #188). Resolution order
+  (explicit > in-tree > auto-detect, never silent), the sandboxed-import
+  trust model for out-of-tree profiles (no `eval` in the channel,
+  `OPERATOR_UNGATE_SENTINEL`/`FWF_ISSUES` denied outright), the exportable
+  allowlist, and how to read the resolved path/mode from `fwf doctor` or
+  `fwf dash`.
 
 ## Development
 

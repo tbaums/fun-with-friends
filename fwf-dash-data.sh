@@ -648,6 +648,16 @@ main() {
   printf '%s' "$unrouted_prs" > "$_ddir/unrouted_prs.json"
   printf '%s' "$visibility"   > "$_ddir/visibility.json"
 
+  # issue #188: resolution is otherwise invisible (the #30/#31 class of pain)
+  # -- surface which absolute profile file actually loaded and how, plus any
+  # name an out-of-tree profile set that got dropped (not in the allowlist).
+  # Data-layer only, following the unrouted_prs precedent (#194 AC d): dash/
+  # src/data.rs does not yet deserialize or render this field; query
+  # `fwf-dash-data.sh` directly (or `.profile_resolution` off its JSON).
+  profile_resolution="$(jq -n --arg path "${PROFILE_FILE:-}" --arg mode "${FWF_PROFILE_RESOLUTION_MODE:-}" \
+    --arg dropped "${FWF_PROFILE_DROPPED_NAMES:-}" \
+    '{path:$path, mode:$mode, dropped:($dropped | split(" ") | map(select(length>0)))}')"
+
   jq -n \
     --arg profile "$PROFILE" --arg template "$FWF_TEMPLATE" \
     --argjson parked "$parked" \
@@ -659,12 +669,12 @@ main() {
     --slurpfile _visibility "$_ddir/visibility.json" \
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
     --argjson api_budget "$api_budget" \
-    --argjson claim_refusals "$claim_refusals" \
+    --argjson claim_refusals "$claim_refusals" --argjson profile_resolution "$profile_resolution" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$_roles[0], decisions:$_decisions[0], issues:$_issues[0],
       activity:$_activity[0], needs_you:$_needs_you[0], floor_idle:$floor_idle, upgrade:$upgrade,
       installed:$installed, unrouted_prs:$_unrouted_prs[0], visibility:$_visibility[0], api_budget:$api_budget,
-      claim_refusals:$claim_refusals}'
+      claim_refusals:$claim_refusals, profile_resolution:$profile_resolution}'
   rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
 

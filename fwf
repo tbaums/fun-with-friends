@@ -639,6 +639,31 @@ parse_runtime_flags() {
   done
 }
 
+# issue #188: resolution is otherwise invisible and gets debugged by reading
+# source (the exact #30/#31 class of pain) -- report the ABSOLUTE file
+# actually loaded and whether it was in-tree/explicit/auto-detected, plus any
+# name the profile set that doctor dropped (not in the out-of-tree
+# allowlist), so "why is my setting ignored?" is answerable in one command.
+# Never fails doctor: a broken profile is exactly the kind of thing doctor
+# exists to surface, so its own error is printed rather than swallowed.
+_doctor_profile_resolution() {
+  local out
+  if ! out="$(FWF_PROFILE="${FWF_PROFILE:-$(resolve_profile 2>/dev/null || true)}" bash -c '
+    source "'"$FWF_DIR"'/lib.sh" 2>&1
+    printf "%s\t%s\t%s\t%s\n" "$PROFILE" "$FWF_PROFILE_RESOLUTION_MODE" "$PROFILE_FILE" "${FWF_PROFILE_DROPPED_NAMES:-}"
+  ' 2>&1)"; then
+    echo "  profile   : could not resolve — $out"
+    return 0
+  fi
+  local line; line="$(printf '%s\n' "$out" | tail -1)"
+  local name mode file dropped
+  IFS=$'\t' read -r name mode file dropped <<<"$line"
+  printf '  profile   : %s (%s) -> %s\n' "$name" "$mode" "$file"
+  if [ -n "$dropped" ]; then
+    echo "  profile   : WARNING — not exportable out-of-tree, ignored:$dropped"
+  fi
+}
+
 # --- doctor -----------------------------------------------------------------
 doctor() {
   local ok=0
@@ -658,6 +683,7 @@ doctor() {
   fi
   printf '  workspace : %s\n' "$FWF_WORKSPACE_BASE"
   printf '  run dir   : %s\n' "$FWF_RUN"
+  _doctor_profile_resolution
   fwf_doctor_version_line
   _doctor_usage_schema
   _doctor_e2e_cmd_check
