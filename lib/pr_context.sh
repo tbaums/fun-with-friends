@@ -336,6 +336,23 @@ fwf_pr_body_guard() {
   printf '%s' "$text"
 }
 
+# --- "does this issue have extractable content?" (issue #136) --------------
+# The shared predicate #136's history-card guard and #212's backfill both
+# need: a hollow card is only a DEFECT if the linked issue actually had
+# something to fold. $1 = issue number -> 0 if the body has at least one
+# substantive (non-whitespace) section, 1 if it is genuinely sparse (no
+# heading has any real content, or the issue is unresolvable).
+fwf_pr_ctx_has_extractable_content() {
+  local n="$1" json body rec c has=1
+  json="$(fwf_pr_ctx_issue_json "$n")"
+  body="$(printf '%s' "$json" | jq -r '.body // ""' 2>/dev/null)"
+  while IFS= read -r -d $'\x1e' rec; do
+    c="${rec#*$'\x1f'}"
+    [ -n "$(printf '%s' "$c" | tr -d '[:space:]')" ] && { has=0; break; }
+  done < <(_fwf_pr_ctx_split <<<"$body")
+  return "$has"
+}
+
 # --- public entry point: multi-ticket context fold ----------------------------
 # $1.. = issue numbers (any order/dupes) -> sanitized "## Context & rationale"
 # block, one "### <title>" sub-section per ticket, ordered by issue number.
@@ -385,4 +402,108 @@ fwf_credit_block() {
     line="🏭 Built with $link (a multi-agent Claude Code dev factory) + Claude."
   fi
   if [ -n "$models" ]; then printf '%s (%s)' "$line" "$models"; else printf '%s' "$line"; fi
+}
+
+# --- history-card guard (issue #136): the permanent squash-merge invariant ---
+# A post-merge, per-commit verdict: does this commit's body carry the
+# crafted card (fwf-Provenance:, credit per FWF_CREDIT, and -- the #189
+# amendment -- is it NOT hollow while its linked issue has extractable
+# content)? Never audits branch history on its own; the caller
+# (fwf_history_guard_range below, or fwf-gate-promote.sh) decides the range.
+
+# $1=commit body -> space-separated list of "Closes #N" issue numbers, or
+# empty if none found. Mirrors _fwf_pr_ctx_pr_linked_issues's keyword set.
+_fwf_history_closed_issues() {
+  # `|| true` on the final stage: a genuine "no Closes # at all" makes the
+  # first grep exit 1, which under a caller's `set -o pipefail` would make
+  # this whole function return non-zero for the ordinary case of "nothing
+  # matched" -- the same class of bug fixed in
+  # _fwf_pr_ctx_pr_linked_issues above; the caller reads emptiness from the
+  # OUTPUT, never from this function's exit status.
+  printf '%s\n' "$1" \
+    | grep -ioE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+' \
+    | grep -oE '[0-9]+' \
+    | sort -n -u | tr '\n' ' ' | sed -E 's/[[:space:]]+$//' || true
+}
+
+# $1=commit body -> 0 (hollow) if the "## Context & rationale" block, once
+# its own scaffolding (the ### heading, the four canned "_(none logged)_"
+# lines, blank lines) is stripped, has no remaining substantive line left --
+# the exact "byte-identical 17-line empty skeleton" shape #189 audited.
+_fwf_history_card_is_hollow() {
+  local body="$1" block remaining
+  block="$(printf '%s\n' "$body" | awk '/^## Context & rationale$/{f=1;next} /^🏭 Built with|^fwf-Provenance:|^Co-Authored-By:/{f=0} f')"
+  remaining="$(printf '%s\n' "$block" \
+    | grep -vE '^### |^\*\*(Decisions & tradeoffs|Alternatives considered|Acceptance criteria|Testing):\*\*$|^_\(none logged\)_$|^[[:space:]]*$')"
+  [ -z "$(printf '%s' "$remaining" | tr -d '[:space:]')" ]
+}
+
+# $1=commit sha -> prints "PASS" / "FAIL <reason>" / "INDETERMINATE <reason>".
+fwf_history_card_verdict() {
+  local sha="$1" body issues n has_extractable=1
+  body="$(git log -1 --format=%B "$sha" 2>/dev/null)" || {
+    printf 'INDETERMINATE commit %s does not resolve to any object\n' "$sha"; return
+  }
+  issues="$(_fwf_history_closed_issues "$body")"
+  if [ -z "$issues" ]; then
+    printf 'INDETERMINATE %s: no resolvable "Closes #n" in the commit body\n' "$sha"
+    return
+  fi
+  case "$body" in
+    *"fwf-Provenance:"*) : ;;
+    *) printf 'FAIL %s: missing fwf-Provenance trailer\n' "$sha"; return ;;
+  esac
+  if [ "${FWF_CREDIT:-on}" = "on" ] || [ "${FWF_CREDIT:-on}" = "minimal" ]; then
+    case "$body" in
+      *"Built with"*) : ;;
+      *) printf 'FAIL %s: FWF_CREDIT=%s requires the credit block, none found\n' "$sha" "${FWF_CREDIT:-on}"; return ;;
+    esac
+  fi
+  if _fwf_history_card_is_hollow "$body"; then
+    has_extractable=1
+    for n in $issues; do
+      if fwf_pr_ctx_has_extractable_content "$n"; then has_extractable=0; break; fi
+    done
+    if [ "$has_extractable" = 0 ]; then
+      printf 'FAIL %s: hollow card (all buckets none-logged) but issue(s) %s have extractable content\n' "$sha" "$issues"
+      return
+    fi
+    # hollow AND every linked issue is genuinely sparse -- legitimately thin, not a defect.
+  fi
+  printf 'PASS %s\n' "$sha"
+}
+
+# $1=range-from(exclusive) $2=range-to(inclusive), e.g. "origin/integration" "$tip"
+# -> 0 if every squash-merge commit in the range PASSes; on any FAIL/
+# INDETERMINATE, prints every offending verdict (never just the first) and
+# returns 1. Range-bounded BY CONSTRUCTION (issue #136 AC g0): only commits
+# newly reachable from $2 but not $1 are ever inspected -- pre-existing
+# branch history (the 16 known-hollow commits from #189's audit) is
+# structurally unreachable to this function, not merely skipped by intent.
+#
+# --first-parent --no-merges walks only the branch's OWN mainline commits:
+# a real `git merge` commit (a conductor promotion, a manually-merged PR)
+# has 2+ parents and is excluded, and so is everything reachable ONLY
+# through its non-first parent (a merged branch's individual, pre-squash
+# commits) -- git log without --first-parent would otherwise walk every
+# commit of every non-squash-merged PR too, none of which ever carried a
+# "Closes #n" of their own. Beyond that, only a commit whose subject ends
+# `(#<n>)` -- this repo's own squash-merge signature, from every PR title
+# ending "<title> (#<num>)" -- is checked at all; an ordinary mainline
+# commit that was never meant to close an issue (a release bump, a direct
+# golden re-bless) is out of scope for this invariant entirely, not merely
+# a pass -- it is never flagged, not even INDETERMINATE.
+fwf_history_guard_range() {
+  local from="$1" to="$2" sha subj verdict rc=0
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    subj="$(git log -1 --format=%s "$sha" 2>/dev/null)"
+    printf '%s' "$subj" | grep -qE '\(#[0-9]+\)$' || continue
+    verdict="$(fwf_history_card_verdict "$sha")"
+    case "$verdict" in
+      PASS*) : ;;
+      *) echo "$verdict" >&2; rc=1 ;;
+    esac
+  done < <(git log --first-parent --no-merges --format=%H "$from..$to" 2>/dev/null)
+  return "$rc"
 }

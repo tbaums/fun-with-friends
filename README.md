@@ -943,6 +943,32 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   from the list rather than shown blank. Defaults `on` for a normal
   GitHub-backed profile and `off` for `--issues local` (a repo you don't
   control, until you opt it in).
+  **Enforced on every merge (issue #136):** `fwf merge <num>` is the one
+  code path that composes and applies the crafted body — resolve the linked
+  issue, fold its context, append credit + `fwf-Provenance:` — replacing the
+  inline `gh pr merge --body "$(printf ...)"` construction `qa.tmpl` used to
+  spell out (the exact prose an agent has to transcribe correctly, which is
+  what shipped #189's bug 16 times); it refuses to merge at all if the
+  context fold itself refuses. As a backstop, `fwf gate-promote` (the
+  staging→integration promote path) additionally checks every squash-merge
+  commit newly entering the promoted range for the crafted card and
+  **refuses the promote** if any is missing its `fwf-Provenance:` trailer,
+  the credit block (when `FWF_CREDIT` requires it), or is hollow (every
+  bucket `_(none logged)_`) while its linked issue genuinely has content —
+  a linked issue that's legitimately sparse still passes. The check is
+  range-bounded by construction: only commits newly reachable by this
+  promote are ever inspected, so pre-existing branch history is never
+  retroactively audited, and only ever applies to a commit whose subject
+  carries this repo's own squash-merge signature (`... (#<num>)`) — an
+  ordinary maintenance commit (a release bump, a real merge commit) is out
+  of scope entirely, not merely passing. A commit that DOES carry that
+  signature but has no resolvable `Closes #n` is INDETERMINATE and refuses
+  the promote too, on the reasoning that "cannot verify" must not be
+  cheaper than "verified bad" — known limitation: a factory design whose
+  templates intentionally never close a ticket (`validate`/`ideation`/
+  `consulting`/`defect-report`) would need its own opt-out of this check if
+  it ever promotes through `fwf gate-promote`; this repo's own floor runs
+  `dev`, where every squash-merge always closes an issue.
 - **Release freeze:** ask the PM to "freeze for release" and it labels tickets
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
