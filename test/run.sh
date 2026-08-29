@@ -8436,12 +8436,12 @@ FCG_MARKERS_ONLY() {
     source '$FC'
     gh_() {
       case \"\$*\" in
-        'issue list --state open --label needs-captain --json number,createdAt,comments')
-          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"comments\":[
+        'issue list --state all --label needs-captain --json number,createdAt,state,comments')
+          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"OPEN\",\"comments\":[
             {\"body\":\"a very long unrelated operator write-up, not a marker, imagine this is huge\",\"createdAt\":\"2026-01-01T00:01:00Z\"},
             {\"body\":\"NEEDS-CAPTAIN: [impl1] blocked on base\",\"createdAt\":\"2026-01-01T00:02:00Z\"}
           ]}]' ;;
-        'pr list --state open --label needs-captain --json number,createdAt,comments') printf '%s' '[]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,state,comments') printf '%s' '[]' ;;
       esac
     }
     gh_flagged_items
@@ -8452,6 +8452,66 @@ assert_eq "AC(c): non-marker comments are dropped from the payload" "1" \
   "$(printf '%s' "$MARKERS_OUT" | jq '.[0].comments | length')"
 assert_contains "AC(c): the surviving comment is the actual marker" \
   "$(printf '%s' "$MARKERS_OUT" | jq -r '.[0].comments[0].body')" "NEEDS-CAPTAIN: [impl1]"
+
+section "fwf flag-captain sweep (#374): a flag raised, then the item closed, must not go invisible"
+# The 2026-08-28 incident this ticket exists to close: the GV raised a flag on
+# an issue that had already been closed, and 'sweep --state open' rendered it
+# as indistinguishable from a genuinely empty sweep. AC(3): this must go RED
+# against a --state open sweep and green after the --state all fix -- a test
+# that only exercises open items (like the round-trip test above) does not
+# discriminate this defect at all.
+CLOSED_NUM="$(FCISS create --title "Flag survives a close" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+FCL "$CLOSED_NUM" --role gv --reason "the close itself is the thing that needs a decision" >/dev/null
+FCISS close "$CLOSED_NUM" >/dev/null
+assert_eq "fixture item is actually closed (test validity)" "state: closed" \
+  "$(FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" view "$CLOSED_NUM" | grep -o 'state: .*')"
+CLOSED_SWEEP="$(FCL sweep)"
+# AC(6): the property, not the scope -- a cause-of-emptiness the sweep must
+# never fall into. This item is the ONLY flag left unresolved from earlier
+# sections (LI-1 was cleared, LI-2 has no [role] tag but is still open) --
+assert_not_contains "AC(6): closing an item is never a cause of a bare empty sweep" \
+  "$CLOSED_SWEEP" "no needs-captain flags open"
+assert_contains "AC(1): the flag on the closed item still surfaces" "$CLOSED_SWEEP" "LI-$CLOSED_NUM"
+assert_contains "AC(1)/AC(7): the row is marked as closed, distinct from a live flag" \
+  "$CLOSED_SWEEP" "LI-$CLOSED_NUM (CLOSED)"
+assert_contains "the reason still comes through on a closed item's row" \
+  "$CLOSED_SWEEP" "the close itself is the thing that needs a decision"
+
+section "fwf flag-captain (#374 AC 2): --clear works on a closed item without reopening it"
+CLEAR_CLOSED_OUT="$(FCL "$CLOSED_NUM" --clear --note "routed: closing #333 was correct")"
+assert_contains "clear on a closed item confirms" "$CLEAR_CLOSED_OUT" "needs-captain cleared"
+assert_eq "clearing a closed item's flag does not reopen it" "state: closed" \
+  "$(FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" view "$CLOSED_NUM" | grep -o 'state: .*')"
+# AC(5): latest-clear-wins still holds for a closed item -- once cleared, it
+# stays cleared and does not resurrect as permanent sweep noise.
+POST_CLEAR_CLOSED_SWEEP="$(FCL sweep)"
+case "$POST_CLEAR_CLOSED_SWEEP" in
+  *"LI-$CLOSED_NUM"*) bad "AC(5): a cleared flag on a closed item must not resurface" "$POST_CLEAR_CLOSED_SWEEP";;
+  *) ok "AC(5): the cleared closed-item flag stays cleared";;
+esac
+
+section "fwf flag-captain sweep (#374 AC 4): the gh backend is also widened to --state all"
+FCG_CLOSED() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_kind() { echo issue; }
+    gh_() {
+      case \"\$*\" in
+        'issue list --state all --label needs-captain --json number,createdAt,state,comments')
+          printf '%s' '[{\"number\":333,\"createdAt\":\"2026-08-28T14:07:00Z\",\"state\":\"CLOSED\",\"comments\":[
+            {\"body\":\"NEEDS-CAPTAIN: [gv] closed four minutes before this flag landed\",\"createdAt\":\"2026-08-28T14:11:43Z\"}
+          ]}]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,state,comments') printf '%s' '[]' ;;
+      esac
+    }
+    main sweep
+  " fcg-closed-harness
+}
+GH_CLOSED_SWEEP="$(FCG_CLOSED)"
+assert_contains "gh backend: a flag on a closed issue surfaces too" "$GH_CLOSED_SWEEP" "#333"
+assert_contains "gh backend: the closed state is marked on the row" "$GH_CLOSED_SWEEP" "#333 (CLOSED)"
+assert_not_contains "gh backend: never renders as an empty sweep for a closed-only flag" \
+  "$GH_CLOSED_SWEEP" "no needs-captain flags open"
 
 # --------------------------------------------------------------------------
 # fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed

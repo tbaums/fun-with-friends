@@ -50,13 +50,19 @@ fwf flag-captain sweep                                  list every open flag
   counts as "active" for that item: a `NEEDS-CAPTAIN:` comment posted *after*
   the clear is a fresh, active flag again (a raise-clear-raise sequence never
   gets silently swallowed by the earlier clear).
-- **Sweep** unions open issues and open PRs carrying the label (both
+- **Sweep** unions issues and PRs carrying the label **in any state** (both
   independently, since a flag can be raised on either), and for each surfaces
   one row per *active* raise:
   - zero active `NEEDS-CAPTAIN:` comments on a labeled item → still surfaces,
     as `role unstated` / `no reason given` (a flag is never silently dropped
     for a missing reason or role)
   - a `NEEDS-CAPTAIN:` line with no `[role]` tag → `role unstated`
+  - an item that is not OPEN (issue closed, PR closed/merged) → still
+    surfaces, with its id tagged e.g. `#333 (CLOSED)` (#374) — a flag raised
+    on an item that is subsequently closed does not go invisible; the
+    captain sees it needs a routing decision *because* it is closed, distinct
+    from a live "act on this" item. `--clear` works on a closed item too, and
+    does not reopen it.
 
 The label is guaranteed to exist before any raise: the GitHub-backend raise
 path (`gh label create ... --force`) create-if-absents it inline, and `fwf
@@ -79,6 +85,13 @@ comment on a flagged item that isn't itself a `NEEDS-CAPTAIN`/
 `NEEDS-CAPTAIN-CLEARED` line before combining issues and PRs — the sweep
 only ever needs those marker lines, and keeping the rest of a long thread
 around is what pushed the payload over `ARG_MAX` in the first place.
+
+The invariant this establishes — a bare `no needs-captain flags open` must
+never be the output for any cause other than genuinely zero flags — held for
+a *read failure* but not for a **close**: a flag raised on an item closed
+four minutes earlier used to render exactly as an empty sweep (2026-08-28,
+#374). Sweeping `--state all` on both trackers closes that second cause the
+same way #291 closed the first.
 
 ## Both trackers, one command
 
