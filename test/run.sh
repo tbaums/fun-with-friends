@@ -8686,7 +8686,6 @@ EOSCRIPT
 }
 ARA_FULL_SET="fwf-0.30.3.tar.gz
 fwf-dash-0.30.3-checksums.txt
-fwf-dash-0.30.3-darwin-arm64
 fwf-dash-0.30.3-linux-x86_64
 fwf-dash-0.30.3-linux-arm64"
 
@@ -8700,7 +8699,6 @@ assert_contains "AC(a): passing output says OK"                 "$ARA_OK_OUT" "O
 # AC (b): a missing binary (simulated dropped upload) fails and NAMES it.
 ARA_GH_MISS="$(ara_gh_stub "$TMP/ara-miss" "fwf-0.30.3.tar.gz
 fwf-dash-0.30.3-checksums.txt
-fwf-dash-0.30.3-darwin-arm64
 fwf-dash-0.30.3-linux-x86_64")"
 rc=0; ARA_MISS_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_MISS" "$ARA" 0.30.3 2>&1)" || rc=$?
 assert_eq       "AC(b): missing binary -> fails the job"        "1" "$rc"
@@ -8746,7 +8744,7 @@ assert_contains     "AC(j): the expected-set computation reads ONLY the manifest
 ARA_GH_NONE="$(ara_gh_stub "$TMP/ara-none" "")"
 rc=0; ARA_NONE_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_NONE" "$ARA" 0.30.3 2>&1)" || rc=$?
 assert_eq "AC(j): a skipped-leg (empty actual) run still expects the FULL manifest set" "1" "$rc"
-for want in "fwf-0.30.3.tar.gz" "fwf-dash-0.30.3-darwin-arm64" "fwf-dash-0.30.3-linux-x86_64" "fwf-dash-0.30.3-linux-arm64"; do
+for want in "fwf-0.30.3.tar.gz" "fwf-dash-0.30.3-linux-x86_64" "fwf-dash-0.30.3-linux-arm64"; do
   assert_contains "AC(j): unchanged expectation still names $want as missing" "$ARA_NONE_OUT" "$want"
 done
 
@@ -9461,6 +9459,48 @@ rc=0
   "$ROOT/fwf-gate.sh" f202yrole --tip-cmd "cat tipfile" -- \
   bash -c 'rm tipfile; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "tip-cmd unreadable on exit fails closed (EX_STALE), never a silent promotable verdict" "76" "$rc"
+
+# --------------------------------------------------------------------------
+section "e2e consolidation: conductor is the SOLE full-suite authority, impl only runs mobile-safari on UI diffs (issue #168)"
+# implementer.tmpl step g no longer offers a full self-verification e2e run
+# at all -- the throughput win this ticket exists for. Default is GATE_CMD
+# only; the UI-touching case runs the FULL mobile-safari playwright PROJECT
+# (never a per-spec subset -- that kind of selection silently under-covers
+# as views are renamed/added, per this ticket's own rejected alternative).
+IMPL168="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+assert_contains "impl template: default e2e self-verification is none (GATE-only)" "$IMPL168" "DEFAULT: no e2e self-verification at all"
+assert_contains "impl template: UI-touching diffs trigger the full mobile-safari PROJECT" "$IMPL168" "mobile-safari"
+assert_contains "impl template: the mobile-safari run goes through --project=mobile-safari, not a spec subset" \
+  "$IMPL168" "npx playwright test --project=mobile-safari"
+assert_not_contains "impl template: the old freeform self-verification placeholder is gone, not merely appended to" \
+  "$IMPL168" "<run your e2e/browser self-verification here>"
+assert_contains "impl template: the coarse UI trigger names the frontend tree" "$IMPL168" "frontend/"
+# still routes through the same guarded launcher/lock discipline as before
+# (issues #65/#123) -- consolidation changes WHEN impl runs e2e, not HOW.
+assert_contains "impl template: UI e2e run still takes the shared guarded launcher" "$IMPL168" "fwf gate impl1 --e2e --"
+assert_contains "impl template: exit-75 SKIP handling preserved" "$IMPL168" "Exit 75 means SKIPPED"
+
+# conductor.tmpl step 6 (RED): three-part kick-back-and-unpoison, plus the
+# revert-conflict fail-safe (never leave staging wedged mid-revert).
+assert_contains "conductor template: RED kick-back names the failing spec + output, not just \"e2e is red\"" \
+  "$RENDERED" "must be actionable"
+assert_contains "conductor template: culprit commit is reverted off staging with git revert (auditable, not a force-push)" \
+  "$RENDERED" "git revert --no-edit"
+assert_not_contains "conductor template: revert is never a force-push" "$RENDERED" "push --force"
+assert_contains "conductor template: reverted work is withheld from integration until fixed forward" \
+  "$RENDERED" "Do NOT promote the reverted work"
+assert_contains "conductor template: a revert conflict aborts cleanly rather than leaving staging wedged" \
+  "$RENDERED" "git revert --abort"
+assert_contains "conductor template: the conflict fallback blocks the WHOLE batch, not just the culprit" \
+  "$RENDERED" "BLOCKING THE WHOLE BATCH"
+# regression guard: the OLD RED step (comment + report, no actual revert)
+# must not silently survive verbatim -- pins that the new behavior replaced
+# it rather than being appended as dead alternate text.
+case "$RENDERED" in
+  *"Identify the likely culprit, comment the EXACT failure on that PR (or open a tracking issue tagging the owning implementer), and report."*)
+    bad "conductor template: pre-#168 RED step (no revert) still present verbatim -- new behavior wasn't actually substituted" ;;
+  *) ok "conductor template: pre-#168 RED step (no revert) has been replaced, not merely appended to" ;;
+esac
 
 # --------------------------------------------------------------------------
 section "fwf-mem-admit: issue #156's own test suite is wired into the gating path (issue #286 AC d/e)"
