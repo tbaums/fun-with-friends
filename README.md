@@ -200,7 +200,15 @@ instead of stalling silently (issue #99).
 - **CONDUCTOR** (owns e2e and the gate into `integration`): when `staging` is
   ahead, acquires the e2e lock, runs the **full e2e suite** on `staging`, and on
   green ff-merges **`staging → integration`**. It **never touches the default
-  branch**.
+  branch**. It is the **sole** authority for the full suite (issue #168) —
+  an implementer's own pre-push e2e run (below) only ever runs a UI-scoped
+  subset, never the full suite, so there is no serialized double-run. On RED,
+  it decouples rather than blocking the whole batch: it comments the exact
+  failing spec + output on the owning PR, then `git revert`s the culprit
+  commit off `staging` (never a force-push — stays auditable) so the healthy
+  rest of the batch can still promote; the reverted work waits for the owner
+  to fix forward and re-land it. A revert that conflicts aborts cleanly and
+  falls back to blocking the whole batch instead of leaving `staging` wedged.
 - **CAPTAIN — you talk to it** (interactive + loop, in the coordination
   session): the factory's orchestrator and your technical co-pilot. Drop an idea
   or a feature and it drives it to shipped. Plans and scopes work into ready
@@ -365,10 +373,12 @@ not a per-role copy:
   those instead of a hardcoded port/data dir to actually get concurrent
   lanes; `fwf doctor` warns (never refuses) if it looks like `E2E_CMD`
   hardcodes either. Conductor's promotion e2e and an implementer's own
-  local e2e self-verification (before marking a PR ready) share this same
-  lease pool, so a local run structurally cannot bind a port a sibling's
-  live run holds (subsumes issue #65's implementer-bypass concern —
-  meaningful only once the cap is raised above 1). Each lane's lock dir
+  local e2e self-verification (before marking a PR ready — issue #168:
+  only for a diff that touches the UI surface, running the mobile-safari
+  project alone, never the full suite; a non-UI diff takes no e2e lease at
+  all) share this same lease pool, so a local run structurally cannot bind
+  a port a sibling's live run holds (subsumes issue #65's implementer-bypass
+  concern — meaningful only once the cap is raised above 1). Each lane's lock dir
   carries a holder-identity stamp (role/PID/pgid/pgleader/host/worktree/
   timestamp/port/data_dir; issue #195 adds pgid/pgleader) so a role that
   dies mid-hold is recovered automatically —

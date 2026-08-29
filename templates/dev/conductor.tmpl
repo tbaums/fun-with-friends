@@ -22,8 +22,17 @@ Each cycle:
 
 5. If e2e exits 76, the verdict is STALE — not promotable. Two distinct causes both land here (issue #254): __STAGING__'s tip moved during the run and is no longer an ancestor of what's there now (a force-push/rebase truly rewrote history — the verdict is for code that no longer exists on the branch), or ancestry could not be determined (a shallow clone, missing objects). An ORDINARY move — someone merged on top mid-run — is NOT this case any more: __PROMOTE_GATE__'s --tip-ancestry flag means that verdict is honoured and reported as a normal green/red (step 4/6), not discarded. Either way here: do NOT promote and do NOT treat this as a failure (no culprit hunt, no PR comment) — say "conductor: stale verdict (tip rewritten or indeterminate), the next cycle gates the new tip" and END the cycle.
 
-6. If e2e is RED (any other nonzero exit, excluding 75/76), do NOT promote. List the commits you were about to ship:
+6. If e2e is RED (any other nonzero exit, excluding 75/76), decouple and unpoison rather than blocking the whole batch (issue #168 — throughput is why this ticket exists; one bad commit should not stall every other implementer's already-green work). Do NOT promote yet. List the commits you were about to ship:
    git log --oneline origin/__INTEGRATION__..origin/__STAGING__
-   Identify the likely culprit, comment the EXACT failure on that PR (or open a tracking issue tagging the owning implementer), and report. This verdict is now recorded against __STAGING__'s tip, so an unchanged tip will not be re-gated next cycle (step 3) unless a human forces a resume (FWF_GATE_FORCE=1) or a new commit lands on __STAGING__.
+   a. Identify the likely culprit from the e2e failure output (the failing `mobile*.spec.ts` name(s) + Playwright output point at it).
+   b. Comment the EXACT failing spec name(s) + Playwright failure output on the culprit's owning PR (or open a tracking issue tagging the owning implementer if the PR is already merged/closed) — this must be actionable, not just "e2e is red."
+   c. Revert the culprit commit OFF __STAGING__ with `git revert` — never a force-push, this must stay auditable:
+      git switch --detach origin/__STAGING__
+      git revert --no-edit <culprit-sha>
+      git push origin HEAD:__STAGING__
+      Do NOT promote the reverted work to __INTEGRATION__ until the owning implementer fixes forward and re-lands it as a new commit.
+   d. REVERT-CONFLICT FAIL-SAFE: if the revert conflicts (a later commit touched the same lines), do NOT leave __STAGING__ wedged mid-revert — you write no code and are not the one to resolve a merge conflict. Immediately `git revert --abort` (returns __STAGING__ to its last clean state), then fall back to BLOCKING THE WHOLE BATCH instead: promote nothing this cycle, comment the conflict on the culprit's PR tagging the owning implementer and @captain, and report the block. Decouple-and-promote-healthy (c) is the happy path; block-the-batch is only the fallback when a clean revert isn't possible.
+   e. After a clean revert (c), either re-run step 3 against __STAGING__'s new (culprit-free) tip this same cycle if time allows, or END the cycle and let the next tick pick it up — either is correct, but never promote on the STALE (pre-revert) verdict.
+   This verdict is now recorded against the SHA it was gated for, so an unchanged tip will not be re-gated next cycle (step 3) unless a human forces a resume (FWF_GATE_FORCE=1) or a new commit lands on __STAGING__ (including your own revert commit from (c), which is itself a new commit and gates fresh).
 
 Never touch __DEFAULT__ in any way (no checkout-to-merge, no push). If the ff-only merge into __INTEGRATION__ fails (it should not — you are the sole writer of __INTEGRATION__), stop and report rather than forcing.
