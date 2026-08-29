@@ -112,6 +112,15 @@ IDEA_LABEL="${FWF_IDEA_LABEL:-idea}"
 # Meta/coordination marker (issue #255): a living document (the dependency
 # graph, the release audit) the PM posts to every cycle, not buildable work.
 TRACKING_LABEL="${FWF_TRACKING_LABEL:-tracking}"
+# Coordination-lane idle-backfill (issue #169): a doc-only/chunkable coordination
+# item (PM) or a from-scratch discovery proposal (GV, alongside DISCOVERY_LABEL,
+# only during a floor-down sustained pass) still being drafted via checkpointed
+# issue COMMENTS -- never a branch or file, since PM/GV are read-only roles that
+# never touch branches or PRs. Present = still being drafted, implementers skip
+# it; the coordination role removes it once a final "COORD-DRAFT: READY" comment
+# hands the fully-drafted content to an implementer's normal claim-and-build
+# cycle. See docs/coordination-idle-backfill.md.
+COORD_LABEL="${FWF_COORD_LABEL:-coordination-only}"
 # Survey exclusion set (issue #255): what an implementer's / captain's / pm's
 # `gh issue list` survey excludes. Single-sourced here so a rename, or adding
 # a new exclusion, is a ONE-PLACE edit instead of N template edits in two
@@ -125,7 +134,7 @@ TRACKING_LABEL="${FWF_TRACKING_LABEL:-tracking}"
 # both the -label: flags AND the matching human-readable eligibility prose
 # from it, so the two can never independently drift the way the six-times,
 # two-styles version did.
-SURVEY_EXCLUDE_IMPL="${FWF_SURVEY_EXCLUDE_IMPL:-$WIP_LABEL $HOLD_LABEL $IDEA_LABEL $TRACKING_LABEL}"
+SURVEY_EXCLUDE_IMPL="${FWF_SURVEY_EXCLUDE_IMPL:-$WIP_LABEL $HOLD_LABEL $IDEA_LABEL $TRACKING_LABEL $COORD_LABEL}"
 SURVEY_EXCLUDE_COORD="${FWF_SURVEY_EXCLUDE_COORD:-$WIP_LABEL $HOLD_LABEL $TRACKING_LABEL}"
 # needs-captain flag (issue #113): any role raises this on an issue/PR via
 # `fwf flag-captain` when something needs the captain's decision; the captain

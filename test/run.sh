@@ -7289,7 +7289,7 @@ assert_not_contains "AC(c): the OLD 'idea' literal is gone once renamed too -- t
 F255_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 F255_CAPTAIN_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 F255_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
-for tok in '-label:product-wip' '-label:release-hold' '-label:idea' '-label:tracking'; do
+for tok in '-label:product-wip' '-label:release-hold' '-label:idea' '-label:tracking' '-label:coordination-only'; do
   assert_contains "AC(e): implementer survey excludes $tok" "$F255_IMPL_RENDER" "$tok"
 done
 for role_name in captain pm; do
@@ -7301,6 +7301,7 @@ for role_name in captain pm; do
     assert_contains "AC(e): $role_name queued-issues search excludes $tok" "$F255_ROLE_RENDER" "$tok"
   done
   assert_not_contains "AC(e): $role_name survey does NOT exclude idea (must SEE parked ideas)" "$F255_ROLE_RENDER" '-label:idea'
+  assert_not_contains "AC(e)/#169: $role_name survey does NOT exclude coordination-only (PM must SEE it to work it; captain/GV need it visible too)" "$F255_ROLE_RENDER" '-label:coordination-only'
 done
 
 # AC (a) / AC (d): the rendered eligibility PROSE (dev + refactor
@@ -7313,6 +7314,88 @@ assert_contains "AC(d): dev implementer eligibility prose names tracking, matchi
 F255_REFACTOR_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/implementer.tmpl' 1")"
 assert_contains "AC(d): refactor implementer eligibility prose names tracking, matching the search" \
   "$F255_REFACTOR_RENDER" 'NOT "tracking" (a living coordination document, not buildable work)'
+
+# --------------------------------------------------------------------------
+section "coordination-lane idle-backfill (issue #169): routing, hard preemption, comment-checkpoint handoff"
+
+F169_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+F169_GV_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/gv.tmpl' ''")"
+F169_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+
+# --- config.sh / lib.sh wiring ---------------------------------------------
+assert_eq "COORD_LABEL default is coordination-only" "coordination-only" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$COORD_LABEL")"
+assert_eq "FWF_COORD_LABEL overrides the default" "renamed-coord" \
+  "$(FWF_COORD_LABEL=renamed-coord FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$COORD_LABEL")"
+assert_contains "__COORD_LABEL__ placeholder renders in a template" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")" \
+  "coordination-only"
+
+# --- PM: routing, comment-checkpoint format, hard preemption --------------
+assert_contains "pm.tmpl lists coordination-only candidates" "$F169_PM_RENDER" '--label "coordination-only"'
+assert_contains "pm.tmpl routes a discovery-labeled candidate AWAY from chunking (GV's job instead)" \
+  "$F169_PM_RENDER" 'Skip (never touch) any candidate that ALSO carries "discovery"'
+assert_contains "pm.tmpl's chunk marker format matches the spec" "$F169_PM_RENDER" 'COORD-DRAFT (chunk'
+assert_contains "pm.tmpl's ready marker format matches the spec" "$F169_PM_RENDER" 'COORD-DRAFT: READY'
+assert_contains "pm.tmpl removes coordination-only on handoff (so implementers can finally see it)" \
+  "$F169_PM_RENDER" 'gh issue edit <n> --remove-label "coordination-only"'
+assert_contains "pm.tmpl states hard preemption: unreachable unless the WIP-draft step found nothing" \
+  "$F169_PM_RENDER" "HARD PREEMPTION: only reachable when the step above found NOTHING to do this cycle"
+assert_contains "pm.tmpl explains WHY preemption needs no interruption code (chunk always persisted first)" \
+  "$F169_PM_RENDER" "a chunk (below) is always written and posted complete before your cycle ends"
+assert_contains "pm.tmpl never touches a branch/file/PR for this step (comment-only, matches the hard role boundary)" \
+  "$F169_PM_RENDER" "This never touches a branch, a file, or a PR"
+# Ordering: the idle-backfill section text must appear AFTER (at a later
+# byte offset than) the ordinary WIP-draft sweep's own "no new feedback"
+# line -- proves it really is the LAST thing checked, not spliced in early
+# where it could fire ahead of real PM duty.
+PM_IDLE_OFFSET="${F169_PM_RENDER%%COORDINATION-LANE IDLE-BACKFILL (issue #169)*}"
+PM_WIP_OFFSET="${F169_PM_RENDER%%before idling see COORDINATION-LANE IDLE-BACKFILL below*}"
+[ "${#PM_IDLE_OFFSET}" -gt "${#PM_WIP_OFFSET}" ] \
+  && ok "pm.tmpl: idle-backfill step appears AFTER the ordinary WIP-draft sweep (last-checked, not spliced in early)" \
+  || bad "pm.tmpl: idle-backfill step appears AFTER the ordinary WIP-draft sweep (last-checked, not spliced in early)" "idle offset ${#PM_IDLE_OFFSET} <= wip offset ${#PM_WIP_OFFSET}"
+
+# --- GV: floor-down gating, routing, sustained-sitting model --------------
+F169_BUILD_SESSION="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$BUILD_SESSION")"
+assert_contains "gv.tmpl checks the BUILD session before starting (floor-down gate, placeholder resolved)" \
+  "$F169_GV_RENDER" "tmux has-session -t \"$F169_BUILD_SESSION\""
+assert_not_contains "gv.tmpl's __BUILD_SESSION__ placeholder actually resolved (no stale token)" \
+  "$F169_GV_RENDER" '__BUILD_SESSION__'
+assert_contains "gv.tmpl routes to candidates that carry discovery (from-scratch proposals only)" \
+  "$F169_GV_RENDER" 'ALSO carry "discovery"'
+assert_contains "gv.tmpl works the candidate to completion in one sitting (not bounded chunks)" \
+  "$F169_GV_RENDER" 'Unlike the PM'"'"'s per-tick chunking, work this ONE candidate to completion'
+assert_contains "gv.tmpl aborts an in-progress sitting if the build floor comes back up mid-draft" \
+  "$F169_GV_RENDER" 'STOP immediately without finishing the sitting'
+assert_contains "gv.tmpl's target path for a completed discovery draft is the same docs/proposals/ convention as step e0" \
+  "$F169_GV_RENDER" 'docs/proposals/<num>-<slug>.md'
+assert_contains "gv.tmpl removes coordination-only on handoff, same as PM's" \
+  "$F169_GV_RENDER" 'gh issue edit <n> --remove-label "coordination-only"'
+assert_contains "gv.tmpl states hard preemption: unreachable unless duties 1 and 2 found nothing" \
+  "$F169_GV_RENDER" "HARD PREEMPTION: only reachable when steps 1 and 2 above found NOTHING to do this cycle"
+GV_IDLE_OFFSET="${F169_GV_RENDER%%COORDINATION-LANE FLOOR-DOWN PASS*}"
+GV_ADVISE_OFFSET="${F169_GV_RENDER%%ADVISE THE CAPTAIN*}"
+[ "${#GV_IDLE_OFFSET}" -gt "${#GV_ADVISE_OFFSET}" ] \
+  && ok "gv.tmpl: floor-down pass appears AFTER both the PM-review and advise-captain duties (last-checked)" \
+  || bad "gv.tmpl: floor-down pass appears AFTER both the PM-review and advise-captain duties (last-checked)" "idle offset ${#GV_IDLE_OFFSET} <= advise offset ${#GV_ADVISE_OFFSET}"
+
+# --- Implementer: recognizes and assembles a coordination-drafted handoff --
+assert_contains "implementer.tmpl has a COORDINATION-DRAFTED CONTENT step (issue #169)" \
+  "$F169_IMPL_RENDER" "COORDINATION-DRAFTED CONTENT (issue #169)"
+assert_contains "implementer.tmpl assembles prior COORD-DRAFT comments rather than re-drafting from scratch" \
+  "$F169_IMPL_RENDER" "the substantive content is ALREADY WRITTEN"
+assert_contains "implementer.tmpl explicitly says not to re-draft from scratch" \
+  "$F169_IMPL_RENDER" "do NOT re-draft it from scratch"
+assert_contains "implementer.tmpl routes a discovery-labeled handoff to the same docs/proposals/ path as step e0" \
+  "$F169_IMPL_RENDER" 'target is `docs/proposals/<num>-<slug>.md` as in step e0'
+assert_contains "implementer.tmpl's resume path (step a) already knows a discovery draft means the proposal, unaffected by this change" \
+  "$F169_IMPL_RENDER" "your resumed work is the proposal doc"
+
+# --- #146 non-interaction: PM/GV never write, so no dirty-worktree carve-out is needed --
+assert_not_contains "pm.tmpl idle-backfill never mentions committing or a branch (comment-only by design)" \
+  "$(printf '%s' "$F169_PM_RENDER" | grep -A20 'COORDINATION-LANE IDLE-BACKFILL')" "git commit"
+assert_not_contains "gv.tmpl floor-down pass never mentions committing or a branch (comment-only by design)" \
+  "$(printf '%s' "$F169_GV_RENDER" | grep -A20 'COORDINATION-LANE FLOOR-DOWN PASS')" "git commit"
 
 # --------------------------------------------------------------------------
 # fwf-branch-policy.sh (issue #220): is the committed .github/branch-policy.json
