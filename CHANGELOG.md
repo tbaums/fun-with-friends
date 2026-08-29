@@ -11,6 +11,31 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-28
+
+**The self-inflicted-CI release.** With macOS CI moved off GitHub and onto real hardware, the two defects that had been quietly taxing every run got fixed: a jq `ARG_MAX` overflow that took the whole dash data provider down on verbose repos, and a `TOTAL` line that laundered unpriced seats into `$0`. Verified on a real Darwin box under `/bin/bash` 3.2.57: **2207 passed, 0 failed, 13 skipped**.
+
+### Added
+- **A repo profile can live in the target repo** (#188, code 45208c3, docs 45208c3) — profiles had to be committed into `fun-with-friends` itself, so running a factory against someone else's repo meant carrying their config in this tree. A profile now resolves from the target repo, with the resolution surfaced in the data layer (`.profile_resolution`) because silent resolution is the #30/#31 class of pain.
+- **The diff-scoped gate is wired to a real call site and measured** (#261/#138 phase 2, code 657ddd4, docs 657ddd4) — runs in shadow mode: it records what it *would* have skipped without yet skipping it, so the decision to trust it is made on data instead of argument.
+- **The conductor is the single e2e runner, with a coarse UI pre-check** (#168, code fe4823f, docs fe4823f) — concurrent e2e runs contended for the same ports and lock.
+
+### Fixed
+- **`fwf flag-captain sweep` failed OPEN on a jq `ARG_MAX` overflow** (#291, code cc43c59, docs cc43c59) — `roles`/`decisions`/`issues`/`activity`/`needs_you`/`unrouted_prs`/`visibility` each carry full comment-thread bodies, so on a repo with verbose threads their combined size blew `ARG_MAX` when passed as `--argjson` on the command line. jq exited 126 with "Argument list too long" and took the **whole data provider** down with it — every dash tab rendering a confident, wrong `0`. Large blobs now route through files on stdin (`--slurpfile`); argv only ever carries short scalars.
+- **A failed sweep read was invisible on stdout** (#291, code ec6a267, docs 7f93aad) — `UNKNOWN` went to stderr alone, so a caller reading stdout saw an empty sweep and could not distinguish "nothing flagged" from "the read failed". It now prints on both streams, and the sweep fails closed.
+- **A dead or loading board rendered tab counts as a confident `(0)`** (#291, code 520a53f, docs cc43c59) — now renders `(?)`, which is the honest answer.
+- **`fwf usage TOTAL` laundered unpriced and stale-priced seats into `$0`** (#289, code 95c37df, docs 95c37df) — the three `claude-opus-5` seats were missing from the price table, so their cost silently vanished from the total rather than being reported as unknown. A cost you cannot see is worse than one you cannot compute.
+- **A gate-path change now hints the by-path workaround** (#344, code 708b230, docs none — internal) — a defect in the gate path itself cannot be validated *through* the installed gate, since the wrapper doing the validating is the pre-fix release. The gate now says so, and names the exact by-path invocation, conditionally on the content actually differing.
+
+### Changed
+- **macOS CI runs on local hardware, not GitHub** (code 15801ee, docs 15801ee) — waiting on a hosted macOS runner blocked every release for 20+ minutes at a time while the same suite finished in seconds on the box that was already sitting there. `dash-targets.json` drops `darwin-arm64` accordingly; `scripts/mac-ci.sh` and `scripts/mac-release-asset.sh` cover the local path.
+
+### Internal
+- **The #261 shadow classifier pointed at an out-of-tree profile** (code f8a6fb7, docs none — internal) — `FWF_PROFILE=fwf` names an *installed* profile that does not exist in this repo, so the classifier exited 1 immediately after the tests passed and turned the dash job red on staging and on every open PR. A shadow measurement must never fail a build.
+- **Release-asset fixtures still expected a `darwin-arm64` asset** (code 9ca40cf, docs none — internal) — 11 tests went red the moment the manifest dropped that target.
+- **Version-coupled dash goldens re-blessed** (code fe4cef4 and 0d39c3c, docs none — internal) — these break on *every* release; the durable fix is tracked in #307.
+- **Discovery: the dead-man's-switch can reap a LIVE factory** (#157, code 58527e4, docs 58527e4) — proposal only, no behavior change.
+
 ## [0.36.0] - 2026-08-28
 
 **The macOS release.** `functional suite (macos-latest)` had been red for days and no macOS run could even *finish* — the gate SIGKILLed its own test runner partway through, so ~500 assertions had never executed on that platform. Fixing that exposed six distinct GNU-vs-BSD defect families, every one of them invisible to a Linux CI runner by construction. All are fixed and verified on a real Darwin box: **2174 passed, 0 failed**.
