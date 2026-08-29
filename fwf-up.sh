@@ -233,7 +233,27 @@ declare -a TP BP   # TP[id]=impl pane ; BP[id]=qa pane (id = 1..FWF_PAIRS)
 CONDUCTOR_PANE=""
 if [ "$FULL" = 1 ] || [ "$build_only" = 1 ]; then
 if tmux has-session -t "$BUILD_SESSION" 2>/dev/null; then
-  echo "build session '$BUILD_SESSION' already up — leaving it untouched."
+  # issue #190: a silently-discarded --pairs on a live floor is a WORSE
+  # failure than not being able to scale at all -- the operator sees a
+  # clean exit and believes the floor scaled. Only checked when --pairs was
+  # EXPLICITLY passed this invocation (FWF_PAIRS_REQUESTED, set by the `fwf`
+  # dispatcher, never by FWF_PAIRS's own default/profile value) -- a bare
+  # `fwf up` on a live floor keeps today's unchanged, silent no-op (AC d).
+  if [ "${FWF_PAIRS_REQUESTED:-0}" = 1 ]; then
+    RUNNING_PAIRS="$(fwf_running_pair_count "$BUILD_SESSION")"
+    if [ "$RUNNING_PAIRS" = unknown ]; then
+      echo "fwf: build session '$BUILD_SESSION' has an inconsistent pair state (some index has only one of implN/qaN) — could not determine the running pair count, refusing to guess. Resolve the floor's state before requesting a pair count." >&2
+      exit 1
+    elif [ "$RUNNING_PAIRS" != "$FWF_PAIRS" ]; then
+      echo "fwf: build session '$BUILD_SESSION' is already up running $RUNNING_PAIRS pair(s) — requested $FWF_PAIRS was NOT applied." >&2
+      echo "fwf: 'fwf up --pairs' cannot resize a live floor. The only path that applies a new count today is 'fwf up --build-only', which RECREATES the build session and KILLS every in-flight implementer/QA pane." >&2
+      echo "fwf: if that's acceptable, re-run with 'fwf up --build-only'. Otherwise leave the floor at $RUNNING_PAIRS pair(s)." >&2
+      exit 1
+    fi
+    echo "build session '$BUILD_SESSION' already up running the requested $FWF_PAIRS pair(s) — leaving it untouched."
+  else
+    echo "build session '$BUILD_SESSION' already up — leaving it untouched."
+  fi
 else
   BUILD_CREATED=1
   # fwf_role_cwd gives each pane its worktree, or a throwaway scratch dir for a
@@ -361,8 +381,18 @@ fi
 # when nothing new gets created below, since an up-path was still invoked
 # for that plane and confirms it up, clearing any logged IDLE (issue #85).
 _fwf_log_plane_up_events() {
+  # issue #190: each line's compound condition can be FALSE on a legitimate
+  # invocation (e.g. --build-only alone leaves the `pm` line's condition
+  # false) -- under `set -e`, a bare `cond && cmd` whose cond is false
+  # returns 1, and being the LAST statement run made THAT this function's
+  # own return value, aborting the caller's script on the exact "already up
+  # -- nothing to do" path this function exists to log for. `|| true` on
+  # each line makes "condition didn't apply" distinct from "the logging
+  # call itself failed" -- neither line's failure was ever meant to abort.
   { [ "$FULL" = 1 ] || [ "$build_only" = 1 ]; }                              && fwf_floor_event floor-up "" "" build
+  true
   { [ "$FULL" = 1 ] || [ "$pm_only" = 1 ] || [ "$coord_only" = 1 ]; }        && fwf_floor_event floor-up "" "" pm
+  true
 }
 
 if [ "${#NEW_PANES[@]}" = 0 ]; then

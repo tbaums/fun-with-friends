@@ -626,8 +626,13 @@ parse_runtime_flags() {
     case "$1" in
       --profile)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_PROFILE="$2"; shift 2;;
       --profile=*) export FWF_PROFILE="${1#*=}"; shift;;
-      --pairs)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_PAIRS="$2"; shift 2;;
-      --pairs=*) export FWF_PAIRS="${1#*=}"; shift;;
+      # issue #190: FWF_PAIRS_REQUESTED distinguishes an EXPLICIT --pairs
+      # from FWF_PAIRS's own default/profile value (lib.sh:250 defaults an
+      # unset FWF_PAIRS to 3) -- fwf-up.sh needs this to know whether a live
+      # floor's mismatch was a discarded operator request (fail loudly) or
+      # just the ordinary "fwf up" no-op with no --pairs at all (unchanged).
+      --pairs)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_PAIRS="$2"; export FWF_PAIRS_REQUESTED=1; shift 2;;
+      --pairs=*) export FWF_PAIRS="${1#*=}"; export FWF_PAIRS_REQUESTED=1; shift;;
       --model)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_MODEL="$2"; shift 2;;
       --model=*) export FWF_MODEL="${1#*=}"; shift;;
       --template)   [ $# -ge 2 ] || die "$1 needs a value"; export FWF_TEMPLATE="$2"; shift 2;;
