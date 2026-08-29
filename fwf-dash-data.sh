@@ -363,7 +363,9 @@ stranded_assignments_json() {
   local pairs
   pairs="$(printf '%s' "$raw" | jq -r '
     .[] | . as $i |
-    ([(.comments // [])[] | .body | capture("ASSIGNED (?<role>impl[0-9]+)")?.role] | last) as $a |
+    ([(.comments // [])[] | .body
+       | (capture("ASSIGNED (?<role>impl[0-9]+)") // null)
+       | if . == null then empty else .role end] | last) as $a |
     select($a != null) | "\($i.number)\t\($a)"
   ' 2>/dev/null)"
   local stranded="[]" num role idx found j
