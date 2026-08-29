@@ -8351,7 +8351,7 @@ section "fwf flag-captain (#113): clear ends the flag; a bare re-raise after cle
 CLEAR_OUT="$(FCL 1 --clear --note "unblocked, rebased onto staging")"
 assert_contains "clear confirms" "$CLEAR_OUT" "needs-captain cleared"
 case "$(FCISS list --label needs-captain)" in *LI-1*) bad "clear removes the label" "still listed";; *) ok "clear removes the label";; esac
-assert_eq "cleared item has no open flags" "no needs-captain flags open" "$(FCL sweep)"
+assert_eq "cleared item has no open flags" "no needs-captain flags (open or closed)" "$(FCL sweep)"
 assert_contains "clear is recorded as a comment" "$(FCISS view 1 --comments)" "NEEDS-CAPTAIN-CLEARED: unblocked, rebased onto staging"
 FCL 1 --role impl1 --reason "flaked again on the same base" >/dev/null
 POSTCLEAR="$(FCL sweep)"
@@ -8401,8 +8401,8 @@ assert_contains "PR number routes through 'gh pr', not 'gh issue'" "$(cat "$TMP/
 section "fwf flag-captain sweep (#291): a failed gh read fails CLOSED, never renders as an empty sweep (AC a/d)"
 # gh_ fails outright here (simulating the real incident: jq exiting 126 on
 # ARG_MAX, or any other gh read failure) -- the sweep must exit non-zero and
-# say so, never silently fall through to "no needs-captain flags open",
-# which is indistinguishable from a genuinely empty sweep.
+# say so, never silently fall through to "no needs-captain flags (open or
+# closed)", which is indistinguishable from a genuinely empty sweep.
 FCG_FAILED_READ() {
   FWF_PROFILE=example bash -c "
     source '$FC'
@@ -8422,7 +8422,7 @@ SWEEP_FAIL_OUT="$(FCG_FAILED_READ 2>"$TMP/fcg-failread.err")" || SWEEP_FAIL_RC=$
 assert_contains "AC(a)/(d): the failure is named on stdout as UNKNOWN, not left empty" \
   "$SWEEP_FAIL_OUT" "UNKNOWN"
 assert_not_contains "AC(a)/(d): stdout is never the empty-sweep string on a failed read" \
-  "$SWEEP_FAIL_OUT" "no needs-captain flags open"
+  "$SWEEP_FAIL_OUT" "no needs-captain flags (open or closed)"
 assert_contains "AC(a): the failure is also named on stderr (UNKNOWN, not silently empty)" \
   "$(cat "$TMP/fcg-failread.err")" "UNKNOWN"
 
@@ -8436,12 +8436,12 @@ FCG_MARKERS_ONLY() {
     source '$FC'
     gh_() {
       case \"\$*\" in
-        'issue list --state open --label needs-captain --json number,createdAt,comments')
-          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"comments\":[
+        'issue list --state all --label needs-captain --json number,createdAt,comments,state')
+          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"OPEN\",\"comments\":[
             {\"body\":\"a very long unrelated operator write-up, not a marker, imagine this is huge\",\"createdAt\":\"2026-01-01T00:01:00Z\"},
             {\"body\":\"NEEDS-CAPTAIN: [impl1] blocked on base\",\"createdAt\":\"2026-01-01T00:02:00Z\"}
           ]}]' ;;
-        'pr list --state open --label needs-captain --json number,createdAt,comments') printf '%s' '[]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,comments,state') printf '%s' '[]' ;;
       esac
     }
     gh_flagged_items
@@ -8452,6 +8452,67 @@ assert_eq "AC(c): non-marker comments are dropped from the payload" "1" \
   "$(printf '%s' "$MARKERS_OUT" | jq '.[0].comments | length')"
 assert_contains "AC(c): the surviving comment is the actual marker" \
   "$(printf '%s' "$MARKERS_OUT" | jq -r '.[0].comments[0].body')" "NEEDS-CAPTAIN: [impl1]"
+
+section "fwf flag-captain sweep (#374): a flag on a CLOSED item is not unreachable (AC 1/3/6)"
+# The real incident: a NEEDS-CAPTAIN flag raised on an item that gets closed
+# out from under it must still surface -- the sweep scoped its reads to
+# --state open, so a close silently produced the exact same "no flags"
+# output as a genuinely empty sweep (the #291 failure shape, different cause).
+FCISS create --title "Something that got closed with a live flag" >/dev/null   # LI-3
+FCL 3 --role gv --reason "routing decision needed even though this is closed" >/dev/null
+FCISS close 3 >/dev/null
+CLOSED_SWEEP="$(FCL sweep)"
+assert_contains "AC(1): a flag on a CLOSED issue still surfaces in the sweep" "$CLOSED_SWEEP" "LI-3"
+assert_contains "AC(1): the reason survives" "$CLOSED_SWEEP" "routing decision needed even though this is closed"
+assert_contains "AC(7): the closed row is marked distinctly" "$CLOSED_SWEEP" "(CLOSED)"
+# AC(7): the still-open rows from earlier sections (LI-1, LI-2) must NOT pick
+# up the marker -- widening the scope must not make every row look historical.
+assert_eq "AC(7): exactly one (CLOSED) row, not every row in the sweep" "1" \
+  "$(printf '%s\n' "$CLOSED_SWEEP" | grep -c '(CLOSED)')"
+# AC(6): the invariant this ticket generalizes from #291 -- a bare "no
+# flags" line is never printed for any reason other than a genuine zero
+# count. It must not have been possible to get here by accident: confirm the
+# non-empty sweep is exactly what's asserted above, not a coincidental UNKNOWN.
+assert_not_contains "AC(6): a real (non-empty) sweep is never the UNKNOWN line" "$CLOSED_SWEEP" "UNKNOWN"
+
+section "fwf flag-captain sweep (#374): --clear works on a closed item, and stays cleared (AC 2/5)"
+CLEAR_CLOSED_OUT="$(FCL 3 --clear --note "routed")"
+assert_contains "AC(2): clearing a closed item's flag succeeds" "$CLEAR_CLOSED_OUT" "needs-captain cleared"
+case "$(FCISS list --state all --label needs-captain)" in
+  *LI-3*) bad "AC(2): clear removes the label even when the item is closed" "still listed";;
+  *)      ok  "AC(2): clear removes the label on a closed item";;
+esac
+assert_not_contains "AC(5): a cleared closed flag does not linger in the sweep as permanent noise" \
+  "$(FCL sweep)" "LI-3"
+
+section "fwf flag-captain sweep (#374): gh backend -- closed issues and MERGED PRs both surface, marked distinctly"
+# A MERGED PR is not "open" either -- by construction it's a decided item,
+# same operational shape as a closed issue -- so it gets the same (CLOSED)
+# treatment rather than silently vanishing from a --state all query result
+# a reader doesn't expect to distinguish MERGED from CLOSED.
+FCG_CLOSED_AND_MERGED() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_() {
+      case \"\$*\" in
+        'issue list --state all --label needs-captain --json number,createdAt,comments,state')
+          printf '%s' '[{\"number\":333,\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"CLOSED\",\"comments\":[
+            {\"body\":\"NEEDS-CAPTAIN: [gv] routing decision for the operator\",\"createdAt\":\"2026-01-01T00:01:00Z\"}
+          ]}]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,comments,state')
+          printf '%s' '[{\"number\":999,\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"MERGED\",\"comments\":[
+            {\"body\":\"NEEDS-CAPTAIN: [qa] this PR merged with a routing question unresolved\",\"createdAt\":\"2026-01-01T00:01:00Z\"}
+          ]}]' ;;
+      esac
+    }
+    main sweep
+  " fcg-closedmerged-harness
+}
+CLOSEDMERGED_OUT="$(FCG_CLOSED_AND_MERGED)"
+assert_contains "AC(1): a CLOSED issue's flag surfaces via the gh backend" "$CLOSEDMERGED_OUT" "#333"
+assert_contains "AC(1): a MERGED PR's flag surfaces via the gh backend, not dropped" "$CLOSEDMERGED_OUT" "#999"
+assert_eq "AC(7): both the closed issue and the merged PR carry the (CLOSED) marker" "2" \
+  "$(printf '%s\n' "$CLOSEDMERGED_OUT" | grep -c '(CLOSED)')"
 
 # --------------------------------------------------------------------------
 # fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed

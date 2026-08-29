@@ -22,7 +22,7 @@
 # Usage:
 #   fwf flag-captain <n> --role <role> --reason "<text>"   raise (or re-raise)
 #   fwf flag-captain <n> --clear [--note "<text>"]         clear
-#   fwf flag-captain sweep                                  list every open flag
+#   fwf flag-captain sweep                                  list every active flag (open or closed item), closed marked distinctly
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -65,8 +65,9 @@ gh_clear() { # $1=num $2=note (may be empty)
   gh_ "$kind" edit "$1" --remove-label "$NEEDS_CAPTAIN_LABEL" 2>/dev/null || true
   [ -n "$2" ] && gh_ "$kind" comment "$1" --body "NEEDS-CAPTAIN-CLEARED: $2"
 }
-# -> a single JSON array of {number,createdAt,comments:[{body,createdAt}]},
-# open issues AND open PRs unioned (both carry the same label independently).
+# -> a single JSON array of {number,createdAt,comments:[{body,createdAt}],state},
+# issues AND PRs of any state unioned (both carry the same label independently;
+# #374: --state all, not just open -- see gh_flagged_items below).
 # #291: two defects fixed here, both required.
 # (a) FAIL-CLOSED: a genuine `gh` read failure used to fall back to '[]' --
 # indistinguishable from "no flags open" to the caller, so the sweep silently
@@ -83,9 +84,14 @@ gh_clear() { # $1=num $2=note (may be empty)
 # the sweep only ever needs the marker lines, not the rest of the thread.
 gh_flagged_items() {
   local issues prs ddir
-  issues="$(gh_ issue list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments)" \
+  # #374: --state all, not --state open -- a flag raised on an item that gets
+  # closed before the sweep runs must stay visible (the sweep is exactly the
+  # tool that would otherwise show the close was wrong). `state` is carried
+  # through so the sweep can mark closed rows distinctly rather than silently
+  # promoting them alongside live flags.
+  issues="$(gh_ issue list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments,state)" \
     || { echo "fwf flag-captain: gh issue list failed (read is UNKNOWN, not empty)" >&2; return 1; }
-  prs="$(gh_ pr list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments)" \
+  prs="$(gh_ pr list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments,state)" \
     || { echo "fwf flag-captain: gh pr list failed (read is UNKNOWN, not empty)" >&2; return 1; }
   ddir="$(mktemp -d)" || { echo "fwf flag-captain: mktemp failed" >&2; return 1; }
   trap 'rm -rf "$ddir"' RETURN
@@ -111,7 +117,8 @@ local_clear() { # $1=num $2=note (may be empty)
   [ -n "$2" ] && "$DIR/fwf-issues.sh" comment "$1" --body "NEEDS-CAPTAIN-CLEARED: $2" >/dev/null
 }
 local_flagged_items() {
-  "$DIR/fwf-issues.sh" list --state open --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments
+  # #374: --state all -- see the matching comment on gh_flagged_items.
+  "$DIR/fwf-issues.sh" list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,comments,state
 }
 local_id() { printf 'LI-%s' "$1"; }
 
@@ -124,7 +131,11 @@ local_id() { printf 'LI-%s' "$1"; }
 #  - a labeled item with zero active NEEDS-CAPTAIN: comments still surfaces
 #    (never silently dropped) as "role unstated" / "no reason given";
 #  - a NEEDS-CAPTAIN: line with no "[role]" tag surfaces as "role unstated"
-#    (never inferred from the comment author — every role shares one account).
+#    (never inferred from the comment author — every role shares one account);
+#  - #374: a flag on a CLOSED issue/PR (or a MERGED PR) surfaces exactly like
+#    an open one but marked "(CLOSED)" -- closing an item must never make its
+#    flag unreachable, and a closed flag must never be indistinguishable from
+#    a live one either (that would bury real flags under stale ones).
 # Column-0-only match (^, not a mid-line/quoted occurrence) is the same
 # self-trigger guard fwf-pr-review-state.sh uses for its QA-*/IMPL-* markers.
 read -r -d '' SWEEP_FILTER <<'JQ' || true
@@ -136,6 +147,10 @@ def human_age($secs):
   end;
 def sweep_rows($now):
   . as $it
+  # #374: a CLOSED issue and a MERGED PR are both "not open" -- neither is a
+  # live item, and the sweep marks either the same way so a captain reading
+  # the row can tell at a glance this is a historical flag, not a fresh one.
+  | (if ($it.state // "OPEN") == "OPEN" then "OPEN" else "CLOSED" end) as $state
   # Index-based (not timestamp-string-based) ordering: the local backend's
   # createdAt has only 1s resolution, so a clear and the very next raise can
   # land in the SAME second — comparing createdAt strings would then mis-order
@@ -145,13 +160,13 @@ def sweep_rows($now):
   | ([$ce[] | select((.value.body // "") | test("^NEEDS-CAPTAIN-CLEARED:"))] | last | .key) as $clearedIdx
   | ([$ce[] | select((.value.body // "") | test("^NEEDS-CAPTAIN:")) | select($clearedIdx == null or .key > $clearedIdx) | .value]) as $active
   | if ($active | length) == 0 then
-      { number: $it.number, role: "role unstated", reason: "no reason given", at: $it.createdAt }
+      { number: $it.number, role: "role unstated", reason: "no reason given", at: $it.createdAt, state: $state }
     else
       $active[] | (.body | capture("^NEEDS-CAPTAIN: *(\\[(?<role>[^\\]]*)\\])? *(?<reason>.*)$")) as $m
       | { number: $it.number,
           role: (if ($m.role // "") == "" then "role unstated" else $m.role end),
           reason: (if ($m.reason // "") == "" then "no reason given" else $m.reason end),
-          at: .createdAt }
+          at: .createdAt, state: $state }
     end
   | . + { age: human_age($now - (.at | fromdateiso8601)) };
 [.[] | sweep_rows($now)] | sort_by(.number, .at)
@@ -173,7 +188,11 @@ cmd_sweep() {
   now="$(date -u +%s)"
   # #291 AC(a): a read/parse failure anywhere in this chain must exit
   # non-zero and say so on stderr -- NEVER fall through to "no needs-captain
-  # flags open", which is indistinguishable from a genuinely empty sweep.
+  # flags (open or closed)", which is indistinguishable from a genuinely
+  # empty sweep. #374: this guard is what keeps the invariant true even
+  # after widening the query to --state all -- a bare empty-sweep line is
+  # only ever printed for a genuine zero-flag count, never for a read that
+  # merely failed to find something.
   if [ "$FWF_ISSUES" = "local" ]; then
     items="$(local_flagged_items)" \
       || { _sweep_unknown "could not enumerate local flags"; return 1; }
@@ -187,10 +206,15 @@ cmd_sweep() {
     || { _sweep_unknown "sweep filter failed"; return 1; }
   n="$(jq 'length' <<<"$rows")" \
     || { _sweep_unknown "sweep count failed"; return 1; }
-  if [ "$n" = 0 ]; then echo "no needs-captain flags open"; return 0; fi
-  jq -r '.[] | "\(.number)\t[\(.role)]\t\(.reason)\t\(.age)"' <<<"$rows" | \
-  while IFS=$'\t' read -r num role reason age; do
-    printf '%s\t%s\t%s\t%s\n' "$("$id_fn" "$num")" "$role" "$reason" "$age"
+  if [ "$n" = 0 ]; then echo "no needs-captain flags (open or closed)"; return 0; fi
+  # #374: state rides along per-row so a CLOSED (or MERGED-PR) item is marked
+  # distinctly -- widening the query to --state all must not let a historical
+  # flag silently look identical to a live one.
+  jq -r '.[] | "\(.number)\t[\(.role)]\t\(.state)\t\(.reason)\t\(.age)"' <<<"$rows" | \
+  while IFS=$'\t' read -r num role state reason age; do
+    local marker=""
+    [ "$state" = "CLOSED" ] && marker=" (CLOSED)"
+    printf '%s%s\t%s\t%s\t%s\n' "$("$id_fn" "$num")" "$marker" "$role" "$reason" "$age"
   done
 }
 

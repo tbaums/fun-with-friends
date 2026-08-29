@@ -29,17 +29,18 @@ the comment author — every fwf-self role authenticates as the same GitHub
 account, so the author field carries no role information.
 
 The captain's per-tick loop (wired into every `captain.tmpl`) sweeps every
-open `needs-captain` item and folds it into its report: `#` · role · reason ·
-age. A flag raised during tick N is guaranteed to surface no later than the
-captain's next tick — no pane-reading required. The flag **persists** across
-ticks, idle/respawn, and pane churn until the captain explicitly clears it.
+`needs-captain` item — open OR closed — and folds it into its report: `#` ·
+role · reason · age. A flag raised during tick N is guaranteed to surface no
+later than the captain's next tick — no pane-reading required. The flag
+**persists** across ticks, idle/respawn, pane churn, *and the item being
+closed*, until the captain explicitly clears it (issue #374).
 
 ## `fwf flag-captain`
 
 ```
 fwf flag-captain <n> --role <role> --reason "<text>"   raise (or re-raise)
 fwf flag-captain <n> --clear [--note "<text>"]         clear (captain only)
-fwf flag-captain sweep                                  list every open flag
+fwf flag-captain sweep                                  list every flag, open or closed
 ```
 
 - **Raise** is idempotent on the label (re-applying it no-ops) and *appends* a
@@ -50,13 +51,17 @@ fwf flag-captain sweep                                  list every open flag
   counts as "active" for that item: a `NEEDS-CAPTAIN:` comment posted *after*
   the clear is a fresh, active flag again (a raise-clear-raise sequence never
   gets silently swallowed by the earlier clear).
-- **Sweep** unions open issues and open PRs carrying the label (both
+- **Sweep** unions issues and PRs carrying the label, **of any state** (both
   independently, since a flag can be raised on either), and for each surfaces
   one row per *active* raise:
   - zero active `NEEDS-CAPTAIN:` comments on a labeled item → still surfaces,
     as `role unstated` / `no reason given` (a flag is never silently dropped
     for a missing reason or role)
   - a `NEEDS-CAPTAIN:` line with no `[role]` tag → `role unstated`
+  - a CLOSED issue or a MERGED PR → the row is marked `(CLOSED)` (issue #374)
+    so a historical flag can never look identical to a live one; `--clear`
+    works on a closed item exactly as on an open one, and once cleared it
+    stays cleared, closed or not.
 
 The label is guaranteed to exist before any raise: the GitHub-backend raise
 path (`gh label create ... --force`) create-if-absents it inline, and `fwf
@@ -69,16 +74,32 @@ A sweep that cannot actually enumerate flags — a failed `gh` read, or the
 combined comment payload blowing `ARG_MAX` — **exits non-zero and names the
 cause on BOTH stdout and stderr** as `UNKNOWN: sweep could not be completed —
 <reason> (this is NOT an empty sweep)`; it never falls through to `no
-needs-captain flags open`, which would be indistinguishable from a genuinely
-empty sweep and is exactly how a flag went missing on 2026-08-28. Naming it
-on stdout too (not just stderr) matters because an empty stdout still *reads*
-as "an empty sweep" to anything piping this output — an operator glancing at
-the captain's report, or a stderr-dropping pipeline — the same failure shape
-with one fewer step. The GitHub-backend reader also drops every
-comment on a flagged item that isn't itself a `NEEDS-CAPTAIN`/
-`NEEDS-CAPTAIN-CLEARED` line before combining issues and PRs — the sweep
-only ever needs those marker lines, and keeping the rest of a long thread
-around is what pushed the payload over `ARG_MAX` in the first place.
+needs-captain flags (open or closed)`, which would be indistinguishable from
+a genuinely empty sweep and is exactly how a flag went missing on
+2026-08-28. Naming it on stdout too (not just stderr) matters because an
+empty stdout still *reads* as "an empty sweep" to anything piping this
+output — an operator glancing at the captain's report, or a stderr-dropping
+pipeline — the same failure shape with one fewer step. The GitHub-backend
+reader also drops every comment on a flagged item that isn't itself a
+`NEEDS-CAPTAIN`/`NEEDS-CAPTAIN-CLEARED` line before combining issues and
+PRs — the sweep only ever needs those marker lines, and keeping the rest of
+a long thread around is what pushed the payload over `ARG_MAX` in the first
+place.
+
+### Closed items are not invisible either (issue #374)
+
+The sweep used to scope its GitHub reads to `--state open`, so an item that
+got closed while its flag was still live produced the exact same "no flags"
+output as a genuinely empty sweep — the #291 failure shape, reached by a
+different cause. It's a worse miss than an ordinary scoping bug too: the flag
+most likely to be raised on an item just as it's closed is a flag *about the
+close being wrong*, so the sweep was blindest exactly where it was most
+needed. `fwf flag-captain sweep` now queries `--state all` on both the `gh
+issue`/`gh pr` and local-issues backends, and a CLOSED issue or a MERGED PR
+renders its row with a trailing `(CLOSED)` marker so a historical flag can
+never look identical to a live one. `--clear` works on a closed item exactly
+as it does on an open one, and a cleared flag stays cleared whether or not
+the item is closed.
 
 ## Both trackers, one command
 
