@@ -279,3 +279,37 @@ claimed as fully closed.
   owner, or date is recorded for that step as of this PR; per AC (c) that
   is drift, not a deferral, and should be assigned rather than left open
   indefinitely.
+
+## Orphan reaping is fail-closed, and portable (#332)
+
+When a gate lock's recorded holder is dead, the gate may reap the orphaned
+build tree by signalling its process group. Two safety properties govern that,
+and both are load-bearing:
+
+**It refuses when it cannot answer the question.** Before signalling, the gate
+establishes whether the process currently occupying that pgid actually *is* the
+recorded holder's group, or an unrelated newer process that happens to have
+been assigned the same id (PID space wraps under load). It compares the
+occupant's elapsed time against the lock's own acquisition time. Three
+outcomes:
+
+| observation | action |
+|---|---|
+| pid absent — the holder is genuinely gone | reap (a safe no-op) |
+| pid live, started **after** the lock was acquired | **refuse** — this is id reuse (#195 AC(h)) |
+| pid live, elapsed time **cannot be determined** | **refuse** — reuse cannot be ruled out |
+
+The third row is the point. An unreadable measurement must never become a
+confident "safe to kill" (#211's convention, with a `kill -KILL` attached).
+
+**It never signals its own or an ancestor's process group.** The gate runs
+nested — the suite invokes it, and it invokes itself — so the dangerous group
+is usually an ancestor's rather than its own. It walks the parent chain and
+refuses.
+
+**Portability note.** Elapsed time is read with `ps -o etime=`, which exists on
+both GNU and BSD. It is deliberately *not* `ps -o etimes=` (seconds): that is a
+GNU procps extension, absent on macOS, where it returned empty on every call —
+so the reuse guard was structurally impossible and **failed open into a
+SIGKILL**. In the harness it killed the test runner, which is why the suite
+could not complete on macOS at all.
