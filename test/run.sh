@@ -2989,6 +2989,53 @@ EOS
       FWF_SKIP_BOOT_GATE=1 \
       "$ROOT/fwf-up.sh" >/dev/null 2>&1
   if [ -e "$F143BRUN/state/example/pane-env.sh" ]; then bad "no pane-env file when FWF_PANE_ENV unset"; else ok "no pane-env file when FWF_PANE_ENV unset"; fi
+
+  # issue #312: the case above only proves forwarding into a BRAND-NEW pane --
+  # and a brand-new `tmux new-session` against an already-running server
+  # inherits the CREATING CLIENT's live env regardless of whether
+  # FWF_PANE_ENV/pane-env.sh sourcing works AT ALL (verified directly against
+  # tmux, independent of fwf: export a var, `tmux new-session`, read it back
+  # from the new pane's own process -- it's there). So the case above can
+  # pass 100% of the time even with lib.sh:412's sourcing entirely broken.
+  # The scenario that mechanism actually protects is `fwf-respawn.sh`
+  # re-launching claude into an EXISTING pane: `tmux respawn-pane` forks a
+  # fresh shell that does NOT inherit the respawning process's live env
+  # (same direct-tmux check: export a var immediately before `respawn-pane`,
+  # read it back from the respawned pane's own process -- it's absent). So a
+  # value set only AFTER the floor is already up has no path into that pane
+  # except pane-env.sh sourcing. This is the discriminating half #312 asked
+  # for: reuses the SAME floor/session brought up just above (no
+  # FWF_PANE_ENV yet), then sets it and respawns onto the EXISTING pane.
+  F312_SECRET="respawn-shh-$$-$(date +%N 2>/dev/null || echo x)"; export F312_SECRET
+  env FWF_PROFILE=example FWF_RUN_DIR="$F143BRUN" FWF_SESSION="$F143BSESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F143BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
+      FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F312_SECRET \
+      "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
+  IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+  SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
+  # AC(b)-style bounded retry, matching the #143 case above.
+  IMPL1_PID_312=""
+  if [ -n "$SHELL_PID_312" ]; then
+    for _f312_try in 1 2 3 4 5; do
+      IMPL1_PID_312="$(pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true)"
+      [ -n "$IMPL1_PID_312" ] && break
+      sleep 0.2
+    done
+  fi
+  if [ -n "$IMPL1_PID_312" ]; then
+    assert_contains "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" \
+      "$(ps eww "$IMPL1_PID_312" 2>/dev/null)" "F312_SECRET=$F312_SECRET"
+  else
+    if [ -z "$IMPL1_PANE_312" ]; then
+      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "fwf_find_pane returned empty after respawn"
+    elif [ -z "$SHELL_PID_312" ]; then
+      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "tmux pane_pid returned empty for pane $IMPL1_PANE_312"
+    else
+      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "pgrep -P $SHELL_PID_312 returned empty after 5 retries (~1s)"
+    fi
+  fi
+  unset F312_SECRET
+
   tmux kill-session -t "${F143BSESS}-coord" 2>/dev/null
   tmux kill-session -t "${F143BSESS}-build" 2>/dev/null
   unset F143_SECRET
