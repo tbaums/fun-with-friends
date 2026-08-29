@@ -1188,6 +1188,32 @@ fwf_running_pair_count() { # $1=build session name
   echo "$n"
 }
 
+# issue #309 (#221 AC h/h2): the set of impl indices with a LIVE PANE right
+# now, on the ACTUAL floor -- never derived from FWF_PAIRS or the roster
+# prose, which would make a stranded-assignment check agree with the
+# (possibly stale) prompt by construction and never fire. Echoes
+# space-separated indices ("1 2 3", or "" for a confirmed-empty floor), or
+# the literal string "unknown" when this cannot be determined at all (tmux
+# itself unreachable) -- distinct from "confirmed zero", per #193's
+# UNKNOWN-is-not-zero convention. A HALF-present index (impl alive, its qa
+# pane not, or vice versa) still counts impl$i as present here -- this
+# check is about whether an ASSIGNED implN seat exists to claim the work,
+# not about pair contiguity (fwf_running_pair_count's own concern).
+fwf_live_impl_indices() { # $1=build session name
+  local sess="$1" i upper out=""
+  command -v tmux >/dev/null 2>&1 || { echo unknown; return 0; }
+  tmux has-session -t "$sess" 2>/dev/null || { echo ""; return 0; }
+  upper=30
+  i=1
+  while [ "$i" -le "$upper" ]; do
+    if fwf_find_pane "$sess" "IMPL$i ·" >/dev/null 2>&1; then
+      out="${out:+$out }$i"
+    fi
+    i=$((i+1))
+  done
+  echo "$out"
+}
+
 # --- launch-socket persistence (issue #62, supersedes #57) ------------------
 # The factory's tmux sessions land on whatever socket $TMUX pointed to when
 # `fwf up`/`fwf respawn` launched them — a bare `tmux new-session`/`split-window`

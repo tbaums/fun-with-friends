@@ -5826,6 +5826,83 @@ assert_eq "a refusal outside the trailing window is excluded, not counted foreve
 assert_eq "...but widening the window past its age DOES include it" "3" \
   "$(FWF_RUN_DIR="$DD243_STATE" FWF_PROFILE=example FWF_CLAIM_REFUSAL_WINDOW=999999 bash -c "source '$DD'; claim_refusals_json" | jq -r '.count')"
 
+section "dash data: stranded_assignments_json — ASSIGNED implN for a seat off the live floor (issue #309, #221 AC h/h2)"
+assert_contains "dashboard_json includes the top-level 'stranded_assignments' key" \
+  "$(grep -n 'stranded_assignments:\$stranded_assignments' "$DD")" "stranded_assignments:\$stranded_assignments"
+
+DD309_STATE="$TMP/dd309-state"; mkdir -p "$DD309_STATE/state/example"
+DD309I() { FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+DD309SESS="fwf-selftest-309-$$"
+
+if command -v tmux >/dev/null 2>&1; then
+  tmux new-session -d -s "${DD309SESS}-build" 2>/dev/null
+  tmux set -p -t "${DD309SESS}-build" @l "IMPL1 · any issue" 2>/dev/null
+
+  DD309I create --title "Assigned to a LIVE seat" >/dev/null
+  DD309I comment 1 --body "ASSIGNED impl1 go ahead" >/dev/null
+  DD309I create --title "Assigned to a seat with NO pane at all" >/dev/null
+  DD309I comment 2 --body "**ASSIGNED impl3** please" >/dev/null
+
+  DD309OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_SESSION="$DD309SESS" FWF_PROFILE=example bash -c "source '$DD'; stranded_assignments_json")"
+  assert_eq "an assignment to a LIVE seat is never flagged" "1" "$(printf '%s' "$DD309OUT" | jq -r '.count')"
+  assert_eq "the stranded entry names the right issue" "2" "$(printf '%s' "$DD309OUT" | jq -r '.issues[0].number')"
+  assert_eq "...and the right (dead) seat, bold-markdown prefix and all -- unanchored match" "impl3" "$(printf '%s' "$DD309OUT" | jq -r '.issues[0].assigned')"
+  assert_eq "the LIVE-seat issue is not in the stranded list at all" "null" \
+    "$(printf '%s' "$DD309OUT" | jq -r '.issues | map(select(.number==1)) | first // null')"
+  assert_eq "unknown is false on a clean, fully-readable check" "false" "$(printf '%s' "$DD309OUT" | jq -r '.unknown')"
+
+  # AC: "current floor" is derived from actual pane presence, NOT FWF_PAIRS --
+  # a correctly-configured pair count with a genuinely dead pane must still
+  # flag the assignment. FWF_PAIRS=3 here (impl3 "configured") but its pane
+  # was never created -- the same live-tmux fixture already proves this
+  # (impl3 has no pane above), asserted again explicitly against FWF_PAIRS.
+  DD309PAIRS_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_SESSION="$DD309SESS" FWF_PROFILE=example FWF_PAIRS=3 bash -c "source '$DD'; stranded_assignments_json")"
+  assert_eq "AC: a correct FWF_PAIRS does NOT suppress the flag -- pane presence is what's checked" "1" \
+    "$(printf '%s' "$DD309PAIRS_OUT" | jq -r '.count')"
+
+  # AC (h2): re-assignment supersedes an earlier one -- only the LATEST
+  # "ASSIGNED implN" comment on an issue counts.
+  DD309I comment 2 --body "ASSIGNED impl1 (reassigning off the dead seat)" >/dev/null
+  DD309REASSIGN_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_SESSION="$DD309SESS" FWF_PROFILE=example bash -c "source '$DD'; stranded_assignments_json")"
+  assert_eq "a later re-assignment to a live seat clears the stranded flag" "0" "$(printf '%s' "$DD309REASSIGN_OUT" | jq -r '.count')"
+
+  tmux kill-session -t "${DD309SESS}-build" 2>/dev/null
+
+  # AC (h2): an unreadable live-floor roster (tmux unreachable) reports
+  # unknown -- never a false alarm across every assignment.
+  DD309UNKNOWN_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_SESSION="fwf-nonexistent-$$" FWF_PROFILE=example bash -c "
+    source lib.sh
+    command() { if [ \"\$1\" = -v ] && [ \"\$2\" = tmux ]; then return 1; fi; builtin command \"\$@\"; }
+    source '$DD' >/dev/null 2>&1
+    stranded_assignments_json
+  ")"
+  assert_eq "AC(h2): tmux unreachable -> unknown, never zero (would be a false 'nothing stranded')" "true" \
+    "$(printf '%s' "$DD309UNKNOWN_OUT" | jq -r '.unknown')"
+  assert_contains "AC(h2): names which input failed (the roster, not the issue list)" "$DD309UNKNOWN_OUT" "live floor roster"
+  assert_eq "AC(h2): count is null, not a fabricated 0, when unknown" "null" "$(printf '%s' "$DD309UNKNOWN_OUT" | jq -r '.count')"
+else
+  skip "real-tmux issue #309 stranded-assignment tests (tmux not installed)" 9
+fi
+
+# AC(h2): an unreadable issue/comment list also reports unknown, distinctly
+# named from the roster failure above -- neither input may default.
+DD309GHBIN="$TMP/dd309ghbin"; mkdir -p "$DD309GHBIN"
+cat > "$DD309GHBIN/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+exit 1
+GHSTUB
+chmod +x "$DD309GHBIN/gh"
+DD309READFAIL_OUT="$(PATH="$DD309GHBIN:$PATH" FWF_RUN_DIR="$TMP/dd309-readfail" FWF_SESSION="fwf-nonexistent-rf-$$" FWF_PROFILE=example FWF_REPO="$TMP/dd309-fakerepo" bash -c "source '$DD'; stranded_assignments_json")"
+assert_eq "AC(h2): an unreadable issue/comment list -> unknown" "true" "$(printf '%s' "$DD309READFAIL_OUT" | jq -r '.unknown')"
+assert_contains "AC(h2): names the OTHER input as the failure (the comment list, not the roster)" "$DD309READFAIL_OUT" "issue comment list"
+assert_eq "AC(h2): count is null here too, never a fabricated 0" "null" "$(printf '%s' "$DD309READFAIL_OUT" | jq -r '.count')"
+
+# --- static: fwf_live_impl_indices matches the SAME anchor convention as
+# fwf_running_pair_count (issue #190), never a bare "impl$i" substring that
+# would collide impl1/impl10.
+assert_contains "fwf_live_impl_indices uses the IMPL\$i (space+middle-dot) anchor, matching #190's own precedent" \
+  "$(cat "$ROOT/lib.sh")" 'fwf_find_pane "$sess" "IMPL$i ·"'
+
 section "dash data: captain_sequences_releases keys off the template (#51)"
 assert_eq "refactor → captain-sequenced" "yes" \
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; captain_sequences_releases && echo yes || echo no")"
