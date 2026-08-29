@@ -3006,10 +3006,16 @@ EOS
   # except pane-env.sh sourcing. This is the discriminating half #312 asked
   # for: reuses the SAME floor/session brought up just above (no
   # FWF_PANE_ENV yet), then sets it and respawns onto the EXISTING pane.
+  # issue #116: the stub claude never ticks, so fwf-respawn.sh's post-arm
+  # verify legitimately runs out its full window (escalating to a hard
+  # kill+relaunch, then waiting out the window again) before returning --
+  # override the interval/margin/poll to keep that window fast, matching the
+  # existing "fwf-respawn.sh of a floor role (pm)" case above.
   F312_SECRET="respawn-shh-$$-$(date +%N 2>/dev/null || echo x)"; export F312_SECRET
   env FWF_PROFILE=example FWF_RUN_DIR="$F143BRUN" FWF_SESSION="$F143BSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F143BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F312_SECRET \
+      FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
       "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
   IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
   SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
