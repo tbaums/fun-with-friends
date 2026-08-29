@@ -8934,8 +8934,13 @@ assert_not_contains "AC1: ci.yml does NOT swallow the verdict into a warning (Ho
 # Wiring: every publishing job hangs off the pre-publish check.
 assert_contains "AC2: release.yml has a pre-publish preflight job" "$REL_YML" "preflight:"
 assert_contains "AC2: preflight runs the non-mutating check" "$REL_YML" "./fwf reconcile --check"
-assert_contains "AC2: artifact build is gated on preflight" "$REL_YML" "needs: preflight"
-assert_contains "AC2: publish is gated on preflight" "$REL_YML" "needs: [preflight, dash-binaries]"
+# issue #303: load-targets/release now ALSO gate on the new ci-verdict job
+# (release.yml consults ci.yml's own verdict rather than a hand-rolled
+# subset) -- updated from the bare "needs: preflight" / "needs: [preflight,
+# dash-binaries]" strings issue #179 originally asserted, preserving their
+# intent (still gated on preflight) rather than reverting #303's addition.
+assert_contains "AC2: artifact build is gated on preflight" "$REL_YML" "needs: [preflight, ci-verdict]"
+assert_contains "AC2: publish is gated on preflight" "$REL_YML" "needs: [preflight, ci-verdict, dash-binaries]"
 
 # Behaviour: DIVERGED must fail the check, and the refusal must be ROUTED --
 # naming the branch, what it diverged against, and the resolving command. A
