@@ -267,6 +267,15 @@ construction, not by anyone's choice.
   falls back to the branch-prefix rule ONLY in that case, so a human PR on
   an `implN/*` branch still routes to `qaN` as it always did, and a human
   PR on any other branch is correctly left unrouted rather than guessed at.
+- **"Correctly left unrouted" still needs a signal, or it strands silently
+  (issue #385).** `fwf pr-route-check sweep` — ENFORCED every captain tick,
+  same as `flag-captain sweep` — raises a `needs-captain` flag on any open,
+  non-draft, non-`implN/*` PR whose `fwf pr-reviewer` verdict stays
+  `NO_MARKER` past a grace period (`FWF_PR_ROUTE_GRACE_SECS`, default 300s).
+  It never guesses a reviewer itself (that would reintroduce #194's
+  original defect) — only the signal is automatic; a human/captain still
+  posts the `fwf-Reviewer:` comment, at which point the flag clears itself
+  on the next sweep with no manual `--clear`.
 
 **Commands:**
 

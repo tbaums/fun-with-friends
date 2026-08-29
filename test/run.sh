@@ -8607,6 +8607,109 @@ assert_not_contains "gh backend: never renders as an empty sweep for a closed-on
   "$GH_CLOSED_SWEEP" "no needs-captain flags open"
 
 # --------------------------------------------------------------------------
+# fwf pr-route-check (#385): a PR opened outside the implN/qaN flow with no
+# fwf-Reviewer: marker (NO_MARKER) is correctly left unrouted by design
+# (#194), but nothing OBLIGED anyone to notice -- twice in one day (#380,
+# #384) it sat unrouted, once for 24 minutes while blocking a release. This
+# reuses the needs-captain mechanism (#113/#374) rather than a new channel.
+PRC="$ROOT/fwf-pr-route-check.sh"
+PRC_ISO_OLD="2020-01-01T00:00:00Z"   # always past the default 300s grace
+PRC_ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"  # always within the grace window
+
+# $1=PR-list-json $2=verdict-map-body(bash case arms) $3=fake-sweep-output
+# -> stdout of `main sweep`, with RAISE/CLEAR calls logged to prc-calls.log
+PRCRUN() {
+  rm -f "$TMP/prc-calls.log"
+  FWF_PROFILE=example bash -c "
+    source '$PRC'
+    gh_pr_list() { printf '%s' '$1'; }
+    pr_reviewer_verdict() {
+      case \"\$1\" in
+        $2
+        *) echo NO_MARKER;;
+      esac
+    }
+    flag_captain_sweep() { printf '%s\n' '$3'; }
+    flag_captain_raise() { printf 'RAISE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$TMP/prc-calls.log'; }
+    flag_captain_clear() { printf 'CLEAR\t%s\t%s\n' \"\$1\" \"\$2\" >> '$TMP/prc-calls.log'; }
+    main sweep
+  " prc-test-harness
+}
+
+section "fwf pr-route-check (#385 AC 1/AC 5): an unrouted, non-implN/* PR past the grace period is flagged"
+PRC_PRS='[{"number":501,"headRefName":"fix/some-hotfix","isDraft":false,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"staging"}]'
+OUT501="$(PRCRUN "$PRC_PRS" "" "no needs-captain flags open")"
+assert_contains "AC(1): reports the PR as flagged" "$OUT501" "#501: flagged"
+CALLS501="$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+assert_contains "AC(1): fwf-flag-captain raise was actually called for #501" "$CALLS501" "RAISE	501"
+assert_contains "AC(1): the reason names the PR as unrouted" "$CALLS501" "unrouted PR"
+assert_contains "AC(1): the reason names the branch" "$CALLS501" "fix/some-hotfix"
+
+section "fwf pr-route-check (#385 AC 5): an implN/* branch is NOT flagged even at NO_MARKER (already covered by qa.tmpl's fallback)"
+PRC_PRS_IMPL='[{"number":502,"headRefName":"impl3/issue-999-something","isDraft":false,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"staging"}]'
+OUT502="$(PRCRUN "$PRC_PRS_IMPL" "" "no needs-captain flags open")"
+CALLS502="$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+# #247 AC(a5): assert_not_contains refuses a vacuous pass on an EMPTY
+# haystack -- an implN/* PR is skipped with NO output at all (silent, by
+# design: it is not "unrouted", it already routes via the fallback), so
+# the discriminating check is that the run produced nothing, via assert_eq.
+assert_eq "AC(5): a discriminating test -- an implN/* NO_MARKER PR must NOT be flagged (no raise call)" "" "$CALLS502"
+assert_eq "AC(5): #502 produces no output at all (silently covered by the fallback, not flagged)" "" "$OUT502"
+
+section "fwf pr-route-check (#385 AC 2): the grace period suppresses a just-opened PR (must not fire on the normal case)"
+PRC_PRS_NEW='[{"number":503,"headRefName":"fix/brand-new","isDraft":false,"createdAt":"'"$PRC_ISO_NOW"'","baseRefName":"staging"}]'
+OUT503="$(PRCRUN "$PRC_PRS_NEW" "" "no needs-captain flags open")"
+CALLS503="$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+assert_eq "AC(2): a PR still inside the grace window is not flagged (no raise call)" "" "$CALLS503"
+assert_contains "AC(2): the output says why (still within grace)" "$OUT503" "grace period"
+
+section "fwf pr-route-check (#385): draft PRs and non-staging-base PRs are skipped"
+PRC_PRS_DRAFT='[{"number":504,"headRefName":"fix/still-a-draft","isDraft":true,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"staging"}]'
+PRCRUN "$PRC_PRS_DRAFT" "" "no needs-captain flags open" >/dev/null
+assert_eq "a draft PR is never flagged (no raise call)" "" "$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+PRC_PRS_OTHERBASE='[{"number":505,"headRefName":"fix/targets-integration","isDraft":false,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"integration"}]'
+PRCRUN "$PRC_PRS_OTHERBASE" "" "no needs-captain flags open" >/dev/null
+assert_eq "a PR not based on staging is never flagged (no raise call)" "" "$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+
+section "fwf pr-route-check (#385 AC 4): idempotent -- an already-active flag is not re-raised every tick"
+PRC_SWEEP_ACTIVE='#506	[pr-route-check]	unrouted PR: opened 600s ago on branch '"'"'fix/already-flagged'"'"' (not implN/*), fwf pr-reviewer=NO_MARKER (#385)	10m'
+PRC_PRS_ALREADY='[{"number":506,"headRefName":"fix/already-flagged","isDraft":false,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"staging"}]'
+OUT506="$(PRCRUN "$PRC_PRS_ALREADY" "" "$PRC_SWEEP_ACTIVE")"
+CALLS506="$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+assert_eq "AC(4): no duplicate RAISE call when our tag is already active" "" "$CALLS506"
+assert_contains "AC(4): the run still reports it as already flagged" "$OUT506" "#506: already flagged"
+
+section "fwf pr-route-check (#385 AC 4): a PR that gets routed (fwf-Reviewer: comment lands) auto-clears the flag next sweep"
+PRC_PRS_ROUTED='[{"number":507,"headRefName":"fix/now-routed","isDraft":false,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"staging"}]'
+PRC_SWEEP_ROUTED='#507	[pr-route-check]	unrouted PR: opened 900s ago on branch '"'"'fix/now-routed'"'"' (not implN/*), fwf pr-reviewer=NO_MARKER (#385)	15m'
+OUT507="$(PRCRUN "$PRC_PRS_ROUTED" "507) echo qa1;;" "$PRC_SWEEP_ROUTED")"
+CALLS507="$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+assert_contains "AC(4): a routed PR (verdict now qa1) is auto-cleared with no manual step" "$CALLS507" "CLEAR	507"
+assert_contains "AC(4): the clear note explains why" "$CALLS507" "routed"
+assert_contains "AC(4): the run reports the clear" "$OUT507" "#507: cleared"
+
+section "fwf pr-route-check (#385): a genuinely unreadable verdict (UNKNOWN) neither raises nor clears -- fail-safe, not fail-guess"
+PRC_PRS_UNK='[{"number":508,"headRefName":"fix/read-failure","isDraft":false,"createdAt":"'"$PRC_ISO_OLD"'","baseRefName":"staging"}]'
+PRC_SWEEP_UNK='#508	[pr-route-check]	unrouted PR: opened 900s ago on branch '"'"'fix/read-failure'"'"' (not implN/*), fwf pr-reviewer=NO_MARKER (#385)	15m'
+PRCRUN "$PRC_PRS_UNK" "508) echo UNKNOWN;;" "$PRC_SWEEP_UNK" >/dev/null
+CALLS508="$(cat "$TMP/prc-calls.log" 2>/dev/null || true)"
+assert_eq "an UNKNOWN verdict triggers neither RAISE nor CLEAR this tick" "" "$CALLS508"
+
+section "fwf pr-route-check (#385 AC 3): never assigns/guesses a reviewer itself -- signal only"
+# Text-search the whole file would false-positive on the header's own
+# prose (it explains fwf-Reviewer:/pr-assign-reviewer.sh in comments) --
+# check for the actual CALL SITES a reviewer-assignment would need instead.
+assert_not_contains "AC(3): never invokes fwf-pr-assign-reviewer.sh" \
+  "$(cat "$PRC")" '$DIR/fwf-pr-assign-reviewer.sh'
+assert_not_contains "AC(3): never posts a gh pr comment/edit itself (only via flag_captain_raise/clear)" \
+  "$(grep -v '^#' "$PRC")" 'gh pr comment'
+assert_not_contains "AC(3) behavioral: a run that resolves NO_MARKER never emits a fwf-Reviewer: comment call" \
+  "$CALLS501" "fwf-Reviewer:"
+
+section "fwf pr-route-check (#385): CLI wiring"
+assert_contains "help mentions pr-route-check sweep" "$("$ROOT/fwf" help)" "pr-route-check sweep"
+
+# --------------------------------------------------------------------------
 # fwf usage aggregator (#95, Ticket A of #70): per-role token/$ usage summed
 # from FAKE Claude Code project dirs — never touches the real
 # ~/.claude/projects (FWF_CLAUDE_PROJECTS_DIR override) or the real run dir
