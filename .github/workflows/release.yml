@@ -234,14 +234,26 @@ jobs:
       - name: Lint
         run: shellcheck -s bash -S warning fwf *.sh lib/*.sh profiles/example.sh templates/*/template.sh eval/run.sh test/run.sh
 
-      - name: Functional tests
-        run: bash test/run.sh
-
-      - name: Memory-admission suite (issue #286 AC d)
-        # A dedicated step (not nested in test/run.sh -- see ci.yml for why):
-        # this is where releases are actually decided, so it belongs here as
-        # its own gate, not only in ci.yml's PR-time matrix.
-        run: bash test/mem-admit-test.sh
+      # TESTS DO NOT RUN ON GITHUB ANY MORE (operator direction 2026-08-29).
+      # This job used to re-run the whole ~2500-test suite plus the
+      # memory-admission suite here, on a SHA that had ALREADY been tested.
+      # GitHub evicted that step four times across v0.37.0, v0.38.0 and two
+      # v0.39.0 attempts -- "The runner has received a shutdown signal", zero
+      # FAIL lines, suite never finished. Every one of those was a lost release
+      # for reasons that had nothing to do with the code.
+      #
+      # The gate did not disappear, it moved off GitHub:
+      #   * ci.yml is disabled; all CI runs on the factory box
+      #     (fwf-local-ci.sh), which records a per-SHA verdict.
+      #   * RELEASING.md requires a TWO-RUNNER local green (macOS + devbox) for
+      #     the exact SHA being tagged, each log carrying DONE, EXIT= and a
+      #     "passed, N failed" summary, BEFORE the tag is pushed.
+      #   * The #303 job above still consults ci.yml's verdict for this SHA and
+      #     re-arms to blocking automatically if ci.yml is ever re-enabled.
+      #
+      # What stays here is PACKAGING, not testing: tarball, dash binaries,
+      # checksums, and the asset assertion that proves the published set is
+      # exactly what dash-targets.json says it should be.
 
       - name: Build tarball
         id: pkg
