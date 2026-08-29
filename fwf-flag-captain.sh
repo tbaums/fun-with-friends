@@ -65,6 +65,25 @@ gh_clear() { # $1=num $2=note (may be empty)
   gh_ "$kind" edit "$1" --remove-label "$NEEDS_CAPTAIN_LABEL" 2>/dev/null || true
   [ -n "$2" ] && gh_ "$kind" comment "$1" --body "NEEDS-CAPTAIN-CLEARED: $2"
 }
+# #394: `issue list`/`pr list --json ...,comments` truncates each item's
+# nested `comments` array at the first 100 -- #161 has 134 comments, and the
+# sweep could only ever see comment #1 (a raise). Its own clear (#101) and a
+# later, unrelated raise from the PM (#134) both sat past the cut and were
+# silently invisible: a false "still held" AND a hidden live flag, in one
+# incident. `--paginate` on the outer list call cannot reach into that nested
+# field -- it only walks the outer page of issues/PRs, never a field nested
+# inside one of them. So markers are fetched per flagged item instead, via
+# the REST comments endpoint, which `--paginate` DOES walk in full for that
+# one thread (same call shape fwf-authz.sh already uses for label-history
+# reads). #291(c)'s marker-only filter still runs on that per-item payload,
+# so a huge unrelated thread never reintroduces the ARG_MAX failure this
+# hardens against.
+gh_item_markers() { # $1=number -> JSON array of {body,createdAt}; nonzero on ANY read/parse failure
+  local raw
+  raw="$(gh_ api "repos/{owner}/{repo}/issues/$1/comments" --paginate 2>/dev/null)" || return 1
+  jq -sc '[.[][] | select((.body // "") | test("^NEEDS-CAPTAIN(-CLEARED)?:")) | {body, createdAt: .created_at}]' \
+    <<<"$raw" 2>/dev/null
+}
 # -> a single JSON array of {number,createdAt,state,comments:[{body,createdAt}]},
 # ALL issues AND ALL PRs (any state) carrying the label unioned (both checked
 # independently, since a flag can be raised on either). #374: --state open
@@ -79,28 +98,42 @@ gh_clear() { # $1=num $2=note (may be empty)
 # under-reported. Every read below is checked explicitly and this function
 # returns 1 (prints nothing on stdout) on any failure, so a caller that
 # actually checks $? gets UNKNOWN, never a confident empty list.
-# (b) ARG_MAX: a flagged item's `comments` carries every comment BODY on the
-# thread verbatim, so one item with a long thread (an un-gate rationale, a
-# triage write-up) can push the combined payload past ARG_MAX when passed as
-# --argjson on the command line -- jq then exits 126 and (before fix (a))
-# that got swallowed as "no flags". Route the payload through files
-# (--slurpfile) instead of argv, and (c) drop every comment that isn't an
-# actual NEEDS-CAPTAIN(-CLEARED) marker before it ever reaches jq's argv --
-# the sweep only ever needs the marker lines, not the rest of the thread.
+# (b) ARG_MAX: routed through files (--slurpfile) instead of argv, since a
+# combined payload of every flagged item can push past ARG_MAX when passed as
+# --argjson on the command line -- jq then exits 126 and (before fix (a)) that
+# got swallowed as "no flags".
+# #394: the list call no longer requests `comments` at all -- that field is
+# exactly what silently truncated, and every marker now comes from
+# gh_item_markers instead, which fails the WHOLE sweep closed (never drops
+# just that one item) if any single item's comment history can't be read.
 gh_flagged_items() {
-  local issues prs ddir
-  issues="$(gh_ issue list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,state,comments)" \
+  local issues prs items n ddir i num markers itemjson first=1
+  issues="$(gh_ issue list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,state)" \
     || { echo "fwf flag-captain: gh issue list failed (read is UNKNOWN, not empty)" >&2; return 1; }
-  prs="$(gh_ pr list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,state,comments)" \
+  prs="$(gh_ pr list --state all --label "$NEEDS_CAPTAIN_LABEL" --json number,createdAt,state)" \
     || { echo "fwf flag-captain: gh pr list failed (read is UNKNOWN, not empty)" >&2; return 1; }
   ddir="$(mktemp -d)" || { echo "fwf flag-captain: mktemp failed" >&2; return 1; }
   trap 'rm -rf "$ddir"' RETURN
   printf '%s' "$issues" > "$ddir/issues.json"
   printf '%s' "$prs"    > "$ddir/prs.json"
-  jq -c -n --slurpfile a "$ddir/issues.json" --slurpfile b "$ddir/prs.json" '
-    def only_markers: .comments = [(.comments // [])[] | select((.body // "") | test("^NEEDS-CAPTAIN(-CLEARED)?:"))];
-    ($a[0] + $b[0]) | map(only_markers)
-  ' || { echo "fwf flag-captain: jq combine failed" >&2; return 1; }
+  items="$(jq -c -n --slurpfile a "$ddir/issues.json" --slurpfile b "$ddir/prs.json" '$a[0] + $b[0]')" \
+    || { echo "fwf flag-captain: jq combine failed" >&2; return 1; }
+  n="$(jq 'length' <<<"$items")" || { echo "fwf flag-captain: jq count failed" >&2; return 1; }
+  printf '['
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    num="$(jq -r ".[$i].number" <<<"$items")" \
+      || { echo "fwf flag-captain: jq number-extract failed" >&2; return 1; }
+    markers="$(gh_item_markers "$num")" \
+      || { echo "fwf flag-captain: could not fetch #$num's full comment history -- a truncated read must never render as this item's actual state (read is UNKNOWN, not empty)" >&2; return 1; }
+    itemjson="$(jq -c --argjson m "$markers" ".[$i] + {comments: \$m}" <<<"$items")" \
+      || { echo "fwf flag-captain: jq item-merge failed" >&2; return 1; }
+    [ "$first" = 1 ] || printf ','
+    first=0
+    printf '%s' "$itemjson"
+    i=$((i + 1))
+  done
+  printf ']\n'
 }
 gh_id() { printf '#%s' "$1"; }
 
