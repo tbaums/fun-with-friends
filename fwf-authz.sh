@@ -10,16 +10,17 @@
 # the operator un-gate sentinel comment (config.sh: $OPERATOR_UNGATE_SENTINEL),
 # emitted only by a human keypress on the `fwf dash` board — plus this verifier.
 #
-# ANCHORING (issue #218): the matcher below is unanchored `grep -qF` over the
-# whole concatenated thread today, and that is a live false-AUTHORIZED bug —
+# ANCHORING (issue #218, shipped): the matcher below was unanchored `grep -qF`
+# over the whole concatenated thread, and that was a false-AUTHORIZED bug —
 # confirmed on #179, #192, and (nine days after the fact) a ROADMAP status
 # bullet on #154. A comment merely CONTAINING the token — quoted, discussed,
-# denied, or pasted as this tool's own HELD/refusal output — flips the verdict.
-# #218 fixes this: the sentinel counts only when it is the FIRST thing on a
-# LINE (column 0) of a COMMENT (never the issue body — see AC (n)), evaluated
-# per comment (never a concatenated blob — see AC (f)), with fenced/indented
-# code regions stripped first (a fence at column 0 is the natural way to
-# DOCUMENT the payload, and must not itself authorize).
+# denied, or pasted as this tool's own HELD/refusal output — used to flip the
+# verdict. #218 fixed this, and the fix is live: the sentinel counts only
+# when it is the FIRST thing on a LINE (column 0) of a COMMENT (never the
+# issue body — see AC (n)), evaluated per comment (never a concatenated blob
+# — see AC (f)), with fenced/indented code regions stripped first (a fence at
+# column 0 is the natural way to DOCUMENT the payload, and does not itself
+# authorize).
 #
 # Usage: fwf authz <issue>
 #   <issue>  bare number, #N, or LI-N (local backend).
