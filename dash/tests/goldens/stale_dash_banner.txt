@@ -1,1 +1,1 @@
- ⟲ STALE DASH — v0.37.1 now installed. Restart: q, then 'fwf dash'
+ ⟲ STALE DASH — v0.38.1 now installed. Restart: q, then 'fwf dash'
