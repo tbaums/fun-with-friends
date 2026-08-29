@@ -8565,17 +8565,22 @@ section "fwf flag-captain sweep (#291 AC c): only NEEDS-CAPTAIN(-CLEARED) commen
 # rationales, triage write-ups) that dwarf the actual marker lines -- those
 # are exactly what blew ARG_MAX in the real incident. gh_flagged_items must
 # drop everything except the marker comments before jq ever sees the payload.
+# #394: markers now come from the paginated per-item comments endpoint, not
+# from a `comments` field on the list call -- the list call is stubbed
+# without one to prove nothing still depends on it.
 FCG_MARKERS_ONLY() {
   FWF_PROFILE=example bash -c "
     source '$FC'
     gh_() {
       case \"\$*\" in
-        'issue list --state all --label needs-captain --json number,createdAt,state,comments')
-          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"OPEN\",\"comments\":[
-            {\"body\":\"a very long unrelated operator write-up, not a marker, imagine this is huge\",\"createdAt\":\"2026-01-01T00:01:00Z\"},
-            {\"body\":\"NEEDS-CAPTAIN: [impl1] blocked on base\",\"createdAt\":\"2026-01-01T00:02:00Z\"}
-          ]}]' ;;
-        'pr list --state all --label needs-captain --json number,createdAt,state,comments') printf '%s' '[]' ;;
+        'issue list --state all --label needs-captain --json number,createdAt,state')
+          printf '%s' '[{\"number\":286,\"createdAt\":\"2026-01-01T00:00:00Z\",\"state\":\"OPEN\"}]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,state') printf '%s' '[]' ;;
+        'api repos/{owner}/{repo}/issues/286/comments --paginate')
+          printf '%s' '[
+            {\"body\":\"a very long unrelated operator write-up, not a marker, imagine this is huge\",\"created_at\":\"2026-01-01T00:01:00Z\"},
+            {\"body\":\"NEEDS-CAPTAIN: [impl1] blocked on base\",\"created_at\":\"2026-01-01T00:02:00Z\"}
+          ]' ;;
       esac
     }
     gh_flagged_items
@@ -8631,11 +8636,13 @@ FCG_CLOSED() {
     gh_kind() { echo issue; }
     gh_() {
       case \"\$*\" in
-        'issue list --state all --label needs-captain --json number,createdAt,state,comments')
-          printf '%s' '[{\"number\":333,\"createdAt\":\"2026-08-28T14:07:00Z\",\"state\":\"CLOSED\",\"comments\":[
-            {\"body\":\"NEEDS-CAPTAIN: [gv] closed four minutes before this flag landed\",\"createdAt\":\"2026-08-28T14:11:43Z\"}
-          ]}]' ;;
-        'pr list --state all --label needs-captain --json number,createdAt,state,comments') printf '%s' '[]' ;;
+        'issue list --state all --label needs-captain --json number,createdAt,state')
+          printf '%s' '[{\"number\":333,\"createdAt\":\"2026-08-28T14:07:00Z\",\"state\":\"CLOSED\"}]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,state') printf '%s' '[]' ;;
+        'api repos/{owner}/{repo}/issues/333/comments --paginate')
+          printf '%s' '[
+            {\"body\":\"NEEDS-CAPTAIN: [gv] closed four minutes before this flag landed\",\"created_at\":\"2026-08-28T14:11:43Z\"}
+          ]' ;;
       esac
     }
     main sweep
@@ -8646,6 +8653,106 @@ assert_contains "gh backend: a flag on a closed issue surfaces too" "$GH_CLOSED_
 assert_contains "gh backend: the closed state is marked on the row" "$GH_CLOSED_SWEEP" "#333 (CLOSED)"
 assert_not_contains "gh backend: never renders as an empty sweep for a closed-only flag" \
   "$GH_CLOSED_SWEEP" "no needs-captain flags open"
+
+# --------------------------------------------------------------------------
+# fwf flag-captain sweep (#394): `issue list`/`pr list --json ...,comments`
+# truncates each item's nested comments array at the first 100. #161 has 134
+# comments; the sweep could only ever see comment #1 (a raise) -- its own
+# clear (#101) and a later, unrelated raise (#134) both sat past the cut and
+# were silently invisible, in one real incident: a false "still held" AND a
+# hidden live flag at once. Markers now come from a paginated per-item fetch
+# instead of the list call's (truncated) comments field.
+section "fwf flag-captain sweep (#394): >100-comment thread -- a clear and a later raise past the old cutoff are both seen"
+FIXTURE161="$TMP/fc394-161-comments.json"
+{
+  printf '['
+  printf '{"body":"NEEDS-CAPTAIN: [operator] RELEASE HOLD: cutting v0.36.0 ... HOLD staging merges and promotions until I post HOLD LIFTED.","created_at":"2026-08-28T23:58:14Z"}'
+  i=2
+  while [ "$i" -le 100 ]; do
+    printf ',{"body":"unrelated operator note #%d, not a marker","created_at":"2026-08-29T00:00:00Z"}' "$i"
+    i=$((i + 1))
+  done
+  printf ',{"body":"NEEDS-CAPTAIN-CLEARED: HOLD LIFTED. v0.36.0 IS PUBLISHED","created_at":"2026-08-29T00:27:37Z"}'
+  printf ',{"body":"NEEDS-CAPTAIN: [pm] v0.39.0 release FAILED and left a half-published state","created_at":"2026-08-29T19:22:46Z"}'
+  printf ']'
+} > "$FIXTURE161"
+assert_eq "fixture validity: the reproduction thread genuinely has >100 comments" "true" \
+  "$(jq '(length) > 100' "$FIXTURE161")"
+
+FCG_161() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_kind() { echo issue; }
+    gh_() {
+      case \"\$*\" in
+        'issue list --state all --label needs-captain --json number,createdAt,state')
+          printf '%s' '[{\"number\":161,\"createdAt\":\"2026-08-28T23:58:14Z\",\"state\":\"OPEN\"}]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,state')
+          printf '%s' '[]' ;;
+        'api repos/{owner}/{repo}/issues/161/comments --paginate')
+          cat '$FIXTURE161' ;;
+      esac
+    }
+    main sweep
+  " fcg-161-harness
+}
+SWEEP161="$(FCG_161)"
+assert_contains "AC(4): a raise sitting past the old 100-comment cutoff is surfaced" \
+  "$SWEEP161" "v0.39.0 release FAILED"
+assert_contains "the row is attributed to the pm, not left as role-unstated" "$SWEEP161" "[pm]"
+case "$SWEEP161" in
+  *"RELEASE HOLD: cutting v0.36.0"*)
+    bad "AC(1)/(3): the already-cleared raise must not resurrect as a stale flag" "$SWEEP161";;
+  *) ok "AC(1)/(3): the cleared raise stays cleared even though its clear sits past comment 100";;
+esac
+
+section "fwf flag-captain sweep (#394 AC 2): a failed per-item comments fetch fails the whole sweep closed"
+# A partial read is exactly as dangerous as a wrong one -- if one flagged
+# item's full comment history can't be confirmed, the sweep must say UNKNOWN
+# for the whole run, never silently drop just that item and report the rest
+# as complete (the #291 rule extended to a per-item read).
+FCG_ITEM_READ_FAILS() {
+  FWF_PROFILE=example bash -c "
+    source '$FC'
+    gh_kind() { echo issue; }
+    gh_() {
+      case \"\$*\" in
+        'issue list --state all --label needs-captain --json number,createdAt,state')
+          printf '%s' '[{\"number\":700,\"createdAt\":\"2026-08-29T00:00:00Z\",\"state\":\"OPEN\"}]' ;;
+        'pr list --state all --label needs-captain --json number,createdAt,state')
+          printf '%s' '[]' ;;
+        'api repos/{owner}/{repo}/issues/700/comments --paginate') return 1 ;;
+      esac
+    }
+    main sweep
+  " fcg-itemfail-harness
+}
+ITEMFAIL_RC=0
+ITEMFAIL_OUT="$(FCG_ITEM_READ_FAILS 2>"$TMP/fc394-itemfail.err")" || ITEMFAIL_RC=$?
+[ "$ITEMFAIL_RC" -ne 0 ] && ok "AC(2): a failed per-item comments read makes the sweep exit non-zero" \
+  || bad "AC(2): sweep exited 0 despite a failed per-item comments read" "rc=$ITEMFAIL_RC"
+assert_contains "AC(2): the failure is named UNKNOWN on stdout, not rendered as an empty/partial sweep" \
+  "$ITEMFAIL_OUT" "UNKNOWN"
+assert_not_contains "AC(2): never silently drops the unreadable item and reports the rest as done" \
+  "$ITEMFAIL_OUT" "no needs-captain flags open"
+
+section "fwf flag-captain (#394 AC 5): local backend already reads the full thread past comment 100"
+# fwf-issues.sh's comments_tsv reads the whole issue file with awk -- there is
+# no 100-item cap to hit on this backend. This is a regression guard, not a
+# behavior change: the fix lives entirely in the gh backend above.
+LARGE_NUM="$(FCISS create --title "Large local thread" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
+FCL "$LARGE_NUM" --role impl1 --reason "large-thread raise" >/dev/null
+i=1
+while [ "$i" -le 105 ]; do
+  FCISS comment "$LARGE_NUM" --body "unrelated filler comment #$i, not a marker" >/dev/null
+  i=$((i + 1))
+done
+FCL "$LARGE_NUM" --clear --note "cleared well past comment 100" >/dev/null
+LARGE_SWEEP_LOCAL="$(FCL sweep)"
+case "$LARGE_SWEEP_LOCAL" in
+  *"LI-$LARGE_NUM"*) bad "AC(5): local backend must see a clear placed past comment 100" "$LARGE_SWEEP_LOCAL";;
+  *) ok "AC(5): local backend correctly sees the clear even 100+ comments deep";;
+esac
 
 # --------------------------------------------------------------------------
 # fwf pr-route-check (#385): a PR opened outside the implN/qaN flow with no
