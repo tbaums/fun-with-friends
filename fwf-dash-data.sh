@@ -22,7 +22,8 @@
 #     issues:[{number,title,gated,body}],
 #     floor_idle:{active,since,reason,actor},
 #     visibility:{factory_visible,newest_heartbeat_age,state_dir,profile,host},
-#     unrouted_prs:[{pr,author,branch,created_at,reason}] }
+#     unrouted_prs:[{pr,author,branch,created_at,reason}],
+#     stranded_assignments:{unknown,reason,count,issues:[{number,assigned}]} }
 #   unrouted_prs (issue #194 AC (d)) is data-layer only as of this field's
 #   introduction -- dash/src/data.rs does not yet deserialize or render it;
 #   query `fwf-dash-data.sh` directly (or `.unrouted_prs` off its JSON) until
@@ -328,6 +329,56 @@ claim_refusals_json() {
   jq -n --argjson n "${n:-0}" '{count:$n}'
 }
 
+# issue #309 (#221 AC h/h2): issues carrying "ASSIGNED implN" for a seat NOT
+# on the live floor -- reachable via a pane dying and never respawning, a
+# future `fwf scale --pairs N` reducing pairs while an assignment is
+# outstanding, or the captain assigning from a prompt rendered before a
+# scale. Two independent reads, EACH of which can fail, and per AC (h2)
+# neither may silently default: an unreadable live-roster defaulting to
+# empty would flag every assignment as stranded (false alarm); an
+# unreadable assignment list defaulting to empty would flag none (the
+# exact silence this check exists to break). Either failure reports the
+# WHOLE result as unknown (#193 vocabulary), naming which input failed.
+stranded_assignments_json() {
+  local live
+  live="$(fwf_live_impl_indices "$BUILD_SESSION" 2>/dev/null)"
+  if [ "$live" = unknown ]; then
+    jq -n '{unknown:true, reason:"could not determine the live floor roster (tmux unreachable)", count:null, issues:null}'
+    return 0
+  fi
+  local raw rc=0
+  raw="$(di_read list --state open --json number,comments --limit 500 2>/dev/null)" || rc=$?
+  if [ "$rc" != 0 ] || ! printf '%s' "$raw" | jq -e 'type=="array"' >/dev/null 2>&1; then
+    jq -n '{unknown:true, reason:"could not read the open-issue comment list", count:null, issues:null}'
+    return 0
+  fi
+  # LAST matching "ASSIGNED implN" comment per issue wins (a re-assignment
+  # supersedes an earlier one) -- unanchored: a bold-markdown-prefixed
+  # "**ASSIGNED implN**" is the captain's own real posting shape (same
+  # reason implementer surveys check for "ASSIGNED" appearing anywhere, not
+  # "^ASSIGNED", per this floor's own established convention), so an
+  # anchored match would silently miss the common case. Emits one
+  # "number\tassigned" TSV row per issue that carries an assignment at all
+  # -- liveness is decided in bash below, since $live is a plain index list.
+  local pairs
+  pairs="$(printf '%s' "$raw" | jq -r '
+    .[] | . as $i |
+    ([(.comments // [])[] | .body | capture("ASSIGNED (?<role>impl[0-9]+)")?.role] | last) as $a |
+    select($a != null) | "\($i.number)\t\($a)"
+  ' 2>/dev/null)"
+  local stranded="[]" num role idx found j
+  while IFS=$'\t' read -r num role; do
+    [ -n "$num" ] || continue
+    idx="${role#impl}"
+    found=0
+    for j in $live; do [ "$j" = "$idx" ] && { found=1; break; }; done
+    if [ "$found" = 0 ]; then
+      stranded="$(printf '%s' "$stranded" | jq -c --argjson n "$num" --arg r "$role" '. + [{number:$n, assigned:$r}]')"
+    fi
+  done <<< "$pairs"
+  printf '%s' "$stranded" | jq -c '{unknown:false, reason:"", count:length, issues:.}'
+}
+
 api_budget_json() {
   local hr remaining limit reset label status
   hr="$("$DIR/fwf-ghcache.sh" headroom 2>/dev/null)" || true
@@ -602,7 +653,7 @@ unrouted_prs_json() {
 
 # --- assemble ---------------------------------------------------------------
 main() {
-  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade unrouted_prs visibility
+  local prod pipeline stamp parked gen issues roles decisions activity needs_you floor_idle upgrade unrouted_prs visibility stranded_assignments
   if status_fresh; then
     prod="$(status_q '.prod // "—"')"; [ -n "$prod" ] || prod="—"
     pipeline="$(status_q '.pipeline // "—"')"; [ -n "$pipeline" ] || pipeline="—"
@@ -625,6 +676,7 @@ main() {
   visibility="$(visibility_json)"
   api_budget="$(api_budget_json)"
   claim_refusals="$(claim_refusals_json)"
+  stranded_assignments="$(stranded_assignments_json)"
 
   # #291: roles/decisions/issues/activity/needs_you/unrouted_prs/visibility can
   # each carry full comment-thread bodies (open_issues_json, unrouted_prs_json
@@ -670,11 +722,13 @@ main() {
     --argjson floor_idle "$floor_idle" --argjson upgrade "$upgrade" --argjson installed "$installed" \
     --argjson api_budget "$api_budget" \
     --argjson claim_refusals "$claim_refusals" --argjson profile_resolution "$profile_resolution" \
+    --argjson stranded_assignments "$stranded_assignments" \
     '{profile:$profile, template:$template, parked:$parked, prod:$prod, pipeline:$pipeline,
       stamp:$stamp, generated_at:$gen, roles:$_roles[0], decisions:$_decisions[0], issues:$_issues[0],
       activity:$_activity[0], needs_you:$_needs_you[0], floor_idle:$floor_idle, upgrade:$upgrade,
       installed:$installed, unrouted_prs:$_unrouted_prs[0], visibility:$_visibility[0], api_budget:$api_budget,
-      claim_refusals:$claim_refusals, profile_resolution:$profile_resolution}'
+      claim_refusals:$claim_refusals, profile_resolution:$profile_resolution,
+      stranded_assignments:$stranded_assignments}'
   rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
 }
 
