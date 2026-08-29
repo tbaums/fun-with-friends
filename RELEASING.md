@@ -6,8 +6,16 @@ git tag `vX.Y.Z` whose number matches it.
 
 Releases are cut from `main` and published automatically by
 [`.github/workflows/release.yml`](.github/workflows/release.yml): pushing a
-matching tag verifies `tag == VERSION`, lints (`shellcheck -S warning`), runs the
-functional suite, builds a tarball with [`scripts/package.sh`](scripts/package.sh),
+matching tag first requires **every context in
+[`.github/branch-policy.json`](.github/branch-policy.json)'s `required_contexts`
+to be reported GREEN by `ci.yml` for that exact SHA** (issue #303 — a required
+context that has never reported is a refusal, exactly like a failing one; this
+polls for up to 20 minutes, matched to `ci.yml`'s own observed
+`functional suite (ubuntu-latest)` worst case plus scheduling margin, then
+fails closed rather than publishing on an incomplete picture — see
+[`fwf-release-ci-gate.sh`](fwf-release-ci-gate.sh)). Only then does it verify
+`tag == VERSION`, lint (`shellcheck -S warning`), run the
+functional suite, build a tarball with [`scripts/package.sh`](scripts/package.sh),
 cross-compiles prebuilt `fwf-dash` binaries for the three supported platforms
 (darwin-arm64, linux-arm64, linux-x86_64 — Intel Macs build from source), and creates a GitHub Release with the
 tarball, the dash binaries, and `fwf-dash-<ver>-checksums.txt` attached (plus
@@ -138,6 +146,30 @@ Build the tarball locally without tagging or publishing:
 ```bash
 scripts/package.sh         # -> dist/fwf-<VERSION>.tar.gz
 ```
+
+## ⚠️ Three published releases went out over a red CI suite (issue #303) — operator decision needed
+
+**v0.33.0, v0.34.0, and v0.35.0 all published with `dash crate (rust)` and the
+(now-removed) macOS functional lane both red**, verified per-SHA against
+GitHub's own check-runs:
+
+| release | SHA | red required contexts |
+|---|---|---|
+| v0.33.0 | `e3404cd` | `dash crate (rust)`, `functional suite (macos-latest)` |
+| v0.34.0 | `1373da7` | `dash crate (rust)`, `functional suite (macos-latest)` |
+| v0.35.0 | `285dc8c` | `dash crate (rust)`, `functional suite (macos-latest)` |
+
+This was a **standing condition, not a one-off slip** — the same two contexts,
+every release, for three releases running — because `release.yml`'s own gate
+only ever consulted a strict subset of what `ci.yml` actually runs (fixed by
+the gate described above). **Recording it here rather than silently letting it
+scroll off**, per issue #303's own AC (g): these artifacts are published and
+users may already have them.
+
+**This needs an explicit operator call, not a default:** re-cut one or more of
+these releases, supersede them with a note in the next release's notes, or
+accept them as-is with a documented reason. Not decided by this change —
+flagging it here is the deliverable; @captain / the operator makes the call.
 
 ## Re-cutting a tag
 

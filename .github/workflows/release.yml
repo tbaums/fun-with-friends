@@ -64,6 +64,51 @@ jobs:
           printf '%s\n' "$out"
 
   # --------------------------------------------------------------------------
+  # Issue #303: release.yml's own checks (shellcheck + a single ubuntu
+  # functional pass, below) were a STRICT SUBSET of what ci.yml actually
+  # runs -- red on macOS or in the Rust crate was invisible here, and three
+  # consecutive releases (v0.33.0/v0.34.0/v0.35.0) published over a red
+  # `dash crate (rust)` as a direct result. Rather than widen this job's own
+  # checks (recreating the drift in a new place, per this ticket's explicit
+  # "do not add a macOS/cargo job here"), this job CONSULTS ci.yml's own
+  # verdict for this exact SHA via GitHub's check-runs API, reading the
+  # required-context list from the SAME committed source of truth
+  # fwf-branch-policy.sh diffs live branch protection against
+  # (.github/branch-policy.json) -- one list, not two that can drift apart.
+  #
+  # Every publishing job hangs off this one too (see preflight's own
+  # comment) -- a red or never-reported required context stops the release
+  # before a single artifact exists.
+  ci-verdict:
+    name: required CI checks are green for this SHA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Consult ci.yml's verdict for this SHA (issue #303)
+        env:
+          FWF_REPO: ${{ github.workspace }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          if ! ./fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log; then
+            {
+              echo "## Release blocked: required CI checks are not green for this SHA"
+              echo
+              echo '```'
+              cat /tmp/ci-verdict.log
+              echo '```'
+              echo
+              echo "Nothing was published — this ran before any artifact was built."
+              echo
+              echo "A required context that never reported is refused exactly like a"
+              echo "failing one (issue #303 AC b) — check whether it was renamed without"
+              echo "updating \`.github/branch-policy.json\` in the same commit, or is"
+              echo "still genuinely running (re-tag once it completes)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------------
   # Issue #209 AC (d)/(d2)/(j): the dash-binaries matrix and
   # scripts/assert-release-assets.sh's expected asset set both derive from
   # ONE declared source of truth (dash-targets.json), never from each other
@@ -75,7 +120,7 @@ jobs:
   # or below may name a target slug or runner label directly.
   load-targets:
     name: load dash-targets.json
-    needs: preflight
+    needs: [preflight, ci-verdict]
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
@@ -91,7 +136,7 @@ jobs:
   # its native runner (no cross-linker), keeping the pure-Rust crate trivial.
   dash-binaries:
     name: dash binary (${{ matrix.slug }})
-    needs: [preflight, load-targets]     # issue #179: no artifact is built onto a diverged base
+    needs: [preflight, ci-verdict, load-targets]     # issue #179: no artifact is built onto a diverged base
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -143,7 +188,7 @@ jobs:
   # --------------------------------------------------------------------------
   release:
     name: package + publish
-    needs: [preflight, dash-binaries]
+    needs: [preflight, ci-verdict, dash-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

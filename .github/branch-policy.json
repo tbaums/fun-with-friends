@@ -1,9 +1,8 @@
 {
-  "_comment": "issue #220: the committed source of truth for required-status-check branch protection on staging/integration/main. fwf-branch-policy.sh diffs LIVE GitHub protection settings against this file -- drift (a setting that no longer matches) is a RED, surfaced on fwf dash. Renaming a CI job means updating required_contexts here IN THE SAME COMMIT (issue #220 edge case: a silently-renamed context never reports, and GitHub treats never-reported as pending forever -- every PR blocks with no failing check to point at).",
+  "_comment": "issue #220: the committed source of truth for required-status-check branch protection on staging/integration/main. fwf-branch-policy.sh diffs LIVE GitHub protection settings against this file -- drift (a setting that no longer matches) is a RED, surfaced on fwf dash. Renaming a CI job means updating required_contexts here IN THE SAME COMMIT (issue #220 edge case: a silently-renamed context never reports, and GitHub treats never-reported as pending forever -- every PR blocks with no failing check to point at). issue #303: 'functional suite (macos-latest)' removed here -- commit 15801ee ('ci: stop running macOS on GitHub; run it locally on real hardware', see docs/macos-ci.md) dropped that job from ci.yml's matrix but missed this file, which is exactly the edge case this comment already warned about: the context has been permanently absent (never pending, never reporting) on every PR since 15801ee landed. Not a new decision -- applying the one 15801ee already made and documented, completing its own 'same commit' requirement.",
   "required_contexts": [
     "shellcheck + syntax",
     "functional suite (ubuntu-latest)",
-    "functional suite (macos-latest)",
     "dash crate (rust)"
   ],
   "strict": false,

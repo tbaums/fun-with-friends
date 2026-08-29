@@ -169,18 +169,31 @@ cmd_producible() {
   policy="$(policy_json)" || return 2
   [ -f "$CI_WORKFLOW_FILE" ] || { echo "fwf-branch-policy.sh: CI workflow file not found: $CI_WORKFLOW_FILE" >&2; return 2; }
   # Job `name:` fields, one per line -- matrix jobs (e.g. `functional
-  # suite` x `os: [ubuntu-latest, macos-latest]`) report as
-  # "<name> (<matrix-value>)", so expand those explicitly rather than
-  # trying to derive them from YAML alone.
+  # suite` x `os: [...]`) report as "<name> (<matrix-value>)", so expand
+  # those explicitly rather than trying to derive them from YAML alone.
   job_names="$(awk '
     /^  [a-zA-Z0-9_-]+:$/ { in_job=1 }
     in_job && /^    name:/ { sub(/^    name:[ \t]*/, ""); gsub(/^"|"$/, ""); print; in_job=0 }
   ' "$CI_WORKFLOW_FILE")"
-  # Expand the one matrix job this repo has (`functional suite` x os).
+  # Expand the one matrix job this repo has (`functional suite` x os) using
+  # the REAL, live matrix values -- issue #303: a previous version of this
+  # expansion hardcoded BOTH "ubuntu-latest" and "macos-latest"
+  # unconditionally, so it kept reporting "functional suite
+  # (macos-latest)" as producible for a full CI cycle after 15801ee
+  # actually dropped macos-latest from the matrix (`os: [ubuntu-latest]`
+  # today) -- the exact "context never reports, checker never notices"
+  # failure mode this function exists to catch, self-inflicted by reading
+  # the matrix from memory instead of from the file.
   if printf '%s\n' "$job_names" | grep -qx "functional suite"; then
-    job_names="$(printf '%s\n' "$job_names" | grep -vx "functional suite")
-functional suite (ubuntu-latest)
-functional suite (macos-latest)"
+    local os_values os_line
+    os_line="$(grep -m1 -E '^[[:space:]]*os:[[:space:]]*\[' "$CI_WORKFLOW_FILE")"
+    os_values="$(printf '%s' "$os_line" | sed -E 's/^[[:space:]]*os:[[:space:]]*\[([^]]*)\].*/\1/' | tr ',' '\n' | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    job_names="$(printf '%s\n' "$job_names" | grep -vx "functional suite")"
+    while IFS= read -r _os; do
+      [ -n "$_os" ] || continue
+      job_names="$job_names
+functional suite ($_os)"
+    done <<<"$os_values"
   fi
   while IFS= read -r ctx; do
     [ -n "$ctx" ] || continue

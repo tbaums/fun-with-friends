@@ -6873,6 +6873,149 @@ assert_contains "help mentions branch-policy check" "$("$ROOT/fwf" help)" "branc
 assert_contains "help mentions branch-policy producible" "$("$ROOT/fwf" help)" "branch-policy producible"
 
 # --------------------------------------------------------------------------
+section "branch-policy (issue #303): cmd_producible expands the REAL os matrix, not a hardcoded pair"
+# A prior version of this expansion hardcoded BOTH ubuntu-latest AND
+# macos-latest whenever it saw a bare "functional suite" job name -- so it
+# kept reporting a required "functional suite (macos-latest)" context as
+# producible for a full CI cycle after 15801ee actually dropped macos-latest
+# from ci.yml's matrix. This is the exact live incident, reproduced with a
+# throwaway single-os workflow fixture (never the real ci.yml, so this
+# proves the READER, not today's file contents).
+BP303_CI="$TMP/bp303-ci.yml"
+cat > "$BP303_CI" <<'EOF'
+jobs:
+  lint:
+    name: shellcheck + syntax
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - name: x
+    name: functional suite
+EOF
+BP303_POLICY="$TMP/bp303-policy.json"
+printf '{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)"]}' > "$BP303_POLICY"
+BP303_OUT="$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$BP303_POLICY" FWF_CI_WORKFLOW_FILE="$BP303_CI" bash -c "source '$BP'; cmd_producible")"
+assert_contains "(#303) a single-os matrix correctly reports the ABSENT macos-latest context, not a hardcoded pair" \
+  "$BP303_OUT" "functional suite (macos-latest)' is not emitted"
+assert_not_contains "(#303) the PRESENT ubuntu-latest context is not also wrongly flagged" \
+  "$BP303_OUT" "functional suite (ubuntu-latest)' is not emitted"
+BP303_POLICY_OK="$TMP/bp303-policy-ok.json"
+printf '{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)"]}' > "$BP303_POLICY_OK"
+assert_eq "(#303) a policy matching the real single-os matrix is clean" "" \
+  "$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$BP303_POLICY_OK" FWF_CI_WORKFLOW_FILE="$BP303_CI" bash -c "source '$BP'; cmd_producible")"
+
+section "branch-policy (issue #303): the committed policy no longer requires the removed macOS lane"
+assert_not_contains "the real .github/branch-policy.json no longer names functional suite (macos-latest) (removed by ci.yml's 15801ee)" \
+  "$(cat "$ROOT/.github/branch-policy.json")" "macos-latest"
+
+# --------------------------------------------------------------------------
+section "fwf-release-ci-gate.sh (issue #303): consults ci.yml's verdict for the release SHA, never re-implements it"
+RCG="$ROOT/fwf-release-ci-gate.sh"
+RCG_POLICY="$TMP/rcg-policy.json"
+printf '{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","dash crate (rust)"]}' > "$RCG_POLICY"
+rcg_run() { # $1=check-runs-json $2=extra env (may be empty)
+  FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$RCG_POLICY" FWF_RELEASE_CI_TIMEOUT_SECS=1 FWF_RELEASE_CI_POLL_SECS=1 ${2:-} bash -c "
+    source '$RCG'
+    gh_check_runs() { printf '%s' '$1'; }
+    main deadbeef
+  "
+}
+RCG_ALL_GREEN='{"check_runs":[
+  {"name":"shellcheck + syntax","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"functional suite (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"}
+]}'
+rc=0; rcg_run "$RCG_ALL_GREEN" >/dev/null 2>&1 || rc=$?
+assert_eq "all required contexts green -> gate proceeds (rc 0)" "0" "$rc"
+
+# AC (b): the ACCEPTANCE CRITERION -- a required context absent from the
+# SHA's check-runs entirely (never a failing one) is refused, not passed.
+RCG_ABSENT='{"check_runs":[
+  {"name":"shellcheck + syntax","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"}
+]}'
+rc=0; OUT="$(rcg_run "$RCG_ABSENT" 2>&1)" || rc=$?
+assert_eq "(b) a required context with NO check-run at all is a refusal, not a pass" "1" "$rc"
+assert_contains "(b) the refusal names the absent context" "$OUT" "functional suite (ubuntu-latest): absent"
+
+# AC (c): the race with ci.yml is bounded -- an absent/pending context
+# waits, and on timeout FAILS CLOSED rather than proceeding.
+assert_contains "(c) a still-absent context after the timeout is an explicit timeout refusal" "$OUT" "timed out after 1s"
+
+# a definitively FAILED (already completed, non-success) context refuses
+# immediately, without waiting out the rest of the timeout on a verdict
+# that can never change.
+RCG_FAILED='{"check_runs":[
+  {"name":"shellcheck + syntax","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"functional suite (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"failure","started_at":"2026-08-29T00:00:00Z"}
+]}'
+rc=0; OUT="$(rcg_run "$RCG_FAILED" FWF_RELEASE_CI_TIMEOUT_SECS=3600 2>&1)" || rc=$?
+assert_eq "a completed, failing required context refuses immediately" "1" "$rc"
+assert_contains "the refusal names the failing context" "$OUT" "dash crate (rust)"
+
+# edge case (skipped is reachable, not evidence of health -- #286's lesson,
+# cited by this ticket's own edge-case list): a "skipped" conclusion is
+# treated as failed, never folded into "not failing therefore fine".
+RCG_SKIPPED='{"check_runs":[
+  {"name":"shellcheck + syntax","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"functional suite (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"skipped","started_at":"2026-08-29T00:00:00Z"}
+]}'
+rc=0; rcg_run "$RCG_SKIPPED" >/dev/null 2>&1 || rc=$?
+assert_eq "a 'skipped' conclusion is NOT treated as success" "1" "$rc"
+
+# a PENDING (not yet completed) context also waits, then times out closed --
+# distinct code path from absent, same outcome.
+RCG_PENDING='{"check_runs":[
+  {"name":"shellcheck + syntax","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"functional suite (ubuntu-latest)","status":"in_progress","conclusion":null,"started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"}
+]}'
+rc=0; OUT="$(rcg_run "$RCG_PENDING" 2>&1)" || rc=$?
+assert_eq "an in-progress (not yet completed) required context is not treated as green" "1" "$rc"
+assert_contains "the wait names it as pending, distinctly from absent" "$OUT" "functional suite (ubuntu-latest): pending"
+
+# "latest run per context" -- a re-run must be read as the CURRENT verdict,
+# not an earlier one for the same context name.
+RCG_RERUN='{"check_runs":[
+  {"name":"shellcheck + syntax","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"functional suite (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"failure","started_at":"2026-08-29T00:00:00Z"},
+  {"name":"dash crate (rust)","status":"completed","conclusion":"success","started_at":"2026-08-29T01:00:00Z"}
+]}'
+rc=0; rcg_run "$RCG_RERUN" >/dev/null 2>&1 || rc=$?
+assert_eq "a later re-run's verdict wins over an earlier failing run for the same context" "0" "$rc"
+
+# AC (d): the two real, historical red SHAs this ticket names must be
+# refused by the REAL gate against REAL branch-policy.json -- a genuinely
+# network-dependent assertion, so it degrades to a skip (not a false pass
+# or a hard failure) when gh/network is unavailable, per this suite's own
+# #275 skip-counting convention.
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  rc=0; ( cd "$ROOT" && FWF_PROFILE=example FWF_REPO="$ROOT" ./fwf-release-ci-gate.sh 285dc8c ) >/dev/null 2>&1 || rc=$?
+  assert_eq "(d) the real gate REFUSES v0.35.0's SHA (285dc8c) -- dash crate + old macOS lane were red there" "1" "$rc"
+  rc=0; ( cd "$ROOT" && FWF_PROFILE=example FWF_REPO="$ROOT" ./fwf-release-ci-gate.sh e3404cd ) >/dev/null 2>&1 || rc=$?
+  assert_eq "(d) the real gate REFUSES v0.33.0's SHA (e3404cd) -- same red contexts" "1" "$rc"
+else
+  skip "fwf-release-ci-gate.sh (#303 AC d): live SHA checks (gh unavailable)" 2
+fi
+
+section "fwf-release-ci-gate.sh (issue #303): wired into release.yml, gating every publishing job"
+RELYML="$(cat "$ROOT/.github/workflows/release.yml")"
+assert_contains "release.yml invokes fwf-release-ci-gate.sh" "$RELYML" "fwf-release-ci-gate.sh"
+assert_contains "load-targets requires ci-verdict" "$RELYML" "needs: [preflight, ci-verdict, load-targets]"
+assert_contains "dash-binaries requires ci-verdict" "$RELYML" "needs: [preflight, ci-verdict, dash-binaries]"
+assert_contains "package+publish requires ci-verdict" "$RELYML" "needs: [preflight, ci-verdict]"
+# AC (e): no macOS/cargo job added to release.yml itself.
+case "$RELYML" in
+  *"macos-latest"*) bad "(#303 e) release.yml must not add its own macOS job -- consult a verdict, don't re-run the work" ;;
+  *) ok "(#303 e) no macos-latest job added to release.yml" ;;
+esac
+
+# --------------------------------------------------------------------------
 # fwf-pr-checks-honored.sh (issue #220 AC i/o/p): the QA-side ERGONOMIC
 # pre-merge checkpoint. Real jq diff logic driven with stubbed gh_pr_checks/
 # gh_pr_comments fixtures, reproducing instance 2 (the live incident this
