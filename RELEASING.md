@@ -24,6 +24,22 @@ resolution — see [docs/dash.md](docs/dash.md).
 
 ## Cut a release
 
+> **LOCAL-CI ERA (2026-08-29).** `ci.yml` is **disabled** — all CI runs on the
+> factory box (`fwf-local-ci.sh`). Its verdicts live on that box and a GitHub
+> runner cannot read them, so release.yml's #303 gate **degrades to advisory**
+> while ci.yml is disabled (it re-arms automatically if ci.yml is re-enabled).
+>
+> **The blocking gate therefore moves to you, before you push the tag:**
+> a **two-runner green** for the exact SHA being tagged — the macOS runner and
+> the devbox — each log containing **`DONE`**, **`EXIT=`** and a
+> **`passed, N failed`** summary. A truncated log is not green.
+>
+> If the two runners disagree, do not tag. Classify every failure first: the
+> devbox is also the factory, so it fails tests that read live GitHub state or
+> race under load. Record the classification on the PR, as done for #386.
+
+
+
 **The version bump rides the normal promotion path (`staging` → `integration` →
 `main`) — it is never committed directly to `main`.** (issue #262.) `main` only
 ever *advances*, by fast-forward, to a SHA that already exists on `staging`/
