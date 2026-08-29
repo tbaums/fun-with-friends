@@ -42,10 +42,48 @@ jobs:
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0    # issue #352: the shadow classifier needs a real
+                             # merge-base, not a shallow (depth-1) tip.
       - name: Show bash version
         run: bash --version | head -1
-      - name: Run functional tests
-        run: bash test/run.sh
+      # issue #352: this repo's own `bash test/run.sh` runs unconditionally
+      # on every push/PR today, ~13min wall-clock, identically for a doc-only
+      # diff and a diff touching lib.sh. Same SHADOW MODE discipline as
+      # #138/#261's Rust-suite classifier below (reusing the same generic
+      # CLI/decide function, see fwf-gate-rust-scope.sh) — this NEVER skips
+      # anything yet; it only starts accumulating the would-skip/would-run +
+      # timing history a future flip-or-drop decision needs, against this
+      # repo's own real branches. The safe list is deliberately narrow
+      # (docs/**, *.md only) — per #352, almost every other path in this repo
+      # is exercised by test/run.sh, and .github/workflows/* is deliberately
+      # EXCLUDED (a CI config change, including to this job, must stay RUN).
+      - name: "Restore #352 shadow-classifier log (this repo's own bash suite)"
+        uses: actions/cache/restore@v4
+        with:
+          path: .gate-bash-suite-shadow.log
+          key: gate-bash-suite-shadow-${{ github.run_id }}
+          restore-keys: |
+            gate-bash-suite-shadow-
+      - name: "Run functional tests (timed, feeds issue #352's shadow classifier)"
+        run: |
+          start="$(date +%s)"
+          bash test/run.sh
+          secs="$(( $(date +%s) - start ))"
+          against="${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}"
+          against="${against:-HEAD^}"
+          bash fwf-gate-rust-scope.sh --against "$against" --log .gate-bash-suite-shadow.log \
+            --full-suite-secs "$secs" --suite-name "bash test/run.sh" \
+            --safe 'docs/*' --safe '*.md'
+        env:
+          FWF_PROFILE: example
+          FWF_RUN_DIR: ${{ runner.temp }}/fwf-run
+      - name: "Save #352 shadow-classifier log"
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gate-bash-suite-shadow.log
+          key: gate-bash-suite-shadow-${{ github.run_id }}
       - name: "Run #156 memory-admission suite (issue #286 AC d)"
         # A SEPARATE step, not folded into test/run.sh: this suite forks real
         # process groups and includes several bounded but real sleeps (orphan

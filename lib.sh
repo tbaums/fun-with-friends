@@ -1133,6 +1133,59 @@ fwf_find_pane() { # $1=session  $2=label-token
   return 1
 }
 
+# issue #190: the RUNNING pair count on a live build session -- distinct
+# from FWF_PAIRS/PAIRS[@], which is the CONFIGURED roster and, on a live
+# floor whose --pairs was silently discarded, is exactly the number that
+# lies about what's actually up. Prints a plain integer, or the literal
+# string "unknown" when the floor is in an inconsistent state.
+#
+# Definitional rule (must be testable, not just descriptive): an index N
+# counts as a running pair only when BOTH implN and qaN panes exist. If
+# exactly ONE of the two exists at some index, the state is inconsistent
+# and the whole count is "unknown" -- this is deliberately NOT "N-1 pairs
+# plus one broken pane": a mid-respawn floor (impl2 present, qa2 not yet
+# relabeled) must read as unknown, never as a confident (and wrong) lower
+# number that would make an ordinary respawn look like a scale-down.
+#
+# Exact-label match, NOT fwf_find_pane's substring search: fwf_find_pane's
+# `case "$label" in *"$2"*)` would let a pane labeled "impl10" satisfy a
+# lookup for "impl1", silently miscounting on any floor at or past 10
+# pairs. This scans every pane's label exactly once and buckets it.
+fwf_running_pair_count() { # $1=build session name
+  local sess="$1" i n=0 upper
+  tmux has-session -t "$sess" 2>/dev/null || { echo 0; return 0; }
+  # fwf_role_label (an optional custom display prefix, then always)
+  # "IMPL$id · ..." / "QA$id · ..." -- "IMPL$i " (trailing space) is the
+  # anchor: "IMPL1 " is never a substring of "IMPL10 " (its next char is
+  # "0", not a space), so reusing fwf_find_pane's own substring search on
+  # THIS token is safe against the impl1-vs-impl10 collision a bare "impl1"
+  # search would have (and a QA pane's label never contains "qa$id/*" at
+  # all -- it names the impl PAIR it reviews, e.g. "QA1 · reviews+merges
+  # impl1/* · loop 1m" -- so the uppercase QA$i tag is the only reliable
+  # anchor for a QA pane, not the lowercase role tag). Scanned well past
+  # any FWF_PAIRS this codebase's own docs/tests ever exercise -- a floor
+  # with more running pairs than that would need a mechanism that doesn't
+  # exist yet (#210).
+  upper=30
+  i=1
+  while [ "$i" -le "$upper" ]; do
+    local has_impl=0 has_qa=0
+    fwf_find_pane "$sess" "IMPL$i ·" >/dev/null 2>&1 && has_impl=1
+    fwf_find_pane "$sess" "QA$i ·" >/dev/null 2>&1 && has_qa=1
+    if [ "$has_impl" = 1 ] && [ "$has_qa" = 1 ]; then
+      n=$((n+1))
+    elif [ "$has_impl" = 1 ] || [ "$has_qa" = 1 ]; then
+      echo unknown
+      return 0
+    fi
+    # neither present at this index: a gap, not itself inconsistent -- a
+    # suppressed qa-only-impl template or a sparse floor is not this
+    # ticket's concern; only a HALF-present index is.
+    i=$((i+1))
+  done
+  echo "$n"
+}
+
 # --- launch-socket persistence (issue #62, supersedes #57) ------------------
 # The factory's tmux sessions land on whatever socket $TMUX pointed to when
 # `fwf up`/`fwf respawn` launched them — a bare `tmux new-session`/`split-window`
@@ -1842,6 +1895,11 @@ _fwf_ps_elapsed_secs() { # $1=pid
   printf '%s' "$(( 10#$d*86400 + 10#$h*3600 + 10#$m*60 + 10#$sec ))"
 }
 
+# Slop allowed when reconstructing a pgid's start time from `ps -o etime=`
+# (whole-second resolution) against the lock's own `acquired` stamp. See the
+# comment at the comparison site in _fwf_kill_orphan_group (issue #195).
+: "${_FWF_PGID_START_SLOP:=2}"
+
 _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
   local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid elapsed now start_epoch anc
   [ "$pgleader" = 1 ] || return 0
@@ -1899,7 +1957,19 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
           etimes="$elapsed"
         now="$(date +%s)"
         start_epoch=$(( now - etimes ))
-        if [ "$start_epoch" -gt "$acquired" ]; then
+        # MEASUREMENT TOLERANCE, not a policy relaxation (issue #195).
+        # `pgid` is stamped into the owner file at the same moment as
+        # `acquired`, so for the REAL holder the two are the same instant.
+        # But start_epoch is reconstructed as now - $(ps -o etime=), and
+        # `ps` reports whole seconds while `now` is sampled after that call,
+        # carrying ~1s of error -- so the genuine holder routinely measures
+        # 1s "after" its own lock. That is what made AC(c) refuse a correct
+        # reap on hosted runners (4 of 5 runs) while passing on the devbox
+        # and macOS, where both events land inside the same second.
+        # Real PID/PGID reuse recycles a number only after the holder died,
+        # which is many seconds out -- far outside this window -- so the
+        # guard still fails closed for the case it exists to catch.
+        if [ "$start_epoch" -gt "$(( acquired + _FWF_PGID_START_SLOP ))" ]; then
           echo "fwf#195: refusing to signal pgid $pgid -- it started AFTER this lock's own acquisition (pid start ~$start_epoch > lock acquired $acquired), so it is NOT the recorded holder's group (PID/PGID reuse) — this is a lock-protocol anomaly, not reaped" >&2
           return 0
         fi
