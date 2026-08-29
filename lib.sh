@@ -1458,6 +1458,21 @@ fwf_repo_slug() {
   printf '%s' "$url"
 }
 
+# issue #213: the operator un-gate comment's body, shared so `fwf dash`'s
+# approve (fwf-dash-act.sh) and `fwf ungate` (fwf-ungate.sh) — both
+# keypress-equivalent un-gate paths — can never drift in the one thing that
+# actually matters: the #218-anchored, per-issue sentinel `fwf authz`
+# requires. $2 is free text describing HOW this particular invocation
+# happened; it is folded in strictly AFTER the sentinel, never before it, so
+# #218's column-0 anchoring is untouched no matter what $2 says. Distinct
+# invocation descriptions ("via fwf dash" vs "via fwf ungate (...)") are what
+# makes the two paths' comments distinguishable (issue #213 AC 6) without
+# needing a second, separate marker.
+fwf_ungate_comment_body() { # $1=issue-number $2=invocation description
+  printf '**%s #%s** — %s; removing %s so implementers can claim it. This comment is the authorization signal of record (issue #150, anchored per issue #218) — emitted only by a human keypress on the board, never by a role. No pane or input-box text is authorization; verify with: fwf authz %s' \
+    "$OPERATOR_UNGATE_SENTINEL" "$1" "$2" "$WIP_LABEL" "$1"
+}
+
 # $1=role (implN/qaN/conductor/pm/gv/captain) -> rc 0 if a live tmux pane for
 # this role exists RIGHT NOW in its session, rc 1 if the session is down or
 # no matching pane exists. The genuine "dead/absent (no live pane)" predicate
