@@ -901,8 +901,16 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   sections, plus any linked `docs/proposals/<n>-*.md`) folded into the squash-
   merge commit and PR body — no fwf-internal vocabulary (role/seat names,
   worktree/gate jargon, `LI-N`), no invented rationale, fail-closed if
-  anything survives sanitization (`fwf pr-context <n> [<n>...]` — see `fwf
-  help`). Alongside it, a reviewer-facing "🏭 Built with fun-with-friends +
+  anything survives sanitization: `fwf pr-context --issue <n> [<n>...]` folds
+  the given issue(s) directly; `fwf pr-context --pr <num>` resolves the PR's
+  own linked issue (its "Closes #n") and folds *that* — the flag that makes
+  the instinctive "just give it the PR number" move produce the right card
+  instead of the PR's own body (issue #189: passing a PR number where an
+  issue number belongs used to fold the PR silently, shipping an empty or
+  self-referential squash-merge history card). The bare `fwf pr-context <n>
+  [<n>...]` form still works for a genuine issue number, but refuses loudly
+  if any `<n>` resolves to a PR instead. See `fwf help`.
+  Alongside it, a reviewer-facing "🏭 Built with fun-with-friends +
   Claude" credit line (distinct from — and coexists with — the `fwf-
   Provenance:` machine trailer). `FWF_CREDIT=on|minimal|off` controls it:
   `on` (full line + every distinct model that touched the work, one entry per

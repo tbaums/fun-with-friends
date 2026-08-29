@@ -647,6 +647,117 @@ CLI_CTX="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROF
 assert_contains "fwf pr-context prints the context fold" "$CLI_CTX" "## Context & rationale"
 assert_contains "fwf pr-context has no fwf-internal leak" "$CLI_CTX" "Fix the thing"
 case "$CLI_CTX" in *impl[0-9]*|*QA-*) bad "fwf pr-context output has no fwf-internal token" "$CLI_CTX";; *) ok "fwf pr-context output has no fwf-internal token";; esac
+# --issue is the explicit, self-describing spelling of the same bare-form call.
+CLI_CTX_ISSUE="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example "$ROOT/fwf" pr-context --issue 1 2>&1)"
+assert_eq "fwf pr-context --issue <n> matches the bare-form call in local-issues mode" "$CLI_CTX" "$CLI_CTX_ISSUE"
+
+# issue #189: fwf pr-context PR-vs-issue confusion -- the defect that shipped
+# 16 hollow squash-merge commit cards (fed a PR number, silently folded the
+# PR's own body). Needs a stubbed `gh` (PR/issue detection + linked-issue
+# resolution are real gh backend calls, not local-issues-mode concepts).
+PCTX189="$TMP/pr-context-189"; mkdir -p "$PCTX189/views"
+# Fixture: issue #501 exists (canonical body); PR #601 closes #501; PR #602
+# has NO "Closes #n" anywhere; PR #603 closes both #501 and #504 (multi).
+printf '{"pull_request":null}' > "$PCTX189/views/issues-501.json"
+printf '{"pull_request":{"url":"x"}}' > "$PCTX189/views/issues-601.json"
+printf '{"pull_request":{"url":"x"}}' > "$PCTX189/views/issues-602.json"
+printf '{"pull_request":{"url":"x"}}' > "$PCTX189/views/issues-603.json"
+printf 'Closes #501.\n\nSome PR description.' > "$PCTX189/views/pr-601-body.txt"
+printf 'A PR body that never mentions closing anything.' > "$PCTX189/views/pr-602-body.txt"
+printf 'Closes #501, Closes #504.\n\nMulti-issue PR.' > "$PCTX189/views/pr-603-body.txt"
+PCTX189GHBIN="$TMP/pr-context-189-ghbin"; mkdir -p "$PCTX189GHBIN"
+PCTX189REPO="$TMP/pr-context-189-repo"; mkdir -p "$PCTX189REPO"
+( cd "$PCTX189REPO" && git init -q )
+PISS189() { FWF_RUN_DIR="$PCTX189RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+# issue #501/#504's real content comes through the SAME gh stub, keyed the
+# way fwf_pr_ctx_issue_json expects (`gh issue view <n> --json title,body`) --
+# FWF_ISSUES stays 'gh' for the CLI calls below so the real PR/issue
+# detection path (not the local-issues store) is what's under test.
+cat > "$PCTX189GHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+# Shells out to the REAL jq on the fixture, applying whatever filter the
+# caller actually passed (--jq is always the last two args here) -- so this
+# faithfully reproduces gh's own filtering (including `empty` producing zero
+# bytes for a null .pull_request) instead of hand-simulating jq semantics.
+case "$1 $2" in
+  "api repos/{owner}/{repo}/issues/"*)
+    n="${2##*/}"
+    f="$PCTX189_VIEWS/issues-$n.json"
+    [ -f "$f" ] || f="$PCTX189_VIEWS/issues-default.json"
+    jq -r "$4" "$f" 2>/dev/null
+    ;;
+  "pr view")
+    n="$3"
+    f="$PCTX189_VIEWS/pr-$n-body.txt"
+    if [ -f "$f" ]; then
+      jq -n --rawfile b "$f" '{body:$b}' | jq -r "$7"
+    else
+      jq -n '{body:""}' | jq -r "$7"
+    fi
+    ;;
+  "issue view")
+    n="$3"
+    case "$n" in
+      501) jq -n '{title:"Real ticket",body:"## Problem / intent\nReal content for #501."}' ;;
+      504) jq -n '{title:"Second real ticket",body:"## Problem / intent\nReal content for #504."}' ;;
+      *) jq -n '{title:"",body:""}' ;;
+    esac
+    ;;
+  *) echo "pr-context-189-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$PCTX189GHBIN/gh"
+PCTX189RUN="$TMP/pr-context-189-run"
+PCTX189_CTX() { PATH="$PCTX189GHBIN:$PATH" PCTX189_VIEWS="$PCTX189/views" FWF_RUN_DIR="$PCTX189RUN" FWF_REPO="$PCTX189REPO" FWF_PROFILE=example "$ROOT/fwf" pr-context "$@"; }
+
+# --- AC(a): bare-number backstop -------------------------------------------
+BARE_601_OUT="$(PCTX189_CTX 601 2>&1)"; BARE_601_RC=$?
+assert_contains "AC(a): bare 'fwf pr-context <PR#>' refuses (names the confusion)" "$BARE_601_OUT" "PULL REQUEST, not an issue"
+[ "$BARE_601_RC" != 0 ] && ok "AC(a): the refusal is a hard failure (non-zero exit)" || bad "AC(a): the refusal is a hard failure (non-zero exit)" "rc=0"
+BARE_501_OUT="$(PCTX189_CTX 501 2>&1)"
+assert_contains "AC(a): a genuine ISSUE number through the bare form still works (backward compat)" "$BARE_501_OUT" "Real content for #501"
+
+# --- AC(b): --pr <num> and --issue <n> produce the SAME card for a linked pair --
+PR_FORM="$(PCTX189_CTX --pr 601 2>&1)"
+ISSUE_FORM="$(PCTX189_CTX --issue 501 2>&1)"
+assert_eq "AC(b): --pr <num> resolves to and folds the SAME card as --issue <linked-n>" "$ISSUE_FORM" "$PR_FORM"
+
+# --- AC(d): the end-to-end regression that would have caught all 16 hollow cards --
+# The heading names the ISSUE's title, never the PR's own -- #601 the PR has
+# no title fixture at all here, so any leakage of PR identity would show up
+# as something other than the real issue title.
+assert_contains "AC(d): the folded heading is the ISSUE title (### Real ticket), not the PR's" "$PR_FORM" "### Real ticket"
+case "$PR_FORM" in *"### PR"*|*"### #601"*) bad "AC(d): heading must never be the PR's own title/number" "$PR_FORM";; *) ok "AC(d): heading must never be the PR's own title/number";; esac
+# The payload (not just the heading) carries the issue's real content -- and
+# since AC(b) above already proved --pr's output is BYTE-IDENTICAL to
+# --issue's, the full bucket-non-emptiness already pinned by the earlier
+# PCTX1 fixture (decisions/alternatives/acceptance/testing, ~line 615-621)
+# transitively holds for --pr too, not just this fixture's intro section.
+assert_contains "AC(d): the payload carries the issue's real content, not just the heading" "$PR_FORM" "Real content for #501"
+
+# --- AC(f): --pr with no resolvable linked issue fails loudly --------------
+NOLINK_OUT="$(PCTX189_CTX --pr 602 2>&1)"; NOLINK_RC=$?
+assert_contains "AC(f): --pr on a PR with no 'Closes #n' refuses rather than folding the PR's own body" "$NOLINK_OUT" "no resolvable linked issue"
+[ "$NOLINK_RC" != 0 ] && ok "AC(f): the no-linked-issue refusal is a hard failure" || bad "AC(f): the no-linked-issue refusal is a hard failure" "rc=0"
+
+# --- edge case: a PR closing multiple issues picks deterministically -------
+MULTI_OUT="$(PCTX189_CTX --pr 603 2>&1)"
+assert_contains "edge: multi-issue PR picks the LOWEST issue number" "$MULTI_OUT" "Real content for #501"
+case "$MULTI_OUT" in *"Real content for #504"*) bad "edge: multi-issue PR folds only the picked issue, not both" "$MULTI_OUT";; *) ok "edge: multi-issue PR folds only the picked issue, not both";; esac
+MULTI_STDERR="$(PCTX189_CTX --pr 603 2>&1 >/dev/null)"
+assert_contains "edge: multi-issue PR NAMES which issue it picked (not a silent selection)" "$MULTI_STDERR" "picked the lowest, #501"
+
+# --- AC(e) pin: the call sites that were already correct still work --------
+assert_contains "AC(e): implementer.tmpl uses the explicit --issue form (pinned, not the old bare form)" \
+  "$(cat "$ROOT/templates/dev/implementer.tmpl")" "fwf pr-context --issue <num>"
+assert_contains "AC(e): refactor/implementer.tmpl matches" \
+  "$(cat "$ROOT/templates/refactor/implementer.tmpl")" "fwf pr-context --issue <num>"
+
+# --- AC(c): BOTH qa.tmpl merge call sites use --pr, not the ambiguous bare form --
+assert_contains "AC(c): templates/dev/qa.tmpl's merge line uses --pr <num>" \
+  "$(cat "$ROOT/templates/dev/qa.tmpl")" 'fwf pr-context --pr <num>'
+assert_contains "AC(c): templates/refactor/qa.tmpl's merge line uses --pr <num>" \
+  "$(cat "$ROOT/templates/refactor/qa.tmpl")" 'fwf pr-context --pr <num>'
 
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
