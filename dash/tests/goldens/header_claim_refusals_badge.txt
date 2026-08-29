@@ -1,4 +1,4 @@
 ┌ fwf dash ──────────────────────────────────────────────────────────────────────────────┐
-│profile fwf-self  ·  dev  ● running  ⛔  3 blocked on authz  · fwf v0.38.0 (built 2026-08│
+│profile fwf-self  ·  dev  ● running  ⛔  3 blocked on authz  · fwf vX.Y.Z (built YYYY-MM-DD│
 │prod https://example.test/prod   pipeline staging → integration → main   [status.json]  │
 └────────────────────────────────────────────────────────────────────────────────────────┘
