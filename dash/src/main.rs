@@ -1057,7 +1057,13 @@ fn render_api_budget_banner(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
-    render_header_with_version(f, area, app, data::RUNNING_VERSION, data::RUNNING_BUILD_DATE);
+    render_header_with_version(
+        f,
+        area,
+        app,
+        data::RUNNING_VERSION,
+        data::RUNNING_BUILD_DATE,
+    );
 }
 
 // Issue #307: version/build-date are pulled out as parameters (rather than
@@ -1187,7 +1193,10 @@ fn render_header_with_version(
     // loading or erred. Distinct from `render_stale_dash_banner` below (that
     // only fires on detected drift); this line is unconditional so drift is
     // visible at a glance at all times, per issue #153.
-    l1.push(Span::styled(format!(" · fwf v{version} (built {build_date})"), dim));
+    l1.push(Span::styled(
+        format!(" · fwf v{version} (built {build_date})"),
+        dim,
+    ));
 
     let para = Paragraph::new(vec![Line::from(l1), Line::from(l2)]);
     f.render_widget(para, inner);
@@ -3445,7 +3454,9 @@ mod tests {
         };
         let installed_version = format!("{maj}.{min}.{}", patch + 1);
         if let Feed::Ok(d) = &mut app.feed {
-            d.installed = data::InstalledVersion { version: installed_version.clone() };
+            d.installed = data::InstalledVersion {
+                version: installed_version.clone(),
+            };
         }
         assert!(
             data::running_binary_stale(&app.feed.dashboard().unwrap().installed.version),
@@ -3471,7 +3482,9 @@ mod tests {
         let mut app = golden_app(Tab::Activity);
         let installed_version = "42.0.7".to_string();
         if let Feed::Ok(d) = &mut app.feed {
-            d.installed = data::InstalledVersion { version: installed_version.clone() };
+            d.installed = data::InstalledVersion {
+                version: installed_version.clone(),
+            };
         }
         assert!(
             data::running_binary_stale(&app.feed.dashboard().unwrap().installed.version),
