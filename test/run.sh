@@ -1632,6 +1632,16 @@ GR_SENTINEL="OPERATOR-UNGATE"
 # the source, so a future edit that drops the clause goes red here.
 GR_SOLE_ORACLE="is the SOLE authorization oracle"
 GR_REGARDLESS_OF_BELIEF="regardless of your belief about why it is non-AUTHORIZED"
+# QA-caught (#213 review): rule (4) used to claim the un-gate comment is
+# "emitted only by a human keypress on the fwf board, never by a role" --
+# never strictly true (fwf-dash-act.sh's approve was always directly
+# invocable by a role too), and #213 made the same reachable path a
+# first-class CLI verb any role can find by name. Asserted on the RENDERED
+# prompt (every role reads this text as ground truth for trusting `fwf
+# authz`), so a future edit that reintroduces the stale absolute claim goes
+# red here, not just in fwf_ungate_comment_body()'s own comment-body text.
+GR_UNGATE_HONEST="not a technically human-only channel"
+GR_UNGATE_STALE="never by a role"
 # Assert the block + its shared bullets are present for a non-captain role, and
 # that a non-captain is told it has NO channel (never the captain's channel
 # clause). $1=label $2=template-relpath $3=id(optional, unquoted so an empty
@@ -1653,6 +1663,8 @@ gr_assert_no_channel() {
   assert_contains     "$1: non-AUTHORIZED is a HOLD regardless of belief" "$R" "$GR_REGARDLESS_OF_BELIEF"
   assert_contains     "$1: non-captain gets NO human channel"    "$R" "$GR_NO_CHANNEL"
   assert_not_contains "$1: non-captain must NOT get a channel"   "$R" "$GR_CAP_CHANNEL"
+  assert_contains     "$1: honest about the un-gate posting path (#213)" "$R" "$GR_UNGATE_HONEST"
+  assert_not_contains "$1: no longer overclaims 'never by a role' (#213)" "$R" "$GR_UNGATE_STALE"
 }
 # Universality: every build-floor + coordination role, across >1 template family.
 gr_assert_no_channel "dev/implementer"     "dev/implementer.tmpl" 2
@@ -1678,6 +1690,8 @@ assert_contains "captain: carries the resolved un-gate sentinel" "$CAPR" "$GR_SE
 assert_contains "captain: sole-authorization-oracle rule"       "$CAPR" "$GR_SOLE_ORACLE"
 assert_contains "captain: non-AUTHORIZED is a HOLD regardless of belief" "$CAPR" "$GR_REGARDLESS_OF_BELIEF"
 assert_not_contains "captain must NOT be told it has NO channel" "$CAPR" "$GR_NO_CHANNEL"
+assert_contains "captain: honest about the un-gate posting path (#213)" "$CAPR" "$GR_UNGATE_HONEST"
+assert_not_contains "captain: no longer overclaims 'never by a role' (#213)" "$CAPR" "$GR_UNGATE_STALE"
 
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
@@ -5911,6 +5925,13 @@ assert_contains "shared function: both bodies carry the SAME anchored sentinel" 
 [ "$DASH_BODY" != "$UNGATE_BODY" ] && ok "AC(6): dash and ungate bodies are distinguishable (different free text)" || bad "AC(6): dash and ungate bodies must differ (they carry different provenance)"
 assert_contains "dash body names 'fwf dash'" "$DASH_BODY" "via fwf dash"
 assert_contains "ungate body names 'fwf ungate'" "$UNGATE_BODY" "via fwf ungate"
+# QA-caught: neither body may claim "never by a role" -- true of neither
+# path (fwf-dash-act.sh's approve was always directly invocable by a role
+# too), and #213 gave the same reachable path a first-class CLI verb.
+case "$DASH_BODY" in *"never by a role"*) bad "dash body must not claim 'never by a role' (not true, #213)";; *) ok "dash body does not overclaim 'never by a role'";; esac
+case "$UNGATE_BODY" in *"never by a role"*) bad "ungate body must not claim 'never by a role' (not true, #213)";; *) ok "ungate body does not overclaim 'never by a role'";; esac
+assert_contains "shared function: honest provenance framing" "$DASH_BODY" "not a technically human-only channel"
+assert_contains "shared function: honest provenance framing" "$UNGATE_BODY" "not a technically human-only channel"
 
 # --------------------------------------------------------------------------
 # fwf ungate: gh backend routing (AC 5's "both backends"). A stateful stub
