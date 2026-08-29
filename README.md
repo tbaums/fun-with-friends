@@ -814,11 +814,27 @@ wins.
                      On a LIVE build floor, `fwf up --pairs N` where N
                      differs from the running count now FAILS LOUDLY
                      (non-zero exit, names the current/requested counts and
-                     the destructive `fwf up --build-only` path that would
-                     apply it) instead of silently discarding N and
-                     exiting 0 — issue #190. Resizing a live floor without
-                     disturbing in-flight work is a separate, not-yet-built
-                     feature (`fwf scale`, issue #210).
+                     points at `fwf scale`, the non-destructive path)
+                     instead of silently discarding N and exiting 0 —
+                     issue #190.
+fwf scale --pairs N [--dry-run] [--force]   reconciles a LIVE floor to N
+                     pairs WITHOUT disturbing in-flight work (issue #210) —
+                     creates only the missing implN/qaN panes (existing
+                     panes' PIDs are byte-identical afterward) or, scaling
+                     down, removes ONLY the highest-indexed pair, and only
+                     if it is genuinely idle (no open PR, no live claim) —
+                     it never drains, and never removes a lower index even
+                     if that one is idle instead, since the roster must
+                     stay contiguous. `--dry-run` previews the plan and
+                     mutates nothing; the real run re-evaluates every
+                     refusal at mutation time rather than acting on a
+                     cached plan. Session-scoped only (never rewrites
+                     FWF_PAIRS in the profile — says so on success, and
+                     separately warns the CAPTAIN's own already-rendered
+                     prompt needs `fwf respawn captain` to see the new
+                     roster). Scale-up checks free RAM and the subscription-
+                     usage budget sentinel, refusing on either unless
+                     `--force`. See docs/fwf-scale.md.
 --model M            model for every agent (claude --model M)
 --impl-model M       per-role override; likewise --qa-model, --pm-model,
                      --gv-model, --captain-model, --conductor-model

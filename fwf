@@ -1119,6 +1119,7 @@ case "$cmd" in
     exit "$rc";;
   provision) engine fwf-provision.sh "$@";;
   up)        engine fwf-up.sh "$@";;
+  scale)     engine fwf-scale.sh "$@";;
   respawn)   engine fwf-respawn.sh "$@";;
   tick)
     # issue #133: a looping role's step-0 heartbeat, upgraded to a monotonic
