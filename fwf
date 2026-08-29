@@ -249,6 +249,22 @@ UTILITIES
                          #189's bug 16 times. Refuses (merges nothing) if the
                          context fold itself refuses (issue #106 guard) or
                          the PR has no resolvable linked issue.
+  backfill-context [--to REF] [--force] [--push] [--dry-run]
+                         Recover hollow history cards WITHOUT rewriting any
+                         commit (issue #212, the one-shot recovery for what
+                         #136's go-forward guard deliberately never audits):
+                         finds every commit whose card is entirely
+                         "_(none logged)_" while its linked issue genuinely
+                         has content, regenerates the card with the fixed
+                         extractor, and attaches it as a git note under
+                         refs/notes/fwf-context (never refs/notes/commits).
+                         Idempotent — a commit that already has a note is
+                         left alone unless --force. Notes are LOCAL ONLY
+                         unless --push. Every backfilled note states it was
+                         RECONSTRUCTED and as of what date, since it is a
+                         reconstruction from whatever the linked issue says
+                         NOW, not a contemporaneous record of what it said
+                         at merge time.
   flag-captain <n> --role R --reason TEXT
                          Raise a "needs-captain" flag on issue/PR <n> (label +
                          a NEEDS-CAPTAIN: [R] TEXT comment) — any role calls
@@ -1044,6 +1060,7 @@ case "$cmd" in
   pr-checks-honored) engine fwf-pr-checks-honored.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
   merge)     engine fwf-merge.sh "$@";;
+  backfill-context) engine fwf-backfill-context.sh "$@";;
   flag-captain) engine fwf-flag-captain.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;

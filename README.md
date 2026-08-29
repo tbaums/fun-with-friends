@@ -998,6 +998,24 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   `consulting`/`defect-report`) would need its own opt-out of this check if
   it ever promotes through `fwf gate-promote`; this repo's own floor runs
   `dev`, where every squash-merge always closes an issue.
+  **Recovering pre-existing hollow cards, without rewriting anything (issue
+  #212):** `fwf backfill-context [--to REF] [--force] [--push] [--dry-run]`
+  is the one-shot recovery for what #136's go-forward guard deliberately
+  never audits — history from before the extractor was fixed. It finds
+  every commit whose card is entirely `_(none logged)_` while its linked
+  issue genuinely has content (the same predicate #136 uses), regenerates
+  the card with the fixed extractor, and attaches it as a `git note` under
+  `refs/notes/fwf-context` (never `refs/notes/commits`, so it can't collide
+  with anyone's own notes usage) — **no commit is ever rewritten**. Every
+  backfilled note states it was *RECONSTRUCTED* and as of what date: on a
+  floor where issue bodies get rewritten routinely, a note built now is a
+  reconstruction from a later draft than the commit it's attached to, never
+  a contemporaneous record, and the note says so rather than leaving that
+  to be discovered. **Honest limitation:** notes aren't fetched by default
+  — `git fetch origin 'refs/notes/fwf-context:refs/notes/fwf-context'` then
+  `git log --notes=fwf-context` to read them; a plain clone still shows the
+  hollow card. `fwf backfill-context` writes notes **locally only** unless
+  `--push` is given, so a run can be inspected before it's made permanent.
 - **Release freeze:** ask the PM to "freeze for release" and it labels tickets
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
