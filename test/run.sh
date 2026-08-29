@@ -2779,8 +2779,8 @@ EOF
   # cold start: 2-pair floor comes up (AC e regression guard lives here too --
   # a cold floor's --pairs must still create N pairs, unaffected by this
   # ticket; this same call IS that path, no live-floor branch taken yet).
-  f190up "$ROOT/fwf-up.sh" --build-only >/dev/null 2>&1
-  assert_eq "(#190 e) cold floor: fwf-up.sh --build-only creates the requested 2 pairs" "0" \
+  f190up "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  assert_eq "(#190 e) cold floor: fwf-up.sh creates the requested 2 pairs" "0" \
     "$([ -d "$F190WT/ex-impl1" ] && tmux has-session -t "${F190SESS}-build" 2>/dev/null; echo $?)"
 
   # (d) regression: a bare `fwf up` (no --pairs, so FWF_PAIRS_REQUESTED unset)
