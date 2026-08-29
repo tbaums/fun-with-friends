@@ -6965,6 +6965,82 @@ UNKMODEL="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR=
 assert_eq "unpriced model -> cost_usd is null, never a wrong \$0" "null" "$(printf '%s' "$UNKMODEL" | jq -c '.cost_usd')"
 assert_eq "unpriced model's tokens are still shown (not hidden)" "100" "$(printf '%s' "$UNKMODEL" | jq -r '.tokens.input')"
 
+section "fwf usage (issue #289 b/c): the TOTAL stops laundering an unpriced seat into a silent \$0 -- it's marked partial and the seat is named"
+RUN2DATA="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$UD")"
+assert_eq "(c) a synthetic unknown model does NOT silently vanish: total.partial is true" "true" "$(printf '%s' "$RUN2DATA" | jq -r '.total.partial')"
+assert_contains "(b1) the unpriced seat is named in unpriced_seats, with its model" \
+  "$(printf '%s' "$RUN2DATA" | jq -r '.total.unpriced_seats | join(",")')" "impl2 (claude-totally-unknown)"
+# (b2) excluded_tokens_pct conveys magnitude, not just a bool. impl1 also
+# carries real usage in this run (prior sections in this file wrote to its
+# same project dir), so the exact figure is NOT a fixed constant -- assert
+# the formula it must satisfy instead of a fragile snapshot number: 100 *
+# (unpriced seats' own token sum) / (grand total across every role).
+EXPECTED_EXCL_PCT="$(printf '%s' "$RUN2DATA" | jq -r '
+  ([.roles[] | select(.price_state=="unpriced") | (.tokens.input+.tokens.cache_creation+.tokens.cache_read+.tokens.output)] | add // 0) as $excl |
+  ([.roles[] | (.tokens.input+.tokens.cache_creation+.tokens.cache_read+.tokens.output)] | add // 0) as $grand |
+  if $grand > 0 then (($excl / $grand) * 100) else 0 end')"
+assert_eq "(b2) excluded_tokens_pct matches (unpriced seats' tokens / grand total tokens) * 100" \
+  "$EXPECTED_EXCL_PCT" "$(printf '%s' "$RUN2DATA" | jq -r '.total.excluded_tokens_pct')"
+assert_eq "(b2) and it is strictly greater than zero -- impl2 really does hold real, nonzero excluded tokens" \
+  "true" "$(printf '%s' "$RUN2DATA" | jq -r '.total.excluded_tokens_pct > 0')"
+assert_eq "(b) the per-row null is UNCHANGED -- this ticket's fix is at the aggregate, not the row" "null" \
+  "$(printf '%s' "$RUN2DATA" | jq -c '.roles[] | select(.role=="impl2") | .cost_usd')"
+CLIOUT289="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
+assert_contains "CLI: TOTAL line carries a visible PARTIAL marker" "$CLIOUT289" "PARTIAL"
+assert_contains "CLI: the excluded seat is named on the display path too" "$CLIOUT289" "impl2 (claude-totally-unknown)"
+
+section "fwf usage (issue #289 f): price_state — priced / stale / unpriced, on an INJECTABLE clock"
+_fwf_usage_load_for_test() { FWF_PROFILE=.__usage bash -c "source '$ROOT/lib.sh'; source '$UD'; \"\$1\" \"\${2:-}\" \"\${3:-}\"" _ "$@"; }
+BEFORE_EPOCH="$(date -u -d '2026-08-30T00:00:00Z' +%s 2>/dev/null || date -u -jf '%Y-%m-%dT%H:%M:%SZ' '2026-08-30T00:00:00Z' +%s)"
+AFTER_EPOCH="$(date -u -d '2026-09-05T00:00:00Z' +%s 2>/dev/null || date -u -jf '%Y-%m-%dT%H:%M:%SZ' '2026-09-05T00:00:00Z' +%s)"
+assert_eq "(f0) before valid_until: sonnet-5 is priced" "priced" "$(_fwf_usage_load_for_test _fwf_usage_price_state claude-sonnet-5 "$BEFORE_EPOCH")"
+assert_eq "(f) past valid_until: sonnet-5 degrades to stale (still has a rate, just an old one)" "stale" "$(_fwf_usage_load_for_test _fwf_usage_price_state claude-sonnet-5 "$AFTER_EPOCH")"
+assert_eq "(f0) no valid_until at all: opus-4-8 is priced regardless of clock" "priced" "$(_fwf_usage_load_for_test _fwf_usage_price_state claude-opus-4-8 "$AFTER_EPOCH")"
+assert_eq "(f0) no row at all: opus-5 is unpriced, a DIFFERENT state from stale" "unpriced" "$(_fwf_usage_load_for_test _fwf_usage_price_state claude-opus-5 "$AFTER_EPOCH")"
+# (f1): a stale row still degrades the report but does not gate -- it keeps
+# computing a (best-available, if old) cost_usd rather than dropping to null
+# like a genuinely unpriced model, and the row/total say "stale", not "gone".
+STALE_ROLE="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_USAGE_NOW_EPOCH="$AFTER_EPOCH" "$UD" | jq -c '.roles[] | select(.role=="impl1")')"
+assert_eq "(f1) a stale-priced row still HAS a cost_usd (degrades, doesn't gate)" "false" "$(printf '%s' "$STALE_ROLE" | jq -r '.cost_usd == null')"
+assert_eq "(f1) the stale row is labeled stale, distinctly from priced" "stale" "$(printf '%s' "$STALE_ROLE" | jq -r '.price_state')"
+STALE_TOTAL="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_USAGE_NOW_EPOCH="$AFTER_EPOCH" "$UD" | jq -r '.total.partial')"
+assert_eq "(f0) a stale-priced row ALSO reaches the TOTAL's partial marker (same treatment as unpriced under b)" "true" "$STALE_TOTAL"
+
+section "fwf usage (issue #289 e): price-table drift check reads BOTH the reported and declared sources, in both directions"
+DRIFT_CLEAN="$(_fwf_usage_load_for_test fwf_usage_model_drift 'claude-sonnet-5
+claude-opus-4-8' 'claude-sonnet-5
+claude-haiku-4-5')"; DRIFT_CLEAN_RC=$?
+assert_eq "(e2) every reported+declared model priced -> clean, rc 0" "0" "$DRIFT_CLEAN_RC"
+DRIFT_DIRTY="$(_fwf_usage_load_for_test fwf_usage_model_drift 'claude-opus-5' 'claude-sonnet-4-6')"; DRIFT_DIRTY_RC=$?
+assert_eq "(e1) BOTH instances fire: reported+declared each contribute a failure, rc nonzero" "1" "$DRIFT_DIRTY_RC"
+assert_contains "(e1) the REPORTED-side instance (opus-5, live seats) is named" "$DRIFT_DIRTY" "REPORTED model NOT priced: claude-opus-5"
+assert_contains "(e1) the DECLARED-side instance (sonnet-4-6, the menu) is named" "$DRIFT_DIRTY" "DECLARED model NOT priced: claude-sonnet-4-6"
+DRIFT_ASYMMETRIC="$(_fwf_usage_load_for_test fwf_usage_model_drift 'claude-sonnet-5' 'claude-fable-5')"; DRIFT_ASYMMETRIC_RC=$?
+assert_eq "(e2) priced-but-not-declared/reported (claude-fable-5) is FINE, not a defect -- asymmetric by design" "0" "$DRIFT_ASYMMETRIC_RC"
+assert_eq "(e2) and produces no output" "" "$DRIFT_ASYMMETRIC"
+CLI_DRIFT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+assert_contains "the drift check is wired into the live 'fwf usage' display, not just testable in isolation" "$CLI_DRIFT" "price-table drift check (issue #289)"
+
+section "fwf-budget-check.sh (issue #289 d): the fail-closed pause names the MODEL, not just the seat"
+BC289_ROOT="$TMP/budgetcheck289"; mkdir -p "$BC289_ROOT/wt" "$BC289_ROOT/claude-projects"
+cat > "$ROOT/profiles/.__usage289.sh" <<EOF
+FWF_REPO="$BC289_ROOT/repo"; WT_PREFIX="ut"; WT_BASE="$BC289_ROOT/wt"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+BC289_PROJ_CWD="$BC289_ROOT/wt/ut-impl1"; BC289_SLUG="${BC289_PROJ_CWD//\//-}"; BC289_SLUG="${BC289_SLUG//./-}"
+mkdir -p "$BC289_ROOT/claude-projects/$BC289_SLUG"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-brand-new","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' \
+  > "$BC289_ROOT/claude-projects/$BC289_SLUG/s.jsonl"
+env FWF_PROFILE=.__usage289 FWF_RUN_DIR="$BC289_ROOT/run" FWF_CLAUDE_PROJECTS_DIR="$BC289_ROOT/claude-projects" FWF_PAIRS=1 \
+  bash -c "source '$ROOT/lib.sh'; fwf_budget_baseline_ensure"
+env FWF_PROFILE=.__usage289 FWF_RUN_DIR="$BC289_ROOT/run" FWF_CLAUDE_PROJECTS_DIR="$BC289_ROOT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=1 \
+  "$ROOT/fwf-budget-check.sh" >/dev/null 2>&1
+BC289_HOLD="$(cat "$BC289_ROOT/run/BUDGET_HOLD" 2>/dev/null || true)"
+assert_contains "(d) fail-closed message names the seat" "$BC289_HOLD" "impl1"
+assert_contains "(d) fail-closed message ALSO names the model, not a generic pause" "$BC289_HOLD" "claude-brand-new"
+rm -f "$ROOT/profiles/.__usage289.sh"
+
 section "fwf usage (#95): proxy caveat is present in the payload"
 assert_contains "caveat names this as an estimate, not real account usage" "$(usage_run)" "not your account's actual rolling-window usage"
 

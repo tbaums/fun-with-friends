@@ -19,6 +19,9 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
+# shellcheck source=fwf-usage-data.sh
+source "$DIR/fwf-usage-data.sh"   # sourced, not executed -- reuses its price
+                                   # table + fwf_usage_model_drift_live (#289 e)
 
 usage_data() { "$DIR/fwf-usage-data.sh"; }
 
@@ -149,8 +152,8 @@ main() {
   printf '%-12s %-22s %-20s %10s %10s %10s %10s %10s\n' \
     ROLE STATE MODEL INPUT CACHE-W CACHE-R OUTPUT 'EST-$'
 
-  local role state age model tin twrite tread tout cost
-  while IFS=$'\t' read -r role state age model tin twrite tread tout cost; do
+  local role state age model tin twrite tread tout cost price_state
+  while IFS=$'\t' read -r role state age model tin twrite tread tout cost price_state; do
     printf '%-12s %-22s %-20s %10s %10s %10s %10s %10s\n' \
       "$role" \
       "$(_fwf_usage_fmt_state "$state" "$age")" \
@@ -159,7 +162,7 @@ main() {
       "$(_fwf_usage_fmt_tokens "$twrite")" \
       "$(_fwf_usage_fmt_tokens "$tread")" \
       "$(_fwf_usage_fmt_tokens "$tout")" \
-      "$(_fwf_usage_fmt_cost "$cost")"
+      "$(_fwf_usage_fmt_cost "$cost")$([ "$price_state" = "stale" ] && echo ' ⚠stale-price' || true)"
   done < <(printf '%s' "$data" | jq -r '.roles[] |
     # UNKNOWN never had a real read, so its 0-valued token fields would
     # otherwise render as "confirmed zero usage" — show "-" instead, same
@@ -170,7 +173,7 @@ main() {
     (if .state == "unknown" then null else .tokens.output end) as $tout |
     [.role, .state, (.age_secs // 0), (.model // "null"),
      ($tin // "null"), ($twrite // "null"), ($tread // "null"), ($tout // "null"),
-     (.cost_usd // "null")] | @tsv')
+     (.cost_usd // "null"), (.price_state // "null")] | @tsv')
 
   printf '\n'
   printf '%-12s %-22s %-20s %10s %10s %10s %10s %10s\n' \
@@ -179,13 +182,43 @@ main() {
     "$(printf '%s' "$data" | jq -r '.total.tokens.cache_creation')" \
     "$(printf '%s' "$data" | jq -r '.total.tokens.cache_read')" \
     "$(printf '%s' "$data" | jq -r '.total.tokens.output')" \
-    "$(printf '$%.4f' "$(printf '%s' "$data" | jq -r '.total.cost_usd')")"
+    "$(printf '$%.4f' "$(printf '%s' "$data" | jq -r '.total.cost_usd')")$(printf '%s' "$data" | jq -r 'if .total.partial then " ⚠PARTIAL" else "" end')"
+
+  # issue #289 (b1)/(b2): name what was excluded and its MAGNITUDE, not just
+  # a bool -- "partial" alone reads as a rounding caveat; the excluded-token
+  # percentage is what tells an operator the reported figure could be less
+  # than half the truth.
+  if [ "$(printf '%s' "$data" | jq -r '.total.partial')" = "true" ]; then
+    local unpriced_seats stale_seats excl_pct
+    unpriced_seats="$(printf '%s' "$data" | jq -r '.total.unpriced_seats | join(", ")')"
+    stale_seats="$(printf '%s' "$data" | jq -r '.total.stale_priced_seats | join(", ")')"
+    excl_pct="$(printf '%s' "$data" | jq -r '.total.excluded_tokens_pct')"
+    printf '\n⚠ TOTAL is PARTIAL — excluded seats hold %.1f%% of all factory tokens, priced at $0 above:\n' "$excl_pct"
+    [ -n "$unpriced_seats" ] && printf '  unpriced (no price-table row): %s\n' "$unpriced_seats"
+    [ -n "$stale_seats" ] && printf '  stale-priced (past valid_until, still counted above at the OLD rate): %s\n' "$stale_seats"
+  fi
 
   printf '\n%s\n' "$(printf '%s' "$data" | jq -r '"note: " + .caveat')"
 
   printf '\n'
   _fwf_usage_budget_line "$data"
+  _fwf_usage_drift_section "$data"
   _fwf_unknown_reads_section
+}
+
+# issue #289 (e): surface price-table drift on the display path -- checking
+# BOTH the reported (live transcripts, retrospective) and declared
+# (FWF_MODEL*/menu, prospective) sources; see fwf_usage_model_drift_live's
+# own header for why neither alone is sufficient.
+_fwf_usage_drift_section() { # $1=usage-data JSON
+  local data="$1" out rc=0
+  out="$(fwf_usage_model_drift_live "$data")" || rc=$?
+  printf '\nprice-table drift check (issue #289):\n'
+  if [ "$rc" = 0 ]; then
+    printf '  clean — every reported and declared model has a price-table row\n'
+  else
+    printf '%s\n' "$out" | sed 's/^/  /'
+  fi
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi

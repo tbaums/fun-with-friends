@@ -47,12 +47,48 @@ _fwf_usage_slug() {
 # unknown model yields null cost (never a silent/wrong $0 — see the
 # UNREADABLE philosophy below), not a crash. $/MTok; cache-write is the 5m-
 # breakpoint rate; cache-read is Anthropic's fixed 0.1x-of-input multiplier.
+# "valid_until" (issue #289 (f), YYYY-MM-DD or null=no known expiry): a row
+# past this date is PRICED but STALE — see _fwf_usage_price_state below.
+#
+# issue #289 (a): claude-opus-5 (what pm/gv/captain actually run) is
+# DELIBERATELY ABSENT. (a1)/(a3): a guessed rate replaces a visible gap with
+# an invisible wrong number, which is worse than the gap — inferring it from
+# claude-opus-4-8's row is explicitly out of scope. Add a row here, dated and
+# sourced (a2), the moment a published rate exists; until then (b) below is
+# what keeps the TOTAL honest about the omission.
 _FWF_PRICE_TABLE='{
-  "claude-opus-4-8":  {"input":5.00,  "output":25.00, "cache_write":6.25, "cache_read":0.50},
-  "claude-sonnet-5":  {"input":2.00,  "output":10.00, "cache_write":2.50, "cache_read":0.20},
-  "claude-haiku-4-5": {"input":1.00,  "output":5.00,  "cache_write":1.25, "cache_read":0.10},
-  "claude-fable-5":   {"input":10.00, "output":50.00, "cache_write":12.50,"cache_read":1.00}
+  "claude-opus-4-8":  {"input":5.00,  "output":25.00, "cache_write":6.25, "cache_read":0.50, "valid_until":null},
+  "claude-sonnet-5":  {"input":2.00,  "output":10.00, "cache_write":2.50, "cache_read":0.20, "valid_until":"2026-08-31"},
+  "claude-haiku-4-5": {"input":1.00,  "output":5.00,  "cache_write":1.25, "cache_read":0.10, "valid_until":null},
+  "claude-fable-5":   {"input":10.00, "output":50.00, "cache_write":12.50,"cache_read":1.00, "valid_until":null}
 }'
+
+# issue #289 (f2): the clock is INJECTABLE, never bare `date +%s` inline in
+# the check itself -- a date-driven check tested against the real clock is
+# green today and red on the expiry date for reasons no diff explains.
+# FWF_USAGE_NOW_EPOCH overrides for tests; production leaves it unset.
+_fwf_usage_now_epoch_for_pricing() { printf '%s' "${FWF_USAGE_NOW_EPOCH:-$(date -u +%s)}"; }
+
+# issue #289 (f0)/(f): classify model $1 against the price table using now-
+# epoch $2 (defaults to _fwf_usage_now_epoch_for_pricing). Three states,
+# deliberately distinct (f0: "different states, and both must reach the
+# TOTAL's partial marker" — collapsing them would lose that distinction):
+#   priced    — a row exists and valid_until (if any) has not passed.
+#   stale     — a row exists but valid_until has passed.
+#   unpriced  — no row at all (includes an unknown/未priced model).
+_fwf_usage_price_state() { # $1=model $2=now_epoch(optional)
+  local model="$1" now="${2:-$(_fwf_usage_now_epoch_for_pricing)}" until_date until_epoch
+  until_date="$(printf '%s' "$_FWF_PRICE_TABLE" | jq -r --arg m "$model" '.[$m].valid_until // empty' 2>/dev/null || true)"
+  [ -z "$until_date" ] && {
+    printf '%s' "$_FWF_PRICE_TABLE" | jq -e --arg m "$model" 'has($m)' >/dev/null 2>&1 \
+      && { printf 'priced'; return 0; } || { printf 'unpriced'; return 0; }
+  }
+  until_epoch="$(date -u -d "${until_date}T23:59:59Z" +%s 2>/dev/null \
+    || date -u -jf '%Y-%m-%dT%H:%M:%SZ' "${until_date}T23:59:59Z" +%s 2>/dev/null || echo "")"
+  if [ -z "$until_epoch" ] || [ "$now" -le "$until_epoch" ]; then printf 'priced'
+  else printf 'stale'
+  fi
+}
 
 # Sum new complete "type":"assistant" lines from file $1 since cached byte
 # offset $2. Only counts lines the file has already terminated with a
@@ -156,20 +192,72 @@ _fwf_usage_emit_from_cache_or_unknown() { # $1=role $2=cache_file $3=now
 }
 
 _fwf_usage_emit() { # $1=state $2=role $3=age_secs $4=model(may be empty) $5=totals-json
-  local state="$1" role="$2" age="$3" model="$4" totals="$5" cost
-  cost="$(jq -nc --argjson t "$totals" --arg m "$model" --argjson prices "$_FWF_PRICE_TABLE" '
-    ($prices[$m] // null) as $p |
-    if $p == null then null else
+  local state="$1" role="$2" age="$3" model="$4" totals="$5" cost price_state="unpriced"
+  if [ -n "$model" ]; then price_state="$(_fwf_usage_price_state "$model")"; fi
+  # issue #289 (f1): a STALE price still degrades the report, it does not
+  # gate anything -- compute the best-available number (the expired rate)
+  # rather than dropping it to null like a genuinely unpriced model. The
+  # row's price_state is what tells a reader (and the TOTAL's partial
+  # marker) that this number is stale, not the presence/absence of a number.
+  if [ "$price_state" != "unpriced" ]; then
+    cost="$(jq -nc --argjson t "$totals" --arg m "$model" --argjson prices "$_FWF_PRICE_TABLE" '
+      $prices[$m] as $p |
       (($t.input // 0) * $p.input
        + ($t.cache_creation // 0) * $p.cache_write
        + ($t.cache_read // 0) * $p.cache_read
-       + ($t.output // 0) * $p.output) / 1000000
-    end')"
+       + ($t.output // 0) * $p.output) / 1000000')"
+  else
+    cost=null
+  fi
   jq -nc --arg state "$state" --arg role "$role" --argjson age "$age" \
-    --arg model "$model" --argjson tokens "$totals" --argjson cost "$cost" '
+    --arg model "$model" --argjson tokens "$totals" --argjson cost "$cost" --arg price_state "$price_state" '
     {role:$role, state:$state, age_secs:$age,
      model:(if $model=="" then null else $model end),
-     tokens:$tokens, cost_usd:$cost}'
+     tokens:$tokens, cost_usd:$cost,
+     price_state:(if $model=="" then null else $price_state end)}'
+}
+
+# issue #289 (e): price-table drift check against BOTH sources -- $1=
+# newline-separated REPORTED models (retrospective: what a seat's own
+# transcript actually emits; sees only models a seat has run at least once),
+# $2=newline-separated DECLARED models (prospective: FWF_MODEL/_ROLE and
+# every FWF_MODEL_MENU entry; sees a configured-but-never-run model the
+# reported half cannot). Neither subsumes the other -- see the ticket for
+# why (a menu entry nobody picked yet, or a model set at `fwf up` for a seat
+# that has not produced a transcript yet, are each invisible to one source).
+# (e2): the asymmetry is deliberate -- ONLY offered/reported-but-unpriced is
+# a defect; a priced-but-unoffered table row (claude-fable-5 today) is fine,
+# the table may legitimately carry models nobody currently runs.
+# Prints one line per drift instance; returns 1 if any found, 0 if clean.
+fwf_usage_model_drift() { # $1=reported-models(newline) $2=declared-models(newline)
+  local reported="$1" declared="$2" m rc=0
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    printf '%s' "$_FWF_PRICE_TABLE" | jq -e --arg m "$m" 'has($m)' >/dev/null 2>&1 \
+      || { echo "REPORTED model NOT priced: $m"; rc=1; }
+  done <<<"$reported"
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    printf '%s' "$_FWF_PRICE_TABLE" | jq -e --arg m "$m" 'has($m)' >/dev/null 2>&1 \
+      || { echo "DECLARED model NOT priced: $m"; rc=1; }
+  done <<<"$declared"
+  return $rc
+}
+
+# Convenience wrapper over the REAL live state: reported = every non-unknown
+# role's model from an already-fetched usage-data JSON; declared = this
+# box's FWF_MODEL/_IMPL/_QA/_PM/_GV/_CAPTAIN/_CONDUCTOR + every
+# FWF_MODEL_MENU entry.
+fwf_usage_model_drift_live() { # $1=usage-data-json
+  local data="$1" reported declared
+  reported="$(printf '%s' "$data" | jq -r '.roles[] | select(.state != "unknown") | .model // empty')"
+  declared="$(
+    { printf '%s\n' "${FWF_MODEL:-}" "${FWF_MODEL_IMPL:-}" "${FWF_MODEL_QA:-}" "${FWF_MODEL_PM:-}" \
+        "${FWF_MODEL_GV:-}" "${FWF_MODEL_CAPTAIN:-}" "${FWF_MODEL_CONDUCTOR:-}"
+      printf '%s' "${FWF_MODEL_MENU:-}" | tr '|' '\n' | cut -d: -f1 | sed 's/^ *//;s/ *$//'
+    } | sort -u
+  )"
+  fwf_usage_model_drift "$reported" "$declared"
 }
 
 # Main body: emit the whole-factory usage roll-up. Guarded so this file can also
@@ -184,8 +272,19 @@ for role in $(fwf_all_roles); do
   roles_json="$(jq -nc --argjson arr "$roles_json" --argjson r "$r" '$arr + [$r]')"
 done
 
+# issue #289 (b): the per-row null (unpriced) is correct and untouched above
+# -- the defect was ONLY here, at the aggregate, where `// 0` laundered every
+# unpriced/stale-priced row into a silent, indistinguishable zero. Fixed by
+# naming what was excluded (b1) and its magnitude (b2) rather than changing
+# what the summed number itself means (it was already, and remains, "sum of
+# what could be priced" -- the bug was that nothing said so).
 jq -nc --argjson roles "$roles_json" --argjson stale_secs "$FWF_USAGE_STALE_SECS" \
   --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+  ($roles | map(select(.state != "unknown" and .price_state == "unpriced")) | map("\(.role) (\(.model))")) as $unpriced_seats |
+  ($roles | map(select(.state != "unknown" and .price_state == "stale")) | map("\(.role) (\(.model))")) as $stale_priced_seats |
+  ($roles | map((.tokens.input//0)+(.tokens.cache_creation//0)+(.tokens.cache_read//0)+(.tokens.output//0)) | add // 0) as $grand_tokens |
+  ($roles | map(select(.state != "unknown" and .price_state != "priced")) |
+    map((.tokens.input//0)+(.tokens.cache_creation//0)+(.tokens.cache_read//0)+(.tokens.output//0)) | add // 0) as $excluded_tokens |
   {generated_at: $generated_at,
    stale_secs: $stale_secs,
    caveat: "estimated $ equivalent — not your account'\''s actual rolling-window usage",
@@ -197,6 +296,18 @@ jq -nc --argjson roles "$roles_json" --argjson stale_secs "$FWF_USAGE_STALE_SECS
        cache_read:     ($roles | map(.tokens.cache_read // 0) | add // 0),
        output:         ($roles | map(.tokens.output // 0) | add // 0)
      },
-     cost_usd: ($roles | map(.cost_usd // 0) | add // 0)
+     # (b) sum of rows that HAD a price (priced or stale-priced) -- an
+     # unpriced row still contributes 0 here, same arithmetic as before the
+     # fix; what changed is that "partial" + the two seat lists below now
+     # say so instead of leaving this number looking complete.
+     cost_usd: ($roles | map(.cost_usd // 0) | add // 0),
+     partial: (($unpriced_seats | length) > 0 or ($stale_priced_seats | length) > 0),
+     unpriced_seats: $unpriced_seats,
+     stale_priced_seats: $stale_priced_seats,
+     # (b2): magnitude, not just a bool -- what fraction of ALL factory
+     # tokens (grand total across every role, priced or not) is held by
+     # seats this cost_usd figure does NOT reflect. 0 when nothing is
+     # excluded or there is no usage yet.
+     excluded_tokens_pct: (if $grand_tokens > 0 then (($excluded_tokens / $grand_tokens) * 100) else 0 end)
    }}'
 fi
