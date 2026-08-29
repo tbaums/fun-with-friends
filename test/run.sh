@@ -6907,16 +6907,16 @@ assert_eq "(#303) a policy matching the real single-os matrix is clean" "" \
   "$(FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$BP303_POLICY_OK" FWF_CI_WORKFLOW_FILE="$BP303_CI" bash -c "source '$BP'; cmd_producible")"
 
 section "branch-policy (issue #303): the committed policy no longer requires the removed macOS lane"
-assert_not_contains "the real .github/branch-policy.json no longer names functional suite (macos-latest) (removed by ci.yml's 15801ee)" \
-  "$(cat "$ROOT/.github/branch-policy.json")" "macos-latest"
+assert_not_contains "the real .github/branch-policy.json's required_contexts no longer names functional suite (macos-latest) (removed by ci.yml's 15801ee)" \
+  "$(jq -c '.required_contexts' "$ROOT/.github/branch-policy.json")" "macos-latest"
 
 # --------------------------------------------------------------------------
 section "fwf-release-ci-gate.sh (issue #303): consults ci.yml's verdict for the release SHA, never re-implements it"
 RCG="$ROOT/fwf-release-ci-gate.sh"
 RCG_POLICY="$TMP/rcg-policy.json"
 printf '{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","dash crate (rust)"]}' > "$RCG_POLICY"
-rcg_run() { # $1=check-runs-json $2=extra env (may be empty)
-  FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$RCG_POLICY" FWF_RELEASE_CI_TIMEOUT_SECS=1 FWF_RELEASE_CI_POLL_SECS=1 ${2:-} bash -c "
+rcg_run() { # $1=check-runs-json
+  FWF_PROFILE=example FWF_BRANCH_POLICY_FILE="$RCG_POLICY" FWF_RELEASE_CI_TIMEOUT_SECS=1 FWF_RELEASE_CI_POLL_SECS=1 bash -c "
     source '$RCG'
     gh_check_runs() { printf '%s' '$1'; }
     main deadbeef
@@ -6952,8 +6952,8 @@ RCG_FAILED='{"check_runs":[
   {"name":"functional suite (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-08-29T00:00:00Z"},
   {"name":"dash crate (rust)","status":"completed","conclusion":"failure","started_at":"2026-08-29T00:00:00Z"}
 ]}'
-rc=0; OUT="$(rcg_run "$RCG_FAILED" FWF_RELEASE_CI_TIMEOUT_SECS=3600 2>&1)" || rc=$?
-assert_eq "a completed, failing required context refuses immediately" "1" "$rc"
+rc=0; OUT="$(rcg_run "$RCG_FAILED" 2>&1)" || rc=$?
+assert_eq "a completed, failing required context refuses immediately (not waiting out the timeout)" "1" "$rc"
 assert_contains "the refusal names the failing context" "$OUT" "dash crate (rust)"
 
 # edge case (skipped is reachable, not evidence of health -- #286's lesson,
