@@ -111,6 +111,22 @@ fi
 if ! git fetch origin "$target" >/dev/null 2>&1; then
   refuse "could not fetch origin/$target" "check network/credentials and retry"
 fi
+
+# issue #136: the permanent history-card invariant is enforced HERE, not as
+# a separate step a caller's prompt could skip -- same reasoning as AC (l)
+# above, one command line down. Range-bounded to exactly the commits this
+# promote is about to newly land (origin/$target..$tip): pre-existing
+# branch history -- including #189's own audited 16 hollow commits -- is
+# structurally unreachable to this check, never merely skipped by intent
+# (AC g0). A FAIL or INDETERMINATE verdict on anything in that range
+# refuses the promote outright (AC g/i2); a genuinely sparse linked issue
+# still passes (AC h); a commit that never closed an issue at all (a
+# release bump, a merge commit) is out of scope for the check entirely.
+if ! HISTORY_GUARD_ERR="$(fwf_history_guard_range "origin/$target" "$tip" 2>&1 >/dev/null)"; then
+  refuse "history-card invariant violated by a commit being promoted (issue #136)" \
+    "$HISTORY_GUARD_ERR"
+fi
+
 if ! git switch --detach "origin/$target" >/dev/null 2>&1; then
   refuse "could not detach onto origin/$target"
 fi

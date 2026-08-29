@@ -999,6 +999,212 @@ I195_CLI_RC=0
 FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/fwf" pr-context --issue 6 >/dev/null 2>&1 || I195_CLI_RC=$?
 assert_eq "CLI: the real #195 fixture (containing legitimate 'GV'/'worktree'/'captain' prose) is not refused by the guard" "0" "$I195_CLI_RC"
 
+section "history-card guard (issue #136): the permanent squash-merge invariant"
+
+H136RUN="$TMP/h136-run"
+H136ISS() { FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+H136ISS create --title "Sparse issue" --body "" >/dev/null                                  # issue 1: genuinely empty body
+H136ISS create --title "Rich issue" --body "## Problem / intent
+Real substantive content that must not be dropped." >/dev/null                              # issue 2: extractable
+
+H136() { FWF_ISSUES=local FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1" _ "${@:2}"; }
+assert_eq "fwf_pr_ctx_has_extractable_content: a genuinely sparse issue reads FALSE" "1" "$(H136 'fwf_pr_ctx_has_extractable_content 1; echo $?')"
+assert_eq "fwf_pr_ctx_has_extractable_content: an issue with real content reads TRUE" "0" "$(H136 'fwf_pr_ctx_has_extractable_content 2; echo $?')"
+
+# --- a throwaway git repo with controlled commits, so the guard's range/
+# subject-filter/first-parent logic is tested against KNOWN inputs rather
+# than live repo history. ---
+H136WT="$TMP/h136-wt"; mkdir -p "$H136WT"
+( cd "$H136WT" && git init -q && git config user.email t@t.co && git config user.name t )
+h136_commit() { # $1=subject $2=body(may be multi-line)
+  ( cd "$H136WT" && git commit -q --allow-empty -m "$1" -m "$2" )
+}
+FULL_CARD='## Context & rationale
+
+### Rich issue
+Real substantive content that must not be dropped.
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_'
+HOLLOW_CARD='## Context & rationale
+
+### Rich issue
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_'
+SPARSE_CARD='## Context & rationale
+
+### Sparse issue
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_'
+h136_commit "base"                                                 ""   # BASE marker
+h136_commit "Good merge (#2)"     "Closes #2.
+
+$FULL_CARD
+
+🏭 Built with fun-with-friends + Claude.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+fwf-Provenance: fwf=1.0@abc"
+h136_commit "No-provenance merge (#2)" "Closes #2.
+
+$FULL_CARD
+
+🏭 Built with fun-with-friends + Claude."
+h136_commit "Hollow merge (#2)"   "Closes #2.
+
+$HOLLOW_CARD
+
+🏭 Built with fun-with-friends + Claude.
+fwf-Provenance: fwf=1.0@abc"
+h136_commit "Sparse merge (#1)"   "Closes #1.
+
+$SPARSE_CARD
+
+🏭 Built with fun-with-friends + Claude.
+fwf-Provenance: fwf=1.0@abc"
+h136_commit "release: v1.0.0 (VERSION + CHANGELOG)" "no Closes here, an ordinary maintenance commit"
+BASE_SHA="$(cd "$H136WT" && git log --format=%H --grep '^base$' -1)"
+GOOD_SHA="$(cd "$H136WT" && git log --format=%H --grep 'Good merge' -1)"
+NOPROV_SHA="$(cd "$H136WT" && git log --format=%H --grep 'No-provenance merge' -1)"
+HOLLOW_SHA="$(cd "$H136WT" && git log --format=%H --grep 'Hollow merge' -1)"
+SPARSE_SHA="$(cd "$H136WT" && git log --format=%H --grep 'Sparse merge' -1)"
+TIP_SHA="$(cd "$H136WT" && git rev-parse HEAD)"
+
+H136G() { FWF_ISSUES=local FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example bash -c "cd '$H136WT'; source '$ROOT/lib.sh'; $1" _ "${@:2}"; }
+
+# --- per-commit verdicts ----------------------------------------------------
+assert_contains "verdict: a complete card PASSes" "$(H136G "fwf_history_card_verdict $GOOD_SHA")" "PASS"
+assert_contains "verdict: a card missing fwf-Provenance FAILs" "$(H136G "fwf_history_card_verdict $NOPROV_SHA")" "FAIL"
+assert_contains "verdict: ...and names the reason" "$(H136G "fwf_history_card_verdict $NOPROV_SHA")" "missing fwf-Provenance"
+assert_contains "AC(g): a hollow card whose linked issue HAS extractable content FAILs" "$(H136G "fwf_history_card_verdict $HOLLOW_SHA")" "FAIL"
+assert_contains "AC(g): ...and names it hollow" "$(H136G "fwf_history_card_verdict $HOLLOW_SHA")" "hollow card"
+assert_contains "AC(h): a hollow card whose linked issue is genuinely SPARSE still PASSes (discriminating half)" "$(H136G "fwf_history_card_verdict $SPARSE_SHA")" "PASS"
+assert_contains "AC(i): a commit with no resolvable Closes # is INDETERMINATE" "$(H136G "fwf_history_card_verdict $BASE_SHA")" "INDETERMINATE"
+
+# --- range-bounding (AC g0): only NEWLY-reachable commits are ever inspected --
+GOOD_ONLY_RC=0
+H136G "fwf_history_guard_range $BASE_SHA $GOOD_SHA" >/dev/null 2>&1 || GOOD_ONLY_RC=$?
+assert_eq "AC(g0): a range containing only a passing commit -> guard passes" "0" "$GOOD_ONLY_RC"
+FULL_RANGE_ERR="$(H136G "fwf_history_guard_range $BASE_SHA $TIP_SHA" 2>&1 >/dev/null)"; FULL_RANGE_RC=$?
+assert_eq "AC(g0)/(g): a range containing a hollow commit -> guard fails the whole range" "1" "$FULL_RANGE_RC"
+assert_contains "AC(g0): the failing range names the offending commit(s)" "$FULL_RANGE_ERR" "$HOLLOW_SHA"
+case "$FULL_RANGE_ERR" in *"$SPARSE_SHA"*) bad "AC(h): the sparse-but-legitimate commit is NOT named as a failure" "$FULL_RANGE_ERR";; *) ok "AC(h): the sparse-but-legitimate commit is NOT named as a failure";; esac
+# The maintenance commit (release bump, no "(#N)" subject) is out of scope
+# entirely -- never even INDETERMINATE, not merely passing.
+case "$FULL_RANGE_ERR" in *"release: v1.0.0"*) bad "a non-squash maintenance commit (no (#N) subject) must never be flagged at all" "$FULL_RANGE_ERR";; *) ok "a non-squash maintenance commit (no (#N) subject) is out of scope entirely, never flagged";; esac
+# NARROWER range excludes the pre-existing hollow commit already on branch
+# history (the exact #189-audit shape this AC protects against): promoting
+# from AFTER the hollow commit to the tip only inspects what's actually new.
+NARROW_RC=0
+H136G "fwf_history_guard_range $HOLLOW_SHA $TIP_SHA" >/dev/null 2>&1 || NARROW_RC=$?
+assert_eq "AC(g0): range-bounding by construction -- a pre-existing hollow commit OUTSIDE the range never blocks a later, clean promotion" "0" "$NARROW_RC"
+
+# --- merge-commit exclusion (--first-parent --no-merges) -------------------
+( cd "$H136WT" && git checkout -q -b feature "$SPARSE_SHA" && git commit -q --allow-empty -m "wip on feature, no Closes#, no provenance" && git checkout -q - && git merge -q --no-ff feature -m "Merge pull request #99 from x/feature" )
+MERGE_TIP="$(cd "$H136WT" && git rev-parse HEAD)"
+MERGE_RANGE_RC=0
+H136G "fwf_history_guard_range $TIP_SHA $MERGE_TIP" >/dev/null 2>&1 || MERGE_RANGE_RC=$?
+assert_eq "a real 2-parent merge commit (and its non-first-parent's own sub-commits) are excluded, never flagged" "0" "$MERGE_RANGE_RC"
+
+# --- fwf-gate-promote.sh wiring: a failing range refuses the promote -------
+assert_contains "fwf-gate-promote.sh sources the history guard (wired, not just written)" \
+  "$(cat "$ROOT/fwf-gate-promote.sh")" "fwf_history_guard_range"
+assert_contains "AC(i2): the wiring's own refusal message names issue #136" \
+  "$(cat "$ROOT/fwf-gate-promote.sh")" "issue #136"
+
+# --- fwf merge (prevention layer) -------------------------------------------
+assert_eq "fwf merge with no PR number is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf" merge >/dev/null 2>&1; echo $?)"
+# Regression: -h/--help was being swallowed as the positional <num> before
+# flag parsing ran, so `fwf merge --help` printed "PR #--help has no
+# resolvable linked issue" instead of the usage text.
+assert_eq "fwf merge --help prints usage and exits 0 (not swallowed as <num>)" "0" "$(FWF_PROFILE=example "$ROOT/fwf" merge --help >/dev/null 2>&1; echo $?)"
+assert_eq "fwf merge with a non-numeric <num> is a usage error, not a PR lookup attempt" "1" "$(FWF_PROFILE=example "$ROOT/fwf" merge abc >/dev/null 2>&1; echo $?)"
+assert_contains "fwf-gate-promote.sh dispatch: 'fwf merge' is wired into the fwf CLI" "$(cat "$ROOT/fwf")" "merge)     engine fwf-merge.sh"
+assert_contains "AC(c)-analog: templates/dev/qa.tmpl's merge step now calls fwf merge, not an inline gh pr merge --body construction" \
+  "$(cat "$ROOT/templates/dev/qa.tmpl")" "fwf merge <num>"
+assert_contains "AC(c)-analog: templates/refactor/qa.tmpl matches" \
+  "$(cat "$ROOT/templates/refactor/qa.tmpl")" "fwf merge <num>"
+case "$(cat "$ROOT/templates/dev/qa.tmpl")" in *'gh pr merge <num> --squash'*) bad "templates/dev/qa.tmpl must no longer hand-compose the merge body inline" "";; *) ok "templates/dev/qa.tmpl no longer hand-composes the merge body inline";; esac
+
+# --- fwf merge end-to-end, against a stubbed gh --------------------------
+FMRGGHBIN="$TMP/fmrg-ghbin"; mkdir -p "$FMRGGHBIN"
+FMRG_MERGE_LOG="$TMP/fmrg-merge-log"
+cat > "$FMRGGHBIN/gh" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    n="\$3"
+    if [ "\$n" = "701" ]; then
+      case "\$*" in *"--json title"*) echo '{"title":"Fix the widget"}' | jq -r '.title';; *"--json body"*) echo 'Closes #801.
+
+Some PR description.';; esac
+    elif [ "\$n" = "702" ]; then
+      case "\$*" in *"--json title"*) echo '{"title":"No linked issue"}' | jq -r '.title';; *"--json body"*) echo 'A PR body that never mentions closing anything.';; esac
+    fi
+    ;;
+  "issue view")
+    n="\$3"
+    if [ "\$n" = "801" ]; then
+      jq -n '{title:"Widget is broken",body:"## Problem / intent\nThe widget is broken for real users."}'
+    fi
+    ;;
+  "pr merge")
+    echo "\$*" > "$FMRG_MERGE_LOG"
+    exit 0
+    ;;
+  *) echo "fmrg-stub-gh: unhandled invocation, refusing: \$*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$FMRGGHBIN/gh"
+FMRGREPO="$TMP/fmrg-repo"; mkdir -p "$FMRGREPO"; ( cd "$FMRGREPO" && git init -q )
+FMRG() { PATH="$FMRGGHBIN:$PATH" FWF_REPO="$FMRGREPO" FWF_PROFILE=example "$ROOT/fwf" merge "$@"; }
+
+rm -f "$FMRG_MERGE_LOG"
+FMRG_OUT="$(FMRG 701 2>&1)"; FMRG_RC=$?
+assert_eq "fwf merge: a PR with a resolvable linked issue succeeds" "0" "$FMRG_RC"
+case "$FMRG_OUT" in *"refus"*|*"error"*) bad "fwf merge: the success path prints no spurious error/refusal text" "$FMRG_OUT";; *) ok "fwf merge: the success path prints no spurious error/refusal text";; esac
+assert_contains "fwf merge: gh pr merge was actually invoked" "$(cat "$FMRG_MERGE_LOG" 2>/dev/null)" "701"
+assert_contains "fwf merge: --squash is passed" "$(cat "$FMRG_MERGE_LOG")" "--squash"
+assert_contains "fwf merge: the subject is the PR's own title" "$(cat "$FMRG_MERGE_LOG")" "Fix the widget"
+assert_contains "fwf merge: the body closes the LINKED ISSUE (801), not the PR (701)" "$(cat "$FMRG_MERGE_LOG")" "Closes #801"
+assert_contains "fwf merge: the body folds the linked issue's real content" "$(cat "$FMRG_MERGE_LOG")" "widget is broken for real users"
+assert_contains "fwf merge: the fwf-Provenance trailer is present" "$(cat "$FMRG_MERGE_LOG")" "fwf-Provenance:"
+
+rm -f "$FMRG_MERGE_LOG"
+FMRG_NOLINK_OUT="$(FMRG 702 2>&1)"; FMRG_NOLINK_RC=$?
+assert_eq "fwf merge: a PR with NO resolvable linked issue refuses (merges nothing)" "1" "$FMRG_NOLINK_RC"
+assert_contains "fwf merge: the refusal names why" "$FMRG_NOLINK_OUT" "no resolvable linked issue"
+assert_eq "fwf merge: gh pr merge was never invoked on the refusal path" "" "$([ -f "$FMRG_MERGE_LOG" ] && cat "$FMRG_MERGE_LOG" || true)"
+
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
 # constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.

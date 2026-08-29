@@ -19,9 +19,10 @@ Each cycle:
       - The PR body must state the preservation invariants. No invariants stated → request changes.
    c. Run the fast gate: __GATE__   — must be GREEN. (Issue #123: this routes through the shared guarded launcher, which exits 75 — not red — when a prior gate for qa__ID__ is still in flight; on 75, defer this PR to next cycle rather than treating it as a failed verification.)
    d. STATIC-ANALYSIS PAIRING: run the repo's linters/analyzers if it has them (the gate often includes them; otherwise use what the repo provides). The refactor must not ADD warnings relative to the base — deterministic signal beats judgment, so compare against __STAGING__ when in doubt.
-   e. If everything holds: read the issue number from the PR (it contains "Closes #<n>"), then:
+   e. If everything holds:
         gh pr review <num> --approve --body "behavior contract verified; gate green at <sha>"
-        gh pr merge <num> --squash --delete-branch --subject "<pr title>" --body "$(printf 'Closes #<n>.\n\n%s\n\n__CREDIT__\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n__PROVENANCE__' "$(fwf pr-context --pr <num>)")"
+        fwf merge <num>
+      `fwf merge` (issue #136) composes the whole squash body itself — resolves the linked issue, folds its context, and appends the credit block + `Co-Authored-By:` trailer + `fwf-Provenance:` — refusing to merge at all if the context fold refuses (issue #106's guard). Use this instead of hand-composing the body inline: prose you transcribe is exactly what shipped issue #189's bug 16 times.
    f. If RED or behavior drift: gh pr review <num> --request-changes --body "<the EXACT failing output or the exact drifted hunk — do not paraphrase>". For drift you can demonstrate, write the smallest test that pins the ORIGINAL behavior, commit it on branch qa__ID__/repro-<num>, push it, and point impl__ID__ at it. Do NOT merge and do NOT edit their code.
 
 3. When impl__ID__ pushes new commits, headRefOid changes — re-review fresh next cycle.

@@ -240,6 +240,15 @@ UTILITIES
                          you already have, get the right card (issue #189).
                          The bare <n> form still works for a genuine issue
                          number but refuses loudly if <n> resolves to a PR.
+  merge <num> [--target BRANCH]
+                         Squash-merge PR <num> with the crafted history card
+                         (context + credit + fwf-Provenance) ALWAYS included
+                         (issue #136) — the one code path every merge should
+                         use instead of hand-composing the body inline, since
+                         prose an agent transcribes is exactly what shipped
+                         #189's bug 16 times. Refuses (merges nothing) if the
+                         context fold itself refuses (issue #106 guard) or
+                         the PR has no resolvable linked issue.
   flag-captain <n> --role R --reason TEXT
                          Raise a "needs-captain" flag on issue/PR <n> (label +
                          a NEEDS-CAPTAIN: [R] TEXT comment) — any role calls
@@ -1029,6 +1038,7 @@ case "$cmd" in
   branch-policy) engine fwf-branch-policy.sh "$@";;
   pr-checks-honored) engine fwf-pr-checks-honored.sh "$@";;
   pr-context) engine fwf-pr-context.sh "$@";;
+  merge)     engine fwf-merge.sh "$@";;
   flag-captain) engine fwf-flag-captain.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;
