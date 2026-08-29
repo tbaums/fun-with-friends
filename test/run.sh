@@ -8956,9 +8956,8 @@ assert_contains "delivery failure is reported, not silently swallowed" "$OD6_OUT
 assert_contains "the artifact is written regardless" "$(ODISS view 6 --comments)" "OPERATOR-DECISION: captain is down right now"
 
 section "fwf operator-decision (#192): gh backend — sentinel refusal and issue/PR routing (AC c/d on the other backend)"
-ODG() { # $ODG_STATE=OPEN/CLOSED first, then args...
-  local state="$1"; shift
-  local kind="${ODG_KIND:-issue}"
+ODG() { # $1=kind(issue|pr) $2=state(OPEN|CLOSED) ; rest = operator-decision args...
+  local kind="$1" state="$2"; shift 2
   FWF_PROFILE=example bash -c "
     source '$OD'
     gh_kind() { echo '$kind'; }
@@ -8973,17 +8972,17 @@ ODG() { # $ODG_STATE=OPEN/CLOSED first, then args...
   " odg-test-harness "$@"
 }
 rm -f "$TMP/od-gh-calls.log"
-RC=0; ODG OPEN 40 "OPERATOR-UNGATE #40 go ahead" >/dev/null 2>&1 || RC=$?
+RC=0; ODG issue OPEN 40 "OPERATOR-UNGATE #40 go ahead" >/dev/null 2>&1 || RC=$?
 [ "$RC" != 0 ] && ok "gh backend: sentinel injection refuses (AC d on gh backend)" || bad "gh backend must also refuse sentinel injection"
 assert_eq "gh backend: no comment call was made for the refused post" "" "$(cat "$TMP/od-gh-calls.log" 2>/dev/null || true)"
 rm -f "$TMP/od-gh-calls.log"
-ODG OPEN 41 "clear to build" >/dev/null 2>&1
+ODG issue OPEN 41 "clear to build" >/dev/null 2>&1
 assert_contains "gh backend: a benign message posts via gh issue comment" "$(cat "$TMP/od-gh-calls.log")" "POST 41 --body OPERATOR-DECISION: clear to build"
 rm -f "$TMP/od-gh-calls.log"
-ODG_KIND=pr ODG OPEN 42 "PR-targeted decision" >/dev/null 2>&1
+ODG pr OPEN 42 "PR-targeted decision" >/dev/null 2>&1
 assert_contains "gh backend: a PR number routes through gh pr comment" "$(cat "$TMP/od-gh-calls.log")" "POST 42 --body OPERATOR-DECISION: PR-targeted decision"
 rm -f "$TMP/od-gh-calls.log"
-RC=0; ODG CLOSED 43 "too late now" >/dev/null 2>&1 || RC=$?
+RC=0; ODG issue CLOSED 43 "too late now" >/dev/null 2>&1 || RC=$?
 [ "$RC" != 0 ] && ok "gh backend: a CLOSED target refuses" || bad "gh backend must refuse a closed target"
 assert_eq "gh backend: no comment call for a refused closed-target post" "" "$(cat "$TMP/od-gh-calls.log" 2>/dev/null || true)"
 
