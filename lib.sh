@@ -1533,28 +1533,54 @@ fwf_build_plane_blocked() {
   # Claim-window guard (issue #147): a ticket can be claimed with no PR
   # pushed yet -- the multi-minute window between CLAIM and the first push,
   # which the pr_count==0 check above cannot see at all. Reaching this point
-  # already means there is NO open PR for ANY issue, so a live claim on ANY
-  # open issue means "no PR yet" by construction -- no per-claim PR lookup
-  # needed. Only the FIRST "CLAIM implN" comment on an issue is the winning
-  # claimant per the atomic-claim protocol; a later one lost the race and
-  # never proceeded to build.
-  local claims claim_created claim_body role_tag now claim_age resolved=""
-  claims="$(gh issue list -R "$(fwf_repo_slug)" --state open --json comments --jq \
-    '.[] | (.comments // []) | map(select(.body | test("^CLAIM impl[0-9]+$"))) | (.[0] // empty) | "\(.createdAt)\t\(.body)"' \
+  # already means there is NO OPEN PR for ANY issue, so a live claim's PR (if
+  # it has one) is never open here -- but issue #391: "no open PR" does not
+  # mean "no PR" or "unpushed". A driver-merge closes the PR without the
+  # linked issue auto-closing (that only fires on a merge into the repo's
+  # DEFAULT branch, and PRs here merge into staging), so a claim whose PR
+  # already MERGED (or was closed without merging) reads identically to one
+  # that was never pushed at all -- both show as "open issue, live claim, no
+  # open PR". Distinguish them: a claim with a resolved (non-open) PR on its
+  # own issue is DONE and must never block, regardless of pane liveness. Only
+  # the FIRST "CLAIM implN" comment on an issue is the winning claimant per
+  # the atomic-claim protocol; a later one lost the race and never proceeded
+  # to build.
+  local claims claim_num claim_created claim_body role_tag now claim_age resolved=""
+  claims="$(gh issue list -R "$(fwf_repo_slug)" --state open --json number,comments --jq \
+    '.[] | . as $issue | ($issue.comments // []) | map(select(.body | test("^CLAIM impl[0-9]+$"))) | (.[0] // empty) | select(. != null) | "\($issue.number)\t\(.createdAt)\t\(.body)"' \
     2>/dev/null)" \
     || { printf 'could not scan open issues for live claims (gh failed) — assuming blocked'; return 0; }
+  # Every NON-open PR's branch, fetched once (not per-claim -- an N+1 gh call
+  # per live claim would multiply this guard's own cost with the number of
+  # in-flight claims). Branch naming is the fixed, repo-wide claim/build
+  # convention (implN/issue-<num>-<slug>), the same one every role's claim
+  # step creates -- matched against each claim's OWN issue number below, so
+  # an unrelated PR on a same-numbered branch prefix from a different role
+  # never resolves someone else's claim.
+  local resolved_prs
+  resolved_prs="$(gh pr list -R "$(fwf_repo_slug)" --state all --json headRefName,state --jq \
+    '.[] | select(.state != "OPEN") | .headRefName' 2>/dev/null)"
   now="$(date -u +%s)"
-  local claim_epoch
-  while IFS=$'\t' read -r claim_created claim_body; do
+  local claim_epoch pr_branch_prefix pr_hit
+  while IFS=$'\t' read -r claim_num claim_created claim_body; do
     [ -n "$claim_created" ] || continue
     role_tag="${claim_body#CLAIM }"
     case " $resolved " in *" $role_tag "*) continue;; esac
+    pr_branch_prefix="${role_tag}/issue-${claim_num}-"
+    pr_hit=""
+    [ -n "$resolved_prs" ] && pr_hit="$(printf '%s\n' "$resolved_prs" | awk -v p="$pr_branch_prefix" 'index($0,p)==1{print;exit}')"
+    if [ -n "$pr_hit" ]; then
+      # This claim's own PR already merged or was closed -- finished, not
+      # "no PR yet". Never blocks, regardless of pane liveness.
+      resolved="$resolved $role_tag"
+      continue
+    fi
     claim_epoch="$(fwf_iso_to_epoch "$claim_created" 2>/dev/null || true)"
     case "$claim_epoch" in ''|*[!0-9]*) claim_epoch="$now";; esac
     claim_age=$(( now - claim_epoch ))
     [ "$claim_age" -ge 0 ] || claim_age=0
     if fwf_claim_liveness_blocks "$role_tag" "$claim_age"; then
-      printf 'claim window: %s has a live claim with no PR yet (pane alive or unconfirmed)' "$role_tag"
+      printf 'claim window: %s has a live claim with no PR found for it, open or merged (pane alive or unconfirmed)' "$role_tag"
       return 0
     fi
     resolved="$resolved $role_tag"
