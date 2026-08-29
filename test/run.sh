@@ -401,7 +401,11 @@ assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one templat
 MISSING_PROV=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
-    /usr/bin/grep -q "__PROVENANCE__" "$f" || MISSING_PROV="$MISSING_PROV $f"
+    # issue #136: `fwf merge <num>` guarantees the fwf-Provenance: trailer
+    # internally (via fwf_provenance_block, unconditionally) without the
+    # template spelling out the __PROVENANCE__ placeholder at all -- a
+    # template that delegates to it is covered, not a gap.
+    /usr/bin/grep -q "__PROVENANCE__" "$f" || /usr/bin/grep -qE 'fwf merge <num>' "$f" || MISSING_PROV="$MISSING_PROV $f"
   fi
 done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
 assert_eq "every PR-producing template carries the provenance stamp" "" "$MISSING_PROV"
@@ -759,11 +763,21 @@ assert_contains "AC(e): implementer.tmpl uses the explicit --issue form (pinned,
 assert_contains "AC(e): refactor/implementer.tmpl matches" \
   "$(cat "$ROOT/templates/refactor/implementer.tmpl")" "fwf pr-context --issue <num>"
 
-# --- AC(c): BOTH qa.tmpl merge call sites use --pr, not the ambiguous bare form --
-assert_contains "AC(c): templates/dev/qa.tmpl's merge line uses --pr <num>" \
-  "$(cat "$ROOT/templates/dev/qa.tmpl")" 'fwf pr-context --pr <num>'
-assert_contains "AC(c): templates/refactor/qa.tmpl's merge line uses --pr <num>" \
-  "$(cat "$ROOT/templates/refactor/qa.tmpl")" 'fwf pr-context --pr <num>'
+# --- AC(c): BOTH qa.tmpl merge call sites use --pr resolution, not the
+# ambiguous bare form -- either directly (fwf pr-context --pr <num>) or via
+# `fwf merge <num>` (issue #136), which resolves the SAME --pr-safe way
+# internally (_fwf_pr_ctx_pr_linked_issues) without spelling the flag out in
+# the template text.
+DEV_QA_TXT="$(cat "$ROOT/templates/dev/qa.tmpl")"
+case "$DEV_QA_TXT" in
+  *'fwf pr-context --pr <num>'*|*'fwf merge <num>'*) ok "AC(c): templates/dev/qa.tmpl's merge line uses --pr resolution (directly or via fwf merge)" ;;
+  *) bad "AC(c): templates/dev/qa.tmpl's merge line uses --pr resolution (directly or via fwf merge)" "$DEV_QA_TXT" ;;
+esac
+REFACTOR_QA_TXT="$(cat "$ROOT/templates/refactor/qa.tmpl")"
+case "$REFACTOR_QA_TXT" in
+  *'fwf pr-context --pr <num>'*|*'fwf merge <num>'*) ok "AC(c): templates/refactor/qa.tmpl's merge line uses --pr resolution (directly or via fwf merge)" ;;
+  *) bad "AC(c): templates/refactor/qa.tmpl's merge line uses --pr resolution (directly or via fwf merge)" "$REFACTOR_QA_TXT" ;;
+esac
 
 section "fwf_context_block fail-open (issue #135): non-canonical headings, new bucket schema, coverage/drift"
 
@@ -1215,7 +1229,10 @@ assert_eq "#247 (a4): filter 'gh pr (create|merge)' matched at least one templat
 MISSING_CREDIT=""
 while IFS= read -r -d '' f; do
   if /usr/bin/grep -qE 'gh pr (create|merge)' "$f"; then
-    /usr/bin/grep -q "__CREDIT__" "$f" || MISSING_CREDIT="$MISSING_CREDIT $f"
+    # issue #136: `fwf merge <num>` guarantees the credit block internally
+    # (via fwf_credit_block, honoring FWF_CREDIT) without the template
+    # spelling out __CREDIT__ at all -- covered, not a gap.
+    /usr/bin/grep -q "__CREDIT__" "$f" || /usr/bin/grep -qE 'fwf merge <num>' "$f" || MISSING_CREDIT="$MISSING_CREDIT $f"
   fi
 done < <(find "$ROOT/templates" -name "*.tmpl" ! -path "*_local-issues*" -print0)
 assert_eq "every PR-producing template carries the built-with credit" "" "$MISSING_CREDIT"
