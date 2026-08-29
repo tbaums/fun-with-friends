@@ -1219,6 +1219,198 @@ assert_eq "fwf merge: a PR with NO resolvable linked issue refuses (merges nothi
 assert_contains "fwf merge: the refusal names why" "$FMRG_NOLINK_OUT" "no resolvable linked issue"
 assert_eq "fwf merge: gh pr merge was never invoked on the refusal path" "" "$([ -f "$FMRG_MERGE_LOG" ] && cat "$FMRG_MERGE_LOG" || true)"
 
+section "backfill-context (issue #212): recover hollow history cards without rewriting"
+
+B212RUN="$TMP/b212-run"
+B212ISS() { FWF_RUN_DIR="$B212RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+B212ISS create --title "Rich issue" --body "## Problem / intent
+Real substantive content that must not be dropped." >/dev/null                              # issue 1
+B212ISS create --title "Sparse issue" --body "" >/dev/null                                   # issue 2
+ISSUE152_BODY='## Problem / intent
+
+Follow-up to #150 (its ask #3). The v0.27.1 fix for #150 closed the fabricated-authorization hole at the prompt level, and PR #163 landed the mechanical check: `fwf authz <issue>` verifies an `OPERATOR-UNGATE` sentinel comment in the issue thread.
+
+But the current check is not attributable. `fwf authz` is a plaintext `grep -qF` of the sentinel string with no author/provenance verification.
+
+## Constraints
+
+- All roles share one account identity (#82) — a marker a role writes is indistinguishable from one the operator writes by API metadata alone.
+- A role must be able to check it cheaply on a tick (`fwf authz`), no human in the loop at check time.
+
+## Prior art / where this plugs in
+
+- #150 — the fabrication incident + the v0.27.1 prompt-level fix.
+- PR #163 (merged) — landed `fwf authz` + the `OPERATOR-UNGATE` sentinel convention.
+
+## For PM / GV
+
+Deliverable is a written proposal (docs/proposals/) that states whether attributable operator authorization is achievable at all under #82'"'"'s shared-account constraint. Must never appear on a backfilled card.'
+B212ISS create --title "issue 152 verbatim (non-canonical headings)" --body "$ISSUE152_BODY" >/dev/null   # issue 3
+
+B212() { FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_PROFILE=example bash -c "cd '$B212WT'; source '$ROOT/lib.sh'; $1" _ "${@:2}"; }
+
+# --- a throwaway git repo with controlled commits -----------------------
+B212WT="$TMP/b212-wt"; mkdir -p "$B212WT"
+( cd "$B212WT" && git init -q && git config user.email t@t.co && git config user.name t )
+b212_commit() { ( cd "$B212WT" && git commit -q --allow-empty -m "$1" -m "$2" ); }
+FULL_CARD_212='## Context & rationale
+
+### Rich issue
+Real substantive content that must not be dropped.
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_'
+HOLLOW_CARD_212='## Context & rationale
+
+### Rich issue
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_'
+SPARSE_CARD_212='## Context & rationale
+
+### Sparse issue
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_'
+b212_commit "Good merge (#1)"      "Closes #1.
+
+$FULL_CARD_212
+
+fwf-Provenance: fwf=1.0@abc"
+b212_commit "Hollow merge (#1)"    "Closes #1.
+
+$HOLLOW_CARD_212
+
+fwf-Provenance: fwf=1.0@abc"
+b212_commit "Sparse merge (#2)"    "Closes #2.
+
+$SPARSE_CARD_212
+
+fwf-Provenance: fwf=1.0@abc"
+b212_commit "Non-canonical merge (#3)" "Closes #3.
+
+## Context & rationale
+
+### issue 152 verbatim (non-canonical headings)
+
+**Decisions & tradeoffs:**
+_(none logged)_
+
+**Alternatives considered:**
+_(none logged)_
+
+**Acceptance criteria:**
+_(none logged)_
+
+**Testing:**
+_(none logged)_
+
+fwf-Provenance: fwf=1.0@abc"
+b212_commit "Pre-#106 merge (#1)" "Closes #1.
+
+No context-fold section at all -- this predates issue #106 entirely."
+GOOD_SHA_212="$(cd "$B212WT" && git log --format=%H --grep 'Good merge' -1)"
+HOLLOW_SHA_212="$(cd "$B212WT" && git log --format=%H --grep 'Hollow merge' -1)"
+SPARSE_SHA_212="$(cd "$B212WT" && git log --format=%H --grep 'Sparse merge' -1)"
+NONCANON_SHA_212="$(cd "$B212WT" && git log --format=%H --grep 'Non-canonical merge' -1)"
+PRE106_SHA_212="$(cd "$B212WT" && git log --format=%H --grep 'Pre-#106 merge' -1)"
+TIP_212="$(cd "$B212WT" && git rev-parse HEAD)"
+
+# --- fwf_backfill_is_affected: the discriminating predicate -----------------
+assert_eq "is_affected: a hollow card whose issue HAS content -> AFFECTED" "0" "$(B212 "fwf_backfill_is_affected $HOLLOW_SHA_212; echo \$?")"
+assert_eq "is_affected: a complete card -> NOT affected" "1" "$(B212 "fwf_backfill_is_affected $GOOD_SHA_212; echo \$?")"
+assert_eq "is_affected: a hollow card whose issue is genuinely SPARSE -> NOT affected (discriminating half)" "1" "$(B212 "fwf_backfill_is_affected $SPARSE_SHA_212; echo \$?")"
+assert_eq "is_affected: a commit predating issue #106 (no Context & rationale section at all) -> NOT affected, not the same as hollow" "1" "$(B212 "fwf_backfill_is_affected $PRE106_SHA_212; echo \$?")"
+
+# --- AC(b): mechanical identification over a range --------------------------
+FOUND_212="$(B212 "fwf_backfill_find_affected $TIP_212")"
+assert_contains "AC(b): mechanical scan finds the hollow-with-content commit" "$FOUND_212" "$HOLLOW_SHA_212"
+assert_contains "AC(b): ...and the non-canonical-headings commit (was ALL none-logged pre-#135)" "$FOUND_212" "$NONCANON_SHA_212"
+case "$FOUND_212" in *"$SPARSE_SHA_212"*) bad "AC(b): does NOT flag the genuinely sparse commit" "$FOUND_212";; *) ok "AC(b): does NOT flag the genuinely sparse commit";; esac
+case "$FOUND_212" in *"$GOOD_SHA_212"*) bad "AC(b): does NOT flag a complete card" "$FOUND_212";; *) ok "AC(b): does NOT flag a complete card";; esac
+case "$FOUND_212" in *"$PRE106_SHA_212"*) bad "AC(b): does NOT flag a pre-#106 commit (no card at all is out of scope, not a defect)" "$FOUND_212";; *) ok "AC(b): does NOT flag a pre-#106 commit";; esac
+
+# --- AC(g): every backfilled note states RECONSTRUCTED + a date -------------
+NOTE_212="$(B212 "fwf_backfill_note_for $HOLLOW_SHA_212")"
+assert_contains "AC(g): the note states it was RECONSTRUCTED" "$NOTE_212" "RECONSTRUCTED"
+assert_contains "AC(g): ...names WHICH issue it reconstructed from" "$NOTE_212" "issue #1"
+assert_contains "AC(g): ...names a date (ISO-8601)" "$NOTE_212" "$(date -u +%Y)"
+assert_contains "AC(g): ...and carries the actual regenerated content" "$NOTE_212" "Real substantive content that must not be dropped"
+
+# --- AC(h) DISCRIMINATING TEST: non-canonical headings recover their substance --
+NOTE_NONCANON="$(B212 "fwf_backfill_note_for $NONCANON_SHA_212")"
+assert_contains "AC(h): a card whose issue uses non-canonical headings (Constraints/Prior art/For PM GV) recovers real substance" \
+  "$NOTE_NONCANON" "not attributable"
+assert_contains "AC(h): ...and its 'Constraints' section specifically" "$NOTE_NONCANON" "share one account identity"
+case "$NOTE_NONCANON" in *"Must never appear on a backfilled card"*) bad "AC(h): the 'For PM / GV' section stays denied even in a backfilled note" "$NOTE_NONCANON";; *) ok "AC(h): the 'For PM / GV' section stays denied even in a backfilled note";; esac
+
+# --- CLI end-to-end: dry-run, real run, idempotency, --force, no-rewrite ----
+B212CLI() { FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_REPO="$B212WT" FWF_PROFILE=example "$ROOT/fwf" backfill-context "$@"; }
+
+DRY_OUT="$(B212CLI --to "$TIP_212" --dry-run 2>&1)"
+assert_contains "CLI --dry-run: reports what it would backfill" "$DRY_OUT" "would backfill $HOLLOW_SHA_212"
+assert_eq "CLI --dry-run: writes NO notes" "" "$(cd "$B212WT" && git for-each-ref refs/notes/)"
+
+REAL_OUT="$(B212CLI --to "$TIP_212" 2>&1)"
+assert_contains "CLI: reports what it backfilled" "$REAL_OUT" "backfilled $HOLLOW_SHA_212"
+assert_contains "CLI: a note now exists for the hollow commit" "$(cd "$B212WT" && git notes --ref=refs/notes/fwf-context show "$HOLLOW_SHA_212" 2>&1)" "RECONSTRUCTED"
+
+# AC(d): zero commits rewritten -- the SHA is byte-identical after backfill.
+POST_SHA_212="$(cd "$B212WT" && git rev-parse "$HOLLOW_SHA_212")"
+assert_eq "AC(d): the backfilled commit's SHA is unchanged (git notes never rewrite)" "$HOLLOW_SHA_212" "$POST_SHA_212"
+
+# AC(c)/(f): idempotent -- a second run skips, writes nothing new.
+IDEMPOTENT_OUT="$(B212CLI --to "$TIP_212" 2>&1)"
+assert_contains "AC(c)/(f): re-running skips an already-noted commit" "$IDEMPOTENT_OUT" "skip $HOLLOW_SHA_212"
+assert_contains "AC(c): the summary shows 0 newly backfilled on the idempotent re-run" "$IDEMPOTENT_OUT" "0 backfilled"
+
+# --force overwrites.
+FORCE_OUT="$(B212CLI --to "$TIP_212" --force 2>&1)"
+assert_contains "--force: overwrites an already-noted commit rather than skipping it" "$FORCE_OUT" "backfilled $HOLLOW_SHA_212"
+
+# "nothing to backfill" exits 0 cleanly (range with only the sparse/good/pre-106 commits).
+B212EMPTYWT="$TMP/b212-empty-wt"; mkdir -p "$B212EMPTYWT"
+( cd "$B212EMPTYWT" && git init -q && git config user.email t@t.co && git config user.name t && git commit -q --allow-empty -m "Good merge (#1)" -m "Closes #1.
+
+$FULL_CARD_212
+
+fwf-Provenance: fwf=1.0@abc" )
+EMPTY_TIP="$(cd "$B212EMPTYWT" && git rev-parse HEAD)"
+EMPTY_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_REPO="$B212EMPTYWT" FWF_PROFILE=example "$ROOT/fwf" backfill-context --to "$EMPTY_TIP" 2>&1)"; EMPTY_RC=$?
+assert_eq "nothing-to-backfill: exits 0, not an error" "0" "$EMPTY_RC"
+assert_contains "nothing-to-backfill: says so plainly" "$EMPTY_OUT" "nothing to backfill"
+
+# --- CLI wiring ---------------------------------------------------------
+assert_contains "'fwf backfill-context' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "backfill-context) engine fwf-backfill-context.sh"
+assert_eq "fwf backfill-context refuses cleanly when \$FWF_REPO isn't a git repo" "1" "$(FWF_PROFILE=example FWF_REPO=/nonexistent-repo-path "$ROOT/fwf" backfill-context >/dev/null 2>&1; echo $?)"
+
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
 # constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.

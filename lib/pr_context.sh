@@ -507,3 +507,64 @@ fwf_history_guard_range() {
   done < <(git log --first-parent --no-merges --format=%H "$from..$to" 2>/dev/null)
   return "$rc"
 }
+
+# --- backfill (issue #212): recover hollow history cards without rewriting --
+# #136's invariant is go-forward (never audits pre-existing branch history);
+# this is the ONE-SHOT recovery for what it deliberately does not touch.
+
+# $1=commit sha -> 0 if BACKFILL-AFFECTED: its card is hollow (every bucket
+# none-logged) while its linked issue genuinely has extractable content.
+# Deliberately narrower than fwf_history_card_verdict (#136), which ALSO
+# flags missing provenance/credit -- #212 backfills only the empty-card
+# problem, never touches provenance or credit.
+#
+# Requires the "## Context & rationale" heading to actually be PRESENT --
+# a commit that predates issue #106 entirely never had one, and "no card at
+# all" is out of scope for this ticket (pre-feature history, not a defect),
+# not the same thing as "attempted a card and it came out empty". #136's
+# go-forward check never hits this ambiguity (it only ever sees commits
+# newly promoted well after #106 shipped); #212's full-history scan does.
+fwf_backfill_is_affected() {
+  local sha="$1" body issues n
+  body="$(git log -1 --format=%B "$sha" 2>/dev/null)" || return 1
+  case "$body" in *"## Context & rationale"*) : ;; *) return 1 ;; esac
+  issues="$(_fwf_history_closed_issues "$body")"
+  [ -n "$issues" ] || return 1
+  _fwf_history_card_is_hollow "$body" || return 1
+  for n in $issues; do
+    fwf_pr_ctx_has_extractable_content "$n" && return 0
+  done
+  return 1
+}
+
+# $1=to-ref -> newline-separated SHAs of every backfill-affected commit
+# reachable from $1 (full history, not range-bounded -- unlike #136's
+# go-forward check, backfilling by definition targets EXISTING history).
+# Mechanical identification (AC b): the same subject-signature + hollow +
+# extractable-content predicate #136 already established, not a hand list.
+fwf_backfill_find_affected() {
+  local to="$1" sha subj
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    subj="$(git log -1 --format=%s "$sha" 2>/dev/null)"
+    printf '%s' "$subj" | grep -qE '\(#[0-9]+\)$' || continue
+    fwf_backfill_is_affected "$sha" && printf '%s\n' "$sha"
+  done < <(git log --first-parent --no-merges --format=%H "$to" 2>/dev/null)
+}
+
+# $1=commit sha -> the note content to attach, or empty + non-zero if the
+# linked issue is unresolvable. AC (g): every backfilled note states it was
+# RECONSTRUCTED and as of what date -- a floor that rewrites issue bodies
+# routinely means a note built now is reconstructed from a LATER draft than
+# the commit it's attached to, and that must never be mistaken for a
+# contemporaneous record.
+fwf_backfill_note_for() {
+  local sha="$1" body issues n card
+  body="$(git log -1 --format=%B "$sha" 2>/dev/null)" || return 1
+  issues="$(_fwf_history_closed_issues "$body")"
+  [ -n "$issues" ] || return 1
+  n="$(printf '%s\n' "$issues" | tr ' ' '\n' | head -1)"
+  card="$(fwf_context_block "$n" | fwf_pr_body_guard)" || return 1
+  printf 'RECONSTRUCTED (issue #212 backfill) from issue #%s as of %s -- NOT a contemporaneous record; the issue may have been edited since this commit merged.\n\n%s\n' \
+    "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$card"
+}
