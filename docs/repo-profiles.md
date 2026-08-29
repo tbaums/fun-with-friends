@@ -116,18 +116,51 @@ out-of-tree names. `fwf-dash-data.sh`'s JSON carries the same as
 same pattern `unrouted_prs` established — the dash binary does not yet
 render it; query the JSON field directly).
 
+## Known gap: two factories on one box share gate-tip state (AC i)
+
+This ticket cross-posted an acceptance criterion from #237 §5: *"with two
+profiles resolving to different target repos on one box, state written by
+one is not read by the other."* **Verified real, not theoretical** (qa2
+review on PR #346 traced it to a concrete collision and asked for it pinned
+rather than papered over as "follow-on work" — the distinction #261's own
+AC (c) discipline draws):
+
+`FWF_STATE_DIR="$FWF_RUN/state/$PROFILE"` (`lib.sh`) keys purely on the
+**profile name**, never on `$FWF_REPO`. Two different repos each choosing
+the same out-of-tree profile name — plausible, even likely, given this
+ticket's own per-host `.fwf/<name>.sh` convention (`.fwf/laptop.sh` is the
+example used throughout this doc) — resolve `fwf_gate_tip_marker_path` to
+the **identical** path. `test/run.sh`'s "AC(i)" section pins this end to
+end: repo A's `fwf_gate_tip_record` writes a GREEN tip, and repo B's real
+`fwf gate-tip` CLI reads that SHA back as its own — the exact cross-repo
+false green #237 §5 warns about, reachable the moment two out-of-tree
+profiles share a name on one box.
+
+**Why this PR doesn't fix it:** the underlying fix is re-keying
+`FWF_STATE_DIR` (or every state path built from it) by repo identity, not
+just profile name — a change with a much larger blast radius than profile
+resolution, since `FWF_STATE_DIR` underlies gate locks, e2e leases, and
+every other piece of per-role state, not only gate-tip. That is squarely
+`#237`'s "owns keying its own record by repo+branch" territory, generalized
+to the whole `FWF_STATE_DIR` foundation rather than one file.
+
+**Deferral, stated as a trigger/owner/date rather than open-ended
+follow-on work:**
+- **Trigger:** before out-of-tree profiles (`.fwf/<name>.sh`) are used for
+  two or more repos that could plausibly share a profile *name* on the same
+  box/`$FWF_RUN` — which this ticket makes reachable, not hypothetical.
+- **Owner:** unassigned as of this PR — flagged here for PM/GV routing
+  (either as new scope on #237, since it already owns "key state by
+  repo+branch," or a new ticket if #237 is scoped narrowly to the
+  conductor's gated-SHA record specifically).
+- **Condition to close:** `FWF_STATE_DIR` (or the specific paths built from
+  it — gate-tip at minimum, audited for others) incorporates repo identity,
+  and `test/run.sh`'s AC(i) section above is updated from "KNOWN GAP,
+  pinned" to an actual isolation assertion once it holds.
+
 ## Out of scope for this ticket
 
 - Migrating the private `hetzner-devbox` provisioner off writing straight
   into the fwf checkout — an expected follow-on in a repo this ticket
   cannot reach, not retired here.
 - Changing `.gitignore` (the exclusion of `profiles/*.sh` is correct).
-- **Cross-factory state isolation** (two factories on one box, each pointed
-  at a different out-of-tree profile, must not read each other's unkeyed
-  global state under `~/.fun-with-friends/`) — flagged by #188 as an
-  acceptance criterion cross-posted from #237 §5, and genuinely enabled by
-  this ticket (a single factory made single-tenancy accidentally true; this
-  ticket makes two factories on one box an ordinary configuration). Not
-  covered by this PR — #237 owns keying its own gated-SHA record by
-  repo+branch, and the two-factory isolation proof is real follow-on work
-  this PR does not attempt. Recorded here rather than silently dropped.

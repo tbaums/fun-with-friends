@@ -8302,6 +8302,40 @@ H2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/good.sh" ./fwf doctor 2>&1)"
 assert_contains "AC(h): fwf doctor reports the resolution mode" "$H2_OUT" "(explicit) -> $P188/good.sh"
 assert_contains "AC(h): fwf doctor names a dropped (non-allowlisted) name" "$H2_OUT" "ignored: FOO_UNKNOWN"
 
+# --- AC(i): two factories on one box do NOT share each other's state -------
+# Cross-posted from #237 SS5: "one factory's green gate would be readable as
+# another factory's authorization." A single factory made single-tenancy
+# accidentally true; out-of-tree profiles make two factories on one box an
+# ordinary configuration, so this proves whether the isolation actually
+# holds rather than asserting it does. It does NOT, currently -- see
+# docs/repo-profiles.md's "Known gap" section for the deferral (qa2 review
+# on PR #346: verified real, not theoretical, and asked for this pinned
+# rather than papered over).
+I188="$TMP/p188-isolation"; mkdir -p "$I188/repoA/.fwf" "$I188/repoB/.fwf"
+cat > "$I188/repoA/.fwf/laptop.sh" <<'EOF'
+GATE_CMD='true'
+EOF
+cp "$I188/repoA/.fwf/laptop.sh" "$I188/repoB/.fwf/laptop.sh"
+I188_RUN="$TMP/p188-isolation-run"   # the realistic default: no FWF_RUN_DIR override, both factories share $FWF_RUN
+
+# Two DIFFERENT repos, same out-of-tree profile NAME (a likely per-host name
+# under this ticket's own .fwf/<name>.sh convention, e.g. "laptop") ->
+# fwf_gate_tip_marker_path resolves to the SAME path for both, because
+# FWF_STATE_DIR="$FWF_RUN/state/$PROFILE" (lib.sh) keys on the profile NAME
+# only, never on $FWF_REPO.
+I188_PATH_A="$(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_marker_path impl1')"
+I188_PATH_B="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_marker_path impl1')"
+assert_eq "AC(i) KNOWN GAP (pinned, not desired): two different repos sharing a profile NAME resolve the SAME gate-tip state path" \
+  "$I188_PATH_A" "$I188_PATH_B"
+
+# The consequence, end to end: repo A's gate tip becomes readable as repo
+# B's own verified tip via the real `fwf gate-tip` CLI -- a genuine
+# cross-repo false green, not a synthetic path comparison.
+(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_record impl1 sha-from-repoA GREEN')
+I188_READBACK="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" ./fwf-gate-tip.sh impl1 2>&1)"
+assert_eq "AC(i) KNOWN GAP: repo B's 'fwf gate-tip' reads repo A's SHA as its own verified tip (the exact cross-repo false-green #237 SS5 warns about)" \
+  "sha-from-repoA" "$I188_READBACK"
+
 # --------------------------------------------------------------------------
 section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"
 
