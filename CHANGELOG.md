@@ -11,6 +11,27 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-29
+
+**The guard-that-refused-itself release.** v0.37.0 was tagged but never published: its release run failed twice on one test, and that test turned out to be reporting a real defect in the reap path's own PID-reuse guard. The guard blocked every open PR — including a doc-only one — before it was found.
+
+### Fixed
+- **The PID-reuse guard refused to reap a process group it was holding** (#195, code 80b2f1d, docs none — internal) — `pgid` is written into the owner file at the same instant as `acquired`, so for the real holder the two are simultaneous. But `start_epoch` is reconstructed as `now - $(ps -o etime=)`, and `ps` reports whole seconds while `now` is sampled after that call, so the genuine holder routinely measured ~1s "after" its own lock and was declared PID/PGID reuse. Observed on a hosted runner: `1787982520 > 1787982519` — **one second**. It failed AC(c) on 4 of 5 Linux runs, cost two v0.37.0 release attempts, and reddened every open PR, while passing on the devbox and macOS where both events land in the same second. This is a measurement-tolerance correction, **not** a policy relaxation: real reuse recycles a number only after the holder has died, far outside the window, so the guard still fails closed for the case it exists to catch.
+- **`fwf up --pairs N` on a live floor silently no-op'd** (#190, code 3701411, docs 3701411) — the operator got no signal that the resize never happened.
+
+### Added
+- **Coordination-pane parallelism: idle-backfill with hard caretaker-preemption** (#169, code 9f638cd, docs 9f638cd).
+- **Hollow history cards are backfilled as git notes, with no history rewrite** (#212, code cae5dae, docs cae5dae).
+- **A crafted squash-merge history card is enforced on every merge** (#136, code b91c758, docs b91c758).
+
+### Changed
+- **Doc-only diffs no longer pay the full ~13min bash suite** (#352, code 56ba617, docs 56ba617).
+- **The release gate consults CI's verdict for the tagged SHA** instead of gating on a subset (#303, code eead621, docs eead621).
+- **The PR body/history-card context fold fails open, with a new bucket schema** (#135, code a24c17d, docs a24c17d).
+
+### Internal
+- **AC(c)'s failure path is instrumented so a red run explains itself** (#195, code 3ac4a22, docs none — internal) — the reap's own output was captured into a variable and never reached the job log, which is why three hours went into hypotheses instead of evidence.
+
 ## [0.37.0] - 2026-08-28
 
 **The self-inflicted-CI release.** With macOS CI moved off GitHub and onto real hardware, the two defects that had been quietly taxing every run got fixed: a jq `ARG_MAX` overflow that took the whole dash data provider down on verbose repos, and a `TOTAL` line that laundered unpriced seats into `$0`. Verified on a real Darwin box under `/bin/bash` 3.2.57: **2207 passed, 0 failed, 13 skipped**.
