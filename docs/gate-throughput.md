@@ -216,6 +216,17 @@ shadow-log data before anyone could respect it anyway.
   genuinely separate, out-of-repo operational step** (see "Not yet built"
   below) — the pattern being proven correct is not the same as data
   existing yet.
+  **Update (this PR): a second, in-repo call site now exists.**
+  `.github/workflows/ci.yml`'s `dash` job invokes `fwf-gate-rust-scope.sh`
+  for real on every push/PR, in shadow mode, with the actual wall-clock of
+  `cargo test --locked` fed back via `--full-suite-secs` — closing the
+  "verb no template calls" gap for THIS repo's own CI, independent of the
+  separate (still out-of-repo, still unbuilt) live-profile `GATE_CMD`
+  wiring. The log persists across ephemeral runners via `actions/cache`
+  (save-with-a-fresh-key + restore-with-a-prefix). This is a genuinely NEW
+  source of accumulating data, not a re-description of the pattern test
+  above — but it only just started accumulating with this PR, so there is
+  still no HISTORY to decide from yet (see the dated deferral below).
 
 ## Piece C: a real concurrency-bound race, found and fixed post-review (2026-08-24)
 
@@ -269,16 +280,30 @@ claimed as fully closed.
   measurement above; revisit only if the 60s bound is crossed or live
   shadow-log data says otherwise.
 - Wiring `fwf gate-rust-scope` into a real GATE_CMD so the shadow log
-  actually accumulates would-skip-rate data — outside this codebase's scope
-  (it lives in the consuming repo's own profile). Issue #261 verified the
-  wiring PATTERN end-to-end (test/run.sh's "gate-rust-scope" section, the
-  final case: a real `fwf gate` run whose GATE_CMD calls this before the
-  wrapped suite gains a real shadow-log entry) — what remains is an
-  operator actually applying that pattern to a live profile and letting it
-  accumulate over a stated window, per this ticket's AC (b). No trigger,
-  owner, or date is recorded for that step as of this PR; per AC (c) that
-  is drift, not a deferral, and should be assigned rather than left open
-  indefinitely.
+  actually accumulates would-skip-rate data on the LIVE dogfooding
+  profile — outside this codebase's scope (it lives in the consuming
+  repo's own profile, `profiles/fwf.sh`, which is not tracked by this
+  repository). Issue #261 verified the wiring PATTERN end-to-end
+  (test/run.sh's "gate-rust-scope" section, the final case: a real `fwf
+  gate` run whose GATE_CMD calls this before the wrapped suite gains a
+  real shadow-log entry) and additionally wired a SECOND, in-repo call
+  site (this repo's own `ci.yml` `dash` job, see the update above) that
+  needs no out-of-repo change and is already live as of this PR.
+- Flipping B from shadow to enforcing, or dropping the classifier
+  entirely — **BOUNDED DEFERRAL (issue #261 AC (c)): revisit by
+  2026-09-29 (30 days from this PR), or after 20 real CI runs of the
+  `dash` job have accumulated in `.gate-rust-shadow.log`, whichever comes
+  first.** Owner: whoever next grooms this doc (PM/GV on the standing
+  factory-health tracking issue, #161) — read the cache-persisted log via
+  a scratch `actions/cache/restore` step or by downloading it from a
+  recent `dash` job run, and either (a) flip B to enforcing if the
+  would-skip rate and steady-state time both justify it, (b) delete the
+  classifier if the data says it never pays for itself (matching the
+  60s-bound reasoning above, which independently already argues against
+  flipping for this crate's current size), or (c) re-defer with a new
+  dated trigger if the log is still too thin — an honest "insufficient
+  data" is itself a valid outcome per this ticket's own edge-case list, so
+  long as the deferral stays dated rather than becoming silent drift.
 
 ## Orphan reaping is fail-closed, and portable (#332)
 
