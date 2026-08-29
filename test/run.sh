@@ -6642,6 +6642,21 @@ if _fwf195_wait_listening "$G195C_PORT" 50; then
     sleep 0.1; G195C_WAITED=$(( G195C_WAITED + 1 ))
   done
   if [ "$G195C_STILL_LISTENING" = 1 ]; then
+    # This fails ONLY on GitHub's hosted ubuntu runners -- it passes on a real
+    # Linux box and on macOS, both verified by hand on this same SHA. Two
+    # candidates remain and the log alone cannot tell them apart: either the
+    # orphan lands in a different process group there (so the recorded-PGID
+    # kill misses it), or something ELSE in the runner's network namespace is
+    # bound to our randomly-chosen port (the probe only asks "does anything
+    # accept here", never "is it still OUR orphan"). Print both facts on
+    # failure so the next red run answers the question instead of posing it.
+    echo "    diag: port=$G195C_PORT" >&2
+    echo "    diag: gate output was: $G195C2_OUT" >&2
+    echo "    diag: who holds the port now:" >&2
+    { ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null; } | grep ":$G195C_PORT " >&2 || \
+      echo "    diag: (no listener found by ss/netstat -- probe and tooling disagree)" >&2
+    echo "    diag: surviving http.server processes:" >&2
+    ps -eo pid,pgid,ppid,args 2>/dev/null | grep "[h]ttp.server" >&2 || echo "    diag: (none)" >&2
     bad "AC(c): the orphaned server is STILL listening after acquire-side reconciliation"
   else
     ok "AC(c): acquire-side reconciliation reaped the orphaned server (the ticket's load-bearing guarantee)"
