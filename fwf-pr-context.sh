@@ -13,10 +13,27 @@
 # when it composes its `gh pr create`/`gh pr merge` command — the same pattern
 # templates already use for `$(printf '...')` in the QA squash-merge body.
 #
-# Usage: fwf pr-context <issue-num> [<issue-num> ...]
+# Usage:
+#   fwf pr-context --issue <n> [<n> ...]   fold the given ISSUE(s) directly
+#   fwf pr-context --pr <num>              resolve <num>'s linked issue(s)
+#                                           (its own body's "Closes #n"),
+#                                           then fold THAT
+#   fwf pr-context <n> [<n> ...]           legacy bare form: same as --issue,
+#                                           except refuses (issue #189 AC a)
+#                                           if any <n> resolves to a PR
+#                                           instead of an issue -- the
+#                                           confusion that shipped 16 hollow
+#                                           squash-merge commit cards.
 # Prints the sanitized, multi-ticket "## Context & rationale" block (see
-# lib/pr_context.sh: fwf_context_block) to stdout, one ticket per issue
-# number given, ordered.
+# lib/pr_context.sh: fwf_context_block) to stdout.
+#
+# WHY TWO FLAGS INSTEAD OF ONE SMARTER FORM (issue #189): the command's own
+# name reads as "context of the PR", so supplying a PR number is the natural
+# misreading -- `--pr` satisfies that instinct correctly instead of fighting
+# it, while `--issue` stays for the (equally common) call site that already
+# has the issue number in hand. The bare form is kept for backward
+# compatibility (existing muscle memory / any un-migrated call site) but is
+# no longer silent about the one confusion that actually shipped bugs.
 #
 # FAIL-CLOSED (PM item 2 — the runtime guard, not just the CI fixture test):
 # the actual rendered output is re-scanned by fwf_pr_body_guard immediately
@@ -29,5 +46,43 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
 
-[ $# -gt 0 ] || { echo "usage: fwf pr-context <issue-num> [<issue-num> ...]" >&2; exit 1; }
-fwf_context_block "$@" | fwf_pr_body_guard
+usage() {
+  echo "usage: fwf pr-context --issue <n> [<n> ...]  |  fwf pr-context --pr <num>  |  fwf pr-context <n> [<n> ...]" >&2
+}
+
+[ $# -gt 0 ] || { usage; exit 1; }
+
+case "$1" in
+  --issue)
+    shift
+    [ $# -gt 0 ] || { usage; exit 1; }
+    fwf_context_block "$@" | fwf_pr_body_guard
+    ;;
+  --pr)
+    shift
+    [ $# -eq 1 ] || { usage; exit 1; }
+    pr_num="$1"
+    linked="$(_fwf_pr_ctx_pr_linked_issues "$pr_num")"
+    [ -n "$linked" ] || {
+      echo "fwf pr-context: PR #$pr_num has no resolvable linked issue (no 'Closes #n' found in its body) -- refusing rather than folding the PR's own body" >&2
+      exit 1
+    }
+    issue_num="$(printf '%s\n' "$linked" | head -1)"
+    if [ "$(printf '%s\n' "$linked" | wc -l)" -gt 1 ]; then
+      echo "fwf pr-context: PR #$pr_num closes multiple issues ($(printf '%s' "$linked" | tr '\n' ' ' | sed 's/ $//')) -- picked the lowest, #$issue_num" >&2
+    fi
+    fwf_context_block "$issue_num" | fwf_pr_body_guard
+    ;;
+  -h|--help)
+    usage; exit 0
+    ;;
+  *)
+    for n in "$@"; do
+      [ "$(_fwf_pr_ctx_kind "$n")" = pr ] && {
+        echo "fwf pr-context: #$n is a PULL REQUEST, not an issue (issue #189) -- pass '--pr $n' to fold its linked issue, or '--issue <n>' with the actual issue number" >&2
+        exit 1
+      }
+    done
+    fwf_context_block "$@" | fwf_pr_body_guard
+    ;;
+esac

@@ -30,6 +30,48 @@
 # Sourced by lib.sh (profile-independent otherwise; only needs $FWF_ISSUES /
 # $FWF_REPO / $FWF_LIB_DIR, all set by the time lib.sh gets here).
 
+# --- PR-vs-issue detection + linked-issue resolution (issue #189) -----------
+# GitHub shares ONE number sequence across issues and PRs; `gh issue view`
+# happily succeeds on a PR number too (PRs ARE issues in the underlying data
+# model), which is exactly how #189 shipped 16 hollow squash-merge cards --
+# the extractor was fed a PR number and silently folded the PR's own body.
+# fwf-flag-captain.sh's gh_kind() established the detection idiom (the
+# unified /issues API: a PR comes back with a non-null .pull_request); this
+# mirrors it rather than sharing a function across two independently-sourced
+# files, matching the file's own existing cd-into-repo pattern below.
+_fwf_pr_ctx_gh() { if [ -d "${FWF_REPO:-}/.git" ]; then ( cd "$FWF_REPO" && gh "$@" ); else gh "$@"; fi; }
+
+# $1=num -> "issue"|"pr". Local-issues mode has no PR concept at all -- every
+# number there is an issue by construction.
+_fwf_pr_ctx_kind() {
+  [ "${FWF_ISSUES:-gh}" = "local" ] && { echo issue; return; }
+  local pr
+  pr="$(_fwf_pr_ctx_gh api "repos/{owner}/{repo}/issues/$1" --jq '.pull_request // empty' 2>/dev/null || true)"
+  [ -n "$pr" ] && echo pr || echo issue
+}
+
+# $1=PR number -> newline-separated, deduped, numerically-sorted list of
+# issue numbers the PR's OWN BODY closes (GitHub's `closingIssuesReferences`
+# is empty for a PR targeting a non-default branch -- every fwf PR targets
+# __STAGING__, never __DEFAULT__ -- so this greps the body text directly for
+# GitHub's own recognized closing keywords, matching what actually resolves
+# the issue once the squash commit reaches __DEFAULT__). Empty output = no
+# linked issue found; caller decides how to fail.
+_fwf_pr_ctx_pr_linked_issues() {
+  local n="$1" body
+  body="$(_fwf_pr_ctx_gh pr view "$n" --json body --jq '.body // ""' 2>/dev/null)" || return 0
+  # A genuine "no match" makes grep exit 1, which -- under this file's
+  # sourcing script's `set -o pipefail` -- would make the whole pipeline
+  # (and this function) return non-zero for the ordinary, non-error case of
+  # "this PR just doesn't close anything". `|| true` on the final stage
+  # keeps that case indistinguishable from success; the caller reads
+  # emptiness from the OUTPUT, not the exit code.
+  printf '%s\n' "$body" \
+    | grep -ioE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+' \
+    | grep -oE '[0-9]+' \
+    | sort -n -u || true
+}
+
 # --- ticket fetch (mode-aware: gh for remote, fwf-issues.sh for --issues local) ---
 # $1 = issue number -> {"title":...,"body":...} JSON (gh-shaped either way).
 fwf_pr_ctx_issue_json() {

@@ -228,11 +228,18 @@ UTILITIES
                          DIFFERENT, deterministic red one. Exit 0 = honored;
                          1 = refused (names which); 2 = checks/comments
                          unreadable, fails closed, never silently honored.
-  pr-context <n> [n...]  Print the sanitized "## Context & rationale" fold for
+  pr-context --issue <n> [n...] | --pr <num> | <n> [n...]
+                         Print the sanitized "## Context & rationale" fold for
                          the given issue number(s) — an implementer/QA agent
                          runs this for real when composing a PR/squash-merge
                          body (issue #106); fails closed (prints nothing, rc 1)
                          if fwf-internal vocabulary survives sanitization.
+                         --issue <n> folds the given issue(s) directly; --pr
+                         <num> resolves that PR's own linked issue ("Closes
+                         #n" in its body) and folds THAT — pass the PR number
+                         you already have, get the right card (issue #189).
+                         The bare <n> form still works for a genuine issue
+                         number but refuses loudly if <n> resolves to a PR.
   flag-captain <n> --role R --reason TEXT
                          Raise a "needs-captain" flag on issue/PR <n> (label +
                          a NEEDS-CAPTAIN: [R] TEXT comment) — any role calls
