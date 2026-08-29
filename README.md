@@ -901,20 +901,36 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   default branch; the implementer puts it in the PR body and QA preserves it in
   the squash commit, so it closes when you promote `integration → main`.
 - **PR body context-fold + built-with credit:** every PR that closes a ticket
-  gets a mechanically-extracted, sanitized "Context & rationale" fold (the
-  ticket's problem/decisions/alternatives/acceptance-criteria/testing
-  sections, plus any linked `docs/proposals/<n>-*.md`) folded into the squash-
-  merge commit and PR body — no fwf-internal vocabulary (role/seat names,
-  worktree/gate jargon, `LI-N`), no invented rationale, fail-closed if
-  anything survives sanitization: `fwf pr-context --issue <n> [<n>...]` folds
-  the given issue(s) directly; `fwf pr-context --pr <num>` resolves the PR's
-  own linked issue (its "Closes #n") and folds *that* — the flag that makes
-  the instinctive "just give it the PR number" move produce the right card
-  instead of the PR's own body (issue #189: passing a PR number where an
-  issue number belongs used to fold the PR silently, shipping an empty or
-  self-referential squash-merge history card). The bare `fwf pr-context <n>
-  [<n>...]` form still works for a genuine issue number, but refuses loudly
-  if any `<n>` resolves to a PR instead. See `fwf help`.
+  gets a mechanically-extracted, sanitized "Context & rationale" fold folded
+  into the squash-merge commit and PR body — no fwf-internal vocabulary
+  (role/seat names, worktree/gate jargon, `LI-N`), no invented rationale,
+  fail-closed if anything survives sanitization: `fwf pr-context --issue <n>
+  [<n>...]` folds the given issue(s) directly; `fwf pr-context --pr <num>`
+  resolves the PR's own linked issue (its "Closes #n") and folds *that* — the
+  flag that makes the instinctive "just give it the PR number" move produce
+  the right card instead of the PR's own body (issue #189: passing a PR
+  number where an issue number belongs used to fold the PR silently, shipping
+  an empty or self-referential squash-merge history card). The bare `fwf
+  pr-context <n> [<n>...]` form still works for a genuine issue number, but
+  refuses loudly if any `<n>` resolves to a PR instead. See `fwf help`.
+  **Fail-open (issue #135):** every substantive section is kept by default
+  and routed to a bucket by heading keyword — problem/intent → intro, plus
+  first-class Root cause / Evidence / Constraints & sequencing / Edge cases
+  buckets, the original Decisions & tradeoffs / Alternatives considered /
+  Acceptance criteria / Testing, and an "Other context" catch-all for
+  anything substantive that matches no known bucket. Only a short,
+  explicit deny-list is dropped (`## For PM / GV`, `## Related` — role
+  coordination about the *future*, not content that explains the *past*).
+  The old version allow-listed five headings and silently discarded
+  everything else — the better a ticket was written, the emptier its
+  permanent history card. A section landing in "Other context" prints a
+  DRIFT notice to stderr (never into the card itself, and never when
+  everything maps cleanly) naming the section, so a schema that has drifted
+  from how tickets are actually written is visible the first time it
+  happens. A defensive guard also strips any machine-trailer-looking line
+  (`fwf-Provenance:`, `Co-Authored-By:`, `Closes #N`, the credit block) from
+  every admitted section, regardless of nesting — so even a PR body fed in
+  by mistake can't fold its own credit/provenance back into itself.
   Alongside it, a reviewer-facing "🏭 Built with fun-with-friends +
   Claude" credit line (distinct from — and coexists with — the `fwf-
   Provenance:` machine trailer). `FWF_CREDIT=on|minimal|off` controls it:

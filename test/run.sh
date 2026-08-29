@@ -759,6 +759,232 @@ assert_contains "AC(c): templates/dev/qa.tmpl's merge line uses --pr <num>" \
 assert_contains "AC(c): templates/refactor/qa.tmpl's merge line uses --pr <num>" \
   "$(cat "$ROOT/templates/refactor/qa.tmpl")" 'fwf pr-context --pr <num>'
 
+section "fwf_context_block fail-open (issue #135): non-canonical headings, new bucket schema, coverage/drift"
+
+PCTX135RUN="$TMP/pr-context-135-run"
+PISS135() { FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+PCTX135_CTX() { FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block \"\$@\"" _ "$@"; }
+PCTX135_ONE() { FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_pr_ctx_one \"\$@\"" _ "$@"; }
+
+# --- fail-open: a ticket with NO canonical headings still folds real content --
+PISS135 create --title "Non-canonical ticket" --body "## Bug
+It breaks in production.
+
+## Root cause
+The retry loop never backs off.
+
+## Impact
+Every request in the window fails.
+
+## Fix direction
+Add exponential backoff." >/dev/null
+NONCANON="$(PCTX135_ONE 1)"
+assert_contains "fail-open: a ticket with zero canonical headings still folds real content" "$NONCANON" "retry loop never backs off"
+assert_contains "fail-open: 'Root cause' routes to the new first-class bucket" "$NONCANON" "**Root cause:**"
+assert_contains "fail-open: the Impact/Fix-direction prose (no matching bucket) still lands under Other context, never dropped" "$NONCANON" "**Other context:**"
+
+# --- mixed: a recognized heading PLUS a substantive unrecognized one -- both fold --
+PISS135 create --title "Mixed heading ticket" --body "## Problem
+Recognized intro content.
+
+## Design notes
+Unrecognized but substantive -- must not be dropped." >/dev/null
+MIXED="$(PCTX135_ONE 2)"
+assert_contains "AC(mixed): the recognized heading's content folds" "$MIXED" "Recognized intro content"
+assert_contains "AC(mixed): the unrecognized-but-substantive section is NOT dropped (fail-open, not silently lost)" "$MIXED" "Unrecognized but substantive"
+assert_contains "AC(mixed): the unrecognized section lands under Other context, not silently merged into a wrong bucket" "$MIXED" "**Other context:**"
+
+# --- denial: coordination noise sections are excluded ----------------------
+PISS135 create --title "Denial ticket" --body "## Problem / intent
+Real content that must survive.
+
+## For PM / GV
+Coordination note that must never appear on the card.
+
+## Related
+#42 is a stale cross-reference that must never appear on the card." >/dev/null
+DENIED="$(PCTX135_ONE 3)"
+assert_contains "denial: kept content survives" "$DENIED" "Real content that must survive"
+case "$DENIED" in *"Coordination note that must never"*) bad "denial: 'For PM / GV' section must never appear on the card" "$DENIED";; *) ok "denial: 'For PM / GV' section is excluded";; esac
+case "$DENIED" in *"stale cross-reference"*) bad "denial: 'Related' section must never appear on the card" "$DENIED";; *) ok "denial: 'Related' section is excluded";; esac
+
+# --- acceptance criteria always present when the source has them -----------
+assert_contains "acceptance criteria present in source always appear in the card" "$(PCTX135_ONE 1)" "Add exponential backoff" # (folded via no bucket match -> Other context; still present, never dropped)
+
+# --- regression: the canonical-heading path (#128/#114-style) is unmoved ---
+# The PCTX1 fixture earlier in this file (Fix the thing / Decisions & tradeoffs
+# / Alternatives considered / Acceptance criteria / Testing) already asserts
+# every legacy bucket individually -- re-run here post-#135 to pin it did not
+# regress under the new fail-open routing.
+CANON_REGRESSION="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block 1")"
+assert_contains "regression: canonical-heading fold (#128/#114-style) still carries decisions"    "$CANON_REGRESSION" "mechanical extraction over an LLM pass"
+assert_contains "regression: canonical-heading fold still carries acceptance criteria"            "$CANON_REGRESSION" "ships behind a flag"
+case "$CANON_REGRESSION" in *"**Other context:**"*) bad "regression: a fully-canonical ticket must never gain an Other-context bucket" "$CANON_REGRESSION";; *) ok "regression: a fully-canonical ticket gains no Other-context bucket";; esac
+
+# --- self-referential-fold guard (the #189 failure mode, hardened regardless of merge order) --
+SELFREF_BODY='Closes #500.
+
+## Context & rationale
+
+### Some other ticket
+Some content here.
+
+**Decisions & tradeoffs:**
+Something.
+
+🏭 Built with fun-with-friends + Claude.
+fwf-Provenance: fwf=1.0@abc profile=x seats=[]
+
+Co-Authored-By: Claude <noreply@anthropic.com>'
+PISS135 create --title "Self-ref test" --body "$SELFREF_BODY" >/dev/null
+SELFREF_OUT="$(PCTX135_ONE 4)"
+case "$SELFREF_OUT" in *"Built with"*) bad "self-referential guard: a credit block must never fold back into the card" "$SELFREF_OUT";; *) ok "self-referential guard: no credit block leak";; esac
+case "$SELFREF_OUT" in *"fwf-Provenance:"*) bad "self-referential guard: an fwf-Provenance trailer must never fold back into the card" "$SELFREF_OUT";; *) ok "self-referential guard: no fwf-Provenance trailer leak";; esac
+# Through the real multi-ticket wrapper (fwf_context_block, the one used in
+# production): it prints exactly ONE "## Context & rationale" -- its OWN --
+# so a count of exactly 1 proves the nested one from the fed-in PR body did
+# not additionally leak through (0 would mean even the wrapper's own is
+# missing; 2+ would mean the nested one survived).
+SELFREF_CTX="$(PCTX135_CTX 4)"
+NESTED_HEADING_COUNT="$(printf '%s\n' "$SELFREF_CTX" | grep -c '^## Context & rationale$')"
+assert_eq "self-referential guard: '## Context & rationale' appears exactly once (this function's OWN wrapper heading, never a nested leak)" "1" "$NESTED_HEADING_COUNT"
+
+# --- coverage/drift reporting: asserted in BOTH directions ------------------
+# It FIRES -- a fixture with a deliberately unmapped substantive section.
+DRIFT_STDERR="$(PCTX135_ONE 2 2>&1 >/dev/null)"
+assert_contains "drift FIRES: an unmapped substantive section produces the drift report" "$DRIFT_STDERR" "DRIFT on issue #2"
+assert_contains "drift report names the unmapped section" "$DRIFT_STDERR" "Design notes"
+assert_contains "drift report gives the seen/mapped/denied counts" "$DRIFT_STDERR" "mapped="
+DRIFT_STDOUT="$(PCTX135_ONE 2 2>/dev/null)"
+case "$DRIFT_STDOUT" in *"DRIFT"*) bad "drift report must stay on stderr, never leak into the card itself" "$DRIFT_STDOUT";; *) ok "drift report stays on stderr, never in the card";; esac
+# It stays QUIET -- a fixture where everything maps cleanly.
+QUIET_STDERR="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_pr_ctx_one 1" 2>&1 >/dev/null)"
+assert_eq "drift stays QUIET when every section maps cleanly (a reporter that always fires is one nobody reads)" "" "$QUIET_STDERR"
+
+# --- #189 VERBATIM AS THE FIXTURE (load-bearing): Root cause + Evidence ----
+# The real, unmodified issue #189 body -- not a hand-built canonical fixture,
+# which would pass while the real corpus keeps failing (exactly how this
+# defect survived a month, per this ticket's own words).
+ISSUE189_BODY='## Problem / intent
+
+At squash-merge, the QA template passes the **PR number** to `fwf pr-context`
+instead of the **issue number**. `gh issue view <PR#>` succeeds — GitHub serves
+pull requests from the issues endpoint — so the call returns the *PR'"'"'s own*
+title and body. A PR body contains none of the canonical ticket sections, so
+every bucket renders `_(none logged)_` and the `###` heading becomes the PR
+title.
+
+Result: **the permanent squash-merge commit — the only artifact that survives a
+clone/export/mirror, and the one #106 named as the primary target — carries an
+empty skeleton on every merge**, while the PR body (written by the implementer,
+which passes the issue number correctly) carries **whatever the extractor'"'"'s
+heading allow-list happens to route** — which is the full fold only for issues
+that used canonical headings.
+
+## Evidence
+
+Audited every merged factory PR from the last month, in this repo and in one
+other repo running the same `templates/dev` floor. **16 of 16 merged PRs
+carrying a context block produced a byte-identical 17-line empty skeleton.**
+13 of those had substantive content in the PR body that was dropped on merge.
+
+## Root cause
+
+`templates/dev/qa.tmpl:29` (and `templates/refactor/qa.tmpl:24`) use two
+visually-indistinguishable placeholders on a single line, meaning different
+things.
+
+`<num>` is the PR; `<n>` is the issue. The implementer template
+(`templates/dev/implementer.tmpl:33`) uses `<num>` for the *issue* — so the same
+token means opposite things in the two templates an agent reads.
+
+## Constraints
+
+- The fix must not rely on an agent reading a placeholder more carefully.
+- Sequencing with #135 matters — see below.
+
+## For PM / GV
+
+Coordination note that must never appear on the permanent card.
+
+## Acceptance criteria
+
+- Bare-number backstop.
+- Both flag forms fold correctly, against a fixture.
+
+## Edge cases
+
+- PR number and issue number collide in range.
+- A PR that closes multiple issues.
+
+## Out of scope
+
+- Backfilling the 16 hollow cards — #212.'
+PISS135 create --title "issue 189 verbatim" --body "$ISSUE189_BODY" >/dev/null
+I189_CARD="$(PCTX135_ONE 5 2>/dev/null)"
+assert_contains "#189 verbatim fixture: Root cause bucket carries its real content" "$I189_CARD" "visually-indistinguishable placeholders"
+assert_contains "#189 verbatim fixture: Evidence bucket carries its real content" "$I189_CARD" "16 of 16 merged PRs"
+assert_contains "#189 verbatim fixture: Acceptance criteria still carried" "$I189_CARD" "Bare-number backstop"
+case "$I189_CARD" in *"Coordination note that must never appear"*) bad "#189 verbatim fixture: 'For PM / GV' denial holds on a REAL ticket, not just a synthetic one" "$I189_CARD";; *) ok "#189 verbatim fixture: 'For PM / GV' denial holds on a real ticket";; esac
+
+# --- #195 VERBATIM AS THE FIXTURE (load-bearing): Constraints & sequencing + Edge cases --
+ISSUE195_BODY='## Problem
+
+`fwf gate --e2e` releases the e2e lock while the resource it protects is still occupied.
+
+## Mechanism (confirmed in source by GV, on transom #1133)
+
+That trap releases locks only. Nothing tears down the process group the wrapped command spawned.
+
+## Proposed behavior
+
+Two halves.
+
+### 5. Blast-radius constraint (hard)
+
+The reaper only ever signals PIDs in the PGID recorded in the lock file. On a shared devbox, port-ownership-based killing would eventually take out an operator'"'"'s own dev server or another profile'"'"'s process, silently, as part of a routine gate run.
+
+## Acceptance criteria
+
+- Clean exit, ordering.
+
+## Sequencing (coordination note — captain)
+
+#195, #196, and #65 all rewrite the same locking code in `fwf-gate.sh`.
+
+## Edge cases
+
+- Identifier reuse, on BOTH recorded identifiers. If the whole child group exited and PID space wrapped, the PGID leader may now be an unrelated process.
+- Child group already exited before teardown: kill on a dead PGID is a no-op.
+
+## Related
+
+- #65 — who takes the lock. Must never appear on the card.'
+PISS135 create --title "issue 195 verbatim" --body "$ISSUE195_BODY" >/dev/null
+I195_CARD="$(PCTX135_ONE 6 2>/dev/null)"
+assert_contains "#195 verbatim fixture: Constraints & sequencing carries the blast-radius content" "$I195_CARD" "take out an operator's own dev server"
+assert_contains "#195 verbatim fixture: 'Sequencing' folds into Constraints & sequencing (kept, per this ticket's own PAST-explaining principle)" "$I195_CARD" "#195, #196, and #65 all rewrite the same locking code"
+assert_contains "#195 verbatim fixture: Edge cases carries the PID-reuse content" "$I195_CARD" "PID space wrapped"
+case "$I195_CARD" in *"Must never appear on the card"*) bad "#195 verbatim fixture: 'Related' denial holds on a real ticket" "$I195_CARD";; *) ok "#195 verbatim fixture: 'Related' denial holds on a real ticket";; esac
+# The Mechanism section (#195's real root-cause explanation) has no
+# literal "Root cause" heading -- fail-open still ADMITS it (Other context)
+# rather than silently dropping it, which is the property that matters.
+assert_contains "#195 verbatim fixture: the Mechanism/root-cause content is admitted somewhere, never silently dropped" "$I195_CARD" "Nothing tears down the process group"
+
+# --- guard consistency (issue #135 fix to fwf_pr_body_guard): the backstop --
+# no longer flags what #234 already decided is legitimate content, but still
+# catches a genuine unsanitized marker leak.
+GUARD_LEGIT_RC=0
+printf 'plain prose mentioning gv, pm, captain, conductor, worktree and floor by name, plus impl2 and qa1 as seat identifiers' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" >/dev/null 2>&1 || GUARD_LEGIT_RC=$?
+assert_eq "guard: bare role/jargon words #234 already decided are legitimate content pass clean" "0" "$GUARD_LEGIT_RC"
+GUARD_LEAK="$(printf 'this text still says GV-SIGNOFF verbatim' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" 2>&1 >/dev/null)"
+assert_contains "guard: a genuine unsanitized PROTOCOL MARKER (GV-SIGNOFF) still trips the backstop" "$GUARD_LEAK" "GV-SIGNOFF"
+
+# --- CLI end-to-end: the real #195 fixture through the guard doesn't refuse --
+I195_CLI_RC=0
+FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/fwf" pr-context --issue 6 >/dev/null 2>&1 || I195_CLI_RC=$?
+assert_eq "CLI: the real #195 fixture (containing legitimate 'GV'/'worktree'/'captain' prose) is not refused by the guard" "0" "$I195_CLI_RC"
+
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
 # constraint-5 exemption as __PROVENANCE__'s) MUST carry __CREDIT__.
