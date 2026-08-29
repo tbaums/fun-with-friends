@@ -6902,9 +6902,16 @@ SWEEP_FAIL_RC=0
 SWEEP_FAIL_OUT="$(FCG_FAILED_READ 2>"$TMP/fcg-failread.err")" || SWEEP_FAIL_RC=$?
 [ "$SWEEP_FAIL_RC" -ne 0 ] && ok "AC(a): a failed gh read makes the sweep exit non-zero" \
   || bad "AC(a): sweep exited 0 on a failed gh read" "rc=$SWEEP_FAIL_RC"
-assert_not_contains "AC(a)/(d): a failed read must NOT render as an empty sweep" \
+# Operator follow-up: the UNKNOWN marker now prints on stdout too, not just
+# stderr -- an empty stdout still READS as "an empty sweep" to anyone piping
+# this output, which is the exact shape this ticket exists to kill. Two
+# positive assertions now that stdout has real content (issue #247 a5:
+# assert_not_contains on an expected-empty haystack is vacuous).
+assert_contains "AC(a)/(d): the failure is named on stdout as UNKNOWN, not left empty" \
+  "$SWEEP_FAIL_OUT" "UNKNOWN"
+assert_not_contains "AC(a)/(d): stdout is never the empty-sweep string on a failed read" \
   "$SWEEP_FAIL_OUT" "no needs-captain flags open"
-assert_contains "AC(a): the failure is named on stderr (UNKNOWN, not silently empty)" \
+assert_contains "AC(a): the failure is also named on stderr (UNKNOWN, not silently empty)" \
   "$(cat "$TMP/fcg-failread.err")" "UNKNOWN"
 
 section "fwf flag-captain sweep (#291 AC c): only NEEDS-CAPTAIN(-CLEARED) comments survive into the sweep payload"
