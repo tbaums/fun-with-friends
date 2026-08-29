@@ -291,6 +291,17 @@ if [ -n "$tip_cmd" ]; then
   fi
 fi
 
+# issue #298: FWF_GATE_FORCE's own decision (fwf_gate_tip_unchanged, above)
+# is now made -- unset it here, in THIS process, before anything below can
+# hand it on. Env vars inherit transitively: left set, a
+# `FWF_GATE_FORCE=1 fwf gate <role> --tip-cmd ... -- bash -c "bash
+# test/run.sh"` leaks into every subprocess the wrapped command forks,
+# including this repo's own nested `fwf-gate.sh --tip-cmd` invocations
+# under test/run.sh's #202 section -- which then force past the very
+# unchanged-tip skip those fixtures exist to assert, producing false
+# failures unrelated to whatever the outer force-resume was actually for.
+unset FWF_GATE_FORCE
+
 fwf_gate_lock_acquire "$role" || exit "$EX_SKIPPED"
 gate_lock_held=1   # issue #156 BLOCKER 2: tracked so the release trap never rm's
 
