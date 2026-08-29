@@ -8163,7 +8163,14 @@ assert_not_contains "AC(b): identical worktree fwf-gate.sh -> silence, no hint" 
 echo "# a local edit to the gate path" >> "$G277_WT/fwf-gate.sh"
 DIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-diff" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
 assert_contains "AC(a1): a content-differing worktree fwf-gate.sh fires the hint" "$DIFF_OUT" "issue #277"
-assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT/fwf-gate.sh\""
+# issue #337 (third occurrence of this class): the hint names the RESOLVED
+# worktree path, because the gate resolves it. On macOS /var is a symlink to
+# /private/var (as /tmp is to /private/tmp), so comparing against the
+# unresolved $G277_WT never matches and this read as a failure on every macOS
+# run. Pre-existing in #277's test, invisible until the suite could finish on
+# macOS. Compare resolved-to-resolved; `pwd -P` is a no-op on Linux.
+G277_WT_REAL="$(cd "$G277_WT" && pwd -P)"
+assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT_REAL/fwf-gate.sh\""
 assert_contains "AC(c): safety-equivalence is stated CONDITIONALLY, never flatly" "$DIFF_OUT" "PROVIDED your diff does not touch the locking path"
 assert_contains "AC(c): names the lock files to verify before trusting the result" "$DIFF_OUT" "gate-lock/<role>/owner"
 assert_contains "AC(d): the wrapped command still ran (hint never gates)"        "$DIFF_OUT" "hi"

@@ -159,23 +159,34 @@ JQ
 
 cmd_sweep() {
   local items now rows n id_fn
+  # #291 AC(a)/(d), operator follow-up: the failure must also be visible on
+  # STDOUT, not stderr alone. Returning 1 with an EMPTY stdout is still
+  # "an empty sweep" to anyone reading the output -- the exact shape this
+  # ticket exists to kill -- and it made the AC(a)/(d) assertion vacuous
+  # (#275 (a5) correctly refuses to pass on an empty haystack). Print the
+  # UNKNOWN marker on both streams; still return 1.
+  _sweep_unknown() { # $1=detail
+    echo "UNKNOWN: sweep could not be completed -- $1 (this is NOT an empty sweep)"
+    echo "fwf flag-captain: $1 (UNKNOWN, not empty)" >&2
+    return 1
+  }
   now="$(date -u +%s)"
   # #291 AC(a): a read/parse failure anywhere in this chain must exit
   # non-zero and say so on stderr -- NEVER fall through to "no needs-captain
   # flags open", which is indistinguishable from a genuinely empty sweep.
   if [ "$FWF_ISSUES" = "local" ]; then
     items="$(local_flagged_items)" \
-      || { echo "fwf flag-captain: sweep could not enumerate local flags (UNKNOWN, not empty)" >&2; return 1; }
+      || { _sweep_unknown "could not enumerate local flags"; return 1; }
     id_fn=local_id
   else
     items="$(gh_flagged_items)" \
-      || { echo "fwf flag-captain: sweep could not enumerate flags (UNKNOWN, not empty)" >&2; return 1; }
+      || { _sweep_unknown "could not enumerate flags"; return 1; }
     id_fn=gh_id
   fi
   rows="$(jq -c --argjson now "$now" "$SWEEP_FILTER" <<<"$items")" \
-    || { echo "fwf flag-captain: sweep filter failed (UNKNOWN, not empty)" >&2; return 1; }
+    || { _sweep_unknown "sweep filter failed"; return 1; }
   n="$(jq 'length' <<<"$rows")" \
-    || { echo "fwf flag-captain: sweep count failed (UNKNOWN, not empty)" >&2; return 1; }
+    || { _sweep_unknown "sweep count failed"; return 1; }
   if [ "$n" = 0 ]; then echo "no needs-captain flags open"; return 0; fi
   jq -r '.[] | "\(.number)\t[\(.role)]\t\(.reason)\t\(.age)"' <<<"$rows" | \
   while IFS=$'\t' read -r num role reason age; do
