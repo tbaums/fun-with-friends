@@ -11,6 +11,32 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-08-29
+
+**The CI-comes-home release.** GitHub Actions evicted five jobs today and was red more often than green, so CI moved onto the factory box: the suite runs on our own hardware, records its own verdict, and the promotion gate reads that instead of waiting. Alongside it, three defects that had each silently blocked the whole floor.
+
+### Added
+- **`fwf scale --pairs N` reconciles pairs on a LIVE floor** (#210, code a993393, docs a993393) — resizing used to require a full bounce.
+- **`fwf pr-route-check` flags an unrouted PR before it silently strands** (#385, code 340b4b7, docs 340b4b7) — a PR opened outside the implementer flow has no `fwf-Reviewer:` marker, so every QA seat correctly skips it and *nothing* signals that it will never be reviewed. Caught on its second occurrence.
+- **Local CI: the suite runs on the factory box by default** (code 41d0ae4, docs none — internal) — consults our own verdict for the SHA, then ci.yml's, and only then runs the suite and **records** the result so the next consult by any role is a cache hit. Explicitly **not** a self-hosted Actions runner: this repo is public, and a registered runner would execute fork-PR code on a box holding the factory OAuth token, tailnet access and SSH keys.
+
+### Fixed
+- **`stranded_assignments_json`'s jq never compiled** (#309, code d343ba0, docs none — internal) — `capture(...)?.role` is invalid jq, so the whole program was a compile error, `2>/dev/null` swallowed it, and the function returned `{"unknown":false,"count":0,"issues":[]}`. It claimed it had checked the floor without parsing a single comment. It shipped in 9104ac4 with its own seven acceptance tests red, so every branch cut from staging afterwards inherited a failing suite.
+- **The conductor re-ran the whole suite on a SHA already tested** (code 7c09582, docs none — internal) — measured cycles of 35/53/17/42/38/47/21 min against a designed 2 min, with 3 of 7 verdicts `STALE` because staging moved mid-run. `integration` starved 8 commits behind for four hours.
+- **The E2E-lock PID-reuse guard refused after a resource wait** (#375, code 93cde53, docs none — internal) — the `acquired` stamp was taken before an up-to-900s wait, so the guard mis-timed exactly as #195 did on the gate lock.
+- **Version-coupled dash golden drift** (#307, code bb4f6f9, docs none — internal) — the goldens embedded a version literal and broke on *every* bump; hand-blessed four times in 24h before this.
+- **`fwf flag-captain sweep` was scoped `--state open`** (#374, code 06de8af, docs 06de8af) — closing an item silently destroyed a live flag.
+- **Authorization is enforced at the point of action** (#207, code 1f4f14e, docs 1f4f14e) — `fwf merge` refuses on a non-AUTHORIZED linked issue.
+
+### Changed
+- **The GV has a filing bar** (code d55056c, docs none — internal) — a finding is not automatically a ticket. File on an **observed** failure with evidence; stale comments, unreproduced hypotheses and restatements of shipped fixes go in the review comment. #169's idle-backfill sends an idle reviewer looking for work, and with no bar the floor was filing against itself.
+- **The release gate degrades to advisory while ci.yml is disabled** (code f3e3f43, docs f3e3f43) — an absent context is refused exactly like a failing one, so with CI off this would have blocked every release forever. It re-arms automatically if ci.yml is re-enabled; the blocking gate is now a two-runner local green before tagging.
+
+### Internal
+- **#218's shipped fix described in past tense** (#382, code 3d06921, docs none — internal).
+- **`FWF_PANE_ENV` forwarding into an existing pane covered** (#312, code 4f13cfd, docs none — internal).
+- **#210's AC(c) fixture asserts its re-scale-up precondition** (#387, code fb15486, docs none — internal) — it was discarded, so the assertion could pass without its setup holding.
+
 ## [0.38.0] - 2026-08-29
 
 **The guard-that-refused-itself release.** v0.37.0 was tagged but never published: its release run failed twice on one test, and that test turned out to be reporting a real defect in the reap path's own PID-reuse guard. The guard blocked every open PR — including a doc-only one — before it was found.
