@@ -142,6 +142,13 @@ SURVEY_EXCLUDE_COORD="${FWF_SURVEY_EXCLUDE_COORD:-$WIP_LABEL $HOLD_LABEL $TRACKI
 # incident this closes). Carrier is a label + a NEEDS-CAPTAIN: comment — see
 # fwf-flag-captain.sh and docs/needs-captain.md.
 NEEDS_CAPTAIN_LABEL="${FWF_NEEDS_CAPTAIN_LABEL:-needs-captain}"
+# Operator→captain channel (issue #192): `fwf operator-decision <n> <text>`
+# writes an attributable artifact (an issue/PR comment) delivering a human
+# decision when the board keypress isn't available; `--floor` posts to this
+# configured coordination issue instead of naming one. Empty by default —
+# --floor refuses (rather than guessing a destination) until a profile sets
+# it. See fwf-operator-decision.sh and docs/operator-decision.md.
+FLOOR_ISSUE="${FWF_FLOOR_ISSUE:-}"
 # How long fwf-up / fwf-respawn wait for claude to boot in a pane before sending a prompt.
 FWF_BOOT_TIMEOUT="${FWF_BOOT_TIMEOUT:-45}"
 
