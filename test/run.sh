@@ -2755,8 +2755,79 @@ EOF
     "$F146_NEW_SHA" "$(git -C "$F146WT/ex-captain" rev-parse HEAD 2>/dev/null)"
   tmux kill-session -t "${F146SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F146SESS}-build" 2>/dev/null
+
+  # --------------------------------------------------------------------------
+  # issue #190: `fwf up --pairs N` on a live floor fails loudly instead of
+  # silently discarding N and exiting 0. A 2-pair floor, real tmux/worktrees,
+  # matching this section's own established fixture shape (F85REPO/F85CLAUDE).
+  F190WT="$TMP/wt190"
+  # impl3/qa3 worktrees exist too (unused) -- fwf-up.sh's own worktree-
+  # existence check runs BEFORE this ticket's live-floor mismatch check and
+  # validates for whatever --pairs was actually requested, so a --pairs 3
+  # test against a 2-pair floor would otherwise fail on a MISSING-worktree
+  # error rather than exercising the mismatch path this section tests.
+  mkdir -p "$F190WT/ex-impl1" "$F190WT/ex-qa1" "$F190WT/ex-impl2" "$F190WT/ex-qa2" "$F190WT/ex-impl3" "$F190WT/ex-qa3" "$F190WT/ex-conductor" "$F190WT/ex-pm" "$F190WT/ex-gv" "$F190WT/ex-captain"
+  F190RUN="$TMP/run190"; mkdir -p "$F190RUN/state/example"
+  printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tqueue empty; nothing in flight\n' \
+    > "$F190RUN/state/example/floor-events.log"
+  F190SESS="fwf-selftest-190-$$"
+  f190up() { # extra env (may be empty), positional args to fwf-up.sh
+    env FWF_PROFILE=example FWF_RUN_DIR="$F190RUN" FWF_SESSION="$F190SESS" FWF_MIN_FREE_GB=0 \
+        FWF_REPO="$F85REPO" FWF_WT_BASE="$F190WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=2 \
+        FWF_SKIP_BOOT_GATE=1 "$@"
+  }
+  # cold start: 2-pair floor comes up (AC e regression guard lives here too --
+  # a cold floor's --pairs must still create N pairs, unaffected by this
+  # ticket; this same call IS that path, no live-floor branch taken yet).
+  f190up "$ROOT/fwf-up.sh" --build-only >/dev/null 2>&1
+  assert_eq "(#190 e) cold floor: fwf-up.sh --build-only creates the requested 2 pairs" "0" \
+    "$([ -d "$F190WT/ex-impl1" ] && tmux has-session -t "${F190SESS}-build" 2>/dev/null; echo $?)"
+
+  # (d) regression: a bare `fwf up` (no --pairs, so FWF_PAIRS_REQUESTED unset)
+  # on this now-live floor behaves EXACTLY as before -- still a silent,
+  # exit-0 no-op, never the new failure.
+  rc=0; f190up "$ROOT/fwf-up.sh" --build-only >/dev/null 2>&1 || rc=$?
+  assert_eq "(#190 d) no --pairs on a live floor: unchanged, still exits 0" "0" "$rc"
+
+  # (c) discriminating test: --pairs matching the ALREADY-running count
+  # succeeds (this must exist, or (a) below could be satisfied by simply
+  # failing on every --pairs regardless of the value).
+  rc=0; OUT="$(f190up env FWF_PAIRS_REQUESTED=1 "$ROOT/fwf-up.sh" --build-only 2>&1)" || rc=$?
+  assert_eq "(#190 c) --pairs 2 on an already-2-pair live floor: exits 0" "0" "$rc"
+  assert_contains "(#190 c) reports the floor already matches the requested count" "$OUT" "already up running the requested 2"
+
+  # (a)/(b) the acceptance criterion: --pairs 3 on the live 2-pair floor
+  # fails loudly, names 2 (current), 3 (requested), and the (destructive)
+  # corrective command -- never a silent, exit-0 no-op.
+  rc=0; OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F190RUN" FWF_SESSION="$F190SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F190WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=3 FWF_PAIRS_REQUESTED=1 \
+      FWF_SKIP_BOOT_GATE=1 "$ROOT/fwf-up.sh" --build-only 2>&1)" || rc=$?
+  assert_eq "(#190 a) --pairs 3 on a live 2-pair floor: exits non-zero" "1" "$rc"
+  assert_contains "(#190 a) names the CURRENT count (2)" "$OUT" "running 2 pair(s)"
+  assert_contains "(#190 a) names the REQUESTED count (3)" "$OUT" "requested 3 was NOT applied"
+  assert_contains "(#190 a) names the corrective command" "$OUT" "fwf up --build-only"
+  assert_contains "(#190 b) states the DESTRUCTIVE consequence, not just the flag" "$OUT" "KILLS every in-flight"
+  assert_eq "(#190 g) the refusal touched no session -- pane count unchanged (still 2 pairs)" "2" \
+    "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_running_pair_count '${F190SESS}-build'")"
+
+  # (h) a half-present index (mid-respawn shape: impl2 present, qa2 not) is
+  # UNKNOWN, never a confident (and wrong) lower number -- and --pairs on
+  # that floor refuses saying so, not "current 1, requested N".
+  F190_QA2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F190SESS}-build' 'QA2 ·'")"
+  [ -n "$F190_QA2_PANE" ] && tmux kill-pane -t "$F190_QA2_PANE" 2>/dev/null
+  assert_eq "(#190 h) fwf_running_pair_count reports unknown for a half-present index" "unknown" \
+    "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_running_pair_count '${F190SESS}-build'")"
+  rc=0; OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F190RUN" FWF_SESSION="$F190SESS" FWF_MIN_FREE_GB=0 \
+      FWF_REPO="$F85REPO" FWF_WT_BASE="$F190WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=2 FWF_PAIRS_REQUESTED=1 \
+      FWF_SKIP_BOOT_GATE=1 "$ROOT/fwf-up.sh" --build-only 2>&1)" || rc=$?
+  assert_eq "(#190 h) --pairs on a half-present floor: exits non-zero" "1" "$rc"
+  assert_contains "(#190 h) names it inconsistent/unknown, never a guessed number" "$OUT" "inconsistent pair state"
+
+  tmux kill-session -t "${F190SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F190SESS}-build" 2>/dev/null
 else
   skip "real-tmux floor-lifecycle wiring tests (tmux not installed)" 60
+  skip "real-tmux issue #190 --pairs live-floor tests (tmux not installed)" 10
 fi
 
 section "floor-down cooldown guard (issue #88, per-plane by #105): fwf_plane_last_up_epoch / fwf_plane_cooldown_remaining"

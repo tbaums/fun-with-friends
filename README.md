@@ -789,7 +789,15 @@ wins.
                      validation; see docs/validate-factory.md). A template can
                      declare EXTRA roles (FWF_EXTRA_ROLES) and inherit prompts
                      from a base (FWF_TEMPLATE_BASE). List them: fwf templates
---pairs N            number of implementer/QA pairs (default 3; refactor: 2)
+--pairs N            number of implementer/QA pairs (default 3; refactor: 2).
+                     On a LIVE build floor, `fwf up --pairs N` where N
+                     differs from the running count now FAILS LOUDLY
+                     (non-zero exit, names the current/requested counts and
+                     the destructive `fwf up --build-only` path that would
+                     apply it) instead of silently discarding N and
+                     exiting 0 — issue #190. Resizing a live floor without
+                     disturbing in-flight work is a separate, not-yet-built
+                     feature (`fwf scale`, issue #210).
 --model M            model for every agent (claude --model M)
 --impl-model M       per-role override; likewise --qa-model, --pm-model,
                      --gv-model, --captain-model, --conductor-model
