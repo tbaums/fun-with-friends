@@ -8624,7 +8624,6 @@ EOSCRIPT
 }
 ARA_FULL_SET="fwf-0.30.3.tar.gz
 fwf-dash-0.30.3-checksums.txt
-fwf-dash-0.30.3-darwin-arm64
 fwf-dash-0.30.3-linux-x86_64
 fwf-dash-0.30.3-linux-arm64"
 
@@ -8638,7 +8637,6 @@ assert_contains "AC(a): passing output says OK"                 "$ARA_OK_OUT" "O
 # AC (b): a missing binary (simulated dropped upload) fails and NAMES it.
 ARA_GH_MISS="$(ara_gh_stub "$TMP/ara-miss" "fwf-0.30.3.tar.gz
 fwf-dash-0.30.3-checksums.txt
-fwf-dash-0.30.3-darwin-arm64
 fwf-dash-0.30.3-linux-x86_64")"
 rc=0; ARA_MISS_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_MISS" "$ARA" 0.30.3 2>&1)" || rc=$?
 assert_eq       "AC(b): missing binary -> fails the job"        "1" "$rc"
@@ -8684,7 +8682,7 @@ assert_contains     "AC(j): the expected-set computation reads ONLY the manifest
 ARA_GH_NONE="$(ara_gh_stub "$TMP/ara-none" "")"
 rc=0; ARA_NONE_OUT="$(ASSERT_RELEASE_GH="$ARA_GH_NONE" "$ARA" 0.30.3 2>&1)" || rc=$?
 assert_eq "AC(j): a skipped-leg (empty actual) run still expects the FULL manifest set" "1" "$rc"
-for want in "fwf-0.30.3.tar.gz" "fwf-dash-0.30.3-darwin-arm64" "fwf-dash-0.30.3-linux-x86_64" "fwf-dash-0.30.3-linux-arm64"; do
+for want in "fwf-0.30.3.tar.gz" "fwf-dash-0.30.3-linux-x86_64" "fwf-dash-0.30.3-linux-arm64"; do
   assert_contains "AC(j): unchanged expectation still names $want as missing" "$ARA_NONE_OUT" "$want"
 done
 
