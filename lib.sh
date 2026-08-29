@@ -1895,6 +1895,11 @@ _fwf_ps_elapsed_secs() { # $1=pid
   printf '%s' "$(( 10#$d*86400 + 10#$h*3600 + 10#$m*60 + 10#$sec ))"
 }
 
+# Slop allowed when reconstructing a pgid's start time from `ps -o etime=`
+# (whole-second resolution) against the lock's own `acquired` stamp. See the
+# comment at the comparison site in _fwf_kill_orphan_group (issue #195).
+: "${_FWF_PGID_START_SLOP:=2}"
+
 _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
   local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid elapsed now start_epoch anc
   [ "$pgleader" = 1 ] || return 0
@@ -1952,7 +1957,19 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
           etimes="$elapsed"
         now="$(date +%s)"
         start_epoch=$(( now - etimes ))
-        if [ "$start_epoch" -gt "$acquired" ]; then
+        # MEASUREMENT TOLERANCE, not a policy relaxation (issue #195).
+        # `pgid` is stamped into the owner file at the same moment as
+        # `acquired`, so for the REAL holder the two are the same instant.
+        # But start_epoch is reconstructed as now - $(ps -o etime=), and
+        # `ps` reports whole seconds while `now` is sampled after that call,
+        # carrying ~1s of error -- so the genuine holder routinely measures
+        # 1s "after" its own lock. That is what made AC(c) refuse a correct
+        # reap on hosted runners (4 of 5 runs) while passing on the devbox
+        # and macOS, where both events land inside the same second.
+        # Real PID/PGID reuse recycles a number only after the holder died,
+        # which is many seconds out -- far outside this window -- so the
+        # guard still fails closed for the case it exists to catch.
+        if [ "$start_epoch" -gt "$(( acquired + _FWF_PGID_START_SLOP ))" ]; then
           echo "fwf#195: refusing to signal pgid $pgid -- it started AFTER this lock's own acquisition (pid start ~$start_epoch > lock acquired $acquired), so it is NOT the recorded holder's group (PID/PGID reuse) — this is a lock-protocol anomaly, not reaped" >&2
           return 0
         fi
