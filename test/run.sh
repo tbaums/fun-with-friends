@@ -1241,7 +1241,7 @@ section "fwf supervise: AC(f2) — the mirror of (f)/(d), a genuinely WEDGED+rea
 # is stubbed, since actually hot-swapping a tmux pane is out of scope here.
 F2ISO="$TMP/f2iso"; mkdir -p "$F2ISO/lib" "$F2ISO/profiles"
 cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F2ISO/"
-cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F2ISO/lib/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F2ISO/lib/"
 cp "$ROOT/profiles/example.sh" "$F2ISO/profiles/"
 ln -sf "$ROOT/templates" "$F2ISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
 ln -sf "$ROOT/fwf-pane-liveness.sh" "$F2ISO/fwf-pane-liveness.sh"
@@ -2321,7 +2321,7 @@ EOS
   # the breaker every pass would call fwf-respawn.sh again.
   F217ISO="$TMP/f217iso"; mkdir -p "$F217ISO/lib" "$F217ISO/profiles"
   cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F217ISO/"
-  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$F217ISO/lib/"
+  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F217ISO/lib/"
   cp "$ROOT/profiles/example.sh" "$F217ISO/profiles/"
   ln -sf "$ROOT/templates" "$F217ISO/templates"
   ln -sf "$ROOT/fwf-usage-data.sh" "$F217ISO/fwf-usage-data.sh"
@@ -3830,7 +3830,7 @@ assert_eq "issue #174 (p1): fwf_write_role_prompt ALSO stamps the commit it rend
 section "fwf_prompt_drift_verdict: CURRENT / STALE / UNKNOWN against fwf's OWN repo state (issue #174)"
 PDISO="$TMP/prompt-drift-iso"; mkdir -p "$PDISO/lib" "$PDISO/profiles"
 cp "$ROOT/config.sh" "$ROOT/lib.sh" "$PDISO/"
-cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$PDISO/lib/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$PDISO/lib/"
 cp "$ROOT/profiles/example.sh" "$PDISO/profiles/"
 ln -s "$ROOT/templates" "$PDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
 printf '%s' "$REALV" > "$PDISO/VERSION"
@@ -4563,7 +4563,7 @@ assert_eq "reports the real tracked VERSION file" "$REALV" \
 # copy, so config.sh's own BASH_SOURCE resolves there instead.
 DDISO="$TMP/dd-isolated-home"; mkdir -p "$DDISO/lib" "$DDISO/profiles"
 cp "$ROOT/config.sh" "$ROOT/lib.sh" "$ROOT/fwf-dash-data.sh" "$DDISO/"
-cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$DDISO/lib/"
+cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$DDISO/lib/"
 cp "$ROOT/profiles/example.sh" "$DDISO/profiles/"
 ln -s "$ROOT/templates" "$DDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
 DDISO_DD="$DDISO/fwf-dash-data.sh"
@@ -8156,7 +8156,7 @@ section "fwf-gate.sh (issue #277 AC a1/b/c/d): hints the by-path workaround only
 G277_WT="$TMP/gate277-worktree"; mkdir -p "$G277_WT/lib" "$G277_WT/profiles"
 ( cd "$G277_WT" && git init -q && git config user.email t@t.co && git config user.name t )
 cp "$ROOT/fwf-gate.sh" "$ROOT/lib.sh" "$ROOT/config.sh" "$G277_WT/"
-cp "$ROOT/lib/detect.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile.sh" "$ROOT/lib/version_check.sh" "$G277_WT/lib/"
+cp "$ROOT/lib/detect.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile.sh" "$ROOT/lib/version_check.sh" "$ROOT/lib/profile-sandbox.sh" "$G277_WT/lib/"
 cp "$ROOT/profiles/example.sh" "$G277_WT/profiles/"
 ln -s "$ROOT/templates" "$G277_WT/templates"
 printf '%s' "$(cat "$ROOT/VERSION")" > "$G277_WT/VERSION"
@@ -8257,11 +8257,18 @@ E_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/func_hijack.sh" bash -c '
 assert_eq "AC(e): a profile function redefinition has no effect on the calling process" "UNCHANGED" "$E_OUT"
 
 # --- AC(f0): a forged import channel changes nothing ------------------------
-F0_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/forge.sh" bash -c 'source lib.sh; echo "${FWF_ISSUES:-UNSET}"')"
-assert_eq "AC(f0): bytes a profile writes to its own fd never reach the import channel" "UNSET" "$F0_OUT"
+# lib.sh defaults FWF_ISSUES to 'gh' AFTER profile resolution (line ~112)
+# whether or not anything set it -- so the discriminating check is that the
+# forged 'local' value never took, not that the var stayed unset.
+F0_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/forge.sh" bash -c 'source lib.sh; echo "$FWF_ISSUES"')"
+assert_eq "AC(f0): bytes a profile writes to its own fd never reach the import channel (falls back to the real default, not the forged 'local')" "gh" "$F0_OUT"
 
 # --- AC(f1): profiles are data, not code -------------------------------------
-assert_not_contains "AC(f1): the tracked example profile defines no functions" "$(cat "$ROOT/profiles/example.sh")" "() {"
+# Exclude comment lines -- profiles/example.sh documents a commented-out
+# seed_data() example ("# seed_data() { ... }"), which must not itself count
+# as a live function definition.
+EX_FUNCS="$(grep -vE '^[[:space:]]*#' "$ROOT/profiles/example.sh" | grep -c '() {' || true)"
+assert_eq "AC(f1): the tracked example profile defines no LIVE functions (comments don't count)" "0" "$EX_FUNCS"
 
 # --- AC(f): denylisted keys are refused outright, not silently dropped ------
 F_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/deny.sh" bash -c 'source lib.sh' 2>&1)"; F_RC=$?
