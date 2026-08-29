@@ -9,6 +9,13 @@
 # To target a repo manually: copy this to profiles/<name>.sh, fill in the values,
 # and launch with `fwf --profile <name> up`. Every value is overridable by the
 # matching FWF_* env var.
+#
+# Alternative (issue #188): a profile can instead live IN the target repo, at
+# $FWF_REPO/.fwf/<name>.sh, so it's versioned and reviewed there instead of as
+# untracked local state here. It runs through a sandboxed import (only a
+# fixed allowlist of values comes back; two authorization-critical names are
+# refused outright) — see docs/repo-profiles.md for the trust model and the
+# resolution order (explicit path > in-tree > auto-detected).
 
 FWF_REPO="${FWF_REPO:-$HOME/your-repo}"     # the application repo (source of truth)
 WT_PREFIX="${FWF_WT_PREFIX:-ex}"            # worktrees: ${WT_PREFIX}-impl1, -qa1, -pm, -conductor

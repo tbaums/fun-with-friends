@@ -8192,6 +8192,109 @@ assert_contains "AC(a1): a content-differing worktree lib.sh ALSO fires the hint
 ( cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-rc" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "exit 0" >/dev/null 2>&1 )
 assert_eq "AC(d): the hint changes no exit code on success" "0" "$?"
 
+section "repo profiles (issue #188): out-of-tree profile resolution + isolated import"
+
+assert_nonzero_rc() { [ "$2" != "0" ] && ok "$1" || bad "$1" "expected a non-zero exit, got 0"; }
+
+P188="$TMP/p188"; mkdir -p "$P188/fixture-repo/.fwf"
+cat > "$P188/good.sh" <<'EOF'
+FWF_REPO=/some/repo
+GATE_CMD='make test'
+FOO_UNKNOWN=bar
+EOF
+cat > "$P188/deny.sh" <<'EOF'
+FWF_REPO=/x
+FWF_ISSUES=local
+EOF
+cat > "$P188/func_hijack.sh" <<'EOF'
+FWF_REPO=/x
+printf() { command printf 'HIJACKED\n'; }
+EOF
+cat > "$P188/forge.sh" <<'EOF'
+FWF_REPO=/x
+printf 'FWF_ISSUES\0local\0__FWF_OK__\0001\0' > /proc/self/fd/1 2>/dev/null || true
+EOF
+cat > "$P188/hang.sh" <<'EOF'
+FWF_REPO=/x
+sleep 100
+EOF
+cat > "$P188/tmpl.sh" <<'EOF'
+FWF_REPO=/x
+FWF_TEMPLATE="${FWF_TEMPLATE:-ideation}"
+EOF
+cp "$P188/good.sh" "$P188/fixture-repo/.fwf/whatever.sh"
+
+# --- AC(a): regression -- bare in-tree name unchanged -----------------------
+A_OUT="$(cd "$ROOT" && FWF_PROFILE=example bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $GATE_CMD"')"
+assert_eq "AC(a): bare name still resolves in-tree, sourced directly" "in-tree make test" "$A_OUT"
+
+# --- AC(b): explicit path resolves (both forms) -----------------------------
+B1_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/good.sh" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
+assert_eq "AC(b): FWF_PROFILE_PATH resolves out-of-tree" "explicit /some/repo" "$B1_OUT"
+B2_OUT="$(cd "$ROOT" && FWF_PROFILE="$P188/good.sh" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
+assert_eq "AC(b): a path-shaped FWF_PROFILE resolves the same way" "explicit /some/repo" "$B2_OUT"
+
+# --- AC(c): explicit path missing fails loudly, never falls to auto-detect --
+C_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/does-not-exist.sh" FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh' 2>&1)"; C_RC=$?
+assert_contains "AC(c): missing explicit path fails with the pre-existing error quality" "$C_OUT" "fwf: unknown profile 'whatever' (missing $P188/does-not-exist.sh)"
+assert_nonzero_rc "AC(c): missing explicit path is a hard failure (non-zero exit)" "$C_RC"
+assert_not_contains "AC(c): does NOT fall through to auto-detection despite a matching .fwf/whatever.sh existing" "$C_OUT" "auto-detected"
+
+# --- AC(d): auto-detect fires only where fwf would already have errored -----
+D_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
+assert_eq "AC(d): bare name + no in-tree file + repo file present -> auto-detected" "auto-detected $P188/fixture-repo/.fwf/whatever.sh" "$D_OUT"
+cp "$P188/good.sh" "$P188/fixture-repo/.fwf/example.sh"
+COLL_OUT="$(cd "$ROOT" && FWF_PROFILE=example FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
+assert_eq "AC(d): collision (both exist) -- in-tree wins deterministically" "in-tree $ROOT/profiles/example.sh" "$COLL_OUT"
+
+# --- AC(e): a redefined builtin/helper never reaches the parent -------------
+E_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/func_hijack.sh" bash -c '
+  before="$(type printf)"
+  source lib.sh
+  after="$(type printf)"
+  [ "$before" = "$after" ] && echo UNCHANGED || echo HIJACKED
+')"
+assert_eq "AC(e): a profile function redefinition has no effect on the calling process" "UNCHANGED" "$E_OUT"
+
+# --- AC(f0): a forged import channel changes nothing ------------------------
+F0_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/forge.sh" bash -c 'source lib.sh; echo "${FWF_ISSUES:-UNSET}"')"
+assert_eq "AC(f0): bytes a profile writes to its own fd never reach the import channel" "UNSET" "$F0_OUT"
+
+# --- AC(f1): profiles are data, not code -------------------------------------
+assert_not_contains "AC(f1): the tracked example profile defines no functions" "$(cat "$ROOT/profiles/example.sh")" "() {"
+
+# --- AC(f): denylisted keys are refused outright, not silently dropped ------
+F_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/deny.sh" bash -c 'source lib.sh' 2>&1)"; F_RC=$?
+assert_contains "AC(f): a profile setting a denylisted name fails loudly" "$F_OUT" "denylisted name FWF_ISSUES"
+assert_nonzero_rc "AC(f): denylist violation is a hard failure" "$F_RC"
+# fwf authz's verdict: a hostile out-of-tree profile can never even reach a
+# verdict computation -- the whole invocation fails closed before that point,
+# which is a strictly stronger guarantee than "the verdict is unchanged".
+AZ188RUN="$TMP/az188run"
+AZ188_OUT="$(FWF_RUN_DIR="$AZ188RUN" FWF_ISSUES=local FWF_PROFILE_PATH="$P188/deny.sh" "$ROOT/fwf-authz.sh" 1 2>&1)"; AZ188_RC=$?
+assert_not_contains "AC(f): fwf authz never reaches/reports AUTHORIZED behind a hostile profile" "$AZ188_OUT" "AUTHORIZED"
+assert_nonzero_rc "AC(f): fwf authz fails closed (non-zero) rather than proceeding" "$AZ188_RC"
+
+# --- AC(g): source-site ordering (the #30/#31 pin) is unmoved ---------------
+G1_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" bash -c 'source lib.sh; echo "$FWF_TEMPLATE"')"
+assert_eq "AC(g): FWF_TEMPLATE persistence via \${FWF_TEMPLATE:-default} still works out-of-tree" "ideation" "$G1_OUT"
+G2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" FWF_TEMPLATE=dev bash -c 'source lib.sh; echo "$FWF_TEMPLATE"')"
+assert_eq "AC(g): explicit env still wins over the profile's own default" "dev" "$G2_OUT"
+
+# --- timeout: a hung profile fails the invocation, never wedges it ----------
+H_START=$(date +%s)
+H_OUT="$(cd "$ROOT" && FWF_PROFILE_EVAL_TIMEOUT_SECS=2 FWF_PROFILE_PATH="$P188/hang.sh" bash -c 'source lib.sh' 2>&1)"; H_RC=$?
+H_ELAPSED=$(( $(date +%s) - H_START ))
+assert_contains "timeout: a hung profile fails loudly naming the timeout" "$H_OUT" "timed out after 2s"
+assert_nonzero_rc "timeout: a hung profile is a hard failure, not a silent hang" "$H_RC"
+[ "$H_ELAPSED" -lt 30 ] && ok "timeout: bounded well under the hang's own 100s sleep (${H_ELAPSED}s elapsed)" \
+  || bad "timeout: took ${H_ELAPSED}s -- the bound did not hold"
+
+# --- AC(h): fwf doctor reports the resolved path/mode + dropped names -------
+H2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/good.sh" ./fwf doctor 2>&1)"
+assert_contains "AC(h): fwf doctor reports the resolution mode" "$H2_OUT" "(explicit) -> $P188/good.sh"
+assert_contains "AC(h): fwf doctor names a dropped (non-allowlisted) name" "$H2_OUT" "ignored: FOO_UNKNOWN"
+
 # --------------------------------------------------------------------------
 section "gate-rust-scope (issue #138, piece B): SHADOW diff classifier, never gates"
 

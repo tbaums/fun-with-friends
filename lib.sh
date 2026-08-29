@@ -17,10 +17,21 @@ FWF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$FWF_LIB_DIR/config.sh"
 
 PROFILE="${FWF_PROFILE:-example}"
-PROFILE_FILE="$FWF_LIB_DIR/profiles/$PROFILE.sh"
-[ -f "$PROFILE_FILE" ] || { echo "fwf: unknown profile '$PROFILE' (missing $PROFILE_FILE)" >&2; exit 1; }
-# shellcheck source=/dev/null  # profile path is resolved at runtime
-source "$PROFILE_FILE"
+# shellcheck source=lib/profile-sandbox.sh
+source "$FWF_LIB_DIR/lib/profile-sandbox.sh"
+fwf_profile_resolve "$FWF_LIB_DIR" "$PROFILE"
+# In-tree profiles/*.sh share the fwf install's trust domain and are sourced
+# directly, unchanged. An explicit or auto-detected profile is out-of-tree --
+# arbitrary repo bash must never execute in this process (every fwf-*.sh
+# entrypoint sources lib.sh unconditionally, including fwf-authz.sh), so it
+# is evaluated in an isolated child that reports back only plain, allowlisted
+# values (issue #188; see lib/profile-sandbox.sh for the full trust model).
+if [ "$FWF_PROFILE_RESOLUTION_MODE" = "in-tree" ]; then
+  # shellcheck source=/dev/null  # profile path is resolved at runtime
+  source "$PROFILE_FILE"
+else
+  fwf_profile_eval_isolated "$PROFILE_FILE" || exit 1
+fi
 
 # Resolve the factory template: the directory of role prompts the panes run.
 # The dev fallback applies HERE, after the profile loads (issue #30) — config.sh
