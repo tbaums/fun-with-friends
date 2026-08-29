@@ -9365,6 +9365,30 @@ rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FRE
         "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
 
+# --- issue #298: FWF_GATE_FORCE must not leak into anything the wrapped
+# command itself forks -- env vars inherit transitively, and a NESTED
+# fwf-gate.sh --tip-cmd call (exactly test/run.sh's own #202 section, when
+# the OUTER gate wrapping "bash test/run.sh" was itself force-resumed) must
+# still see its OWN unchanged-tip skip fire normally, not force-bypassed by
+# the outer invocation's ambient var.
+# f202role already carries a terminal (RED) marker for the repo's current
+# tip, from the prior section -- an ordinary (unforced) re-gate of it must
+# skip immediately (rc 75); that is the exact behavior FWF_GATE_FORCE
+# leaking into this nested call would defeat.
+NESTED_OUT="$(cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
+  "$ROOT/fwf-gate.sh" f202outer --tip-cmd "git rev-parse HEAD" -- bash -c \
+  "FWF_RUN_DIR='$F202RUN' FWF_PROFILE=example FWF_MIN_FREE_GB=0 '$ROOT/fwf-gate.sh' f202role --tip-cmd 'git rev-parse HEAD' -- true; echo NESTED_RC=\$?" 2>&1)"
+assert_contains "(#298) the NESTED gate call still skips its own unchanged tip (rc 75) -- FWF_GATE_FORCE did not leak from the outer invocation" \
+  "$NESTED_OUT" "NESTED_RC=75"
+case "$NESTED_OUT" in
+  *"NESTED_RC=0"*) bad "(#298) regression: FWF_GATE_FORCE leaked into the nested fwf-gate.sh call, forcing it past its own skip" ;;
+  *) ;;
+esac
+case "$(cat "$ROOT/fwf-gate.sh")" in
+  *"unset FWF_GATE_FORCE"*) ok "(#298) fwf-gate.sh's own source unsets FWF_GATE_FORCE before proceeding" ;;
+  *) bad "(#298) fwf-gate.sh's own source unsets FWF_GATE_FORCE before proceeding" ;;
+esac
+
 # --------------------------------------------------------------------------
 section "fwf gate: SHA-keyed, reviewer-readable verdict recording (issue #220 AC r/r0)"
 # The PRIOR clause a promotion-integrity check must satisfy: a gate invoked

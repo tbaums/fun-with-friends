@@ -489,7 +489,12 @@ not a per-role copy:
   role's memory — a captain-authored prompt guard with the same intent had
   silently stopped firing because nothing ever wrote its marker.
   `FWF_GATE_FORCE=1` forces a re-run of an otherwise-skippable unchanged tip
-  (`fwf_gate_tip_unchanged` / `fwf_gate_tip_record` in `lib.sh`).
+  (`fwf_gate_tip_unchanged` / `fwf_gate_tip_record` in `lib.sh`) — scoped to
+  that single invocation: `fwf-gate.sh` unsets it in its own process before
+  ever running the wrapped command, so it never leaks into anything that
+  command itself forks (issue #298 — this repo's own `bash test/run.sh`
+  gates itself via nested `fwf-gate.sh --tip-cmd` calls, which would
+  otherwise force-bypass their own unchanged-tip skip too).
 
   **The ruling is ancestry, not movement** (issue #254): if the watched ref
   moves DURING the run, "did the ref change" is the wrong question — a
