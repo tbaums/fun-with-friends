@@ -11747,8 +11747,13 @@ section "fwf-mem-admit: issue #156's own test suite is wired into the gating pat
 # without that risk; this section only asserts the WIRING exists, statically.
 assert_contains "ci.yml runs test/mem-admit-test.sh (issue #156's own suite)" \
   "$(cat "$ROOT/.github/workflows/ci.yml")" "bash test/mem-admit-test.sh"
-assert_contains "release.yml runs test/mem-admit-test.sh where releases are decided" \
-  "$(cat "$ROOT/.github/workflows/release.yml")" "bash test/mem-admit-test.sh"
+# CI moved off GitHub on 2026-08-29 (GitHub evicted 7 jobs and killed 4
+# releases), so release.yml no longer runs tests -- it packages only. The gate
+# did not go away, it moved to the machine that actually runs the suite: assert
+# the WIRING in fwf-local-ci.sh, which is what gates every release now via the
+# two-runner local green in RELEASING.md.
+assert_contains "local CI runs test/mem-admit-test.sh where releases are decided" \
+  "$(cat "$ROOT/fwf-local-ci.sh")" "bash \"$DIR/test/mem-admit-test.sh\""
 # (e): a workflow step that only LINTS the file (shellcheck/bash -n) does not
 # satisfy this — it must actually EXECUTE the suite's assertions.
 case "$(cat "$ROOT/.github/workflows/ci.yml")" in
