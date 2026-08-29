@@ -3701,11 +3701,22 @@ if command -v tmux >/dev/null 2>&1; then
   # way the real difference between the two callers is expressed. Default
   # F88_CLAIMS empty (no live claims) preserves this fixture's existing
   # "safe" default for every test that doesn't set it.
+  #
+  # issue #391 adds a SECOND "pr list" caller: --state all, fetching every
+  # non-open PR's branch to resolve a claim whose PR already merged/closed.
+  # Distinguished from the original --state open pr-count call by "--state
+  # all" in the args. Default F88_RESOLVED_PRS empty (no resolved PRs found)
+  # preserves every existing test's "still looks unpushed" behavior.
   F88GHSTUB="$TMP/gh88stub"; mkdir -p "$F88GHSTUB"
   cat > "$F88GHSTUB/gh" <<'EOS'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "pr list") echo "${F88_PR_COUNT:-0}";;
+  "pr list")
+    case "$*" in
+      *"--state all"*) printf '%s' "${F88_RESOLVED_PRS:-}" ;;
+      *) echo "${F88_PR_COUNT:-0}" ;;
+    esac
+    ;;
   "issue list")
     case "$*" in
       *"comments"*) printf '%s' "${F88_CLAIMS:-}" ;;
@@ -3820,7 +3831,7 @@ EOS
   # entirely. Reuses the SAME fwf-down.sh mechanism, not a new one.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   F147_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  F147OUT="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl9" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F147OUT="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9001"$'\t'"$F147_NOW"$'\t'"CLAIM impl9" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)" \
     || ok "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)"
   assert_contains "refusal names the claim window"  "$F147OUT" "claim window"
@@ -3835,7 +3846,7 @@ EOS
   # same role here would spuriously find a (just-stamped) signal.
   F147_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
   F147_OLD="$(date -u -d "@$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
-  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="$F147_OLD"$'\t'"CLAIM impl8" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9002"$'\t'"$F147_OLD"$'\t'"CLAIM impl8" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "build-only proceeds: old claim, no pane signal ever recorded (abandoned)" \
     || bad "build-only proceeds: old claim, no pane signal ever recorded (abandoned)"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: abandoned claim did not block" || ok "build session torn down: abandoned claim did not block"
@@ -3854,7 +3865,7 @@ EOS
   # pane-absent branch this test is actually about.
   printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
     "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl7.json"
-  env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+  env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9003"$'\t'"$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter" \
     || bad "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: confirmed-absent claimant did not block" || ok "build session torn down: confirmed-absent claimant did not block"
@@ -3872,7 +3883,7 @@ EOS
   # above for why a trusted usage cache is required to actually reach it.
   printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
     "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl5.json"
-  F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9004"$'\t'"$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)" \
     || ok "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)"
   assert_contains "refusal still names the claim window (WEDGED-but-present blocks)" "$F147OUT3" "claim window"
@@ -3886,11 +3897,41 @@ EOS
   mkdir -p "$F88TRUN/state/example/tick" "$F88TRUN/state/example/tick-watch"
   printf '5 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl6"
   echo 6 > "$F88TRUN/state/example/tick/impl6"   # ticked since the baseline -> HEALTHY
-  F147OUT2="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="$F147_OLD"$'\t'"CLAIM impl6" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F147OUT2="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9005"$'\t'"$F147_OLD"$'\t'"CLAIM impl6" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: claim is 15+ min old but the pane is still actively ticking" \
     || ok "build-only refused: claim is 15+ min old but the pane is still actively ticking"
   assert_contains "refusal still names the claim window (age alone did not decide it)" "$F147OUT2" "claim window"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (long-ticket refusal survives --force)" || bad "build session untouched (long-ticket refusal survives --force)"
+  tmux kill-session -t "${F88SESS}-build" 2>/dev/null   # done with this section's build session
+
+  # --- (1a-claim-391) issue #391: a claim whose PR is MERGED (or closed
+  # without merging) must NOT block, even though pr_count==0 makes it
+  # indistinguishable from "never pushed" under the OLD #147-only check --
+  # "no open PR" is not "no PR". Reuses the SAME fresh-claim, no-baseline-yet
+  # ambiguous-pane scenario as impl9's case above (which correctly still
+  # blocks with no resolved PR), so this pair isolates exactly the ONE new
+  # variable -- AC(3)'s own RED-before/GREEN-after fixture.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  F391_BEFORE="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9006"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+    && bad "#391 baseline: still refuses with NO resolved PR (fresh claim, no pane signal yet)" \
+    || ok "#391 baseline: still refuses with NO resolved PR (fresh claim, no pane signal yet)"
+  assert_contains "#391 baseline refusal names the claim window" "$F391_BEFORE" "claim window"
+  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9006"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" \
+    F88_RESOLVED_PRS="impl10/issue-9006-some-slug" \
+    "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+    && ok "#391 AC(1): a claim whose PR is MERGED/closed proceeds -- 'no open PR' is not 'no PR'" \
+    || bad "#391 AC(1): a claim whose PR is MERGED/closed proceeds -- 'no open PR' is not 'no PR'"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "#391 AC(1): build session torn down once the claim's PR resolves as merged" || ok "#391 AC(1): build session torn down once the claim's PR resolves as merged"
+
+  # A resolved PR on an UNRELATED issue number (same role, different branch)
+  # must NOT resolve this claim -- prevents a role with any old merged PR
+  # anywhere from getting a free pass on a brand-new, genuinely unpushed claim.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9007"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" \
+    F88_RESOLVED_PRS="impl10/issue-9006-some-slug" \
+    "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+    && bad "#391: a resolved PR on a DIFFERENT issue number must not resolve this claim" \
+    || ok "#391: a resolved PR on a DIFFERENT issue number must not resolve this claim"
   tmux kill-session -t "${F88SESS}-build" 2>/dev/null   # done with this section's build session
 
   # (1b) pm-only refused while an open product-wip draft exists — --force does NOT override
@@ -12142,9 +12183,11 @@ section "drift guard: a per-tick gh call count is asserted, not assumed (issue #
 # adding a fourth per-tick call to the loop is a visible change rather than
 # a silent one." fwf_build_plane_blocked (#147) is the deterministic,
 # code-level (not prose-rendered) case: a call-counting gh stub proves it
-# makes EXACTLY two gh calls in its worst case (pr-count check, then the
-# claim-window scan once pr-count comes back 0) -- a THIRD call silently
-# added later must turn this red, not pass unnoticed.
+# makes EXACTLY three gh calls in its worst case (pr-count check, the
+# claim-window scan once pr-count comes back 0, then issue #391's
+# resolved-PR-branch fetch -- deliberately bumped from two to three by that
+# ticket, not a silent drift) -- a FOURTH call added later must turn this
+# red, not pass unnoticed.
 # Needs an ISOLATED git fixture where staging == integration -- with the
 # real worktree's own repo, whether the pr-count==0 path reaches the
 # claim-scan gh call depends on whether staging happens to be ahead of
@@ -12170,12 +12213,16 @@ chmod +x "$G239DRIFT_STUB/gh"
 rm -f "$G239DRIFT_LOG"
 ( export PATH="$G239DRIFT_STUB:$PATH"
   FWF_PROFILE=example FWF_REPO="$G239DRIFT_GITROOT" bash -c "source '$ROOT/lib.sh'; fwf_build_plane_blocked" >/dev/null 2>&1 )
-assert_eq "AC(drift): fwf_build_plane_blocked makes exactly 2 gh calls per tick in its worst case (pr-count + claim scan) -- change this number only deliberately" \
-  "2" "$(wc -l < "$G239DRIFT_LOG" | tr -d ' ')"
+assert_eq "AC(drift): fwf_build_plane_blocked makes exactly 3 gh calls per tick in its worst case (pr-count + claim scan + #391 resolved-PR fetch) -- change this number only deliberately" \
+  "3" "$(wc -l < "$G239DRIFT_LOG" | tr -d ' ')"
 assert_eq "the FIRST call is the pr-count check" "pr list" \
   "$(head -1 "$G239DRIFT_LOG" | cut -d' ' -f1-2)"
 assert_eq "the SECOND call is the claim-window scan" "issue list" \
   "$(sed -n '2p' "$G239DRIFT_LOG" | cut -d' ' -f1-2)"
+assert_eq "the THIRD call is #391's resolved-PR-branch fetch" "pr list" \
+  "$(sed -n '3p' "$G239DRIFT_LOG" | cut -d' ' -f1-2)"
+assert_contains "the THIRD call asks for --state all (not just --state open, unlike the first)" \
+  "$(sed -n '3p' "$G239DRIFT_LOG")" "--state all"
 
 # --------------------------------------------------------------------------
 section "consumers hold position under a failed gh read (issue #239: '#140/#147 do not conclude nothing in flight')"
