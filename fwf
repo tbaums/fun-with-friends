@@ -436,6 +436,21 @@ UTILITIES
                          `fwf ungate --audit` lists every un-gate on the
                          floor with its issue, timestamp, and invocation
                          path (board keypress / this CLI / concierge proxy).
+  claim-liveness <issue> Is another role's live CLAIM comment on this issue
+                         actually abandoned, or just mid-validation-gate
+                         (issue #377)? Reuses the SAME liveness signal
+                         (fwf_claim_liveness_blocks, lib.sh) as the
+                         conductor's build-plane teardown guard and `fwf
+                         scale` — age alone (the old "no PR after 15
+                         minutes" rule) can't tell a walked-away claimant
+                         from one mid-`fwf gate`, since a real gate run
+                         routinely exceeds 15 minutes under parallel-
+                         worktree contention. Exit 0 = RECLAIMABLE (pane
+                         confirmed dead, or no signal ever + past the
+                         fallback window); 1 = LIVE (pane alive, or
+                         liveness unconfirmed — do not reclaim); 2 = no
+                         CLAIM comment found, or a read failure (fails
+                         closed toward "do not reclaim"). Read-only.
   auth resolve           Re-resolve the claude auth credential (issue #217)
                          and print its source (env|credentials_file|
                          keychain), without launching anything — `fwf up`
@@ -1127,6 +1142,7 @@ case "$cmd" in
   authz)     engine fwf-authz.sh "$@";;
   claim)     engine fwf-claim.sh "$@";;
   ungate)    engine fwf-ungate.sh "$@";;
+  claim-liveness) engine fwf-claim-liveness.sh "$@";;
   auth)      engine fwf-auth.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
