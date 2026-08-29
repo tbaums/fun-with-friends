@@ -315,9 +315,19 @@ fwf_pr_body_guard() {
   # guard catches a sanitizer GAP (something that should have been
   # substituted and wasn't), not a policy that never shipped in the
   # sanitizer to begin with.
-  hit="$(printf '%s\n' "$text" | grep -inE \
-    '(^|[^A-Za-z0-9_])(impl__ID__|qa__ID__|LI-[0-9]+|Owner:|WIP|GV-SIGNOFF|GV-CHANGES|QA-APPROVED:|QA-CHANGES-REQUESTED:|IMPL-ADDRESSED:|CLAIM (impl|qa)[0-9]+|ASSIGNED (impl|qa)[0-9]+|FWF_[A-Z_]+|fwf-self-[A-Za-z0-9-]+|__PROVENANCE__|__CREDIT__|__CONTEXT__|origin/staging|origin/integration)([^A-Za-z0-9_]|$)|impl[0-9]+/issue-[0-9]+-[a-z0-9-]+|/?\.fun-with-friends/[A-Za-z0-9_./-]*' \
-    2>/dev/null || true)"
+  # Split case-sensitive vs case-insensitive, matching the sanitizer's OWN
+  # per-rule case behavior exactly -- a blanket -i previously matched the
+  # lowercase "wip" inside the legitimate label name "product-wip" against
+  # the bare `WIP` term (whose sanitizer rule is deliberately uppercase-only,
+  # unlike Owner:/CLAIM/GV-SIGNOFF/FWF_*/QA-*, which the sanitizer's own
+  # _fwf_pr_ctx_wordsub does match case-insensitively) -- a false positive on
+  # ordinary ticket prose that a single combined -i pass can't avoid.
+  hit="$( { printf '%s\n' "$text" | grep -nE \
+      '(^|[^A-Za-z0-9_])(LI-[0-9]+|WIP|__PROVENANCE__|__CREDIT__|__CONTEXT__|origin/staging|origin/integration)([^A-Za-z0-9_]|$)|impl[0-9]+/issue-[0-9]+-[a-z0-9-]+|/?\.fun-with-friends/[A-Za-z0-9_./-]*' \
+      2>/dev/null;
+    printf '%s\n' "$text" | grep -inE \
+      '(^|[^A-Za-z0-9_])(impl__ID__|qa__ID__|Owner:|GV-SIGNOFF|GV-CHANGES|QA-APPROVED:|QA-CHANGES-REQUESTED:|IMPL-ADDRESSED:|CLAIM (impl|qa)[0-9]+|ASSIGNED (impl|qa)[0-9]+|FWF_[A-Z_]+|fwf-self-[A-Za-z0-9-]+)([^A-Za-z0-9_]|$)' \
+      2>/dev/null; } || true)"
   if [ -n "$hit" ]; then
     echo "fwf: PR/commit body BLOCKED (issue #106 guard) — fwf-internal token(s) survived sanitization:" >&2
     printf '%s\n' "$hit" >&2

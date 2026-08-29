@@ -979,6 +979,14 @@ printf 'plain prose mentioning gv, pm, captain, conductor, worktree and floor by
 assert_eq "guard: bare role/jargon words #234 already decided are legitimate content pass clean" "0" "$GUARD_LEGIT_RC"
 GUARD_LEAK="$(printf 'this text still says GV-SIGNOFF verbatim' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" 2>&1 >/dev/null)"
 assert_contains "guard: a genuine unsanitized PROTOCOL MARKER (GV-SIGNOFF) still trips the backstop" "$GUARD_LEAK" "GV-SIGNOFF"
+# Regression (found while landing this fix): a blanket case-insensitive
+# guard pass matches lowercase "wip" inside the legitimate label name
+# "product-wip" against the bare WIP term -- but the sanitizer's own WIP
+# rule is deliberately uppercase-only, so this is a guard/sanitizer
+# case-sensitivity mismatch, not a real leak.
+GUARD_LABEL_RC=0
+printf 'discussing the product-wip label and gate notes in prose' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" >/dev/null 2>&1 || GUARD_LABEL_RC=$?
+assert_eq "guard regression: 'product-wip' as a label name in prose does not false-positive against the case-sensitive-only WIP rule" "0" "$GUARD_LABEL_RC"
 
 # --- CLI end-to-end: the real #195 fixture through the guard doesn't refuse --
 I195_CLI_RC=0
