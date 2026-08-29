@@ -581,12 +581,18 @@ assert_eq "remote (gh) mode defaults FWF_CREDIT to on" "on" "$CRED_REMOTE_DEFAUL
 GUARD_CLEAN="$(pctx_env "fwf_pr_body_guard" <<<"a normal reviewer-facing sentence with no fwf vocabulary")"
 assert_eq "guard passes clean text through unchanged" \
   "a normal reviewer-facing sentence with no fwf vocabulary" "$GUARD_CLEAN"
-GUARD_LEAK_OUT="$(pctx_env "fwf_pr_body_guard" <<<"still mentions impl3 raw" 2>/tmp/fwf-guard-err.$$)"
+# issue #135: this fixture used to be "still mentions impl3 raw" -- but
+# #234 (AC g, just above) already established bare "impl3" is legitimate
+# content the sanitizer deliberately leaves untouched, so a guard blocking
+# it was testing a policy the sanitizer never actually implements. Swapped
+# for a genuine unsanitized PROTOCOL MARKER (GV-SIGNOFF), which the
+# sanitizer DOES target -- the guard's actual job as a backstop.
+GUARD_LEAK_OUT="$(pctx_env "fwf_pr_body_guard" <<<"still mentions GV-SIGNOFF raw" 2>/tmp/fwf-guard-err.$$)"
 GUARD_LEAK_RC=$?
 GUARD_LEAK_ERR="$(cat /tmp/fwf-guard-err.$$ 2>/dev/null)"; rm -f "/tmp/fwf-guard-err.$$"
 assert_eq "guard blocks a surviving fwf-internal token (rc)" "1" "$GUARD_LEAK_RC"
 assert_eq "guard blocks a surviving fwf-internal token (no stdout)" "" "$GUARD_LEAK_OUT"
-assert_contains "guard names the offending line on stderr" "$GUARD_LEAK_ERR" "impl3"
+assert_contains "guard names the offending line on stderr" "$GUARD_LEAK_ERR" "GV-SIGNOFF"
 
 # fwf_context_block: mechanical extraction from a fixture ticket's structured
 # body sections + a linked docs/proposals/<n>-*.md, via the LOCAL issue store
