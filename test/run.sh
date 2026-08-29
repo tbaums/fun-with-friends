@@ -5737,6 +5737,98 @@ assert_eq "AC(c): NOT-GATED still creates the claim artifact (init commit + clai
   "$(cd "$CLAIMCGIT" && git log --oneline | wc -l | tr -d ' ')"
 
 # --------------------------------------------------------------------------
+# fwf claim-liveness (issue #377): the implementer's own stale-claim reclaim
+# decision reused a bare "no PR after 15min = abandoned" proxy that #147/
+# #210 already replaced with a real liveness check at the OTHER two
+# consumers of a claim's age (fwf_build_plane_blocked, fwf-scale.sh). This is
+# the third call site, reusing the SAME fwf_claim_liveness_blocks (lib.sh).
+CLRUN="$TMP/claimliveness"
+CLI() { FWF_RUN_DIR="$CLRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+CL() { FWF_RUN_DIR="$CLRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-claim-liveness.sh" "$@"; }
+
+section "fwf claim-liveness (#377): no CLAIM comment on the issue"
+CLI create --title "Nobody has claimed this" >/dev/null
+CLRC=0; CL 1 >/dev/null 2>&1 || CLRC=$?
+assert_eq "no claim -> exit 2 (nothing to check)" "2" "$CLRC"
+assert_contains "names that no claim was found" "$(CL 1 2>&1)" "no CLAIM comment found"
+
+section "fwf claim-liveness (#377): a FRESH claim with no liveness signal yet is LIVE (ambiguous -> fail-safe)"
+CLI create --title "Fresh claim" >/dev/null
+CLI comment 2 --body "CLAIM impl9" >/dev/null
+CLRC=0; CL 2 >/dev/null 2>&1 || CLRC=$?
+assert_eq "fresh + no signal -> LIVE (rc 1), never assumed reclaimable" "1" "$CLRC"
+
+section "fwf claim-liveness (#377): AC(3) fallback -- an OLD claim with NO liveness signal ever recorded is RECLAIMABLE"
+CLI create --title "Old claim, no signal ever" >/dev/null
+CL3_FILE=$(find "$CLRUN/issues/example/open" -name '3-*.md')
+CL3_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
+CL3_OLD_TS="$(date -u -d "@$CL3_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$CL3_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+printf '\n## comment %s\n\nCLAIM impl8\n' "$CL3_OLD_TS" >> "$CL3_FILE"
+# Single invocation, not two: fwf_claim_liveness_blocks (lib.sh) stamps a
+# first liveness baseline as a side effect of the "no snapshot yet" branch
+# even while it returns based on age -- a SECOND call would find that
+# just-stamped (too-fresh) baseline and spuriously read UNKNOWN instead.
+CL3_OUT="$(CL 3 2>&1)"; CLRC=$?
+assert_eq "old claim, no signal ever, past the fallback -> RECLAIMABLE (rc 0)" "0" "$CLRC"
+assert_contains "names it abandoned/RECLAIMABLE" "$CL3_OUT" "RECLAIMABLE"
+
+if command -v tmux >/dev/null 2>&1; then
+  section "fwf claim-liveness (#377 AC 2/4): the discriminating case -- an OLD claim whose claimant is mid-gate (WEDGED, pane PRESENT) is NOT reclaimable"
+  # This is the exact scenario the old age-only rule got wrong: tick AND
+  # tokens both static (a blocking `bash test/run.sh` produces neither) past
+  # the wedge window, aged well past the old 15-minute threshold, with NO
+  # open PR -- indistinguishable from an abandoned claim under the OLD rule,
+  # but the claimant's pane is genuinely still there running a real gate.
+  CL4SESS="fwf-selftest-claimlive-$$"
+  mkdir -p "$CLRUN/state/example/tick-watch" "$CLRUN/state/example/usage-cache"
+  tmux new-session -d -s "${CL4SESS}-build" -c "$TMP"
+  tmux set -p -t "${CL4SESS}-build" @l "IMPL6 · dev impl · impl6/*"
+  CLI create --title "Wedged but alive" >/dev/null
+  CLI comment 4 --body "CLAIM impl6" >/dev/null
+  # OLD-RULE COMPARISON (AC 4's own ask: prove this fixture would have been
+  # wrongly reclaimed under the bare age+no-PR proxy this ticket replaces).
+  # This claim is deliberately FRESH (age 0): the old rule (age<15min) would
+  # already call it LIVE too, so the property under test is that a real
+  # gate's liveness signal blocks reclaim regardless of age -- the old rule
+  # could never express that at all, only a bare age threshold.
+  printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$CLRUN/state/example/tick-watch/impl6"
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$CLRUN/state/example/usage-cache/impl6.json"
+  CLRC=0; FWF_SESSION="$CL4SESS" FWF_WEDGE_MIN_SECS=600 CL 4 >/dev/null 2>&1 || CLRC=$?
+  assert_eq "AC(2): a live pane running a gate BLOCKS reclaim regardless of age (rc 1)" "1" "$CLRC"
+  tmux kill-session -t "${CL4SESS}-build" 2>/dev/null
+
+  section "fwf claim-liveness (#377): the mirror case -- WEDGED but the pane is CONFIRMED ABSENT is reclaimable"
+  CL5SESS="fwf-selftest-claimlive2-$$"
+  mkdir -p "$CLRUN/state/example/tick-watch" "$CLRUN/state/example/usage-cache"
+  tmux new-session -d -s "${CL5SESS}-build" -c "$TMP"   # session exists, no IMPL7 pane in it
+  CLI create --title "Wedged and absent" >/dev/null
+  CLI comment 5 --body "CLAIM impl7" >/dev/null
+  printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$CLRUN/state/example/tick-watch/impl7"
+  printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
+    "$(( $(date -u +%s) - 3600 ))" > "$CLRUN/state/example/usage-cache/impl7.json"
+  CLRC=0; FWF_SESSION="$CL5SESS" FWF_WEDGE_MIN_SECS=600 CL 5 >/dev/null 2>&1 || CLRC=$?
+  assert_eq "confirmed-dead pane -> RECLAIMABLE (rc 0), even though WEDGED" "0" "$CLRC"
+  tmux kill-session -t "${CL5SESS}-build" 2>/dev/null
+else
+  skip "fwf claim-liveness (#377): WEDGED-pane discriminator (needs tmux)" 2
+fi
+
+section "fwf claim-liveness (#377): CLI wiring"
+assert_contains "'fwf claim-liveness' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "claim-liveness) engine fwf-claim-liveness.sh"
+assert_contains "help mentions claim-liveness" "$("$ROOT/fwf" help)" "claim-liveness <issue>"
+
+section "fwf claim-liveness (#377 AC 5): docs/templates no longer teach the bare age-only rule"
+assert_not_contains "README.md no longer says claims 'expire after 15 minutes' unconditionally" \
+  "$(cat "$ROOT/README.md")" "expire after 15 minutes"
+assert_contains "README.md now points at fwf claim-liveness" "$(cat "$ROOT/README.md")" "fwf claim-liveness"
+assert_contains "docs/tutorial.md now points at fwf claim-liveness" "$(cat "$ROOT/docs/tutorial.md")" "fwf claim-liveness"
+assert_contains "templates/dev/implementer.tmpl calls fwf claim-liveness, not the bare age rule" \
+  "$(cat "$ROOT/templates/dev/implementer.tmpl")" "fwf claim-liveness"
+assert_contains "templates/refactor/implementer.tmpl calls fwf claim-liveness too" \
+  "$(cat "$ROOT/templates/refactor/implementer.tmpl")" "fwf claim-liveness"
+
+# --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
 # captain-sequenced decisions behaviour and activity bucketing/branch parsing.

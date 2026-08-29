@@ -165,8 +165,13 @@ instead of stalling silently (issue #99).
   drafts and any issue already resolved on a shared branch, and picks the
   **lowest-collision, oldest** eligible issue. Claiming is **atomic**: the
   implementer posts a `CLAIM implN` comment, re-checks that the first claim in
-  the thread is its own (losers yield with zero wasted work; stale claims
-  expire after 15 minutes), and only then branches and opens a draft PR
+  the thread is its own (losers yield with zero wasted work; a claim with no
+  PR yet is checked for liveness via `fwf claim-liveness` — issue #377 —
+  which reuses the same pane-liveness signal as the conductor's build-plane
+  guard, since a claimant mid-`fwf gate` is indistinguishable from an
+  abandoned one on age alone; only a confirmed-dead claimant, or one with no
+  liveness signal ever recorded past a 15-minute fallback, is reclaimable),
+  and only then branches and opens a draft PR
   (`Closes #N`). One issue = one branch = one PR, and a behavior-changing PR
   **updates its own docs in the same PR** (definition of done). They loop: address review
   feedback, wait while a PR is in review, or claim the next issue once one
