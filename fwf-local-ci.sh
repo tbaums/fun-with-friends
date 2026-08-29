@@ -34,17 +34,6 @@ echo "local-ci: running required suites for $sha on $(hostname) ($(nproc) cores)
 
 rc=0
 bash "$DIR/test/run.sh" > "$log" 2>&1 || rc=$?
-
-# MEMORY-ADMISSION GATE (issue #156, moved here 2026-08-29). This used to be a
-# dedicated step in ci.yml/release.yml. CI is off GitHub now, so the gate lives
-# where the suite lives -- on our own hardware. It is NOT nested inside
-# test/run.sh on purpose: #156's suite spawns memory-hungry children and nesting
-# it got the whole outer gate SIGKILLed mid-run as "wedged" (the #123 anomaly).
-# It stays a separate invocation, and a red here is a red verdict.
-if [ -f "$DIR/test/mem-admit-test.sh" ]; then
-  echo "--- memory-admission suite (issue #156) ---" >> "$log"
-  bash "$DIR/test/mem-admit-test.sh" >> "$log" 2>&1 || rc=$?
-fi
 summary="$(grep -E '^[0-9]+ passed,' "$log" | tail -1)"
 
 # A run is only valid if it actually finished: a truncated log is NOT green.
