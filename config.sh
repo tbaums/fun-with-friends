@@ -39,7 +39,14 @@ FWF_MODEL_CONDUCTOR="${FWF_MODEL_CONDUCTOR:-}"
 
 # The model menu `fwf suggest` recommends from — "id:traits" entries separated
 # by " | ". Edit as models evolve; it is advisory text, not validation.
-FWF_MODEL_MENU="${FWF_MODEL_MENU:-claude-opus-4-8:strongest reasoning, highest cost — synthesis, strategy, judgment seats | claude-sonnet-4-6:strong all-round default — building, reviewing, planning | claude-haiku-4-5-20251001:fast and cheap — mechanical, high-volume, rubric-scored seats}"
+# issue #289 (a4): claude-sonnet-4-6 was offered here but has no price-table
+# entry (fwf-usage-data.sh) and is not a model this project's roles actually
+# run — replaced with claude-sonnet-5, the model every impl/qa/conductor
+# seat on this factory is really running today and the only sonnet tier that
+# IS priced. Do not re-add an entry here without a matching price-table row
+# (or a documented (a3) exception) — an unpriceable menu entry re-arms this
+# same defect for the next operator who picks it.
+FWF_MODEL_MENU="${FWF_MODEL_MENU:-claude-opus-4-8:strongest reasoning, highest cost — synthesis, strategy, judgment seats | claude-sonnet-5:strong all-round default — building, reviewing, planning | claude-haiku-4-5-20251001:fast and cheap — mechanical, high-volume, rubric-scored seats}"
 
 # tmux sessions + cadence. The factory runs as TWO sessions: a COORDINATION
 # session (pm · gv · captain) the human attaches to and talks to the captain in,

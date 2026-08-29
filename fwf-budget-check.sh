@@ -87,9 +87,12 @@ _fwf_token_budget_evaluate() {
     # stale-broken case already returned above) whose model isn't in the
     # price table yields a null cost_usd; that's distinct from "unknown, no
     # data yet" (state=="unknown"), which legitimately contributes 0.
+    # issue #289 (d): name the MODEL alongside the seat -- "impl1" alone
+    # tells the operator WHO paused, not WHY; "impl1 (claude-opus-5)" is
+    # enough to go add the row without also running `fwf usage` first.
     local unpriced
     unpriced="$(printf '%s' "$usage_json" | jq -r \
-      '[.roles[] | select(.state != "unknown") | select(.cost_usd == null) | .role] | join(", ")')"
+      '[.roles[] | select(.state != "unknown") | select(.cost_usd == null) | "\(.role) (\(.model))"] | join(", ")')"
     if [ -n "$unpriced" ]; then
       printf 'UNKNOWN\tUNKNOWN — FAIL-CLOSED: could not price model for: %s (model missing from the price table), NOT over budget — lift: fwf usage --clear-hold\n' "$unpriced"
       return 0

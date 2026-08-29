@@ -732,7 +732,12 @@ fwf usage [--clear-hold]                            per-role token usage + an es
                                                     read from each role's own Claude Code session
                                                     transcripts, plus budget-enforcement status
                                                     (read-only; also a dash tab). --clear-hold lifts
-                                                    a BUDGET_HOLD by hand.
+                                                    a BUDGET_HOLD by hand. A model missing from the
+                                                    price table never disappears into a silent $0 —
+                                                    TOTAL is marked ⚠PARTIAL, naming the excluded
+                                                    seats and what % of all factory tokens they hold
+                                                    (issue #289); a price-table drift check flags any
+                                                    reported-or-declared model with no price row.
 fwf gate <role> [--e2e] -- <cmd...>                 the shared guarded gate/e2e launcher every
                                                     __GATE__/__E2E__ render calls (issue #123); exits
                                                     75 rather than stacking a second run when <role>'s
