@@ -3377,9 +3377,176 @@ EOF
 
   tmux kill-session -t "${F190SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F190SESS}-build" 2>/dev/null
+
+  # --------------------------------------------------------------------------
+  section "fwf scale --pairs N (issue #210): reconcile pairs on a LIVE floor without disturbing in-flight work"
+
+  # --- CLI-level errors, no floor needed -------------------------------------
+  assert_eq "fwf scale with no --pairs is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf" scale >/dev/null 2>&1; echo $?)"
+  assert_eq "fwf scale --pairs 0 refuses" "1" "$(FWF_PROFILE=example "$ROOT/fwf" scale --pairs 0 >/dev/null 2>&1; echo $?)"
+  assert_eq "fwf scale --pairs abc is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf" scale --pairs abc >/dev/null 2>&1; echo $?)"
+  assert_contains "fwf: 'fwf scale' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "scale)     engine fwf-scale.sh"
+
+  # AC(i): the sanity bound is NOT a restatement of the old "hardcoded 3"
+  # ceiling -- issue #221 already made the captain's roster dynamic. Assert
+  # the refusal names #221 and the configurable var, never a bare "3".
+  F210BOUNDOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$TMP/run210bound" "$ROOT/fwf-scale.sh" --pairs 21 2>&1)"; F210BOUND_RC=$?
+  assert_eq "AC(i): a request far above the sanity bound refuses" "1" "$F210BOUND_RC"
+  assert_contains "AC(i): names the configurable bound var" "$F210BOUNDOUT" "FWF_SCALE_MAX_PAIRS"
+  assert_contains "AC(i): says this is NOT #210's original hardcoded-3 ceiling" "$F210BOUNDOUT" "issue #221 already made the captain's roster dynamic"
+
+  assert_eq "fwf scale refuses when the build session is not up" "1" \
+    "$(FWF_PROFILE=example FWF_RUN_DIR="$TMP/run210down" FWF_SESSION="fwf-scale-notup-$$" "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1; echo $?)"
+
+  # --- real-tmux end-to-end: bring up 1 pair, scale to 2, verify PIDs --------
+  F210WT="$TMP/wt210"
+  mkdir -p "$F210WT/ex-impl1" "$F210WT/ex-qa1" "$F210WT/ex-impl2" "$F210WT/ex-qa2" "$F210WT/ex-conductor" "$F210WT/ex-pm" "$F210WT/ex-gv" "$F210WT/ex-captain"
+  F210RUN="$TMP/run210"; mkdir -p "$F210RUN/state/example"
+  F210SESS="fwf-selftest-210-$$"
+  f210() { # extra env (may be empty), then the fwf-scale.sh args
+    env FWF_PROFILE=example FWF_RUN_DIR="$F210RUN" FWF_SESSION="$F210SESS" FWF_MIN_FREE_GB=0 \
+        FWF_REPO="$F85REPO" FWF_WT_BASE="$F210WT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+        FWF_SKIP_BOOT_GATE=1 "$@"
+  }
+  f210 env FWF_PAIRS=1 "$ROOT/fwf-up.sh" >/dev/null 2>&1
+
+  F210PROFILE_SUM_BEFORE="$(md5sum "$ROOT/profiles/example.sh" | awk '{print $1}')"
+  IMPL1_PID_BEFORE="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
+  COND_PID_BEFORE="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
+  COORD_PANES_BEFORE="$(tmux list-panes -t "${F210SESS}-coord" -F '#{pane_id}' | sort)"
+
+  F210SCALE_OUT="$(f210 "$ROOT/fwf-scale.sh" --pairs 2 2>&1)"; F210SCALE_RC=$?
+  assert_eq "AC(a): scale 1->2 exits 0" "0" "$F210SCALE_RC"
+  assert_contains "scale-up creates the new pair" "$F210SCALE_OUT" "create: impl2, qa2"
+  assert_contains "scale-up leaves the existing pair listed as untouched" "$F210SCALE_OUT" "untouched: impl1, qa1"
+
+  IMPL2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL2 ·'")"
+  QA2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'QA2 ·'")"
+  F210IMPL2_RC=0; [ -n "$IMPL2_PANE" ] || F210IMPL2_RC=1
+  assert_eq "AC(a): the new impl2 pane exists" "0" "$F210IMPL2_RC"
+  F210QA2_RC=0; [ -n "$QA2_PANE" ] || F210QA2_RC=1
+  assert_eq "AC(a): the new qa2 pane exists" "0" "$F210QA2_RC"
+  assert_not_contains "AC(a): the new impl2 pane is running claude (not sitting at a shell)" \
+    "$(tmux display -p -t "$IMPL2_PANE" '#{pane_current_command}')" "bash"
+
+  IMPL1_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
+  COND_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
+  assert_eq "AC(a): impl1's pane PID is BYTE-IDENTICAL after scale-up (never recreated)" "$IMPL1_PID_BEFORE" "$IMPL1_PID_AFTER"
+  assert_eq "AC(a): the conductor's pane PID is unchanged too" "$COND_PID_BEFORE" "$COND_PID_AFTER"
+  F210WT1DIR_RC=0; [ -d "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl1")" ] || F210WT1DIR_RC=1
+  assert_eq "AC(a)/impl1 worktree: still the same directory (untouched)" "0" "$F210WT1DIR_RC"
+  assert_eq "AC(e): the coord session's own panes are byte-identical (never touched by a build-plane scale)" \
+    "$COORD_PANES_BEFORE" "$(tmux list-panes -t "${F210SESS}-coord" -F '#{pane_id}' | sort)"
+
+  # AC(g): success output states session-scoped persistence + captain re-arm note
+  assert_contains "AC(g): states the change is session-scoped" "$F210SCALE_OUT" "session-scoped only"
+  assert_contains "AC(g): says the profile is unchanged" "$F210SCALE_OUT" "FWF_PAIRS in the profile is unchanged"
+  assert_contains "AC(g): names the captain re-arm caveat" "$F210SCALE_OUT" "still reflects the OLD 1-pair roster until it is re-armed"
+  assert_contains "AC(g): cross-references issue #221's stranded-assignment safety net" "$F210SCALE_OUT" "issue #221"
+  assert_eq "AC(g): the profile file on disk is verifiably unmodified (checksum before == after the scale)" \
+    "$F210PROFILE_SUM_BEFORE" "$(md5sum "$ROOT/profiles/example.sh" | awk '{print $1}')"
+
+  # --- AC(b): idempotency -- same target twice, zero pane churn --------------
+  PANES_BEFORE_IDEMP="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
+  F210IDEMP_OUT="$(f210 "$ROOT/fwf-scale.sh" --pairs 2 2>&1)"; F210IDEMP_RC=$?
+  assert_eq "AC(b): scaling to the SAME count twice exits 0" "0" "$F210IDEMP_RC"
+  assert_contains "AC(b): says there's nothing to do" "$F210IDEMP_OUT" "already at 2 pair(s) -- nothing to do"
+  assert_eq "AC(b): zero pane churn -- pane ids AND pids byte-identical" "$PANES_BEFORE_IDEMP" \
+    "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
+
+  # --- AC(f)/(f2): --dry-run mutates nothing, plan matches a real run's outcome
+  F210GHBIN="$TMP/f210ghbin"; mkdir -p "$F210GHBIN"
+  cat > "$F210GHBIN/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list") printf '' ;;
+  "issue list") echo "[]" ;;
+  *) exit 1 ;;
+esac
+GHSTUB
+  chmod +x "$F210GHBIN/gh"
+  PANES_BEFORE_DRY="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
+  F210DRY_OUT="$(PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 --dry-run 2>&1)"; F210DRY_RC=$?
+  assert_eq "AC(f): --dry-run exits 0" "0" "$F210DRY_RC"
+  assert_contains "AC(f): --dry-run's plan names the pair it WOULD remove" "$F210DRY_OUT" "remove: impl2, qa2"
+  assert_contains "AC(f): --dry-run says it mutated nothing" "$F210DRY_OUT" "nothing mutated"
+  assert_eq "AC(f): --dry-run genuinely touched zero panes" "$PANES_BEFORE_DRY" \
+    "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
+  F210REAL_OUT="$(PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 2>&1)"; F210REAL_RC=$?
+  assert_eq "AC(f): the REAL run right after the dry-run also succeeds (plan == outcome)" "0" "$F210REAL_RC"
+  assert_contains "AC(f): the real run removes the SAME pair the dry-run named" "$F210REAL_OUT" "remove: impl2, qa2"
+  assert_eq "AC(c)/(d): impl2's pane is genuinely gone after a real scale-down" "" \
+    "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL2 ·'" 2>/dev/null)"
+  F210WT2DIR_RC=0; [ -d "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" ] || F210WT2DIR_RC=1
+  assert_eq "the worktree is KEPT, not deleted, on scale-down" "0" "$F210WT2DIR_RC"
+
+  # --- AC(c)/(d2): scale-down REFUSES on a genuinely busy highest-indexed pair,
+  # even though it's the only pair besides impl1 -- and it must not remove the
+  # LOWER-indexed impl1 instead (contiguity, never a gap).
+  f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1   # back to 2 pairs
+  F210BUSYGHBIN="$TMP/f210busyghbin"; mkdir -p "$F210BUSYGHBIN"
+  cat > "$F210BUSYGHBIN/gh" <<'GHSTUB2'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list") echo "impl2/issue-999-x" ;;
+  "issue list") echo "[]" ;;
+  *) exit 1 ;;
+esac
+GHSTUB2
+  chmod +x "$F210BUSYGHBIN/gh"
+  PANES_BEFORE_BUSY="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
+  F210BUSY_OUT="$(PATH="$F210BUSYGHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 2>&1)"; F210BUSY_RC=$?
+  assert_eq "AC(c): refuses when the highest-indexed pair has an open PR" "1" "$F210BUSY_RC"
+  assert_contains "AC(c): names the blocked pair" "$F210BUSY_OUT" "impl2/qa2"
+  assert_contains "AC(c): names the open-PR reason" "$F210BUSY_OUT" "has an open PR"
+  assert_eq "AC(d2): NO pane is removed on refusal (not even trying a lower index)" "$PANES_BEFORE_BUSY" \
+    "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
+
+  # --- AC(h): capacity guardrail refuses scale-up, --force overrides ---------
+  F210CAP_OUT="$(FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210CAP_RC=$?
+  assert_eq "AC(h): an absurd per-pair RAM requirement refuses scale-up" "1" "$F210CAP_RC"
+  assert_contains "AC(h): names --force as the override" "$F210CAP_OUT" "Pass --force to override"
+  F210CAPFORCE_RC=0
+  FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/fwf-scale.sh" --pairs 3 --force >/dev/null 2>&1 || F210CAPFORCE_RC=$?
+  assert_eq "AC(h): --force bypasses the capacity guardrail" "0" "$F210CAPFORCE_RC"
+  PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1   # back down for the next check (needs the gh stub -- a bare real `gh` against the fake repo fails closed and silently leaves this at 3)
+
+  # --- AC(h2): a budget HOLD refuses scale-up; scale-down is NEVER blocked ---
+  # BUDGET_HOLD_FILE = $FWF_RUN/BUDGET_HOLD -- FWF_RUN resolves flat to
+  # FWF_RUN_DIR itself (no state/<profile>/ nesting), unlike floor-events.log.
+  printf 'HOLD\tsubscription usage at 97%%\n' > "$F210RUN/BUDGET_HOLD"
+  F210BUDGET_OUT="$(f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210BUDGET_RC=$?
+  assert_eq "AC(h2): scale-up refuses while the budget sentinel reads HOLD" "1" "$F210BUDGET_RC"
+  assert_contains "AC(h2): names the hold state" "$F210BUDGET_OUT" "sentinel reads 'HOLD"
+  F210BUDGETDOWN_RC=0
+  PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 >/dev/null 2>&1 || F210BUDGETDOWN_RC=$?
+  assert_eq "AC(h2): scale-DOWN is never blocked by a budget hold" "0" "$F210BUDGETDOWN_RC"
+  rm -f "$F210RUN/BUDGET_HOLD"
+
+  # --- worktree reuse: a scale-up after a scale-down reuses the KEPT worktree,
+  # never fails or recreates it from scratch.
+  F210REUSE_INODE_BEFORE="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1
+  F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  assert_eq "a later scale-up REUSES the kept worktree (same inode, never recreated)" "$F210REUSE_INODE_BEFORE" "$F210REUSE_INODE_AFTER"
+
+  tmux kill-session -t "${F210SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F210SESS}-build" 2>/dev/null
+
+  # --- static: reuses the real auth/arm/boot-verify primitives, never rolls
+  # its own (AC k's "reads the sink, doesn't inherit" is exactly what
+  # fwf_claude_cmd already guarantees -- asserted here as "calls the shared
+  # primitive", the same level fwf-up.sh's own equivalent check uses).
+  F210SRC="$(cat "$ROOT/fwf-scale.sh")"
+  assert_contains "fwf-scale.sh launches panes via fwf_claude_cmd (auth-sink-safe), never a hand-rolled launch string" "$F210SRC" 'fwf_claude_cmd "'
+  assert_contains "fwf-scale.sh arms new panes via the shared fwf_arm_pane" "$F210SRC" "fwf_arm_pane "
+  assert_contains "fwf-scale.sh runs the real boot health-gate on new panes" "$F210SRC" "fwf_verify_boot_ticks"
+  assert_contains "fwf-scale.sh creates panes via the shared fwf_create_role_pane (not hand-rolled tmux split logic)" "$F210SRC" "fwf_create_role_pane "
+  assert_not_contains "fwf-scale.sh never deletes a worktree on scale-down" "$F210SRC" "worktree remove"
 else
   skip "real-tmux floor-lifecycle wiring tests (tmux not installed)" 60
   skip "real-tmux issue #190 --pairs live-floor tests (tmux not installed)" 10
+  skip "real-tmux issue #210 fwf scale tests (tmux not installed)" 35
 fi
 
 section "floor-down cooldown guard (issue #88, per-plane by #105): fwf_plane_last_up_epoch / fwf_plane_cooldown_remaining"

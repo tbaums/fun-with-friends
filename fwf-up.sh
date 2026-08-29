@@ -246,8 +246,9 @@ if tmux has-session -t "$BUILD_SESSION" 2>/dev/null; then
       exit 1
     elif [ "$RUNNING_PAIRS" != "$FWF_PAIRS" ]; then
       echo "fwf: build session '$BUILD_SESSION' is already up running $RUNNING_PAIRS pair(s) — requested $FWF_PAIRS was NOT applied." >&2
-      echo "fwf: 'fwf up --pairs' cannot resize a live floor. The only path that applies a new count today is 'fwf up --build-only', which RECREATES the build session and KILLS every in-flight implementer/QA pane." >&2
-      echo "fwf: if that's acceptable, re-run with 'fwf up --build-only'. Otherwise leave the floor at $RUNNING_PAIRS pair(s)." >&2
+      echo "fwf: 'fwf up --pairs' cannot resize a live floor. 'fwf scale --pairs $FWF_PAIRS' (issue #210) reconciles a live floor WITHOUT disturbing in-flight work — try that first." >&2
+      echo "fwf: the only path here that applies a new count is 'fwf up --build-only', which RECREATES the build session and KILLS every in-flight implementer/QA pane." >&2
+      echo "fwf: if that's acceptable, re-run with 'fwf up --build-only'. Otherwise leave the floor at $RUNNING_PAIRS pair(s) or use 'fwf scale'." >&2
       exit 1
     fi
     echo "build session '$BUILD_SESSION' already up running the requested $FWF_PAIRS pair(s) — leaving it untouched."
