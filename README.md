@@ -1016,6 +1016,15 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   `git log --notes=fwf-context` to read them; a plain clone still shows the
   hollow card. `fwf backfill-context` writes notes **locally only** unless
   `--push` is given, so a run can be inspected before it's made permanent.
+  **Authorization enforced at the same chokepoint (issue #207):** `fwf
+  merge <num>` also refuses unless `fwf authz` reports AUTHORIZED or
+  NOT-GATED for **every** issue the PR closes — a forged out-of-band
+  "this is authorized" artifact changes nothing, since only the real oracle's
+  verdict is read. INDETERMINATE and HELD/INVALID both refuse, but the
+  message names which (infrastructure vs. policy) it is; every refusal also
+  raises a `needs-captain` flag on the blocking issue so it surfaces on the
+  captain's next tick rather than being silently retried. See
+  `docs/authz-point-of-action.md`.
 - **Release freeze:** ask the PM to "freeze for release" and it labels tickets
   that should wait with `release-hold` (implementers skip them, like
   `product-wip`), so in-flight work drains to a clean `integration` you can
