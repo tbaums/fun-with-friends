@@ -25,33 +25,68 @@
 #
 # FAIL-SAFE BY CONSTRUCTION, UNCHANGED: the local suite is skipped ONLY on a
 # definitive green (exit 0) from fwf-local-ci.sh for THIS EXACT SHA. Pending,
-# red, absent, script-missing -- anything else at all -- falls through to the
-# full local run. This can make the gate faster; it cannot make it more
-# permissive.
+# red, absent, script-missing, LAPSED, INDETERMINATE -- anything else at all
+# -- falls through to a local run. This can make the gate faster; it cannot
+# make it more permissive.
+#
+# issue #446 AC (2): a LAPSED verdict (the suite passed but a required check,
+# e.g. shellcheck, never actually ran -- #443's finding escaped to macOS
+# exactly this way) is not treated as a real failure either. It gets a
+# bounded number of forced re-runs rather than either extreme: trusting it
+# (this ticket's own defect) or retrying it forever (#404's shape: no clean
+# run => block => re-run => OOM => block, on a box whose load is the very
+# reason the check keeps lapsing). Three total attempts (N=2 forced re-runs
+# beyond the first) -- enough for a transient spike to clear, small enough
+# that a genuinely loaded box does not spend an hour proving it is loaded.
+# If every attempt lapses the same check, this settles on INDETERMINATE --
+# named and recorded (fwf-local-ci.sh mark-indeterminate), never silently
+# treated as green and never a silent infinite block.
 set -o pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SHA="$(git rev-parse HEAD 2>/dev/null)"
+FWF_CONDUCTOR_E2E_MAX_ATTEMPTS="${FWF_CONDUCTOR_E2E_MAX_ATTEMPTS:-3}"
 
-# 1) LOCAL CI FIRST (operator direction 2026-08-29): the box has 332G free, 17G
+# LOCAL CI FIRST (operator direction 2026-08-29): the box has 332G free, 17G
 # RAM and 12 cores, so a suite we already ran here is the fastest and most
 # reliable oracle available -- GitHub evicted 5 jobs today and had not even
 # STARTED on the staging tip when this was written. Not a self-hosted Actions
 # runner: this repo is PUBLIC, and a registered runner would execute fork-PR
 # code on a box holding the factory OAuth token, tailnet and SSH keys.
 LOCAL="$DIR/fwf-local-ci.sh"
-if [ -n "$SHA" ] && [ -x "$LOCAL" ]; then
+
+if [ -z "$SHA" ] || [ ! -x "$LOCAL" ]; then
+  exec bash test/run.sh
+fi
+
+attempt=1
+while [ "$attempt" -le "$FWF_CONDUCTOR_E2E_MAX_ATTEMPTS" ]; do
   if out="$("$LOCAL" verdict "$SHA" 2>&1)"; then
     echo "conductor-e2e: local CI already GREEN for $SHA — skipping the re-run (#385)"
     echo "$out"
     exit 0
   fi
-fi
+  echo "conductor-e2e: no usable green cached for $SHA (attempt $attempt/$FWF_CONDUCTOR_E2E_MAX_ATTEMPTS) — running locally"
+  printf '%s\n' "$out"
 
-# 2) nothing cached -- run the suite here and RECORD the result, so the next
-# consult (this role's next cycle, or any other role on this box) is a cache
-# hit instead of another full re-run. This is what makes local CI the
-# DEFAULT rather than an opportunistic shortcut.
-if [ -n "$SHA" ] && [ -x "$LOCAL" ]; then
-  exec "$LOCAL" run
-fi
-exec bash test/run.sh
+  # nothing cached (or the cached verdict wasn't a real green) -- run the
+  # suite here and RECORD the result, so the next consult (this role's next
+  # cycle, or any other role on this box) is a cache hit instead of another
+  # full re-run. This is what makes local CI the DEFAULT rather than an
+  # opportunistic shortcut.
+  run_out="$("$LOCAL" run 2>&1)"; run_rc=$?
+  printf '%s\n' "$run_out"
+  [ "$run_rc" -eq 0 ] && exit 0   # a genuine, non-lapsed green
+
+  # issue #446 AC (2): only a LAPSE retries. A real red/truncated is a
+  # terminal result and must stop the loop here, never be masked by trying
+  # again -- retrying a genuine failure is exactly the permissiveness this
+  # gate must not gain.
+  if ! printf '%s\n' "$run_out" | grep -q "LAPSED"; then
+    exit "$run_rc"
+  fi
+  attempt=$((attempt + 1))
+done
+
+echo "conductor-e2e: the lint gate lapsed on every one of $FWF_CONDUCTOR_E2E_MAX_ATTEMPTS attempts for $SHA — INDETERMINATE, not green (issue #446 AC 2)" >&2
+"$LOCAL" mark-indeterminate "$SHA" "lint gate lapsed $FWF_CONDUCTOR_E2E_MAX_ATTEMPTS/$FWF_CONDUCTOR_E2E_MAX_ATTEMPTS attempts" >&2
+exit 1
