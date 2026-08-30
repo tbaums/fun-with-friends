@@ -11767,6 +11767,66 @@ assert_contains "caller's own FWF_PAIRS is preserved"   "$(cat "$F175REPORT")" "
 assert_contains "caller's own FWF_REPO is preserved"    "$(cat "$F175REPORT")" "REPO=$ROOT"
 
 # --------------------------------------------------------------------------
+section "fwf gate bumps tick/heartbeat liveness on every attempt (issue #426)"
+# A role deep in back-to-back gate cycles is unambiguously alive, but its own
+# loop only bumps tick at step 0 of a FRESH cycle -- measured: several roles'
+# ticks froze for 1.5-6h while they provably pushed commits/merged PRs the
+# whole time. fwf-gate.sh (the ONE shared entrypoint every role's gate/e2e
+# already routes through) now bumps tick itself, so freshness tracks actual
+# work rather than "did the agent's loop restart recently".
+F426RUN="$TMP/run426"; mkdir -p "$F426RUN/state/example"
+f426_tick() { cat "$F426RUN/state/example/tick/$1" 2>/dev/null || echo 0; }
+
+# (a) a normal, successful gate run bumps the tick.
+assert_eq "AC(a): no tick recorded yet" "0" "$(f426_tick f426a)"
+FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f426a -- bash -c 'echo hi' >/dev/null 2>&1
+assert_eq "AC(a): a completed gate run bumps the tick counter" "1" "$(f426_tick f426a)"
+
+# (b) a SKIPPED run (unchanged --tip-cmd) ALSO bumps the tick -- an attempt
+# is real activity even when the gate itself decides there's nothing to do.
+FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f426b --tip-cmd 'echo sametip' -- bash -c 'echo hi' >/dev/null 2>&1
+assert_eq "AC(b): first run (real work) bumps the tick" "1" "$(f426_tick f426b)"
+F426B_RC=0
+FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f426b --tip-cmd 'echo sametip' -- bash -c 'echo hi' >/dev/null 2>&1 || F426B_RC=$?
+assert_eq "AC(b): the second (unchanged-tip) run is genuinely SKIPPED" "75" "$F426B_RC"
+assert_eq "AC(b): ...but STILL bumps the tick -- a skip is still a live attempt" "2" "$(f426_tick f426b)"
+
+# (c) a run that SKIPS because this role's own prior gate is still in
+# flight ALSO bumps the tick -- same reasoning as (b).
+mkdir -p "$(FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_lock_dir f426c")"
+printf 'role=f426c\npid=%s\nhost=%s\nacquired=%s\n' "$$" "$(hostname)" "$(date +%s)" \
+  > "$(FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_lock_dir f426c")/owner"
+F426C_RC=0
+FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f426c -- bash -c 'echo hi' >/dev/null 2>&1 || F426C_RC=$?
+assert_eq "AC(c): a busy-own-lock run is genuinely SKIPPED" "75" "$F426C_RC"
+assert_eq "AC(c): ...but STILL bumps the tick" "1" "$(f426_tick f426c)"
+
+# (d) the heartbeat file (dash's staleness signal, DASH_STALE_SECS) is
+# refreshed too, not just the tick counter.
+F426_HB="$F426RUN/state/example/heartbeat/f426a"
+[ -f "$F426_HB" ] && ok "AC(d): the heartbeat file exists after a gate run" || bad "AC(d): the heartbeat file exists after a gate run"
+F426_HB_AGE=$(( $(date +%s) - $(stat -c '%Y' "$F426_HB" 2>/dev/null || stat -f '%m' "$F426_HB" 2>/dev/null || echo 0) ))
+[ "$F426_HB_AGE" -lt 30 ] && ok "AC(d): the heartbeat mtime is fresh (< 30s old)" || bad "AC(d): the heartbeat mtime is fresh" "age=${F426_HB_AGE}s"
+
+# (e) a tick-bump failure must never abort a real gate run -- make ONLY
+# tick/heartbeat unwritable (the gate lock lives in a SIBLING dir under the
+# same state root and must stay writable, or this would test gate-lock
+# failure instead of tick-bump fault tolerance) and confirm the wrapped
+# command still runs and its exit code still propagates.
+F426_RO="$TMP/run426-ro"; mkdir -p "$F426_RO/state/example/tick" "$F426_RO/state/example/heartbeat"
+chmod 555 "$F426_RO/state/example/tick" "$F426_RO/state/example/heartbeat" 2>/dev/null
+F426E_RC=0
+F426E_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F426_RO" FWF_MIN_FREE_GB=0 \
+    "$ROOT/fwf-gate.sh" f426e -- bash -c 'echo ran-anyway; exit 7' 2>&1)" || F426E_RC=$?
+chmod 755 "$F426_RO/state/example/tick" "$F426_RO/state/example/heartbeat" 2>/dev/null
+assert_contains "AC(e): the wrapped command still runs even if the tick-bump write can't" "$F426E_OUT" "ran-anyway"
+assert_eq "AC(e): the wrapped command's own exit code still propagates" "7" "$F426E_RC"
+
+# --------------------------------------------------------------------------
 section "fwf gate does not leak sccache config into an unrelated wrapped command (issue #268)"
 # fwf_cargo_isolate's sccache step used to run unconditionally inside every
 # `fwf gate` invocation, so RUSTC_WRAPPER/SCCACHE_DIR leaked into the wrapped

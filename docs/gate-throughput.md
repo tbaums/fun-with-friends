@@ -378,3 +378,22 @@ GNU procps extension, absent on macOS, where it returned empty on every call —
 so the reuse guard was structurally impossible and **failed open into a
 SIGKILL**. In the harness it killed the test runner, which is why the suite
 could not complete on macOS at all.
+
+## Every gate attempt bumps this role's tick/heartbeat liveness (issue #426)
+
+Measured: several roles' `state/<profile>/tick/<role>` files went stale for
+1.5-6 hours while those roles provably pushed commits and merged PRs the
+whole time. Cause: a role's own loop only bumps tick at step 0 of a *fresh*
+cycle — a role that keeps launching or retrying gates back-to-back, without
+a cycle in between, never returns to step 0, so its tick file looks dead for
+as long as that stretch runs, however long it is.
+
+Fix, applied right after `<role>` is resolved (before the `--tip-cmd`
+unchanged-skip check and before the per-role lock, so even an attempt that's
+about to be SKIPPED still counts as activity): `fwf-gate.sh` calls
+`fwf_tick_bump "$role"` itself. Best-effort — silenced, and its own failure
+can never abort the wrapped command (an unwritable state dir is a liveness
+nicety lost, not a reason to fail a real gate run). This is the same
+structural pattern `#156`'s own "hole #1" used elsewhere in this file: move
+a guarantee out of per-caller discipline (remembering to call `fwf tick`)
+and into the one piece of shared tooling every caller already goes through.
