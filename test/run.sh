@@ -9233,7 +9233,9 @@ CE2E_T2=$(date +%s)
 CE2E_RED_OUT="$(cd "$ROOT" && timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RED_RC=$?
 CE2E_T3=$(date +%s)
 assert_eq "no verdict: falls through to a local run (rc 0 from the stub)" "0" "$CE2E_RED_RC"
-assert_contains "no verdict: the local run actually happened" "$CE2E_RED_OUT" "run invoked"
+assert_contains "no verdict: the stub's own output is visible (exec, not swallowed)" "$CE2E_RED_OUT" "running required suites"
+assert_eq "no verdict: the local run actually happened ('run' mode, not 'verdict')" "true" \
+  "$([ -f "$CE2ETMP/run-marker-nored" ] && echo true || echo false)"
 CE2E_RED_ELAPSED=$(( CE2E_T3 - CE2E_T2 ))
 [ "$CE2E_RED_ELAPSED" -lt 30 ] && ok "no verdict: falls through in under 30s -- the old 1200s GitHub poll never fires (issue #409's own subject)" \
   || bad "no verdict: falls through fast, no GitHub-CI wait" "took ${CE2E_RED_ELAPSED}s (would have been >=1200s before #409)"

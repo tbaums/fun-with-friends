@@ -10,16 +10,16 @@
 # the floor, so `integration` starves for hours at a time.
 #
 # issue #409: this used to ALSO consult GitHub's ci.yml verdict (via #303's
-# fwf-release-ci-gate.sh oracle) as a second step before falling through to
-# the local suite. GitHub CI is now permanently disabled (operator notice,
-# ci.yml disabled, release.yml packaging-only) -- with no context ever
-# reporting, that consult polled the FULL 1200s timeout on every cold-cache
-# cycle before falling through anyway, turning a ~20min cold cycle into
-# ~42min. Dropped entirely rather than degraded to a zero-wait check: a
-# check against a permanently-disabled CI system has no path to ever
-# returning green, so keeping it (even non-blocking) is dead weight with no
-# offsetting benefit. Per the operator's own direction: never wait on,
-# retrigger, or block on a GitHub run. fwf-release-ci-gate.sh itself is
+# release CI-verdict oracle script) as a second step before falling through
+# to the local suite. GitHub CI is now permanently disabled (operator
+# notice, ci.yml disabled, release.yml packaging-only) -- with no context
+# ever reporting, that consult polled the FULL 1200s timeout on every
+# cold-cache cycle before falling through anyway, turning a ~20min cold
+# cycle into ~42min. Dropped entirely rather than degraded to a zero-wait
+# check: a check against a permanently-disabled CI system has no path to
+# ever returning green, so keeping it (even non-blocking) is dead weight
+# with no offsetting benefit. Per the operator's own direction: never wait
+# on, retrigger, or block on a GitHub run. That oracle script itself is
 # untouched -- it's still used elsewhere (release.yml branch-protection
 # checks) and still has its own tests; only this caller stops consulting it.
 #
