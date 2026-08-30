@@ -3600,8 +3600,16 @@ GHSTUB2
   # --- AC(h2): a budget HOLD refuses scale-up; scale-down is NEVER blocked ---
   # BUDGET_HOLD_FILE = $FWF_RUN/BUDGET_HOLD -- FWF_RUN resolves flat to
   # FWF_RUN_DIR itself (no state/<profile>/ nesting), unlike floor-events.log.
+  # issue #404: this test's own subject is the BUDGET refusal, but
+  # fwf-scale.sh's RAM guardrail runs first (fwf-scale.sh:154-163) and reads
+  # this box's REAL free RAM -- on a loaded box (concurrent shellcheck runs
+  # can drive it toward 0) that guardrail can fire before the budget check
+  # ever gets a chance to, so this test would then be asserting against the
+  # wrong refusal message for a reason that has nothing to do with what it's
+  # testing. Neutralized via the shared sensor seam (lib.sh's
+  # fwf_free_ram_gb, issue #404 AC 5) rather than a one-off workaround here.
   printf 'HOLD\tsubscription usage at 97%%\n' > "$F210RUN/BUDGET_HOLD"
-  F210BUDGET_OUT="$(f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210BUDGET_RC=$?
+  F210BUDGET_OUT="$(FWF_FREE_RAM_GB_OVERRIDE=999 f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210BUDGET_RC=$?
   assert_eq "AC(h2): scale-up refuses while the budget sentinel reads HOLD" "1" "$F210BUDGET_RC"
   assert_contains "AC(h2): names the hold state" "$F210BUDGET_OUT" "sentinel reads 'HOLD"
   F210BUDGETDOWN_RC=0
@@ -6434,6 +6442,21 @@ assert_eq "dev surfaces the decision" '["9"]' \
   "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
 assert_eq "refactor surfaces none" "[]" \
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '.')"
+
+# issue #404 AC (4): "refactor surfaces none" used to flake on this box --
+# not because refactor mode's own logic is unreliable, but because
+# LIST_DEGRADED_FILE could inherit a stale flag from an unrelated EARLIER
+# process reusing the same PID (fixed structurally by issue #405). #404
+# asks for the GitHub-unreachable case to be asserted EXPLICITLY, not just
+# implied by #405's fix landing: refactor mode's decision loop is skipped
+# entirely by `captain_sequences_releases` (fwf-dash-data.sh) BEFORE it
+# would ever call di_read/gv_signoff_state, so it must read `[]` even when
+# every di_read call fails outright -- proving the "surfaces none" property
+# holds independent of GitHub reachability, not merely independent of the
+# now-fixed inheritance bug.
+DD404_UNREACHABLE='di_read() { echo "gh: connection refused" >&2; return 1; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+assert_eq "(4) refactor surfaces none even with EVERY di_read call failing (GitHub unreachable)" "[]" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD404_UNREACHABLE; decisions_json '$DD_FIX'" | jq -c '.')"
 
 # #218 AC (i): an INVALID sentinel gets its own decision row, in BOTH template
 # modes (unlike the GV-SIGNOFF row above, this is not release-sequencing —
