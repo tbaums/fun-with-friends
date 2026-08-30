@@ -934,17 +934,39 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   auto-respawn) invoked from a *different* shell inherited nothing — the pane
   comes up "Not logged in", does zero work, and `fwf dash` still renders it as
   up. `fwf up` resolves a credential (in order: `$CLAUDE_CODE_OAUTH_TOKEN` in
-  its own environment · `~/.claude/.credentials.json` on Linux · the macOS
-  Keychain) and persists it once to a private, `chmod 600` sink outside the
-  repo, dir `chmod 700`, written atomically (temp file + `mv`) so a concurrent
+  its own environment · a **token file** named by `FWF_CLAUDE_TOKEN_FILE`
+  (issue #373) · `~/.claude/.credentials.json` on Linux · the macOS Keychain)
+  and persists it once to a private, `chmod 600` sink outside the repo, dir
+  `chmod 700`, written atomically (temp file + `mv`) so a concurrent
   up/respawn never reads a half-written file. Every pane's `claude` launch
   sources it fresh, same mechanism as `FWF_PANE_ENV` above. `fwf auth resolve`
   re-checks without launching anything; `fwf auth clear` removes it by hand
   (`fwf down`'s full teardown already does this — a decommissioned floor
   shouldn't leave a live token sitting at a predictable path). If `fwf up`
   can't resolve any credential it fails loud before any pane boots, rather
-  than seating unauthenticated panes that look live on the dash. `fwf
-  supervise`'s own auto-respawn (`FWF_SUPERVISE_AUTORESPAWN=1`) is bounded by
+  than seating unauthenticated panes that look live on the dash.
+  - **`FWF_CLAUDE_TOKEN_FILE`** exists because a `.bashrc` line that exports
+    `CLAUDE_CODE_OAUTH_TOKEN` from an on-disk token file only runs in an
+    *interactive* shell — every `ssh host 'fwf up'`, cron job, or
+    agent-driven invocation returns before reaching it (the standard
+    `case $- in *i*) ;; *) return;; esac` guard), so a token sitting on disk,
+    readable, was invisible to a non-interactive cold start. It is a
+    colon-separated list of candidate paths, checked in order; the first
+    that **exists, is owned by you, has no group/world permission bit, and
+    is non-empty** wins, and its value is injected into the sink exactly
+    like the env source's is — unlike `credentials_file`/keychain, which
+    inject nothing because `claude` already reads those itself. A candidate
+    that exists but fails one of those checks is reported loudly (naming the
+    path and the reason) and falls through to the next candidate, then to
+    the next source — it never silently resolves as if the token worked.
+    Default: `~/.config/fwf/claude-oauth-token:~/.config/devbox/claude-oauth-token`
+    (the second entry is a **compatibility path** for one host's existing
+    layout, not fwf's convention — a fresh install only needs the first).
+    Setting `FWF_CLAUDE_TOKEN_FILE` to an **empty string** disables this
+    source entirely rather than falling back to the default. Rotating the
+    file does not reach running panes until the next `fwf up` — like `env`,
+    `fwf respawn` deliberately never re-resolves.
+  `fwf supervise`'s own auto-respawn (`FWF_SUPERVISE_AUTORESPAWN=1`) is bounded by
   a circuit breaker: `FWF_RESPAWN_BREAKER_MAX` (default 3) consecutive failed
   respawns for a role open the breaker, backing off (doubling from
   `FWF_RESPAWN_BREAKER_BASE_SECS`, default 60s) instead of retrying every
