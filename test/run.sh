@@ -3917,9 +3917,16 @@ GHSTUB2
 
   # --- worktree reuse: a scale-up after a scale-down reuses the KEPT worktree,
   # never fails or recreates it from scratch.
-  F210REUSE_INODE_BEFORE="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  # issue #431 sweep: `stat -c` is GNU-only; unguarded here it went empty on
+  # both sides on macOS and the assert_eq below PASSED vacuously ("" == "").
+  # `stat -f %i` is the BSD form of the same inode field -- fall back to it.
+  F210REUSE_INODE_BEFORE="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
   f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1
-  F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  # #275: a same-empty-string pass would be vacuous, not a real assertion.
+  [ -n "$F210REUSE_INODE_BEFORE" ] \
+    && ok "a later scale-up REUSES the kept worktree: inode read actually returned a value (not vacuous)" \
+    || bad "a later scale-up REUSES the kept worktree: inode read actually returned a value (not vacuous)" "got an EMPTY inode read (both stat -c and stat -f failed)"
   assert_eq "a later scale-up REUSES the kept worktree (same inode, never recreated)" "$F210REUSE_INODE_BEFORE" "$F210REUSE_INODE_AFTER"
 
   tmux kill-session -t "${F210SESS}-coord" 2>/dev/null
@@ -9655,6 +9662,31 @@ CE2E_GREEN_ELAPSED=$(( CE2E_T1 - CE2E_T0 ))
 [ "$CE2E_GREEN_ELAPSED" -lt 30 ] && ok "green verdict: completes fast (${CE2E_GREEN_ELAPSED}s, nowhere near a 1200s poll)" \
   || bad "green verdict: completes fast" "took ${CE2E_GREEN_ELAPSED}s"
 
+# issue #431: `timeout` is GNU coreutils with no BSD/macOS equivalent, unlike
+# `stat -c`/`date -d` elsewhere in this file which fall back to `-f`/`-r` on
+# the same line -- there is nothing to put after `||` here. The bounded-wait
+# idiom at test/run.sh:85-101 (assert_log_eventually_contains) is the pattern
+# this copies: poll, presence-based, loud (rc 124, matching GNU timeout) on
+# expiry. Used unconditionally rather than only as a macOS fallback so both
+# platforms exercise the identical code path -- no Linux/macOS asymmetry.
+_portable_timeout() { # $1=timeout-secs; rest=cmd...  ($? mirrors GNU timeout: 124 on expiry)
+  local secs="$1"; shift
+  "$@" &
+  local pid=$! tries=$((secs * 5)) i=0
+  while [ "$i" -lt "$tries" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null
+    sleep 0.2
+    kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    return 124
+  fi
+  wait "$pid"
+}
+
 # AC (#409's own regression test): NO verdict cached -- falls straight
 # through to running the suite locally. Before #409 this would have first
 # polled the stub GitHub oracle above for up to 1200s; the stub sleeps for
@@ -9662,7 +9694,7 @@ CE2E_GREEN_ELAPSED=$(( CE2E_T1 - CE2E_T0 ))
 # the consult never ran, not just that the exit code was eventually right.
 ce2e_stub red "$CE2ETMP/run-marker-nored"
 CE2E_T2=$(date +%s)
-CE2E_RED_OUT="$(cd "$ROOT" && timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RED_RC=$?
+CE2E_RED_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RED_RC=$?
 CE2E_T3=$(date +%s)
 assert_eq "no verdict: falls through to a local run (rc 0 from the stub)" "0" "$CE2E_RED_RC"
 assert_contains "no verdict: the stub's own output is visible (exec, not swallowed)" "$CE2E_RED_OUT" "running required suites"

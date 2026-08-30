@@ -37,6 +37,15 @@ resolution — see [docs/dash.md](docs/dash.md).
 > If the two runners disagree, do not tag. Classify every failure first: the
 > devbox is also the factory, so it fails tests that read live GitHub state or
 > race under load. Record the classification on the PR, as done for #386.
+>
+> **v0.40.0 record (#431):** from #416 until #431 merged, the macOS runner
+> reported `EXIT=1` on every SHA regardless of the code under test (a
+> harness-only `timeout: command not found`, not a product failure) — so a
+> macOS report in that window was not a real second signature, only a
+> runner's existence. Not a release blocker per #431's own classification
+> (the devbox was green on the identical SHAs); recorded here so a later
+> reader does not mistake that window's macOS `EXIT=1` for a disagreeing
+> runner.
 
 
 
