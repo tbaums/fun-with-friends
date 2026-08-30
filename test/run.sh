@@ -12551,6 +12551,91 @@ case "$(cat "$ROOT/.github/workflows/ci.yml")" in
 esac
 
 # --------------------------------------------------------------------------
+section "fwf-local-ci.sh: verdict-line duration (issue #407 item 1)"
+# An isolated copy in its own scratch git repo with a FAKE test/run.sh --
+# the real one is THIS suite, so invoking it for real here would recurse.
+LCI_ROOT="$TMP/lci-root"; mkdir -p "$LCI_ROOT/test"
+cp "$ROOT/fwf-local-ci.sh" "$LCI_ROOT/fwf-local-ci.sh"
+( cd "$LCI_ROOT" && git init -q . && git config user.email t@t.com && git config user.name t )
+LCIRUN="$TMP/lci-run"
+LCI() { ( cd "$LCI_ROOT" && FWF_RUN="$LCIRUN" bash fwf-local-ci.sh "$@" ); }
+lci_commit_fixture() { # $1 = fake test/run.sh body, $2 = optional sleep seconds (default 0)
+  cat > "$LCI_ROOT/test/run.sh" <<EOF
+#!/usr/bin/env bash
+sleep ${2:-0}
+$1
+EOF
+  ( cd "$LCI_ROOT" && git add -A && git commit -q -m fixture --allow-empty )
+  ( cd "$LCI_ROOT" && git rev-parse HEAD )
+}
+
+# AC 1/2: a completed GREEN run records a duration, and `verdict` still
+# exits 0 (the ONLY thing #404 needs -- assert the exit code, not the text).
+LCI_GREEN_SHA="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
+LCI_RUN_RC=0; LCI run >/dev/null 2>&1 || LCI_RUN_RC=$?
+assert_eq "AC(1): a completed run exits 0" "0" "$LCI_RUN_RC"
+LCI_GREEN_V="$(cat "$LCIRUN/local-ci/$LCI_GREEN_SHA")"
+case "$LCI_GREEN_V" in
+  green\ [0-9]*s) ok "AC(1): the verdict line carries a duration ('green <N>s')" ;;
+  *) bad "AC(1): the verdict line carries a duration ('green <N>s')" "got [$LCI_GREEN_V]" ;;
+esac
+assert_eq "AC(2): 'verdict' on a green-with-duration line still exits 0 (the exact #404 regression)" "0" \
+  "$(LCI verdict "$LCI_GREEN_SHA" >/dev/null 2>&1; echo $?)"
+
+# AC 1: a RED run (real failures, not a truncation) ALSO records a duration.
+LCI_RED_SHA="$(lci_commit_fixture 'echo "3 passed, 1 failed, 0 skipped"; exit 1')"
+LCI run >/dev/null 2>&1
+LCI_RED_V="$(cat "$LCIRUN/local-ci/$LCI_RED_SHA")"
+case "$LCI_RED_V" in
+  red\ [0-9]*s\ 1\ failed) ok "AC(1): a red verdict ALSO carries a duration ('red <N>s <n> failed')" ;;
+  *) bad "AC(1): a red verdict also carries a duration" "got [$LCI_RED_V]" ;;
+esac
+assert_eq "AC(2)-adjacent: 'verdict' on a red line still exits 1 (refuses)" "1" \
+  "$(LCI verdict "$LCI_RED_SHA" >/dev/null 2>&1; echo $?)"
+
+# AC 5: a TRUNCATED run (no summary line at all) still records exactly
+# 'red truncated', unchanged, no duration bolted onto an outcome that
+# never finished.
+LCI_TRUNC_SHA="$(lci_commit_fixture 'echo "no summary line here"; exit 1')"
+LCI run >/dev/null 2>&1
+assert_eq "AC(5): a truncated run still records the exact literal 'red truncated'" "red truncated" \
+  "$(cat "$LCIRUN/local-ci/$LCI_TRUNC_SHA")"
+assert_eq "AC(5): 'verdict' on a truncated line still exits 1" "1" \
+  "$(LCI verdict "$LCI_TRUNC_SHA" >/dev/null 2>&1; echo $?)"
+
+# AC 3: backward compatibility -- OLD-format verdict files already on disk
+# (no duration) parse to the SAME verdict they did before this ticket.
+mkdir -p "$LCIRUN/local-ci"
+printf 'green' > "$LCIRUN/local-ci/lci-old-green"
+printf 'red 2 failed' > "$LCIRUN/local-ci/lci-old-red"
+printf 'red truncated' > "$LCIRUN/local-ci/lci-old-truncated"
+assert_eq "AC(3): an OLD bare 'green' file still exits 0" "0" \
+  "$(LCI verdict lci-old-green >/dev/null 2>&1; echo $?)"
+assert_eq "AC(3): an OLD 'red N failed' file still exits 1" "1" \
+  "$(LCI verdict lci-old-red >/dev/null 2>&1; echo $?)"
+assert_eq "AC(3): an OLD 'red truncated' file still exits 1" "1" \
+  "$(LCI verdict lci-old-truncated >/dev/null 2>&1; echo $?)"
+
+# AC 4: conductor-e2e.sh takes the SKIP path against a green-WITH-DURATION
+# verdict for the REAL repo's own current HEAD -- end-to-end, not just the
+# unit-level parse above (this is the AC that actually matters).
+CE2E_RUN="$TMP/ce2e-run"; mkdir -p "$CE2E_RUN/local-ci"
+CE2E_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+printf 'green 42s' > "$CE2E_RUN/local-ci/$CE2E_SHA"
+CE2E_OUT="$(FWF_RUN="$CE2E_RUN" bash "$ROOT/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RC=$?
+assert_eq "AC(4): conductor-e2e.sh exits 0 against a green-with-duration local-ci verdict" "0" "$CE2E_RC"
+assert_contains "AC(4): the observed 'local CI already GREEN' skip line is present" "$CE2E_OUT" "local CI already GREEN"
+
+# --------------------------------------------------------------------------
+section "captain per-tick report: ghcache metrics/headroom (issue #407 item 2)"
+CAP_TMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
+assert_contains "AC(6): the STATUS REPORT section wires in 'fwf-ghcache.sh metrics'" "$CAP_TMPL" "fwf-ghcache.sh metrics"
+assert_contains "AC(6): ...and 'fwf-ghcache.sh headroom'" "$CAP_TMPL" "fwf-ghcache.sh headroom"
+assert_contains "AC(7): explicitly instructed to READ, never force a refresh / add an API call" "$CAP_TMPL" "never force a refresh"
+assert_contains "AC(8): a failed/cold read degrades to a visible marker, never a blank/wedge" "$CAP_TMPL" "UNAVAILABLE"
+assert_contains "AC(9): 'remaining' is paired with 'reset' (or seconds-until), never shown alone" "$CAP_TMPL" "paired with its \`reset\`"
+
+# --------------------------------------------------------------------------
 section "gate history: flake-vs-broken discrimination, storage layer (issue #227)"
 G227_ROOT="$TMP/gate227-lib"; mkdir -p "$G227_ROOT/state/example"
 G227_SETUP="$TMP/gate227-setup.sh"
