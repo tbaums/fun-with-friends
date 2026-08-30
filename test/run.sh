@@ -2658,6 +2658,80 @@ D193_I_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=ex
 assert_eq "AC(i): a role holding its own gate lock reads BUSY, not stale/down" "busy" \
   "$(printf '%s' "$D193_I_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
 
+section "fwf dash data (issue #402): Roles roster unions PAIRS with the heartbeat directory"
+# Reuses the #193 fake-tmux db above: friends-build/friends-coord are visible
+# there with zero panes, so any role with no pane still lands on the
+# heartbeat/gate-lock/session-visibility branches of roles_json's own state
+# machine, never a fabricated "live".
+
+# --- AC(1)/(2): FWF_PAIRS=2 (8 roles), but impl3/impl4/qa3/qa4 have ticked
+# too -- the roster must union PAIRS with the heartbeat dir, so all 12 show,
+# the same source the hb column already reads (issue #193's
+# fwf_heartbeat_path). This is the RED-at-592b62e shape itself, minus the
+# Rust rendering layer (covered separately by the golden fixture, AC 7).
+D402_RUN="$TMP/d402-union"; mkdir -p "$D402_RUN/state/example/heartbeat"
+echo default > "$D402_RUN/state/example/tmux_socket"
+for r in impl1 impl2 qa1 qa2 conductor pm gv captain impl3 impl4 qa3 qa4; do
+  touch "$D402_RUN/state/example/heartbeat/$r"
+done
+D402_UNION_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=2 FWF_RUN_DIR="$D402_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(1): FWF_PAIRS=2 but 4 extra roles ticked -> roster is 12, not 8" "12" \
+  "$(printf '%s' "$D402_UNION_OUT" | jq 'length')"
+assert_eq "AC(2): impl3 (outside PAIRS=2, present in the heartbeat dir) appears in the roster at all" "1" \
+  "$(printf '%s' "$D402_UNION_OUT" | jq '[.[] | select(.role=="impl3")] | length')"
+assert_eq "AC(2)/AC(4): impl3 renders its REAL state (visible session, heartbeat, no pane -> stale), never absent or a fabricated live" "stale" \
+  "$(printf '%s' "$D402_UNION_OUT" | jq -r '.[] | select(.role=="impl3") | .state')"
+assert_eq "AC(4): qa4 (a QA seat outside PAIRS) reads the same real state, not absent" "stale" \
+  "$(printf '%s' "$D402_UNION_OUT" | jq -r '.[] | select(.role=="qa4") | .state')"
+
+# --- AC(3): a PAIRS role with NO heartbeat and no pane still renders, as
+# down/unknown -- the union must not swap one truncation for another.
+D402_NOHB_RUN="$TMP/d402-nohb"; mkdir -p "$D402_NOHB_RUN/state/example/heartbeat"
+echo default > "$D402_NOHB_RUN/state/example/tmux_socket"
+touch "$D402_NOHB_RUN/state/example/heartbeat/qa1"   # impl1 deliberately has none
+D402_NOHB_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D402_NOHB_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(3): impl1 is in PAIRS with no heartbeat and no pane -> still present, DOWN, never dropped" "down" \
+  "$(printf '%s' "$D402_NOHB_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+
+# --- AC(5): scale-down. FWF_PAIRS=1 but impl2/qa2 (a retired pair) ticked
+# recently -- the retired seats render in their REAL state (stale: a
+# visible session, evidence they ran, but no pane right now), never
+# silently dropped and never shown as live.
+D402_DOWN_RUN="$TMP/d402-scaledown"; mkdir -p "$D402_DOWN_RUN/state/example/heartbeat"
+echo default > "$D402_DOWN_RUN/state/example/tmux_socket"
+for r in impl1 qa1 impl2 qa2; do touch "$D402_DOWN_RUN/state/example/heartbeat/$r"; done
+D402_DOWN_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D402_DOWN_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "AC(5): retired impl2 (scaled below FWF_PAIRS, still has a heartbeat) still appears" "1" \
+  "$(printf '%s' "$D402_DOWN_OUT" | jq '[.[] | select(.role=="impl2")] | length')"
+assert_eq "AC(5): ...in its real state (stale), not live and not dropped" "stale" \
+  "$(printf '%s' "$D402_DOWN_OUT" | jq -r '.[] | select(.role=="impl2") | .state')"
+
+# --- Edge case: a name in the heartbeat dir that is not a known role (typo /
+# stray leftover) is rendered, not silently swallowed -- an unrecognized name
+# on the board is lower cost than a real role vanishing from it.
+D402_TYPO_RUN="$TMP/d402-typo"; mkdir -p "$D402_TYPO_RUN/state/example/heartbeat"
+echo default > "$D402_TYPO_RUN/state/example/tmux_socket"
+touch "$D402_TYPO_RUN/state/example/heartbeat/impl1" "$D402_TYPO_RUN/state/example/heartbeat/implx-typo"
+D402_TYPO_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D402_TYPO_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "edge case: an unrecognized heartbeat name is rendered, not dropped, and does not blank the tab" "1" \
+  "$(printf '%s' "$D402_TYPO_OUT" | jq '[.[] | select(.role=="implx-typo")] | length')"
+
+# --- Edge case: an empty/absent heartbeat directory (fresh box, nothing has
+# ticked yet) falls back to the PAIRS roster, rendered down/unknown -- never
+# an empty Roles tab. D193_D_RUN above never created a heartbeat dir at all.
+assert_eq "edge case: no heartbeat dir at all -> roster still non-empty (falls back to PAIRS)" "true" \
+  "$(printf '%s' "$D193_D_OUT" | jq '(length) > 0')"
+
+# --- AC(6): FWF_PAIRS's PROVISIONING role is unchanged -- the PAIRS array
+# lib.sh builds for `fwf up`/`fwf scale` is computed purely from FWF_PAIRS
+# and is not consulted or altered by the heartbeat directory in any way.
+# This is a regression check on the array's SIZE with extra heartbeat noise
+# present (the same D402_RUN fixture as AC(1)/(2) above, which has 4 roles
+# ticking outside FWF_PAIRS=2) -- if provisioning ever started reading the
+# heartbeat dir too, this would silently start returning 12.
+D402_PAIRS_LEN="$(env FWF_PROFILE=example FWF_PAIRS=2 FWF_RUN_DIR="$D402_RUN" bash -c "source '$ROOT/lib.sh'; echo \"\${#PAIRS[@]}\"")"
+assert_eq "AC(6): PAIRS array size still tracks FWF_PAIRS alone, unaffected by extra heartbeat entries" "2" "$D402_PAIRS_LEN"
+
 section "fwf_write_pane_env: malformed FWF_PANE_ENV entries are skipped, not sourced (issue #181 review)"
 # The written file is SOURCED by every pane (fwf_claude_cmd) — a name that
 # only passes a first-char check (the original bug) would let an embedded
