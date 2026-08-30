@@ -4133,6 +4133,51 @@ mod tests {
         );
     }
 
+    // issue #402 (AC 1/2/7): the actual defect the operator hit was NOT "a
+    // helper returns the wrong list" — it was the RENDERED Roles tab and its
+    // header count under-reporting a live floor. Drives the real renderer
+    // over a 12-role board (4 pairs + the 4 fixed coord/build roles) so a
+    // future change that re-truncates the roster (e.g. reverting to the
+    // PAIRS-only source) goes RED here, on the visible output, not only on
+    // a bash helper's return value.
+    #[test]
+    fn golden_roles_twelve_role_roster_402() {
+        let mut app = golden_app(Tab::Roles);
+        if let Feed::Ok(d) = &mut app.feed {
+            d.roles = vec![
+                data::Role { role: "impl1".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(584) },
+                data::Role { role: "impl2".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(114) },
+                data::Role { role: "impl3".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(112) },
+                data::Role { role: "impl4".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(120) },
+                data::Role { role: "qa1".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(26) },
+                data::Role { role: "qa2".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(49) },
+                data::Role { role: "qa3".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(24) },
+                data::Role { role: "qa4".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(31) },
+                data::Role { role: "conductor".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(71) },
+                data::Role { role: "pm".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(199) },
+                data::Role { role: "gv".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(163) },
+                data::Role { role: "captain".into(), state: "live".into(), detail: String::new(), heartbeat_age: Some(59) },
+            ];
+        }
+        let buf = render_buffer(100, 34, |f| ui(f, &mut app));
+        let text = buffer_to_text(&buf);
+        assert_golden("full_frame_roles_twelve_402", &normalize_running_version(&text));
+
+        assert!(
+            text.contains("Roles (12)"),
+            "the tab header count is derived from the rendered roster (d.roles.len()) — it must read 12, not truncate to 8: {text}"
+        );
+        for role in [
+            "impl1", "impl2", "impl3", "impl4", "qa1", "qa2", "qa3", "qa4", "conductor", "pm",
+            "gv", "captain",
+        ] {
+            assert!(
+                text.contains(role),
+                "role '{role}' must be visible in the rendered Roles tab: {text}"
+            );
+        }
+    }
+
     #[test]
     fn header_shows_newest_heartbeat_age_whenever_known_193_ac_b() {
         let mut app = golden_app(Tab::Activity);

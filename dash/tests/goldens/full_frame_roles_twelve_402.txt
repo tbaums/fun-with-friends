@@ -1,0 +1,34 @@
+┌ fwf dash ────────────────────────────────────────────────────────────────────────────────────────┐
+│profile fwf-self  ·  dev  ● running  · fwf vX.Y.Z (built YYYY-MM-DD)                             │
+│prod https://example.test/prod   pipeline staging → integration → main   [status.json]   ⟳ 2026-01│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+  1 Activity (3)    2 Roles (12)    3 Decisions (1)    4 Issues (1)    5 Usage (?)
+ ⛔  CAPTAIN NEEDS YOU — decision #101 awaiting you  · attach: tmux attach -t friends-coord
+┌ Roles ───────────────────────────────────────────────────────────────────────────────────────────┐
+│▌ ● impl1     live    hb 584s ago                                                                 │
+│  ● impl2     live    hb 114s ago                                                                 │
+│  ● impl3     live    hb 112s ago                                                                 │
+│  ● impl4     live    hb 120s ago                                                                 │
+│  ● qa1       live    hb 26s ago                                                                  │
+│  ● qa2       live    hb 49s ago                                                                  │
+│  ● qa3       live    hb 24s ago                                                                  │
+│  ● qa4       live    hb 31s ago                                                                  │
+│  ● conductor live    hb 71s ago                                                                  │
+│  ● pm        live    hb 199s ago                                                                 │
+│  ● gv        live    hb 163s ago                                                                 │
+│  ● captain   live    hb 59s ago                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ 1-5 tab  j/k move  Ctrl-r refresh  r respawn  s stop  t captain  ? help  q quit

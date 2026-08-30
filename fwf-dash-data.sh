@@ -170,6 +170,39 @@ visibility_json() {
           state_dir:$state_dir, profile:$profile, host:$host}'
 }
 
+# issue #402: the Roles roster and the "hb Ns ago" column used to come
+# from TWO sources of truth -- fwf_all_roles() (built from FWF_PAIRS) for
+# the roster, and the heartbeat directory for the age. At any pair count
+# other than the profile's own, a role with a real, recent heartbeat
+# simply never appeared -- not as "down", not at all, which is the
+# fail-open shape #291/#309 already named: a display reporting success
+# it hasn't earned. UNION them: every role fwf_all_roles() would name,
+# PLUS every name with a heartbeat file, minus anything suppressed. A
+# role in PAIRS with no heartbeat still renders (down/unknown, never
+# dropped -- roles_json's own state machine handles that already); a
+# role with a heartbeat but outside PAIRS now ALSO renders, in its real
+# state, instead of vanishing. FWF_PAIRS keeps its one remaining job --
+# what `fwf up`/`fwf scale` provision -- unchanged by this function.
+#
+# A name in the heartbeat directory that isn't a role fwf_all_roles()
+# would ever name (a stray file, a typo, a leftover from a renamed role)
+# is rendered rather than silently dropped -- consistent with
+# fwf_extra_names' own precedent and with this ticket's own bias: an
+# unrecognized name showing up is at worst noise on the board; dropping
+# a role that genuinely ticked is the exact defect this ticket exists to
+# close, and the two mistakes are not symmetric.
+_fwf402_roster_names() {
+  {
+    fwf_all_roles
+    if [ -d "$FWF_STATE_DIR/heartbeat" ]; then
+      for _f in "$FWF_STATE_DIR"/heartbeat/*; do
+        [ -e "$_f" ] || continue
+        basename "$_f"
+      done
+    fi
+  } | while IFS= read -r _r; do fwf_role_suppressed "$_r" || printf '%s\n' "$_r"; done | sort -u
+}
+
 # --- roles (tmux pane liveness, overlaid with status.json detail) -----------
 # $1 = floor_idle_json (so a pane-less floor role can render a deliberate IDLE
 # instead of "down" — see floor_idle_json above). Optional and defaults to
@@ -184,7 +217,7 @@ roles_json() {
     fi_actor="$(printf '%s' "$fi_json" | jq -r '.actor // ""')"
   fi
   local role sess token pane state detail cmd hb_age
-  for role in $(fwf_all_roles); do
+  for role in $(_fwf402_roster_names); do
     sess="$(fwf_role_session "$role")"
     token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
     case "$role" in impl*|qa*) token="$token ·";; esac
