@@ -11949,6 +11949,48 @@ assert_contains "ci.yml's test job saves its shadow log back to cache even on fa
 # #261) already covers every --safe list in ci.yml, this job's included.
 assert_contains "#352's own step passes exactly the narrow docs/*, *.md safe list" "$CIYML" "--safe 'docs/*' --safe '*.md'"
 
+# issue #427: classify a shellcheck exit code -- 0 clean, >128 killed by a
+# signal (137 SIGKILL, 143 SIGTERM, ... -- never a lint finding, however the
+# process died), anything else a real finding. Extracted to a pure function
+# (dispatching to the SAME ok/skip/bad the real step below calls) so the
+# regression fixture just below can drive every rc directly and
+# deterministically, without depending on host RAM pressure to reproduce a
+# real OOM kill.
+_sc427_dispatch() { # $1=shellcheck exit code -> calls ok/skip/bad
+  local rc="$1"
+  if [ "$rc" -eq 0 ]; then
+    ok "shellcheck clean"
+  elif [ "$rc" -gt 128 ]; then
+    skip "shellcheck (killed by signal $((rc - 128)) under concurrent box load, issue #418/#427 -- not a code finding)"
+  else
+    bad "shellcheck reported issues"
+  fi
+}
+
+# --------------------------------------------------------------------------
+section "shellcheck OOM-kill misattribution (issue #427): a killed linter is a SKIP, never a lint finding"
+# RED at the pre-#427 code: ANY non-zero rc (including 137/SIGKILL) took the
+# 'else -> bad' branch, so a box-load OOM kill misreported as a lint defect.
+# Every call below runs inside a command-substitution subshell, so its
+# ok()/skip()/bad() calls (even the real-findings one) mutate only that
+# subshell's copy of PASS/SKIP/FAIL -- this suite's own tally is untouched
+# regardless of which branch a given rc drives.
+SC427_CLEAN="$(_sc427_dispatch 0)"
+assert_contains "rc=0 -> ok (clean)" "$SC427_CLEAN" "shellcheck clean"
+
+SC427_KILL9="$(_sc427_dispatch 137)"
+assert_contains "rc=137 (SIGKILL) -> skip, never a lint finding" "$SC427_KILL9" "skip"
+assert_contains "...names the actual signal number (9), not the raw exit code" "$SC427_KILL9" "signal 9"
+assert_not_contains "...never reads as a FAIL" "$SC427_KILL9" "FAIL"
+
+SC427_KILL15="$(_sc427_dispatch 143)"
+assert_contains "rc=143 (SIGTERM) -> skip too, not just SIGKILL" "$SC427_KILL15" "signal 15"
+assert_not_contains "...never reads as a FAIL either" "$SC427_KILL15" "FAIL"
+
+SC427_FINDINGS="$(_sc427_dispatch 1)"
+assert_contains "a genuine non-signal rc (real findings) still reads FAIL, never masked into a skip" "$SC427_FINDINGS" "FAIL"
+assert_contains "...names it as shellcheck reported issues" "$SC427_FINDINGS" "shellcheck reported issues"
+
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
@@ -11982,13 +12024,17 @@ if command -v shellcheck >/dev/null 2>&1; then
     # sourced scripts). Lint only the repo's shipped scripts — not
     # user-local/generated profiles, which live in profiles/ but aren't
     # part of the repo.
-    if shellcheck -s bash -S warning \
-         "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
-         "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"; then
-      ok "shellcheck clean"
-    else
-      bad "shellcheck reported issues"
-    fi
+    shellcheck -s bash -S warning \
+      "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
+      "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"
+    # issue #427: #423's admission gate only bounds ENTRY (RAM free at the
+    # instant of admission), not RESIDENCY -- a concurrent suite can still
+    # grow into shellcheck's reserved memory while it runs and get it
+    # OOM-killed mid-lint. _sc427_dispatch (defined above, RED-first tested
+    # against 0/1/137/143 in the section just above this one) classifies the
+    # exit code so a killed linter reads as an honest SKIP, never a
+    # fabricated lint finding.
+    _sc427_dispatch "$?"
     FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_mem_admit_release '$SC_TOKEN'"
   fi
 else
