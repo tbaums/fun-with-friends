@@ -92,6 +92,118 @@ refuse() { # $1=verdict-line $2=cause-class(policy|infrastructure)
   exit 1
 }
 
+# --- issue #370: LIFECYCLE, reported alongside AUTHORIZATION but never
+# merged into it -- "does the work exist" and "may it be built" are
+# orthogonal axes, answered by different mechanisms (a body scan here vs.
+# `fwf-authz.sh`'s sentinel oracle), and flattening them into one verdict
+# word is exactly what let a declined prerequisite (closed `not_planned`,
+# but still `product-wip` and therefore HELD forever) read as merely
+# "not yet clear" -- indistinguishable from one still awaiting a keypress.
+# Report both; combine neither.
+FWF_CLAIM_MENTION_CAP="${FWF_CLAIM_MENTION_CAP:-20}"
+
+# Batched lifecycle read for a set of issue/PR numbers -- ONE call, not N
+# sequential reads (issue #370 AC 9: a body can mention a couple dozen
+# issues, and reading each one's state separately is a per-claim,
+# per-seat cost invisible to correctness that only ever shows up as
+# rate-limit pressure). Real backend: a single `gh api graphql` call with
+# every number aliased under one `repository` fetch, using
+# `issueOrPullRequest` so a PR-numbered mention is distinguished from an
+# issue in the same response, not a second lookup. A number this repo
+# never had -- a mistyped ref, or a different identifier namespace that
+# happens to share the `#N` spelling (issue #370 AC 6's captured `#1118`
+# transom-id fixture) -- comes back null: a SILENT skip, not a failure.
+# Local backend (FWF_ISSUES=local, test/dev only): the local issue store
+# has no PR concept and no `stateReason` at all -- reported honestly as
+# "reason unknown" on a closed issue rather than guessed as `completed`,
+# which is precisely the collapse AC 6 forbids.
+# Output: TSV "n\ttype\tstate\treason\tclosed_at" per EXISTING number (a
+# nonexistent number contributes no row at all). rc 1 = the whole read
+# failed (infrastructure, not "these don't exist") -- callers render
+# every requested number as a loud UNKNOWN rather than silently skipping,
+# because a batch-level failure cannot tell "doesn't exist" from
+# "exists but unreadable" apart per-number, and AC 6 requires the second
+# case to be loud.
+_lifecycle_batch() { # $@ = deduped issue/PR numbers
+  [ "$#" -eq 0 ] && return 0
+  if [ "${FWF_ISSUES:-}" = "local" ]; then
+    local n st
+    for n in "$@"; do
+      st="$("$DIR/fwf-issues.sh" view "$n" --json state --jq '.state' 2>/dev/null)" || continue
+      case "$st" in
+        open|OPEN)     printf '%s\tIssue\tOPEN\t\t\n' "$n" ;;
+        closed|CLOSED) printf '%s\tIssue\tCLOSED\tUNKNOWN\t\n' "$n" ;;
+      esac
+    done
+    return 0
+  fi
+  local owner repo slug query n out
+  slug="$(fwf_repo_slug)"
+  owner="${slug%%/*}"; repo="${slug#*/}"
+  query="query { repository(owner: \"$owner\", name: \"$repo\") {"
+  for n in "$@"; do
+    query="$query n$n: issueOrPullRequest(number: $n) { __typename ... on Issue { state stateReason closedAt } ... on PullRequest { state closedAt } }"
+  done
+  query="$query } }"
+  out="$(gh api graphql -f "query=$query" --jq '.data.repository' 2>/dev/null)"
+  if [ -z "$out" ] || [ "$out" = "null" ]; then return 1; fi
+  for n in "$@"; do
+    printf '%s' "$out" | jq -r --arg k "n$n" --arg num "$n" '
+      .[$k] as $v
+      | if $v == null then empty
+        else [$num, ($v.__typename // "Issue"), ($v.state // "UNKNOWN"),
+              ($v.stateReason // "UNKNOWN"), ($v.closedAt // "")] | @tsv
+        end' 2>/dev/null
+  done
+}
+
+# One rendering of a single lifecycle row, shared by the declared-heading
+# scan and the weak mention scan below so the two never drift in wording.
+# $1=n $2=type(Issue|PullRequest) $3=state(OPEN|CLOSED) $4=reason $5=closed_at
+# $6=mode(declared|mention) -- "declared" is asserting a real prerequisite
+# and speaks plainly ("the prerequisite shipped"); "mention" is the weak
+# scan and must never claim more than "this body mentions a declined
+# issue" (issue #370's own thesis: an absent mechanical distinction
+# between "asserts" and "merely mentions" is what this ticket routes
+# around, not what it re-introduces here).
+_lifecycle_line() {
+  local n="$1" type="$2" state="$3" reason="$4" closed_at="$5" mode="$6" date=""
+  [ -n "$closed_at" ] && date="${closed_at%%T*}"
+  if [ "$type" = "PullRequest" ]; then
+    echo "    #$n: is a PULL REQUEST, not an issue"
+    return
+  fi
+  case "$state" in
+    OPEN)
+      [ "$mode" = declared ] && echo "    #$n: OPEN"
+      ;;
+    CLOSED)
+      case "$reason" in
+        COMPLETED)
+          if [ "$mode" = declared ]; then
+            echo "    #$n: CLOSED (completed) — the prerequisite shipped"
+          else
+            echo "    #$n: closed completed${date:+ on $date}"
+          fi
+          ;;
+        NOT_PLANNED)
+          if [ "$mode" = declared ]; then
+            echo "    #$n: CLOSED (not planned)${date:+ on $date} — DECLINED, not pending; see its closing comment before relying on it"
+          else
+            echo "    #$n: closed not planned${date:+ on $date} — see its closing comment before relying on it"
+          fi
+          ;;
+        *)
+          echo "    #$n: CLOSED (reason unknown)"
+          ;;
+      esac
+      ;;
+    *)
+      echo "    #$n: UNKNOWN — could not verify its lifecycle"
+      ;;
+  esac
+}
+
 # --- (j)/(j2): declared-prerequisite scan, warn-only, PARTIAL BY CONSTRUCTION
 # The convention (a "## HARD PREREQUISITE(S)" heading, #135's own example)
 # is deliberately NOT minted here -- this consumes whatever's already
@@ -102,7 +214,7 @@ refuse() { # $1=verdict-line $2=cause-class(policy|infrastructure)
 # absent heading must say so explicitly (AC j2: silence is not "no
 # prerequisites", it is "the scan found nothing", a narrower claim).
 _scan_prerequisites() { # $1=issue-number
-  local body heading_line nums n verdict rc read_rc
+  local body heading_line nums n verdict rc read_rc lc_data lc_rc row type state reason closed_at
   # #211's convention, here too: a genuinely EMPTY body (rc 0, a real and
   # common state for a terse ticket) is not the same fact as "the read
   # itself failed" (nonzero rc) -- collapsing them would misreport a real
@@ -119,7 +231,12 @@ _scan_prerequisites() { # $1=issue-number
   # line ("## HARD PREREQUISITES -- #234 AND #189 land first"), and this
   # stays deliberately narrow (a heading match, never free prose) per the
   # ticket's own "cannot be derived from prose" finding.
-  heading_line="$(printf '%s\n' "$body" | grep -inA2 '^##.*HARD PREREQUISITE' | head -3)"
+  # issue #370 AC 10: widened to the spellings actually in use on this
+  # floor -- measured at filing time, EVERY open issue declaring a hard
+  # dependency under a heading spelled it "## HARD DEPENDENCY", never the
+  # "## HARD PREREQUISITE" this used to require alone. `-E` for the
+  # alternation; case-insensitivity is unchanged (`-i`, already present).
+  heading_line="$(printf '%s\n' "$body" | grep -inA2 -E '^##.*(HARD PREREQUISITE(S)?|HARD DEPENDENC(Y|IES))' | head -3)"
   if [ -z "$heading_line" ]; then
     echo "  prerequisites: no '## HARD PREREQUISITE' heading found (a PARTIAL scan -- this is not the same claim as 'no prerequisites exist', see issue #243 AC j2)" >&2
     return 0
@@ -130,15 +247,102 @@ _scan_prerequisites() { # $1=issue-number
     return 0
   fi
   echo "  prerequisites (declared, from a HARD PREREQUISITE heading -- a partial scan, not a schema):" >&2
+  lc_data="$(_lifecycle_batch $nums)"; lc_rc=$?
   for n in $nums; do
     [ "$n" = "$1" ] && continue   # never report an issue as its own prerequisite
+    # LIFECYCLE first, on its own line -- never merged into the authz verdict
+    # below (issue #370's own thesis: "closed" and "HELD" mean opposite
+    # things about whether the work exists vs. whether it may be built).
+    if [ "$lc_rc" -ne 0 ]; then
+      echo "    #$n: UNKNOWN — could not verify its lifecycle" >&2
+    else
+      row="$(printf '%s\n' "$lc_data" | awk -F'\t' -v n="$n" '$1==n{print; exit}')"
+      if [ -n "$row" ]; then
+        IFS=$'\t' read -r _ type state reason closed_at <<<"$row"
+        _lifecycle_line "$n" "$type" "$state" "$reason" "$closed_at" declared >&2
+      fi
+      # no row and rc 0 -> the number never existed; silent (issue #370 AC 6)
+    fi
+    # AUTHORIZATION second, its own line. Split into every verdict
+    # fwf-authz.sh can return (issue #370 AC 3's second half): the old
+    # catch-all folded HELD (rc 10, awaiting a keypress), INVALID (rc 11,
+    # "a forgery attempt or a botched operator action -- not routine
+    # HELD" per fwf-authz.sh's own words) and INDETERMINATE (rc 2, the
+    # thread could not be read) into one "NOT YET CLEAR" string --
+    # collapsing a security-relevant verdict into the same reading as a
+    # routine hold.
     verdict="$("$DIR/fwf-authz.sh" "$n" 2>&1)"; rc=$?
     case "$rc" in
       0)  echo "    #$n: AUTHORIZED" >&2 ;;
       12) echo "    #$n: NOT-GATED (no gate ever applied)" >&2 ;;
+      10) echo "    #$n: NOT YET CLEAR ($(printf '%s' "$verdict" | head -1))" >&2 ;;
+      11) echo "    #$n: INVALID — security-relevant, not a routine hold ($(printf '%s' "$verdict" | head -1))" >&2 ;;
+      2)  echo "    #$n: INDETERMINATE — the thread could not be read ($(printf '%s' "$verdict" | head -1))" >&2 ;;
       *)  echo "    #$n: NOT YET CLEAR ($(printf '%s' "$verdict" | head -1))" >&2 ;;
     esac
   done
+}
+
+# --- issue #370 §2: a WEAK mention scan -- does NOT require solving the
+# prose-dependency problem the two mechanisation attempts above already
+# failed at. It asks a strictly smaller question than "is #N a
+# prerequisite of this issue": only "does this body mention #N, and is #N
+# closed not_planned" -- a lookup, not an inference, and sufficient to
+# stop a reader the way the declared-prerequisite scan above cannot (that
+# scan only ever looks at a heading; most dependencies on this floor are
+# written in prose, per this ticket's own filing). Fence-stripped (AC 7,
+# reusing #218's existing stripper rather than re-deriving it), self- and
+# duplicate-excluded (AC 8), capped (AC 9) and honest about both (AC 4/9).
+_scan_mentions() { # $1=issue-number
+  local body stripped mentions total n count lc_data lc_rc row type state reason closed_at line lines cap_note
+  body="$(_issue_read "$1" --json body --jq '.body' 2>/dev/null)" || return 0
+  stripped="$(printf '%s\n' "$body" | fwf_strip_fences)"
+  # first-occurrence order, deduped, self excluded (AC 8) -- same
+  # `[ "$n" = "$1" ] && continue` exclusion as the declared-prerequisite
+  # loop, applied here via the awk filter instead of a shell loop.
+  mentions="$(printf '%s\n' "$stripped" | grep -oE '#[0-9]+' | tr -d '#' | awk -v self="$1" '$0!=self && !seen[$0]++')"
+  [ -z "$mentions" ] && return 0
+  total="$(printf '%s\n' "$mentions" | wc -l | tr -d ' ')"
+  local -a nums=()
+  count=0
+  while IFS= read -r n; do
+    count=$((count + 1))
+    [ "$count" -gt "$FWF_CLAIM_MENTION_CAP" ] && break
+    nums+=("$n")
+  done <<<"$mentions"
+  lc_data="$(_lifecycle_batch "${nums[@]}")"; lc_rc=$?
+  lines=""
+  for n in "${nums[@]}"; do
+    if [ "$lc_rc" -ne 0 ]; then
+      # Whole batch failed -- can't tell "doesn't exist" from "exists but
+      # unreadable" per number, and AC 6 requires the second case to be
+      # loud, so every scanned number renders loud here (the conservative
+      # direction: never let a read failure collapse into silence, which
+      # would read as "nothing declined").
+      lines="$lines
+    #$n: UNKNOWN — could not verify its lifecycle"
+      continue
+    fi
+    row="$(printf '%s\n' "$lc_data" | awk -F'\t' -v n="$n" '$1==n{print; exit}')"
+    [ -z "$row" ] && continue   # never existed (404-equivalent) -- silent, AC 6
+    IFS=$'\t' read -r _ type state reason closed_at <<<"$row"
+    [ "$state" = "OPEN" ] && continue   # open mentions: nothing to say
+    line="$(_lifecycle_line "$n" "$type" "$state" "$reason" "$closed_at" mention)"
+    [ -n "$line" ] && lines="$lines
+$line"
+  done
+  cap_note=""
+  if [ "$total" -gt "$FWF_CLAIM_MENTION_CAP" ]; then
+    cap_note="  mentions: scanned $FWF_CLAIM_MENTION_CAP of $total distinct #N references (capped) — an unscanned mention could still be declined and would not show here"
+  fi
+  # Silence means "the scan found nothing" (same discipline as AC j2's
+  # absent-heading line above) -- but a cap notice is itself a finding
+  # (incompleteness), so it prints even when nothing else does.
+  [ -z "$lines" ] && [ -z "$cap_note" ] && return 0
+  echo "  mentions of DECLINED issues (a weak signal — this does NOT assert a dependency):" >&2
+  [ -n "$cap_note" ] && echo "$cap_note" >&2
+  [ -n "$lines" ] && printf '%s\n' "$lines" | sed '/^$/d' >&2
+  return 0
 }
 
 verdict_out="$("$DIR/fwf-authz.sh" "$num" 2>&1)"; rc=$?
@@ -176,6 +380,7 @@ case "$rc" in
 esac
 
 _scan_prerequisites "$num"
+_scan_mentions "$num"
 
 echo "$ERGONOMIC_NOTICE" >&2
 

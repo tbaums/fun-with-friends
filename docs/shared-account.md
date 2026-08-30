@@ -227,13 +227,39 @@ runs `fwf authz` first and branches on its verdict:
 | `INDETERMINATE` | **warn** ("infrastructure" cause) and still proceed — claiming is cheap and reversible, so refusing on a mere read failure would manufacture the exact stall this exists to relieve |
 | `HELD` / `INVALID` | **refuse**, exit 1, naming the verdict and a "policy" cause, plus the exact `fwf authz <n>` to run next |
 
-It also scans the issue body for a declared `## HARD PREREQUISITE` heading
-(the convention `#135` already uses) and **warns, never refuses**, on any
-named prerequisite that is not itself authorized — a scan of a heading, not
-a schema; two independent attempts to derive this from free prose (one
-reading, one writing) produced false positives in most of their own spot
-checks, so an absent heading is reported as exactly that — "no heading
-found" — never as "no prerequisites exist".
+It also scans the issue body for a declared `## HARD PREREQUISITE(S)` /
+`## HARD DEPENDENC(Y|IES)` heading (issue #370 widened the accepted
+spellings to what this floor actually writes) and **warns, never
+refuses**, on any named prerequisite that is not itself authorized — a
+scan of a heading, not a schema; two independent attempts to derive this
+from free prose (one reading, one writing) produced false positives in
+most of their own spot checks, so an absent heading is reported as
+exactly that — "no heading found" — never as "no prerequisites exist".
+
+**Lifecycle and authorization, reported as two separate lines, never
+merged (issue #370).** For each declared prerequisite, `fwf claim` now
+also reports whether the referenced issue's *work exists at all* —
+`OPEN`, `CLOSED (completed)`, or `CLOSED (not planned)` — alongside, but
+never combined with, its `fwf authz` verdict. The reason: a `not_planned`
+closure can still carry the gate label, so its authz verdict reads `HELD`
+forever — indistinguishable from one merely awaiting a keypress unless
+lifecycle is reported separately. The same `case` split now also gives
+`INVALID` and `INDETERMINATE` their own distinct, loud lines instead of
+folding both into the same "not yet clear" wording as a routine `HELD`.
+
+**A second, weaker scan covers free-prose mentions.** Most prerequisites
+on this floor are written in prose, not under a heading — the declared
+scan above deliberately does not (and cannot) read that. Instead, `fwf
+claim` separately scans the WHOLE body (fenced/indented code excluded, up
+to `FWF_CLAIM_MENTION_CAP` distinct `#N` references, default 20, with an
+explicit notice if the cap is hit) for any mentioned issue that is closed
+`not_planned`, and prints it under an explicitly-labeled "weak signal"
+heading — a lookup ("this body mentions #N, and #N was declined"), never
+an inference about whether #N is actually depended on. A mention of an
+issue that was never real (a typo, or a different identifier namespace
+reusing the `#N` spelling, e.g. a transom message id) is a silent skip;
+a genuine read failure renders loud instead, on the same "never let a
+read failure collapse into silence" principle used throughout this file.
 
 On success it creates the claim artifact and nothing else: an empty
 `claim #<n>: <title>` commit — no branch create/switch (issue #177: git
