@@ -746,9 +746,13 @@ fwf down [--purge|--build-only|--pm-only|--floor-only [--force]]
 fwf issues <create|list|view|edit|comment|close|reopen|export>
                                                     the local issue tracker (--issues local):
                                                     gh-shaped CLI over a markdown store
-fwf dash                                            read-only status board + decision inbox (Rust
+fwf dash [--remote <host>[:profile]]                read-only status board + decision inbox (Rust
                                                     TUI; prebuilt binary auto-downloaded on first
-                                                    run — docs/dash.md)
+                                                    run — docs/dash.md). --remote (#206) shows a
+                                                    factory on another host via a scrubbed, versioned
+                                                    JSON snapshot fetched on its own interval — never
+                                                    an ssh call per render tick; mutating actions are
+                                                    disabled when remote.
 fwf usage [--clear-hold]                            per-role token usage + an estimated $ equivalent,
                                                     read from each role's own Claude Code session
                                                     transcripts, plus budget-enforcement status

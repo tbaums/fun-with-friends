@@ -135,11 +135,59 @@ coord session for `pm`/`gv`/`captain`) is shared with `fwf-supervise.sh`
 (issue #165), so an invisible session is also never auto-respawned there —
 see `SESSION_UNKNOWN` in its own output.
 
-`fwf dash` has no built-in remote view (spun out as issue #206). For a
-factory running on another host, `ssh -t <host> fwf dash` runs the dash
-there and streams the TUI back over ssh — cheaper than teaching the dash a
-transport, and it reads the real local state on that host instead of
-guessing.
+### Remote view: `fwf dash --remote <host>[:profile]` (issue #206)
+
+`ssh -t <host> fwf dash` (running the dash on the remote box and streaming
+the TUI back) still works and is the zero-setup fallback. `--remote` is
+for leaving a dash running **locally** against a factory on another
+machine — the operator wants a dash they can leave open, possibly showing
+a factory the local box has never touched.
+
+**The wire format is a versioned JSON snapshot, not scraped TUI output.**
+`fwf dash --emit-snapshot` (run on the remote host, over ssh) emits a
+schema-versioned JSON document built from an explicit ALLOWLIST of
+fields — `schema_version`, `profile`, `generated_at`, `roles` (role,
+state, detail, heartbeat_age), `issues` (number, title, gated). Nothing
+else: no process environment, no tokens/credentials, no file contents,
+ever — the snapshot is a committed test fixture as well as a wire format,
+so anything it carries lands in this public repository permanently, and
+the field list is short specifically so it stays auditable. A remote dash
+therefore shows roles + issues + heartbeat ages, not full local-dash
+parity (no decisions/pipeline/prod/activity tabs) — that narrowing is
+deliberate, not a bug.
+
+**Per-render-tick cost stays a local disk read.** A background fetcher
+(started once, when `--remote` launches) polls `ssh <host> fwf dash
+--emit-snapshot` on its own interval — `FWF_DASH_REMOTE_FETCH_INTERVAL`
+(default 15s), decoupled from the render tick (`FWF_DASH_REFRESH`,
+default 5s) — and writes the result atomically to a local cache file. The
+renderer's own data provider (`fwf-dash-remote.sh`) only ever reads that
+cache; it never spawns ssh itself. Every fetch is bounded by a hard
+timeout (`FWF_DASH_REMOTE_FETCH_TIMEOUT`, default 8s) — a hung link
+degrades the *snapshot's age*, never the dash's responsiveness.
+
+**Failure states use the same UNKNOWN/STALE vocabulary as a local
+unreadable read (issue #193/#211), not a new one invented for this
+transport:** no snapshot fetched yet, a fetch failure, a stale snapshot
+(older than `FWF_DASH_REMOTE_STALE_SECS`, default 45s), and a
+`schema_version` mismatch between the remote's `fwf` and the local
+dash's expectation all render as every-role-`unknown` or a `STALE`
+banner naming the age and the reason — never a hang, and never a false
+`down`. A **fetch failure never clobbers the last good snapshot** — the
+board keeps showing the last-good data with its age visible, which is
+what makes a frozen-but-drawing dash self-evidently frozen rather than
+silently misleading.
+
+**Mutating actions are disabled on a remote dash, full stop.** Approve,
+reject, respawn, and every other write-side keypress refuse immediately,
+naming the remote host and the `ssh -t <host> fwf dash` equivalent — an
+operator must never act on the local factory while looking at a remote
+one. Routing mutations to the remote host is explicitly out of scope
+(a follow-up ticket, if ever wanted, once the read-only version has been
+lived with).
+
+Needs ssh key-based access to the host already set up (this feature does
+not manage credentials); one remote host at a time.
 
 ### A dead data provider is never rendered as an empty board (issue #291)
 
