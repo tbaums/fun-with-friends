@@ -6697,24 +6697,39 @@ assert_eq "open_issues_json writes 0 to LIST_DEGRADED_FILE on a validated (rc0) 
 # `trap ... EXIT` (cleanup no longer depends on reaching a specific line).
 section "dash data: LIST_DEGRADED_FILE cannot outlive its process (issue #405)"
 
+# issue #417: these three checks used to count every file matching a bare
+# `${TMPDIR:-/tmp}/fwf-dash-list-degraded.*` glob before/after -- a SHARED,
+# unscoped directory listing. Under concurrent gate runs (routine on this
+# box: four-plus implementer/QA roles running this same suite at once),
+# another role's own subprocess creating/removing its own mktemp'd file in
+# the same window shifts the global count and trips the assertion, even
+# though THIS test's own file was correctly cleaned up the whole time --
+# flaked during #409's gate validation. Fixed by having each subprocess
+# report its OWN LIST_DEGRADED_FILE path back (echoed to stdout, or via a
+# marker file for the kill case where a killed process never returns output
+# normally), so the check is "does THIS SPECIFIC path still exist", never a
+# directory-wide count.
+
 # AC (2): the exact demonstrated bypass -- a bare open_issues_json call with
 # no main() in sight -- now leaves NOTHING behind once the process exits.
-DD405_GLOB="${TMPDIR:-/tmp}/fwf-dash-list-degraded.*"
-DD405_BEFORE="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
-FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null"
-DD405_AFTER="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+DD405_PATH="$(FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null; printf '%s' \"\$LIST_DEGRADED_FILE\"")"
+[ -n "$DD405_PATH" ] || bad "(2) captured LIST_DEGRADED_FILE's own path (test precondition)" "got empty path"
 assert_eq "(2) a bare open_issues_json call (the demonstrated #405 bypass -- no main(), never reaches the old tail-of-function rm) leaves no orphan" \
-  "$DD405_BEFORE" "$DD405_AFTER"
+  "false" "$([ -f "$DD405_PATH" ] && echo true || echo false)"
 
 # AC (5): killed mid-run (after the write, before any cleanup code would
 # normally run) -- the EXIT trap fires on a trappable signal same as a clean
 # exit, so nothing survives even here. (SIGKILL is deliberately excluded --
 # no EXIT trap in any shell can catch it; TERM is the realistic case for a
-# gate/CI teardown killing a stuck child.)
-DD405_BEFORE2="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
-FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null; kill -TERM \$\$" >/dev/null 2>&1
-DD405_AFTER2="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
-assert_eq "(5) SIGTERM mid-run still triggers cleanup via the EXIT trap" "$DD405_BEFORE2" "$DD405_AFTER2"
+# gate/CI teardown killing a stuck child.) A killed process never returns
+# its own echo normally, so its path is captured to a marker FILE up front,
+# before the write+kill, instead.
+DD405_PATHFILE2="$TMP/dd405-path2"; rm -f "$DD405_PATHFILE2"
+FWF_PROFILE=example bash -c "source '$DD'; printf '%s' \"\$LIST_DEGRADED_FILE\" > '$DD405_PATHFILE2'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null; kill -TERM \$\$" >/dev/null 2>&1
+DD405_PATH2="$(cat "$DD405_PATHFILE2" 2>/dev/null)"
+[ -n "$DD405_PATH2" ] || bad "(5) captured LIST_DEGRADED_FILE's own path before the kill (test precondition)" "got empty path"
+assert_eq "(5) SIGTERM mid-run still triggers cleanup via the EXIT trap" \
+  "false" "$([ -f "$DD405_PATH2" ] && echo true || echo false)"
 
 # AC (3) / edge case "a read before any write": decisions_json alone, with
 # NO open_issues_json call anywhere in this process's lifetime, still reads
@@ -6740,12 +6755,16 @@ DD405_SAME="no"; [ "$DD405_P1" = "$DD405_P2" ] && DD405_SAME="yes"
 assert_eq "edge: two concurrent-ish processes never get the same LIST_DEGRADED_FILE name" "no" "$DD405_SAME"
 
 # Edge case: TMPDIR set vs unset -- both must still clean up (not just write
-# to the right place, the actual cleanup guarantee too).
-DD405_BEFORE3="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+# to the right place, the actual cleanup guarantee too). Scoped entirely to
+# this test's own private $TMP/dd405-tmpdir (unique per gate invocation, not
+# shared with concurrent roles' gates the way the default /tmp is) -- no
+# directory-wide count of a shared location needed here.
 mkdir -p "$TMP/dd405-tmpdir"
-FWF_PROFILE=example TMPDIR="$TMP/dd405-tmpdir" bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null"
-DD405_AFTER3="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
-assert_eq "edge: a custom TMPDIR still gets cleaned up (no leak into \${TMPDIR:-/tmp} either)" "$DD405_BEFORE3" "$DD405_AFTER3"
+DD405_PATH3="$(FWF_PROFILE=example TMPDIR="$TMP/dd405-tmpdir" bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null; printf '%s' \"\$LIST_DEGRADED_FILE\"")"
+[ -n "$DD405_PATH3" ] || bad "edge: captured the custom-TMPDIR path (test precondition)" "got empty path"
+assert_eq "edge: the custom TMPDIR is actually used (path lives under it, not the default)" "true" \
+  "$(case "$DD405_PATH3" in "$TMP/dd405-tmpdir"/*) echo true;; *) echo false;; esac)"
+assert_eq "edge: a custom TMPDIR still gets cleaned up" "false" "$([ -f "$DD405_PATH3" ] && echo true || echo false)"
 assert_eq "edge: nothing left behind in the custom TMPDIR itself" "0" \
   "$(ls "$TMP/dd405-tmpdir"/fwf-dash-list-degraded.* 2>/dev/null | wc -l | tr -d ' ')"
 
