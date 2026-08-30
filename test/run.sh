@@ -4892,14 +4892,30 @@ cat > "$VSSTUB/gh" <<'EOS'
 #!/usr/bin/env bash
 case "${1:-}" in
   api)
-    [ -n "${VS_CALL_LOG:-}" ] && echo x >> "$VS_CALL_LOG"
+    # issue #435: a START/END pair per call (each carrying a timestamp and
+    # this process's own $$, which is naturally distinct per invocation)
+    # instead of a bare marker -- a single stamp can't tell single-flight-
+    # held apart from the contestants simply never having overlapped. The
+    # timestamp is recorded for diagnostics only; the actual overlap verdict
+    # (vs_singleflight_verdict, below) reads LOG ORDER, not the timestamp
+    # value -- see that function's own comment for why.
+    [ -n "${VS_CALL_LOG:-}" ] && printf 'x START %s %s\n' "$(date +%s)" "$$" >> "$VS_CALL_LOG"
     # issue #247 (B): a hang STUB, not an assertion -- simulates a genuinely
     # hung gh call so the "never blocks" test above (line ~3186) can prove
     # the caller returns anyway. The sleep only needs to outlast the test's
     # own bounded wait; it is never itself the thing under test.
     [ "${VS_HANG:-0}" = 1 ] && sleep 300
-    [ "${FAKE_GH_FAIL:-0}" = 1 ] && exit 1
-    echo "${FAKE_LATEST:-v0.0.0}";;
+    VS_RC=0
+    if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then
+      VS_RC=1
+    else
+      echo "${FAKE_LATEST:-v0.0.0}"
+    fi
+    # issue #435: the END stamp must sit AFTER the VS_HANG sleep (a hung call
+    # otherwise reports a zero-length window) -- so it goes here, at the ONE
+    # exit point both the success and FAKE_GH_FAIL paths funnel through.
+    [ -n "${VS_CALL_LOG:-}" ] && printf 'x END %s %s\n' "$(date +%s)" "$$" >> "$VS_CALL_LOG"
+    exit "$VS_RC";;
   *) exit 1;;
 esac
 EOS
@@ -4981,41 +4997,117 @@ VS_SKIP="$(FWF_SKIP_VERSION_CHECK=1 vs_run "$VSRUN" 'fwf_version_skew_check')"
 # this is not primarily a sleep bug. Fix, per the idiom already used four
 # times in this file (assert_log_eventually_contains): wait for the FIRST
 # call to actually land (bounded, loud on timeout -- rules out the null
-# state), then poll until the count stops changing (bounded -- rules out a
+# state), then poll until the log stops growing (bounded -- rules out a
 # still-racing duplicate that just hadn't landed yet) before trusting it.
-vs_singleflight_count() { # $1=call-log-file -> prints the stabilized call count; rc 1 + empty if none ever appeared
-  local log="$1" i=0 last=-1 now
+#
+# issue #435: that fixed the MEASUREMENT (a vacuous green can't happen
+# anymore) but not the SIGNAL -- a raw call count still can't tell "single-
+# flight held" apart from "the contestants never overlapped" (spurious
+# green in the OLD sense: passed for the wrong reason) or "genuinely
+# violated" apart from "a contestant hasn't finished yet under a loaded
+# box" (spurious RED, this ticket's own trigger, seen on devbox at
+# d44bcfb under a full 12-seat floor). A red or green that can't say WHICH
+# of those happened is the defect; verdict below distinguishes all four.
+#
+# Overlap is decided by the call LOG's OWN LINE ORDER, not by comparing the
+# `date +%s` values each line also carries: `date +%s` is 1-second
+# resolution and every call here typically completes in tens of
+# milliseconds, so a numeric comparison would read almost every pair as
+# "overlapping" regardless of whether they actually raced -- the exact
+# shape of bug this ticket exists to close, recurring one layer further in.
+# Sub-second GNU `date +%s%N` and bash-5's $EPOCHREALTIME are both off the
+# table (issue #431's own lesson: no GNU-only tool, no bash-version-gated
+# builtin -- this suite is 3.2-clean). Two concurrent processes appending
+# short lines to the same file via O_APPEND are serialized by the kernel in
+# true arrival order (POSIX guarantees atomicity under PIPE_BUF), so the
+# file's own line order is a faithful, fully portable proxy for the real
+# overlap window: replay each pid's START/END as an open/close and see
+# whether two pids were ever open at once.
+vs_singleflight_verdict() { # $1=call-log-file -> prints "PASS <n>"/"FAIL <n>"/"SKIP <reason>"/"INDETERMINATE <reason>"/"TIMEOUT"
+  local log="$1" i=0 last=-1 now marker status ts pid open=0 max_open=0 calls=0
   while [ "$i" -lt 25 ]; do
-    grep -q -F -- "x" "$log" 2>/dev/null && break
+    grep -q -F -- "x START" "$log" 2>/dev/null && break
     sleep 0.2; i=$((i + 1))
   done
-  [ "$i" -lt 25 ] || return 1
+  if [ "$i" -ge 25 ]; then printf 'TIMEOUT'; return; fi
   i=0
   while [ "$i" -lt 25 ]; do
-    now="$(wc -l < "$log" | tr -d ' ')"
-    [ "$now" = "$last" ] && { printf '%s' "$now"; return 0; }
+    now="$(wc -l < "$log" 2>/dev/null | tr -d ' ')"
+    [ "$now" = "$last" ] && break
     last="$now"; sleep 0.2; i=$((i + 1))
   done
-  printf '%s' "$last"
+  while IFS=' ' read -r marker status ts pid; do
+    case "$status" in
+      START) calls=$((calls + 1)); open=$((open + 1)); [ "$open" -gt "$max_open" ] && max_open="$open" ;;
+      END)   open=$((open - 1)) ;;
+    esac
+  done < "$log"
+  if [ "$open" -gt 0 ]; then
+    printf 'INDETERMINATE %s call(s) STARTed but never reported END within the measurement window (%s total)' "$open" "$calls"
+  elif [ "$calls" -le 1 ]; then
+    printf 'PASS %s' "$calls"
+  elif [ "$max_open" -ge 2 ]; then
+    printf 'FAIL %s' "$calls"
+  else
+    printf 'SKIP %s contestants ran fully serialized (never overlapped) -- single-flight was never exercised' "$calls"
+  fi
 }
-# AC (b) demonstration: the counter must still go RED on a genuinely-broken
-# single-flight (proves the fix isn't a weakened check that always passes),
-# and RED on a refresh that never started at all (the null state this whole
-# fix exists to stop conflating with success).
-VS_SF_BROKEN="$TMP/vs-singleflight-demo-broken"; printf 'x\nx\n' > "$VS_SF_BROKEN"
-assert_eq "AC(#247 b): the single-flight counter still goes RED on a genuinely-broken case (2 calls, not silently accepted)" "2" "$(vs_singleflight_count "$VS_SF_BROKEN")"
-VS_SF_NULL="$TMP/vs-singleflight-demo-null"; : > "$VS_SF_NULL"
-vs_singleflight_count "$VS_SF_NULL" >/dev/null 2>&1
-assert_eq "AC(#247 b): ...and goes RED (times out) on the null state -- a refresh that never ran is not single-flight held" "1" "$?"
+# AC demonstration, one fixture per verdict branch -- proves the function
+# can actually separate the four cases the raw count could not, which is
+# this ticket's whole point.
+VS_SF_PASS_HOME="$TMP/vs-sf-pass"
+printf 'x START %s 111\nx END %s 111\n' "$(date +%s)" "$(date +%s)" > "$VS_SF_PASS_HOME"
+assert_eq "AC(435): one call, no contention -> PASS 1" "PASS 1" "$(vs_singleflight_verdict "$VS_SF_PASS_HOME")"
 
+VS_SF_SERIAL_HOME="$TMP/vs-sf-serial"
+printf 'x START %s 111\nx END %s 111\nx START %s 222\nx END %s 222\n' \
+  "$(date +%s)" "$(date +%s)" "$(date +%s)" "$(date +%s)" > "$VS_SF_SERIAL_HOME"
+assert_contains "AC(435): two calls, fully serialized (never overlapped) -> SKIP, not PASS or FAIL" \
+  "$(vs_singleflight_verdict "$VS_SF_SERIAL_HOME")" "SKIP"
+
+VS_SF_OVERLAP_HOME="$TMP/vs-sf-overlap"
+printf 'x START %s 111\nx START %s 222\nx END %s 111\nx END %s 222\n' \
+  "$(date +%s)" "$(date +%s)" "$(date +%s)" "$(date +%s)" > "$VS_SF_OVERLAP_HOME"
+assert_contains "AC(435): two calls whose windows genuinely overlap -> FAIL, a real single-flight violation" \
+  "$(vs_singleflight_verdict "$VS_SF_OVERLAP_HOME")" "FAIL"
+
+VS_SF_DANGLING_HOME="$TMP/vs-sf-dangling"
+printf 'x START %s 111\n' "$(date +%s)" > "$VS_SF_DANGLING_HOME"
+VS_SF_DANGLING_VERDICT="$(vs_singleflight_verdict "$VS_SF_DANGLING_HOME")"
+assert_contains "AC(435): a START with no END inside the measurement window -> INDETERMINATE, never folded into PASS or SKIP" \
+  "$VS_SF_DANGLING_VERDICT" "INDETERMINATE"
+case "$VS_SF_DANGLING_VERDICT" in
+  PASS*|SKIP*) bad "AC(435): the dangling-START case must never read as a measured verdict" "got [$VS_SF_DANGLING_VERDICT]";;
+  *) ok "AC(435): the dangling-START case never reads as a measured verdict";;
+esac
+
+VS_SF_NULL_HOME="$TMP/vs-sf-null"; : > "$VS_SF_NULL_HOME"
+assert_eq "AC(435): a refresh that never ran at all -> TIMEOUT, never conflated with single-flight held" \
+  "TIMEOUT" "$(vs_singleflight_verdict "$VS_SF_NULL_HOME")"
+
+# issue #435 AC(4): no start barrier here -- synchronising at fork time would
+# lower the odds of a miss but can't force the contestants INTO the critical
+# section together (the lock, not the fork, is what they contend on), and
+# there is no barrier idiom already in this file to copy. The evidence that
+# WOULD justify adding one is the SKIP rate this section reports on a loaded
+# box: a rate that stays near-zero means the current setup already exercises
+# real contention often enough; a rate climbing toward "most runs" would be
+# the signal to revisit this decision.
 VSRUN="$TMP/vs-singleflight"
 VS_CALLS="$TMP/vs-call-log"; : > "$VS_CALLS"
 ( VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   VS_CALL_LOG="$VS_CALLS" vs_run "$VSRUN" 'fwf_version_skew_check' & \
   wait )
-VS_CALL_COUNT="$(vs_singleflight_count "$VS_CALLS")" || VS_CALL_COUNT="TIMEOUT-no-call-ever-appeared"
-assert_eq "single-flight: >=3 concurrent refreshes make EXACTLY 1 gh call (proven to have run, then proven not to have run twice)" "1" "$VS_CALL_COUNT"
+VS_VERDICT="$(vs_singleflight_verdict "$VS_CALLS")"
+VS_SF_LABEL="single-flight: >=3 concurrent refreshes make EXACTLY 1 gh call (proven to have run, then proven not to have run twice)"
+case "$VS_VERDICT" in
+  PASS\ *)          ok "$VS_SF_LABEL" ;;
+  FAIL\ *)          bad "$VS_SF_LABEL" "genuine single-flight violation -- windows overlapped: $VS_VERDICT" ;;
+  INDETERMINATE\ *) bad "$VS_SF_LABEL" "INDETERMINATE, not folded into pass/fail/skip: $VS_VERDICT" ;;
+  SKIP\ *)          skip "$VS_SF_LABEL -- ${VS_VERDICT#SKIP }" ;;
+  *)                bad "$VS_SF_LABEL" "no call ever appeared ($VS_VERDICT)" ;;
+esac
 
 section "profile persistence of template/issues + per-template identity (issues #30/#31)"
 cat > "$ROOT/profiles/.__persist.sh" <<EOF
