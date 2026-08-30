@@ -14258,6 +14258,74 @@ assert_contains "AC(k): a canary marker with no GATE_CASE_EXTRACTOR to verify it
   "$G237K_VERDICT3" "verdict=unknown"
 
 # --------------------------------------------------------------------------
+section "gate: a lint-skip is not recorded as the same green as a lint-clean run (issue #447)"
+# Same SHA, same suite: a run whose lint step was OOM-killed/skipped must not
+# be indistinguishable from a run whose lint genuinely ran and passed --
+# #447's own incident (a role's gate said green for over half an hour while
+# the linter itself, version 0.11.0, was independently reporting a real
+# finding on the same tree). FWF_GATE_LINT_SKIP_MARKER is opt-in and inert
+# by default, exactly like #237's FWF_GATE_CANARY_MARKER just above -- it
+# names a substring the harness's own skip line carries.
+G447_MARKER="skip shellcheck ("
+
+G447_STUB_SKIPPED="$TMP/gate447-stub-skipped.sh"
+cat > "$G447_STUB_SKIPPED" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '  ok   real test\n'
+printf '  skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)\n'
+exit 0
+STUBEOF
+chmod +x "$G447_STUB_SKIPPED"
+
+# --- (a): marker configured + rc=0 + marker text present -> green-lint-skipped
+G447_ROOT_A="$TMP/gate447-a"; mkdir -p "$G447_ROOT_A/state/example"
+G447_OUT_A="$(FWF_RUN_DIR="$G447_ROOT_A" FWF_PROFILE=example FWF_GATE_LINT_SKIP_MARKER="$G447_MARKER" \
+  "$ROOT/fwf-gate.sh" g447rolea -- bash "$G447_STUB_SKIPPED" 2>&1)"
+G447_SHA_A="$(git rev-parse HEAD)"
+G447_VERDICT_A="$(FWF_RUN_DIR="$G447_ROOT_A" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G447_SHA_A'")"
+assert_contains "AC(447a): a lint-skipped run records green-lint-skipped, not green" "$G447_VERDICT_A" "verdict=green-lint-skipped"
+assert_contains "AC(447a)/(3): the skip is surfaced loudly, not silently" "$G447_OUT_A" "LINT WAS SKIPPED"
+assert_contains "AC(447a): the loud line names the marker actually seen" "$G447_OUT_A" "$G447_MARKER"
+
+# --- (b): marker NOT configured -> inert, ordinary green stands (backward compat) ---
+G447_ROOT_B="$TMP/gate447-b"; mkdir -p "$G447_ROOT_B/state/example"
+FWF_RUN_DIR="$G447_ROOT_B" FWF_PROFILE=example \
+  "$ROOT/fwf-gate.sh" g447roleb -- bash "$G447_STUB_SKIPPED" >/dev/null 2>&1
+G447_SHA_B="$(git rev-parse HEAD)"
+G447_VERDICT_B="$(FWF_RUN_DIR="$G447_ROOT_B" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G447_SHA_B'")"
+assert_contains "AC(447b): unset marker -> inert, the skip text alone never downgrades a green" "$G447_VERDICT_B" "verdict=green"
+
+# --- (c): a genuine RED is never touched by this mechanism ------------------
+G447_STUB_RED="$TMP/gate447-stub-red.sh"
+cat > "$G447_STUB_RED" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '  FAIL a genuine finding, unrelated to lint\n'
+printf '  skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)\n'
+exit 1
+STUBEOF
+chmod +x "$G447_STUB_RED"
+G447_ROOT_C="$TMP/gate447-c"; mkdir -p "$G447_ROOT_C/state/example"
+FWF_RUN_DIR="$G447_ROOT_C" FWF_PROFILE=example FWF_GATE_LINT_SKIP_MARKER="$G447_MARKER" \
+  "$ROOT/fwf-gate.sh" g447rolec -- bash "$G447_STUB_RED" >/dev/null 2>&1
+G447_SHA_C="$(git rev-parse HEAD)"
+G447_VERDICT_C="$(FWF_RUN_DIR="$G447_ROOT_C" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G447_SHA_C'")"
+assert_contains "AC(447c): a genuine RED is never second-guessed into a lint-skip downgrade" "$G447_VERDICT_C" "verdict=red"
+
+# --- (2): the promotion path refuses a green-lint-skipped verdict, same as
+# any other non-green -- satisfied "for free" by fwf-gate-promote.sh's
+# existing exact-string check (verdict != green), but pinned here as an
+# explicit end-to-end assertion so a future loosening of that check cannot
+# silently reopen this hole.
+G447_ROOT_D="$TMP/gate447-promote"; mkdir -p "$G447_ROOT_D/state/example"
+G447_TIP_SHA="$(cd "$ROOT" && git rev-parse HEAD)"
+FWF_RUN_DIR="$G447_ROOT_D" FWF_PROFILE=example bash -c \
+  "source '$ROOT/lib.sh'; fwf_gate_tip_record g447roled '$G447_TIP_SHA' green-lint-skipped"
+G447_PROMOTE_OUT="$(cd "$ROOT" && FWF_RUN_DIR="$G447_ROOT_D" FWF_PROFILE=example bash "$ROOT/fwf-gate-promote.sh" g447roled staging 2>&1)"
+G447_PROMOTE_RC=$?
+assert_eq "AC(447-2): promote refuses a green-lint-skipped verdict (exit 1)" "1" "$G447_PROMOTE_RC"
+assert_contains "AC(447-2): the refusal names the actual (non-green) verdict" "$G447_PROMOTE_OUT" "green-lint-skipped"
+
+# --------------------------------------------------------------------------
 section "gate-promote: the obliged call site (issue #237)"
 _g237_fixture() { # $1=var-prefix -> sets ${prefix}_BARE/_CONDUCTOR/_STAGING_SHA, a real origin+clone with staging/integration
   local prefix="$1" bare src conductor

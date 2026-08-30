@@ -683,6 +683,25 @@ else
   fwf_gate_history_report_case SUITE "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "SUITE-level (no GATE_CASE_EXTRACTOR declared)"
 fi
 
+# issue #447: a run whose lint step was SKIPPED (OOM-killed under
+# concurrent load, RAM admission timed out, or shellcheck not installed --
+# test/run.sh's own #418/#427 skip lines) must not record the same
+# verdict token as a run whose lint genuinely ran and passed -- a gate
+# that reads green either way silently let a real macOS-only defect reach
+# `integration` (#443) and separately cost an implementer roughly an hour
+# chasing a green that had never actually re-verified the fix. Opt-in and
+# inert by default (FWF_GATE_LINT_SKIP_MARKER unset): names a substring
+# the harness's own skip line carries (test/run.sh's is literally the
+# text 'skip shellcheck ('), scanned from this run's raw captured
+# stdout -- computed HERE, before the capture files are removed just
+# below. (Line wrapped so no comment line here starts with the literal
+# word "shellcheck" -- shellcheck's own parser reads a comment beginning
+# "# shellcheck " as an inline directive, not prose.)
+_fwf447_lint_skip_seen=0
+if [ -n "${FWF_GATE_LINT_SKIP_MARKER:-}" ] && grep -q -F -- "$FWF_GATE_LINT_SKIP_MARKER" "$wrapped_out_capture" 2>/dev/null; then
+  _fwf447_lint_skip_seen=1
+fi
+
 rm -f "$wrapped_err_capture" "$wrapped_out_capture"
 
 if [ "$want_e2e" = 1 ]; then
@@ -707,7 +726,20 @@ if [ -n "${FWF_GATE_CANARY_MARKER:-}" ] && [ "$rc" -eq 0 ]; then
     _fwf237_verdict_downgrade=unknown
   fi
 fi
-_fwf237_verdict() { # prints this run's verdict: green|red|unknown
+# issue #447 AC (1)/(3): a lint-skip is a KNOWN, specific cause (unlike the
+# canary's undetermined "unknown" above) -- its own distinct token, and
+# loud enough on this role's own gate output that an implementer cannot
+# mistake it for a passing lint (the failure that cost #445's implementer
+# roughly an hour: three other checks said red while this role's gate
+# kept saying green). Checked after the canary block so an operator who
+# somehow configures both sees whichever fires; the two are independent
+# and do not need to compose beyond "a downgrade already claimed this
+# verdict."
+if [ "$_fwf447_lint_skip_seen" = 1 ] && [ "$rc" -eq 0 ] && [ -z "$_fwf237_verdict_downgrade" ]; then
+  echo "fwf gate [#447]: LINT WAS SKIPPED this run (marker '$FWF_GATE_LINT_SKIP_MARKER' seen in the suite's own output) -- recording green-lint-skipped, NOT a verified-clean green. Do not treat this as proof the lint check passed; re-gate once the box is quiet." >&2
+  _fwf237_verdict_downgrade=green-lint-skipped
+fi
+_fwf237_verdict() { # prints this run's verdict: green|red|unknown|green-lint-skipped
   if [ "$rc" -ne 0 ]; then echo red; return 0; fi
   [ -n "$_fwf237_verdict_downgrade" ] && { echo "$_fwf237_verdict_downgrade"; return 0; }
   echo green
