@@ -59,13 +59,26 @@ _fwf_version_skew_refresh() {
   mkdir -p "$dir" 2>/dev/null || return 0
   lockdir="$dir/.refresh.lock"
   mkdir "$lockdir" 2>/dev/null || return 0   # someone else already refreshing — non-blocking, bail
-  if ! command -v gh >/dev/null 2>&1; then rmdir "$lockdir" 2>/dev/null; return 0; fi
+  # issue #439: under extreme host contention, a successful mkdir here was
+  # observed NOT to guarantee exclusivity -- two concurrent callers both saw
+  # mkdir succeed on the SAME lockdir path (confirmed via a deliberately
+  # widened critical section; see the issue for the repro and rate data on
+  # both ext4 and tmpfs). Treat mkdir's success as only PROVISIONAL and
+  # confirm sole ownership with a second, independently-atomic primitive
+  # (noclobber file creation, POSIX O_EXCL) before doing any network work.
+  # A loser here backs off exactly like a failed mkdir: it must not touch
+  # the lockdir the real winner is using, so it neither writes nor rmdirs.
+  if ! ( set -o noclobber; printf '%s' "$$" >"$lockdir/owner" ) 2>/dev/null; then
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then rm -f "$lockdir/owner" 2>/dev/null; rmdir "$lockdir" 2>/dev/null; return 0; fi
   repo="${FWF_UPGRADE_REPO:-tbaums/fun-with-friends}"
   latest="$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null || echo '')"
   if [ -n "$latest" ]; then
     printf '%s' "$latest" >"$dir/latest.tmp" 2>/dev/null && mv -f "$dir/latest.tmp" "$dir/latest" 2>/dev/null
     printf '%s' "$(date +%s 2>/dev/null || echo 0)" >"$dir/ts.tmp" 2>/dev/null && mv -f "$dir/ts.tmp" "$dir/ts" 2>/dev/null
   fi
+  rm -f "$lockdir/owner" 2>/dev/null
   rmdir "$lockdir" 2>/dev/null
 }
 
