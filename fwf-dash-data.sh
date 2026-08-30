@@ -411,13 +411,37 @@ api_budget_json() {
 # to mark it — has_gv_signoff/gv_signoff_state is never even reached for a
 # row absent from the list. `main()` invokes this via `issues="$(open_issues_json)"`
 # — a command substitution, i.e. a SUBSHELL — so a plain variable set inside
-# it is invisible to the caller once that subshell exits; a PID-scoped file
-# is what actually crosses that boundary (decisions_json, called from the
-# SAME top-level process, reads it back). A fresh/validated read (exit 0) or
-# a hard failure the gh backend already falls back on (any other exit) write
-# 0 — always written, so a stale value from an earlier call in the same PID
-# can never linger past this call.
-LIST_DEGRADED_FILE="${TMPDIR:-/tmp}/fwf-dash-list-degraded.$$"
+# it is invisible to the caller once that subshell exits; a plain shell
+# variable is what actually crosses that boundary (decisions_json, called
+# from the SAME top-level process via its own command substitution, reads it
+# back — bash subshells inherit the WHOLE variable table of the process that
+# spawned them, so a value computed once here, before either function runs,
+# is visible in both). A fresh/validated read (exit 0) or a hard failure the
+# gh backend already falls back on (any other exit) write 0 — always
+# written, so a stale value from an earlier call in the same PROCESS can
+# never linger past this call.
+#
+# issue #405: this used to be PID-named (`fwf-dash-list-degraded.$$`), which
+# is exactly the WRONG kind of "unique" — PIDs get reused constantly under
+# four-plus concurrent gate loops, and this file is written by ANY process
+# that sources this script and calls open_issues_json, not only a full
+# `main()` run (test/run.sh's own suite does exactly that, unit-testing
+# open_issues_json/decisions_json directly against a stubbed di_read). Only
+# `main()`'s tail ever removed it, so every one of those non-main() callers
+# left an orphan behind for good — 1358 measured on the factory box, all
+# with dead PIDs, because a later process reusing that PID would silently
+# inherit a DIFFERENT process's stale degraded-flag. `mktemp` fixes the
+# uniqueness (a fresh, never-reused name every time, no matter how many
+# processes run concurrently or how fast PIDs cycle); the `trap ... EXIT`
+# below fixes the leak itself — cleanup no longer depends on reaching a
+# specific line, so ANY exit path (normal return, an early `return`/`exit`,
+# or a caller that never runs `main()` at all) still removes it. This
+# REPLACES main()'s old tail-of-function `rm -f "$LIST_DEGRADED_FILE"` (one
+# guaranteed mechanism, not a second cleanup bolted beside a still-fragile
+# first one) — see main() below, which no longer needs its own rm.
+LIST_DEGRADED_FILE="$(mktemp "${TMPDIR:-/tmp}/fwf-dash-list-degraded.XXXXXX" 2>/dev/null)" \
+  || LIST_DEGRADED_FILE="${TMPDIR:-/tmp}/fwf-dash-list-degraded.$$-$RANDOM"
+trap 'rm -f "$LIST_DEGRADED_FILE" 2>/dev/null' EXIT
 open_issues_json() {
   local raw rc=0
   raw="$(di_read list --state open --limit 500 --json number,title,labels,body 2>/dev/null)" || rc=$?
@@ -731,7 +755,12 @@ main() {
       installed:$installed, unrouted_prs:$_unrouted_prs[0], visibility:$_visibility[0], api_budget:$api_budget,
       claim_refusals:$claim_refusals, profile_resolution:$profile_resolution,
       stranded_assignments:$stranded_assignments}'
-  rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266: this PID's scratch signal, done with it
+  # issue #405: cleanup used to live here as a plain tail-of-function `rm`,
+  # which only ran if execution reached this exact line — never on an early
+  # return/exit, a kill, or (the demonstrated leak source) a caller that
+  # invokes open_issues_json/decisions_json directly without ever running
+  # main() at all. The `trap ... EXIT` set alongside LIST_DEGRADED_FILE's
+  # definition above now owns cleanup unconditionally; nothing to do here.
 }
 
 # --- detail (lazy, per-selection) -------------------------------------------
