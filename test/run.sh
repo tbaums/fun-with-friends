@@ -5116,6 +5116,50 @@ case "$VS_VERDICT" in
   *)                bad "$VS_SF_LABEL" "no call ever appeared ($VS_VERDICT)" ;;
 esac
 
+section "fwf_version_skew_check: mkdir's exclusivity is not trusted blindly (issue #439)"
+# #439: under extreme host contention, a widened-critical-section repro
+# showed mkdir can report success to TWO concurrent callers on the SAME
+# path (confirmed on both ext4 and tmpfs). _fwf_version_skew_refresh now
+# treats a successful mkdir as provisional and confirms sole ownership
+# with a second, independently-atomic primitive (noclobber file create)
+# before calling gh. This can't be exercised by ambient timing -- it needs
+# a deliberately injected "mkdir lied" scenario, so a fake mkdir is put on
+# PATH ahead of the real one: it always exits 0 regardless of whether the
+# real mkdir(1) it wraps actually succeeded, replaying exactly the anomaly
+# the repro observed.
+MKSTUB="$TMP/mkdir-lies-stub"; mkdir -p "$MKSTUB"
+cat > "$MKSTUB/mkdir" <<'EOS'
+#!/usr/bin/env bash
+/bin/mkdir "$@" 2>/dev/null
+exit 0
+EOS
+chmod +x "$MKSTUB/mkdir"
+
+VS439RUN="$TMP/vs-439"; mkdir -p "$VS439RUN/upgrade-check"
+LOCKDIR439="$VS439RUN/upgrade-check/.refresh.lock"
+mkdir -p "$LOCKDIR439"
+printf '999999' > "$LOCKDIR439/owner"   # simulate a real racer already holding the lock
+
+VS439CALLS="$TMP/vs-439-calls"; : > "$VS439CALLS"
+PATH="$MKSTUB:$VSSTUB:$PATH" FWF_RUN_DIR="$VS439RUN" FWF_PROFILE=example VS_CALL_LOG="$VS439CALLS" \
+  bash -c "source '$ROOT/lib.sh'; _fwf_version_skew_refresh" >/dev/null 2>&1
+
+if [ ! -s "$VS439CALLS" ]; then
+  ok "AC(439): a provisional (lying) mkdir win never calls gh once another owner already claimed the lockdir"
+else
+  bad "AC(439): a provisional (lying) mkdir win never calls gh once another owner already claimed the lockdir" "gh was called: $(cat "$VS439CALLS")"
+fi
+if [ "$(cat "$LOCKDIR439/owner" 2>/dev/null)" = "999999" ]; then
+  ok "AC(439): the real owner's marker is never overwritten by a losing racer"
+else
+  bad "AC(439): the real owner's marker is never overwritten by a losing racer" "owner file now: $(cat "$LOCKDIR439/owner" 2>/dev/null)"
+fi
+if [ -d "$LOCKDIR439" ]; then
+  ok "AC(439): the real owner's lockdir is never removed by a losing racer"
+else
+  bad "AC(439): the real owner's lockdir is never removed by a losing racer" "lockdir is gone"
+fi
+
 section "profile persistence of template/issues + per-template identity (issues #30/#31)"
 cat > "$ROOT/profiles/.__persist.sh" <<EOF
 FWF_REPO="$TMP/x"; WT_PREFIX="px"; WT_BASE="$TMP"
