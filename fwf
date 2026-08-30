@@ -392,6 +392,25 @@ UTILITIES
                          branch switch/create; issue #177). Refusals are
                          logged durably for `fwf dash` to surface as a
                          count, never recomputed per render.
+  ungate <n> [<n>...]    One verb for the operator's own un-gate ritual
+                         (issue #213), runs on the OPERATOR's own machine:
+                         posts the anchored operator-signal comment, removes
+                         product-wip, busts the gh read cache (#167) so the
+                         un-gate is visible on the next read, then runs and
+                         shows `fwf authz <n>`'s verdict. Multiple issues
+                         each get their own comment (never a batch signal);
+                         one failing does not abort or roll back the rest —
+                         reported per issue, exit non-zero if any failed.
+                         Idempotent: an already-clear issue no-ops rather
+                         than posting a second sentinel. `--via cli|
+                         concierge-proxy` records how it was invoked
+                         (defaults to `cli`); `fwf authz` itself is
+                         unchanged and never depends on provenance.
+                         ERGONOMIC ONLY — see `fwf claim`'s own notice; the
+                         real control is #207's repository-side refusal.
+                         `fwf ungate --audit` lists every un-gate on the
+                         floor with its issue, timestamp, and invocation
+                         path (board keypress / this CLI / concierge proxy).
   auth resolve           Re-resolve the claude auth credential (issue #217)
                          and print its source (env|credentials_file|
                          keychain), without launching anything — `fwf up`
@@ -1081,6 +1100,7 @@ case "$cmd" in
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   claim)     engine fwf-claim.sh "$@";;
+  ungate)    engine fwf-ungate.sh "$@";;
   auth)      engine fwf-auth.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;

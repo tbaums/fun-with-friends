@@ -157,6 +157,46 @@ behaviour, not a bug to be refactored away.
 An operator un-gates via `fwf dash`'s approve action, which posts the
 anchored sentinel and removes the gate label in one step; see `docs/dash.md`.
 
+### `fwf ungate <n>`: the same un-gate, from the operator's own shell (issue #213)
+
+`fwf dash` approve is the board's un-gate; `fwf ungate <n> [<n>...]` is the
+same action run **on the operator's own machine**, for a stalled floor
+noticed from a phone, an ssh session, or the concierge proxy rather than the
+TUI. It performs the operator's own hand-rolled ritual as one verb — post
+the anchored sentinel, remove `product-wip`, bust the gh read cache (#167)
+so the un-gate is visible on the very next read, then run and show `fwf
+authz <n>`'s verdict — and both paths call the same
+`fwf_ungate_comment_body()` (`lib.sh`) so they can never drift in the
+anchored format `fwf authz` actually keys on.
+
+**The label is a convenience index for surveying, never the authorization —
+the comment is.** Implementers survey issues *without* `product-wip`
+(`templates/dev/captain.tmpl:6`), so after a `fwf ungate` run, label-off will
+usually mean signature-present. That inference stays false: anyone can still
+remove the label by hand, producing an issue that looks claimable while `fwf
+authz` reports `HELD`. Issue #207's repository-side merge/promote/release
+refusal is what makes that divergence harmless — it checks `fwf authz`, not
+the label — which is why `fwf ungate` increases #207's value rather than
+being independent of it.
+
+Multiple issues each get their **own** comment naming their own issue number
+— never one comment covering several, since `fwf authz <n>` matches a
+sentinel bearing *that* issue's number specifically. One issue failing does
+not abort or roll back the others; each is reported on its own line, and the
+command exits non-zero if any failed. It is idempotent: an issue with no
+`product-wip` no-ops rather than posting a second sentinel, so a retry after
+a partial failure is always safe. `--via cli|concierge-proxy` (default
+`cli`) records how the invocation happened, folded into the comment as
+free text after the sentinel — `fwf authz` itself never depends on it, and
+`fwf ungate --audit` lists every un-gate on the floor with its issue,
+timestamp, and invocation path by reading the un-gate comments themselves,
+never a separate log.
+
+Like `fwf dash`'s approve, this posts a real comment and removes a real
+label — **it is not a second authorization mechanism**. `fwf authz` remains
+the sole oracle; this only automates a human posting the same signal by
+hand.
+
 ## `fwf claim`: a fail-FAST checkpoint at intent-formation time, not a control (issue #243)
 
 `fwf authz` above is the SOLE oracle; `fwf claim <issue>` is not a second

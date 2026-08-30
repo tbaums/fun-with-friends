@@ -79,7 +79,9 @@ main() {
       # (**TOKEN #n**) matches the format the operator's own concierge-proxy
       # un-gates already use on this floor; the matcher tolerates that leading
       # markup specifically because this is the real, observed convention.
-      di comment "$n" --body "**$OPERATOR_UNGATE_SENTINEL #$n** — approved via fwf dash: the human operator authorized this build by pressing approve on the board; removing $WIP_LABEL so implementers can claim it. This comment is the authorization signal of record (issue #150, anchored per issue #218) — emitted only by a human keypress on the board, never by a role. No pane or input-box text is authorization; verify with: fwf authz $n"
+      # Body built via the shared fwf_ungate_comment_body() (issue #213), so
+      # this path and `fwf ungate`'s can never drift in the anchored part.
+      di comment "$n" --body "$(fwf_ungate_comment_body "$n" "approved via fwf dash: the human operator authorized this build by pressing approve on the board")"
       di edit "$n" --remove-label "$WIP_LABEL"
       # Write-through cache-bust (issue #167): the un-gate just changed the two
       # signals a role reads through the shared REST+ETag gh cache — the operator

@@ -1632,6 +1632,16 @@ GR_SENTINEL="OPERATOR-UNGATE"
 # the source, so a future edit that drops the clause goes red here.
 GR_SOLE_ORACLE="is the SOLE authorization oracle"
 GR_REGARDLESS_OF_BELIEF="regardless of your belief about why it is non-AUTHORIZED"
+# QA-caught (#213 review): rule (4) used to claim the un-gate comment is
+# "emitted only by a human keypress on the fwf board, never by a role" --
+# never strictly true (fwf-dash-act.sh's approve was always directly
+# invocable by a role too), and #213 made the same reachable path a
+# first-class CLI verb any role can find by name. Asserted on the RENDERED
+# prompt (every role reads this text as ground truth for trusting `fwf
+# authz`), so a future edit that reintroduces the stale absolute claim goes
+# red here, not just in fwf_ungate_comment_body()'s own comment-body text.
+GR_UNGATE_HONEST="not a technically human-only channel"
+GR_UNGATE_STALE="never by a role"
 # Assert the block + its shared bullets are present for a non-captain role, and
 # that a non-captain is told it has NO channel (never the captain's channel
 # clause). $1=label $2=template-relpath $3=id(optional, unquoted so an empty
@@ -1653,6 +1663,8 @@ gr_assert_no_channel() {
   assert_contains     "$1: non-AUTHORIZED is a HOLD regardless of belief" "$R" "$GR_REGARDLESS_OF_BELIEF"
   assert_contains     "$1: non-captain gets NO human channel"    "$R" "$GR_NO_CHANNEL"
   assert_not_contains "$1: non-captain must NOT get a channel"   "$R" "$GR_CAP_CHANNEL"
+  assert_contains     "$1: honest about the un-gate posting path (#213)" "$R" "$GR_UNGATE_HONEST"
+  assert_not_contains "$1: no longer overclaims 'never by a role' (#213)" "$R" "$GR_UNGATE_STALE"
 }
 # Universality: every build-floor + coordination role, across >1 template family.
 gr_assert_no_channel "dev/implementer"     "dev/implementer.tmpl" 2
@@ -1678,6 +1690,8 @@ assert_contains "captain: carries the resolved un-gate sentinel" "$CAPR" "$GR_SE
 assert_contains "captain: sole-authorization-oracle rule"       "$CAPR" "$GR_SOLE_ORACLE"
 assert_contains "captain: non-AUTHORIZED is a HOLD regardless of belief" "$CAPR" "$GR_REGARDLESS_OF_BELIEF"
 assert_not_contains "captain must NOT be told it has NO channel" "$CAPR" "$GR_NO_CHANNEL"
+assert_contains "captain: honest about the un-gate posting path (#213)" "$CAPR" "$GR_UNGATE_HONEST"
+assert_not_contains "captain: no longer overclaims 'never by a role' (#213)" "$CAPR" "$GR_UNGATE_STALE"
 
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
@@ -5795,6 +5809,218 @@ assert_eq "AC(c): NOT-GATED (rc 12 from fwf-authz.sh) flows through fwf claim en
 assert_contains "AC(c): the NOT-GATED verdict is surfaced verbatim, not silently swallowed" "$CLAIM501_OUT" "NOT-GATED"
 assert_eq "AC(c): NOT-GATED still creates the claim artifact (init commit + claim commit)" "2" \
   "$(cd "$CLAIMCGIT" && git log --oneline | wc -l | tr -d ' ')"
+
+# --------------------------------------------------------------------------
+# fwf ungate (issue #213): the operator's own hand-rolled un-gate ritual
+# (comment, un-label, cache-bust, verify) as one verb. RESCOPED 2026-08-29:
+# ergonomics only -- #191's signing design was declined; no key/signature
+# work exists here to test. Local-issues backend gives real, driveable
+# state (label + comment thread + fwf-authz.sh integration) for the bulk of
+# the behavioral coverage; a stubbed gh backend below covers AC 5's "both
+# backends" requirement for the write-routing itself.
+section "fwf ungate (issue #213): one verb for comment + un-label + cache-bust + verify"
+UGRUN="$TMP/ungaterun"
+UGI() { FWF_RUN_DIR="$UGRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+UG()  { FWF_RUN_DIR="$UGRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-ungate.sh" "$@"; }
+UGAZ() { local rc=0; FWF_RUN_DIR="$UGRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+
+UGI create --title "Gated ticket one" --label product-wip >/dev/null   # #1
+UGI create --title "Gated ticket two" --label product-wip >/dev/null   # #2
+UGI create --title "Never-gated ticket" >/dev/null                     # #3, no product-wip at all
+UGI create --title "Will be closed" --label product-wip >/dev/null     # #4
+UGI close 4 >/dev/null 2>&1
+
+# AC 1/2: a single un-gate performs all four steps, and fwf authz reports
+# AUTHORIZED (rc 0) immediately after -- asserted end-to-end (via the REAL
+# matcher, not by inspecting the comment text), not by inspecting output.
+assert_eq "AC(1)/(2): HELD before the un-gate" "10" "$(UGAZ 1)"
+UG1_OUT="$(UG 1 2>&1)"; UG1_RC=$?
+assert_eq "AC(1): single-issue un-gate exits 0" "0" "$UG1_RC"
+# The anchored sentinel is asserted on the ACTUAL posted comment (read back),
+# not on fwf-ungate.sh's own status output -- that output includes fwf-
+# authz.sh's own verdict line, which DEFANGS the token in its own echo (#150
+# "never re-authorize from OUR OWN output" discipline), so the raw sentinel
+# deliberately does NOT appear there.
+assert_contains "AC(1): the anchored sentinel is in the actual posted comment" \
+  "$(UGI view 1 --json comments --jq '.comments[].body' 2>/dev/null)" "**OPERATOR-UNGATE #1**"
+assert_contains "AC(1): distinguishable from a fwf dash approve comment (AC 6) -- names 'fwf ungate'" "$UG1_OUT" "via fwf ungate"
+assert_eq "AC(1)/(2): fwf authz reports AUTHORIZED (rc 0) immediately after, asserted end-to-end" "0" "$(UGAZ 1)"
+case "$(UGI view 1 --json labels --jq '.labels[].name' 2>/dev/null)" in
+  *product-wip*) bad "AC(1): product-wip label is gone after un-gate";;
+  *) ok "AC(1): product-wip label is gone after un-gate";;
+esac
+
+# AC 5: idempotent -- an already-clear issue no-ops, never posts a second
+# sentinel comment, and stays AUTHORIZED. Re-running after success is safe.
+UG1_AGAIN="$(UG 1 2>&1)"; UG1_AGAIN_RC=$?
+assert_eq "AC(5): re-running on an already-clear issue exits 0 (idempotent)" "0" "$UG1_AGAIN_RC"
+assert_contains "AC(5): says it's a no-op" "$UG1_AGAIN" "no-op"
+assert_eq "AC(5): exactly one sentinel comment, not two" "1" \
+  "$(UGI view 1 --json comments --jq '.comments[].body' 2>/dev/null | grep -cF '**OPERATOR-UNGATE #1**')"
+
+# AC 3/4: multi-issue produces N INDEPENDENT results -- #2 succeeds, #4
+# (closed) and #999 (nonexistent) fail, and #2's success is NOT rolled back
+# by the other two failing. Exit code is non-zero because something failed.
+UGM_OUT="$(UG 2 4 999 2>&1)"; UGM_RC=$?
+assert_eq "AC(4): partial failure -> non-zero exit" "1" "$UGM_RC"
+assert_eq "AC(3): #2 (the un-gateable one) independently reaches AUTHORIZED" "0" "$(UGAZ 2)"
+assert_contains "edge case: a CLOSED issue is refused, distinctly" "$UGM_OUT" "issue is CLOSED"
+assert_contains "edge case: a nonexistent issue is refused, distinctly" "$UGM_OUT" "could not read this issue"
+# Per-line, not a whole-string glob: `*"#2:"*"issue is CLOSED"*` would match
+# any string containing BOTH substrings ANYWHERE, in order -- including "#2:"
+# from #2's own line and "issue is CLOSED" from #4's DIFFERENT line further
+# down, which is not the mix-up this is meant to catch. Match each issue's
+# own reported line specifically.
+UGM_LINE2="$(printf '%s\n' "$UGM_OUT" | grep '^  #2:')"
+UGM_LINE4="$(printf '%s\n' "$UGM_OUT" | grep '^  #4:')"
+UGM_LINE999="$(printf '%s\n' "$UGM_OUT" | grep '^  #999:')"
+case "$UGM_LINE2" in
+  *FAILED*) bad "AC(3): #2's own line must not report a failure" "$UGM_LINE2";;
+  *) ok "AC(3): #2's own line reports success, not mixed up with #4/#999's failures";;
+esac
+assert_contains "AC(3): #4's own line names 'issue is CLOSED'" "$UGM_LINE4" "issue is CLOSED"
+assert_contains "AC(3): #999's own line names 'could not read'" "$UGM_LINE999" "could not read"
+
+# edge case: never-gated issue (#3, no product-wip ever) is the SAME
+# no-op path as an already-cleared one -- un-gating something that was
+# never gated is safe, not an error.
+UG3_OUT="$(UG 3 2>&1)"; UG3_RC=$?
+assert_eq "never-gated issue: no-op, exits 0" "0" "$UG3_RC"
+assert_contains "never-gated issue: reported as already clear" "$UG3_OUT" "already clear"
+
+# Usage / validation.
+UG_HELP="$(UG --help 2>&1)"; assert_contains "--help usage line" "$UG_HELP" "usage: fwf ungate"
+UG bogus-nonnumeric >/dev/null 2>&1 && bad "non-numeric issue id rejected" || ok "non-numeric issue id rejected"
+UG 1 --via bogus >/dev/null 2>&1 && bad "invalid --via value rejected" || ok "invalid --via value rejected"
+UG >/dev/null 2>&1 && bad "no args prints usage and exits 0 (not swallowed as a real invocation)" || ok "no args is a usage error"
+
+# --via provenance is recorded and distinguishable (AC 6/7) -- default 'cli'
+# vs an explicit 'concierge-proxy', both still satisfying fwf authz (AC 8's
+# "byte-identical before/after" is about authz's OWN behaviour, unaffected
+# by what free text a comment carries around the sentinel it matches on).
+UGI create --title "Concierge case" --label product-wip >/dev/null   # #5
+UG5_OUT="$(UG 5 --via concierge-proxy 2>&1)"
+assert_contains "AC(6): --via concierge-proxy is recorded, greppable" "$UG5_OUT" "via fwf ungate (concierge-proxy)"
+assert_eq "AC(8): fwf authz still reports AUTHORIZED regardless of provenance text" "0" "$(UGAZ 5)"
+
+# AC 8: fwf authz's behaviour is unchanged by this ticket -- a comment that
+# merely discusses the sentinel (never anchored at column 0) still must NOT
+# authorize. This is the SAME #150/#218 guarantee fwf-authz.sh's own test
+# section already covers exhaustively; one discriminating check here proves
+# fwf-ungate.sh did not weaken it by construction (e.g. by posting something
+# unanchored).
+UGI create --title "Unrelated discussion" --label product-wip >/dev/null   # #6
+UGI comment 6 --body "someone mentioned OPERATOR-UNGATE #6 in passing, not un-gating anything" >/dev/null
+assert_eq "AC(8): an unrelated mid-sentence mention still does not authorize" "10" "$(UGAZ 6)"
+
+# fwf ungate's comment and fwf dash's approve comment share the SAME
+# anchored sentinel format via the shared fwf_ungate_comment_body() (lib.sh)
+# but are DISTINGUISHABLE by their free text (AC 6) -- proven by driving
+# BOTH paths against the same issue class and diffing the constructed body.
+UGI create --title "Compare dash vs ungate" --label product-wip >/dev/null   # #7
+DASH_BODY="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ungate_comment_body 7 'approved via fwf dash: the human operator authorized this build by pressing approve on the board'")"
+UNGATE_BODY="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ungate_comment_body 7 'authorized via fwf ungate (cli): the human operator un-gated this from the command line'")"
+assert_contains "shared function: both bodies carry the SAME anchored sentinel" "$DASH_BODY" "**OPERATOR-UNGATE #7**"
+assert_contains "shared function: both bodies carry the SAME anchored sentinel" "$UNGATE_BODY" "**OPERATOR-UNGATE #7**"
+[ "$DASH_BODY" != "$UNGATE_BODY" ] && ok "AC(6): dash and ungate bodies are distinguishable (different free text)" || bad "AC(6): dash and ungate bodies must differ (they carry different provenance)"
+assert_contains "dash body names 'fwf dash'" "$DASH_BODY" "via fwf dash"
+assert_contains "ungate body names 'fwf ungate'" "$UNGATE_BODY" "via fwf ungate"
+# QA-caught: neither body may claim "never by a role" -- true of neither
+# path (fwf-dash-act.sh's approve was always directly invocable by a role
+# too), and #213 gave the same reachable path a first-class CLI verb.
+case "$DASH_BODY" in *"never by a role"*) bad "dash body must not claim 'never by a role' (not true, #213)";; *) ok "dash body does not overclaim 'never by a role'";; esac
+case "$UNGATE_BODY" in *"never by a role"*) bad "ungate body must not claim 'never by a role' (not true, #213)";; *) ok "ungate body does not overclaim 'never by a role'";; esac
+assert_contains "shared function: honest provenance framing" "$DASH_BODY" "not a technically human-only channel"
+assert_contains "shared function: honest provenance framing" "$UNGATE_BODY" "not a technically human-only channel"
+
+# --------------------------------------------------------------------------
+# fwf ungate: gh backend routing (AC 5's "both backends"). A stateful stub
+# (files under a scratch dir hold label/comment state) so the write ->
+# read-back verification path is exercised for real, not just DRYRUN-echoed.
+section "fwf ungate: gh backend (issue #213 AC 5)"
+UGGH_STATE="$TMP/ungate-gh-state"; mkdir -p "$UGGH_STATE"
+printf 'product-wip\n' > "$UGGH_STATE/labels-8"
+: > "$UGGH_STATE/comments-8"
+UGGH_STUB="$TMP/ungate-gh-stub"; mkdir -p "$UGGH_STUB"
+cat > "$UGGH_STUB/gh" <<EOF
+#!/usr/bin/env bash
+STATE="$UGGH_STATE"
+case "\$1 \$2" in
+  "issue view")
+    n="\$3"
+    case "\$*" in
+      *"--json state"*) echo OPEN ;;
+      *"--json labels"*) [ -f "\$STATE/labels-\$n" ] && cat "\$STATE/labels-\$n" ;;
+      # fwf-authz.sh's own gh-backend thread read: --json comments --jq .comments
+      # wants a real JSON array of objects carrying .body (the only field its
+      # matcher reads) -- built from the same one-body-per-line comments file.
+      *"--json comments"*)
+        jq -R -s 'split("\n") | map(select(length>0)) | map({body: .})' < "\$STATE/comments-\$n" ;;
+      *) echo "unhandled issue view: \$*" >&2; exit 1 ;;
+    esac ;;
+  "issue comment")
+    n="\$3"; shift 3
+    [ "\$1" = "--body" ] && shift
+    printf '%s\n' "\$*" >> "\$STATE/comments-\$n" ;;
+  "issue edit")
+    n="\$3"
+    case "\$*" in
+      *"--remove-label"*) : > "\$STATE/labels-\$n" ;;
+      *) echo "unhandled issue edit: \$*" >&2; exit 1 ;;
+    esac ;;
+  # Real 'gh api ... --jq .[].body' prints one bare body per line -- the
+  # comments file already holds exactly that (one posted body per line), so
+  # the stub just echoes it back unchanged rather than re-wrapping it.
+  "api repos/x/y/issues/8/comments") cat "\$STATE/comments-8" ;;
+  *) echo "unhandled: \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$UGGH_STUB/gh"
+# Note: this stub does not emulate fwf-ghcache.sh's own REST+ETag serve path
+# (a separate, extensively-tested subsystem in its own right — docs/gh-read-
+# cache.md) that fwf-authz.sh's `currently_gated` pre-check uses. That read
+# fails against this stub -- and fwf-authz.sh's OWN documented fail-closed
+# default for exactly that ("an unreadable current-label state is treated as
+# 'possibly gated' -- skips the NOT-GATED path entirely and falls through to
+# the existing sentinel-matching logic", #215) then routes straight to its
+# comment-thread read, which bypasses ghcache entirely (`FWF_GHCACHE_OFF=1
+# gh issue view --json comments`, a direct call this stub DOES handle) -- so
+# the full chain, including the trailing `fwf authz` verification, genuinely
+# succeeds end-to-end here. Verified by hand before writing this assertion;
+# not assumed.
+UGGH_OUT="$(PATH="$UGGH_STUB:$PATH" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example FWF_REPO="$ROOT" "$ROOT/fwf-ungate.sh" 8 2>&1)"; UGGH_RC=$?
+assert_eq "gh backend: exits 0 on a successful un-gate" "0" "$UGGH_RC"
+assert_contains "gh backend: the ACTUAL posted comment carries the anchored sentinel" "$(cat "$UGGH_STATE/comments-8")" "**OPERATOR-UNGATE #8**"
+assert_eq "gh backend: product-wip label removed" "" "$(cat "$UGGH_STATE/labels-8")"
+case "$UGGH_OUT" in *"fwf-issues.sh"*) bad "gh backend must not call fwf-issues.sh";; *) ok "gh backend never calls fwf-issues.sh";; esac
+
+# --------------------------------------------------------------------------
+# fwf ungate --audit (issue #213 AC 7): lists un-gates by reading the
+# comments themselves (Assumption 3), classifying each by its stable "via"
+# text (AC 6) -- board / fwf ungate (cli) / fwf ungate (concierge-proxy).
+section "fwf ungate --audit (issue #213 AC 7)"
+UGAUDIT_STUB="$TMP/ungate-audit-stub"; mkdir -p "$UGAUDIT_STUB"
+cat > "$UGAUDIT_STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue list") printf '10\n20\n';;
+  "issue view")
+    n="$3"
+    if [ "$n" = "10" ]; then
+      printf '2026-08-01T00:00:00Z\t**OPERATOR-UNGATE #10** — approved via fwf dash: the human operator authorized this build by pressing approve on the board; removing product-wip so implementers can claim it.\n'
+    elif [ "$n" = "20" ]; then
+      printf '2026-08-02T00:00:00Z\t**OPERATOR-UNGATE #20** — authorized via fwf ungate (concierge-proxy): the human operator un-gated this from the command line; removing product-wip so implementers can claim it.\n'
+    fi ;;
+  *) echo "unhandled: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$UGAUDIT_STUB/gh"
+UGAUDIT_OUT="$(PATH="$UGAUDIT_STUB:$PATH" FWF_PROFILE=example "$ROOT/fwf-ungate.sh" --audit 2>&1)"
+assert_contains "audit: lists #10's issue number" "$UGAUDIT_OUT" "#10"
+assert_contains "audit: lists #10's timestamp" "$UGAUDIT_OUT" "2026-08-01T00:00:00Z"
+assert_contains "audit: classifies #10 as the board path" "$UGAUDIT_OUT" "board (fwf dash approve)"
+assert_contains "audit: lists #20's issue number" "$UGAUDIT_OUT" "#20"
+assert_contains "audit: classifies #20 as the concierge-proxy path" "$UGAUDIT_OUT" "fwf ungate (concierge-proxy)"
 
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
