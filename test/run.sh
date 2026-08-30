@@ -6322,6 +6322,78 @@ assert_eq "open_issues_json writes 1 to LIST_DEGRADED_FILE on a degraded (rc2) l
 OIJ_OK="$(FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 0; }; open_issues_json >/dev/null; cat \"\$LIST_DEGRADED_FILE\"")"
 assert_eq "open_issues_json writes 0 to LIST_DEGRADED_FILE on a validated (rc0) list read" "0" "$OIJ_OK"
 
+# --------------------------------------------------------------------------
+# issue #405: LIST_DEGRADED_FILE used to be PID-named ($$) and only cleaned
+# up by a plain `rm` at the tail of main() -- so ANY caller that reaches
+# open_issues_json/decisions_json without running main() (exactly what the
+# OIJ_DEG/OIJ_OK tests just above, and every decisions_json-driving test in
+# this suite, already do) leaked one file per invocation, and PID reuse
+# under concurrent gate loops meant a LATER unrelated process could inherit
+# an EARLIER one's stale flag. Measured 1358+ dead-PID orphans on the
+# factory box. Fixed with mktemp (collision-proof naming) + a script-level
+# `trap ... EXIT` (cleanup no longer depends on reaching a specific line).
+section "dash data: LIST_DEGRADED_FILE cannot outlive its process (issue #405)"
+
+# AC (2): the exact demonstrated bypass -- a bare open_issues_json call with
+# no main() in sight -- now leaves NOTHING behind once the process exits.
+DD405_GLOB="${TMPDIR:-/tmp}/fwf-dash-list-degraded.*"
+DD405_BEFORE="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null"
+DD405_AFTER="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "(2) a bare open_issues_json call (the demonstrated #405 bypass -- no main(), never reaches the old tail-of-function rm) leaves no orphan" \
+  "$DD405_BEFORE" "$DD405_AFTER"
+
+# AC (5): killed mid-run (after the write, before any cleanup code would
+# normally run) -- the EXIT trap fires on a trappable signal same as a clean
+# exit, so nothing survives even here. (SIGKILL is deliberately excluded --
+# no EXIT trap in any shell can catch it; TERM is the realistic case for a
+# gate/CI teardown killing a stuck child.)
+DD405_BEFORE2="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+FWF_PROFILE=example bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null; kill -TERM \$\$" >/dev/null 2>&1
+DD405_AFTER2="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "(5) SIGTERM mid-run still triggers cleanup via the EXIT trap" "$DD405_BEFORE2" "$DD405_AFTER2"
+
+# AC (3) / edge case "a read before any write": decisions_json alone, with
+# NO open_issues_json call anywhere in this process's lifetime, still reads
+# the correct not-degraded default -- there is no PID-reuse-inherited stale
+# value possible any more, because the name is never reused across processes.
+DD405_NOWRITE_STUB='di_read() { echo "[]"; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+assert_eq "(3)/edge: decisions_json with no preceding open_issues_json in-process reads not-degraded" "[]" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD405_NOWRITE_STUB; decisions_json '[]'" | jq -c '[.[].id]')"
+
+# AC (4): a GENUINE degradation still surfaces -- the fix must not weaken
+# the warning while fixing the false-positive inheritance (the more
+# dangerous direction: a stale 0 masking a real degradation).
+assert_contains "(4) a real degraded list read still produces the LISTDEG row" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }; issues=\"\$(open_issues_json)\"; decisions_json \"\$issues\"" | jq -c '[.[].id]')" \
+  "LISTDEG"
+
+# Edge case: two processes running concurrently never share a name (the
+# uniqueness property PID-naming was supposed to provide and didn't, once
+# PIDs started getting reused) -- each sees only its own state.
+DD405_P1="$(FWF_PROFILE=example bash -c "source '$DD'; echo \"\$LIST_DEGRADED_FILE\"")"
+DD405_P2="$(FWF_PROFILE=example bash -c "source '$DD'; echo \"\$LIST_DEGRADED_FILE\"")"
+DD405_SAME="no"; [ "$DD405_P1" = "$DD405_P2" ] && DD405_SAME="yes"
+assert_eq "edge: two concurrent-ish processes never get the same LIST_DEGRADED_FILE name" "no" "$DD405_SAME"
+
+# Edge case: TMPDIR set vs unset -- both must still clean up (not just write
+# to the right place, the actual cleanup guarantee too).
+DD405_BEFORE3="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+mkdir -p "$TMP/dd405-tmpdir"
+FWF_PROFILE=example TMPDIR="$TMP/dd405-tmpdir" bash -c "source '$DD'; di_read() { echo '[]'; return 2; }; open_issues_json >/dev/null"
+DD405_AFTER3="$(ls $DD405_GLOB 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "edge: a custom TMPDIR still gets cleaned up (no leak into \${TMPDIR:-/tmp} either)" "$DD405_BEFORE3" "$DD405_AFTER3"
+assert_eq "edge: nothing left behind in the custom TMPDIR itself" "0" \
+  "$(ls "$TMP/dd405-tmpdir"/fwf-dash-list-degraded.* 2>/dev/null | wc -l | tr -d ' ')"
+
+# Construction: the fragile single-line-dependent cleanup is gone from
+# main() -- the trap is the only mechanism now (issue #405 AC 2, "not a
+# second cleanup bolted beside the first").
+assert_not_contains "construction: main() no longer has its own tail-of-function rm for this file" \
+  "$(cat "$DD")" 'rm -f "$LIST_DEGRADED_FILE" 2>/dev/null   # issue #266'
+assert_contains "construction: a script-level EXIT trap owns cleanup instead" \
+  "$(cat "$DD")" "trap 'rm -f \"\$LIST_DEGRADED_FILE\" 2>/dev/null' EXIT"
+
 section "dash data: activity_json buckets PRs + parses role/issue from the branch"
 printf '%s' '[{"number":7,"title":"wip","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-42-foo","statusCheckRollup":[]}]' > "$TMP/dd-open.json"
 printf '%s' '[{"number":8,"title":"done","baseRefName":"integration","headRefName":"qa2/issue-43-bar","mergedAt":"2026-06-18T12:34:56Z"}]' > "$TMP/dd-merged.json"
