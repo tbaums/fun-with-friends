@@ -5043,7 +5043,10 @@ vs_singleflight_verdict() { # $1=call-log-file -> prints "PASS <n>"/"FAIL <n>"/"
     [ "$now" = "$last" ] && break
     last="$now"; sleep 0.2; i=$((i + 1))
   done
-  while IFS=' ' read -r marker status ts pid; do
+  # $1 is the "x" sentinel and $3 is the raw timestamp (diagnostics only,
+  # per the log-order comment above) -- both deliberately discarded, not
+  # dead code (issue #443).
+  while IFS=' ' read -r _ status _ pid; do
     case "$status" in
       START) calls=$((calls + 1)); open=$((open + 1)); [ "$open" -gt "$max_open" ] && max_open="$open" ;;
       END)   open=$((open - 1)) ;;
