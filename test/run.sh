@@ -11659,21 +11659,72 @@ assert_contains "#352's own step passes exactly the narrow docs/*, *.md safe lis
 # --------------------------------------------------------------------------
 section "shellcheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
-  # Policy: fail on warnings + errors; allow info-level style nits (the
-  # `cmd && ok || bad` idiom, intentional word-splitting). SC2034 is annotated
-  # at the top of config/profile files (vars consumed in other sourced scripts).
-  # Lint only the repo's shipped scripts — not user-local/generated profiles,
-  # which live in profiles/ but aren't part of the repo.
-  if shellcheck -s bash -S warning \
-       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
-       "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"; then
-    ok "shellcheck clean"
+  # issue #418: shellcheck is the single biggest RAM/CPU spike this suite
+  # produces (~2.8G, measured repeatedly against issues #404/#405). Under
+  # 5+ concurrent gate-role `bash test/run.sh` runs on this shared box,
+  # several roles' shellcheck invocations landing at once has been driving
+  # free RAM toward 0 -- observed as OOM-killed shellcheck processes (a
+  # false "shellcheck reported issues" on a run that found nothing), a
+  # fwf_free_ram_gb self-test reading 0, and CPU-starved pane-fork timeouts
+  # elsewhere in the suite. Bounded via the SAME admission primitive #156
+  # built for cargo-build concurrency (fwf_mem_admit/_release, lib.sh) --
+  # reused, not reinvented, and deliberately independent of
+  # FWF_MEM_ADMIT_ENABLE (which only governs fwf-gate.sh's OWN --cargo-build
+  # dispatch choice between two build-concurrency mechanisms -- a different
+  # consumer entirely; this is a THIRD, always-on one). Own reserve/floor/
+  # timeout, much smaller and shorter than the build defaults (8GiB floor,
+  # 900s timeout) -- shellcheck's actual footprint is a few GiB for well
+  # under a minute, and a suite step should fail fast into a SKIP rather
+  # than block a whole gate cycle behind cargo-build-scale patience.
+  SC_TOKEN="$(FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT="${FWF_MEM_ADMIT_TIMEOUT_SHELLCHECK:-120}" \
+    FWF_MEM_ADMIT_FLOOR_GB="${FWF_MEM_ADMIT_FLOOR_GB_SHELLCHECK:-1}" FWF_MEM_ADMIT_POLL=3 \
+    bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-$$' '${FWF_MEM_RESERVE_SHELLCHECK_GB:-3}'")"
+  SC_RC=$?
+  if [ "$SC_RC" != 0 ]; then
+    skip "shellcheck (RAM admission timed out under concurrent box load -- issue #418; not a code finding)"
   else
-    bad "shellcheck reported issues"
+    # Policy: fail on warnings + errors; allow info-level style nits (the
+    # `cmd && ok || bad` idiom, intentional word-splitting). SC2034 is
+    # annotated at the top of config/profile files (vars consumed in other
+    # sourced scripts). Lint only the repo's shipped scripts — not
+    # user-local/generated profiles, which live in profiles/ but aren't
+    # part of the repo.
+    if shellcheck -s bash -S warning \
+         "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
+         "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"; then
+      ok "shellcheck clean"
+    else
+      bad "shellcheck reported issues"
+    fi
+    FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_mem_admit_release '$SC_TOKEN'"
   fi
 else
   skip "shellcheck (not installed)"
 fi
+
+# --------------------------------------------------------------------------
+# issue #418: test/run.sh's own shellcheck section is now bounded by the
+# #156 admission primitive rather than running unconditionally regardless
+# of concurrent box load. Construction check on the real source above;
+# behavioral check here is against an ISOLATED admission pool (its own
+# FWF_RUN_DIR) -- never the real shared ~/.fun-with-friends one this
+# section itself just used, so this test can't perturb production state.
+section "shellcheck admission guard is real, not a decoy (issue #418)"
+RUN_SRC="$(cat "$ROOT/test/run.sh")"
+assert_contains "the shellcheck section calls the shared #156 admission primitive" "$RUN_SRC" "fwf_mem_admit 'shellcheck-\$\$'"
+assert_contains "and releases its token afterward" "$RUN_SRC" "fwf_mem_admit_release '\$SC_TOKEN'"
+
+F418_RUN="$TMP/f418-run"; mkdir -p "$F418_RUN"
+F418_TOKEN="$(FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT=5 FWF_MEM_ADMIT_FLOOR_GB=1 FWF_MEM_ADMIT_POLL=1 \
+  FWF_FREE_RAM_GB_OVERRIDE=20 bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-f418' '3'")"; F418_RC=$?
+assert_eq "the exact call shape used admits when RAM is ample (pinned 20GiB, need 3+1)" "0" "$F418_RC"
+assert_eq "admission returned a usable token" "false" "$([ -z "$F418_TOKEN" ] && echo true || echo false)"
+FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_mem_admit_release '$F418_TOKEN'"
+
+F418_RC2=0
+FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT=2 FWF_MEM_ADMIT_FLOOR_GB=1 FWF_MEM_ADMIT_POLL=1 \
+  FWF_FREE_RAM_GB_OVERRIDE=2 bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-f418-b' '3'" >/dev/null 2>&1 || F418_RC2=$?
+assert_eq "correctly refuses (never admitted) when pinned RAM genuinely can't meet reserve+floor" "1" "$F418_RC2"
 
 # --------------------------------------------------------------------------
 section "fwf gate does not leak its own profile resolution (issue #175)"
