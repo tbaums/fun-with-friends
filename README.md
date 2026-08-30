@@ -592,6 +592,19 @@ success, failure, or a kill — so no role has to manage them by hand; see
   command's raw rc) is unaffected either way — only the RECORDED verdict a
   later promote reads is downgraded.
 
+  **`FWF_GATE_LINT_SKIP_MARKER`** (opt-in — issue #447) closes a related
+  gap: a run whose lint step was skipped (OOM-killed under load, a RAM
+  admission timeout, or the linter simply not installed) used to record
+  the same `green` as a run whose lint genuinely ran and passed, so a
+  reviewer or an implementer had no way to tell "verified clean" apart
+  from "never actually checked." The marker names a substring the
+  harness's own skip line carries; if this run's captured output
+  contains it on an otherwise-passing run, the recorded verdict is
+  `green-lint-skipped` instead of `green`, with a loud line on stderr
+  naming the marker seen. `fwf gate-promote` refuses it exactly like any
+  other non-`green` verdict. Same "only ever downgrades a candidate
+  green" rule as the canary marker above.
+
   **The honest ceiling, stated so this is not read as prevention:**
   `fwf gate-promote` binds the *ordinary* path — every seat still holds
   full git credentials and can run `git push origin <target>` directly, or
