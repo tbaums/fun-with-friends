@@ -8,18 +8,32 @@
 # GitHub warns against exactly this. This script is pull-only: it reads our
 # own tree and writes a local verdict. Nothing inbound ever runs here.
 #
-# Verdict file: $FWF_RUN/local-ci/<sha>  ->  "green <N>s" | "red <N>s <n> failed"
-#   | "red truncated" | "lapsed <N>s <check-name>" | "indeterminate [reason]"
+# Verdict file: $FWF_RUN/local-ci/<sha>  ->  "green <N>s" | "green <N>s recovered:<n>"
+#   | "red <N>s <n> failed" | "red truncated" | "lapsed <N>s <check-name>"
+#   | "indeterminate [reason]"
 #   (issue #407 adds the elapsed-seconds field; issue #446 adds lapsed/
-#   indeterminate -- older files on disk are the bare "green" / "red <n>
-#   failed" and still parse -- `verdict` matches by PREFIX, not the whole
-#   line, on purpose)
+#   indeterminate; issue #436 adds green's recovered:<n> suffix -- older
+#   files on disk are the bare "green" / "red <n> failed" and still parse
+#   -- `verdict` matches by PREFIX, not the whole line, on purpose)
 # "lapsed": the suite passed but a required check (named) never actually
 #   ran this cycle -- distinct from both green (ran, passed) and red (ran,
 #   failed). "indeterminate": a caller (conductor-e2e.sh's bounded retry)
 #   gave up after every attempt lapsed the same check.
-# Consult with: fwf-local-ci.sh verdict <sha>   (exit 0 only on a recorded green)
+# Consult with: fwf-local-ci.sh verdict <sha>   (exit 0 only when skip-eligible)
 # Streak: fwf-local-ci.sh lapse-streak [check-name]   (consecutive lapses on this box)
+#
+# issue #436: a "green" verdict alone no longer means "never failed" -- a SHA
+# that has ever recorded a genuine (non-infra, non-lapsed) red now stays
+# "recovered:<n>" for <n> = consecutive clean greens since that red, and
+# `verdict` only exits 0 once <n> >= 2 (two consecutive greens confirm a
+# flake resolved; policy chosen on the issue). The fact that a SHA ever
+# failed is tracked in a sibling $VDIR/<sha>.failed marker, OUTSIDE
+# $VDIR/<sha>.runs/, so it is immune to the retention sweep below (AC 5) --
+# and a SHA with NO $VDIR/<sha>.runs/ directory at all (the entire pre-#436
+# corpus) resolves to UNKNOWN rather than GREEN, since there is no way to
+# know whether it ever failed. An infrastructure red ("red truncated") or a
+# lapsed check never touches the marker either way -- neither is a claim
+# about the tree.
 #
 # issue #425: this SHARED flat file used to be the run's OWN log destination
 # too (`> "$VDIR/$sha.log"`), and two runs of the same SHA -- the observed
@@ -90,6 +104,17 @@ cmd="${1:-run}"; sha="${2:-}"
 
 if [ "$cmd" = verdict ]; then
   [ -n "$sha" ] || { echo "usage: $0 verdict <sha>" >&2; exit 2; }
+  # issue #436 AC (1)/(4): a key with no per-run history directory at all
+  # predates #429's durable-history feature entirely (or this SHA was never
+  # run under local-ci here) -- there is no way to know whether it has ever
+  # failed, so it must resolve to UNKNOWN and NEVER take the skip-eligible
+  # branch, regardless of what the key itself says. This is the MAJORITY
+  # case for the pre-#429 corpus (every verdict written before that ticket
+  # shipped), so it is checked first, ahead of the key content.
+  if [ ! -d "$VDIR/$sha.runs" ]; then
+    echo "local-ci: $sha is UNKNOWN (no run history recorded here -- pre-#429 or never run on this box)" >&2
+    exit 1
+  fi
   v="$(cat "$VDIR/$sha" 2>/dev/null)"
   case "$v" in
     # issue #407: a completed run now records "green <N>s", not the bare
@@ -101,8 +126,32 @@ if [ "$cmd" = verdict ]; then
     # matched by this same prefix pattern, so no backfill/migration needed.
     green|green\ *)
       dur="${v#green}"; dur="${dur# }"
-      echo "local-ci: $sha is GREEN (recorded on $(hostname))${dur:+, ${dur}}"
-      exit 0
+      case "$dur" in
+        # issue #436 AC (2)/(3): this SHA failed before ($sha.failed exists,
+        # see the writer in `run` mode below) -- "green" alone can no longer
+        # mean "skip eligible" for it. Require TWO CONSECUTIVE greens since
+        # the last real failure (policy chosen on the issue) before the skip
+        # is taken; the FIRST green after a red is real progress (the flake
+        # may have resolved) but not yet confirmed, so it stays supersedable
+        # information without being actionable on its own.
+        *' recovered:'*)
+          n="${dur##* recovered:}"
+          case "$n" in
+            1)
+              echo "local-ci: $sha is GREEN but recovered:1 -- failed before, only one confirming green so far (issue #436: needs two consecutive greens before this is skip-eligible)" >&2
+              exit 1
+              ;;
+            *)
+              echo "local-ci: $sha is GREEN, recovered:${n} -- failed before, confirmed by ${n} consecutive greens, skip-eligible"
+              exit 0
+              ;;
+          esac
+          ;;
+        *)
+          echo "local-ci: $sha is GREEN (recorded on $(hostname))${dur:+, ${dur}}"
+          exit 0
+          ;;
+      esac
       ;;
     # issue #446 AC (1): distinguishable by PREFIX from green, same idiom as
     # #407's own green-vs-green-with-duration split above -- a consumer that
@@ -119,6 +168,14 @@ if [ "$cmd" = verdict ]; then
       exit 1
       ;;
     "")    echo "local-ci: no verdict recorded for $sha" >&2; exit 1;;
+    # issue #436 edge case (decided, not deferred): a truncated/infra run
+    # says nothing about the TREE, only about the runner -- it must never be
+    # read as "has failed". Called out explicitly rather than falling into
+    # the generic red branch below so the exclusion is visible, not silent.
+    "red truncated")
+      echo "local-ci: $sha is red truncated -- an infrastructure failure, not counted as a tree failure (issue #436 edge case)" >&2
+      exit 1
+      ;;
     *)     echo "local-ci: $sha is $v" >&2; exit 1;;
   esac
 fi
@@ -166,6 +223,17 @@ log="$runs_dir/$run_id.log"
 verdict_run_file="$runs_dir/$run_id"
 echo "local-ci: running required suites for $sha on $(hostname) ($(nproc) cores) [run $run_id]"
 
+# issue #436 AC (5): "has this SHA ever failed" must survive the retention
+# sweep above, which only ages out files under $sha.runs/ -- by design, that
+# is what the sweep is FOR (reclaiming logs), and this fact is not a log. A
+# sibling file OUTSIDE $sha.runs/, never matched by _fwf_local_ci_prune's
+# `*.runs/*` glob, carries it instead: its mere existence means "a genuine
+# (non-infra, non-lapsed) red has been recorded for this SHA", and its
+# content is the count of CONSECUTIVE clean greens recorded since that
+# failure -- read by `verdict` above to decide skip-eligibility, written
+# only here.
+failed_marker="$VDIR/$sha.failed"
+
 # issue #407: wall-clock for the FULL run (test/run.sh + the memory-
 # admission suite below), recorded on the verdict line -- the driver has
 # had no way to see how long a gate took once its process exits.
@@ -193,6 +261,10 @@ summary="$(grep -E '^[0-9]+ passed,' "$log" | tail -1)"
 # "red truncated" must stay exactly what it already is so it never looks
 # like a completed, timed run.
 if [ -z "$summary" ]; then
+  # issue #436 edge case: a truncated run is an infrastructure claim, not a
+  # tree claim -- $failed_marker is deliberately left untouched (neither
+  # created nor reset nor incremented), so it says nothing about whether the
+  # tree itself has ever failed.
   echo "red truncated" | tee "$VDIR/$sha" "$verdict_run_file" >/dev/null
   echo "local-ci: REFUSING to record a verdict — no summary line, the run did not finish [run $run_id]" >&2
   exit 1
@@ -219,13 +291,29 @@ if [ "$rc" = 0 ] && [ "${failed:-1}" = 0 ] && [ "$lapsed" = 1 ]; then
   # issue #446 AC (1)/(4): the suite did not fail and the check did not run
   # -- a distinct claim from both green (check ran, passed) and red (suite
   # failed). Never "green": that is the exact defect #443 escaped through.
+  # issue #436: a lapsed check is, like an infra red, a claim about the
+  # runner rather than the tree -- $failed_marker is left untouched here too.
   echo "lapsed ${elapsed}s ${FWF_LOCAL_CI_LAPSE_CHECK_NAME}" | tee "$VDIR/$sha" "$verdict_run_file" >/dev/null
   echo "local-ci: LAPSED — $summary (${elapsed}s), but $FWF_LOCAL_CI_LAPSE_CHECK_NAME never ran (streak: $streak) [run $run_id]" >&2
   exit 1
 elif [ "$rc" = 0 ] && [ "${failed:-1}" = 0 ]; then
-  echo "green ${elapsed}s" | tee "$VDIR/$sha" "$verdict_run_file" >/dev/null
-  echo "local-ci: GREEN — $summary (${elapsed}s) [run $run_id]"
+  if [ -f "$failed_marker" ]; then
+    n="$(cat "$failed_marker" 2>/dev/null)"
+    case "$n" in ''|*[!0-9]*) n=0;; esac
+    n=$((n + 1))
+    echo "$n" > "$failed_marker" 2>/dev/null
+    echo "green ${elapsed}s recovered:${n}" | tee "$VDIR/$sha" "$verdict_run_file" >/dev/null
+    echo "local-ci: GREEN, recovered:${n} — $summary (${elapsed}s) [run $run_id]"
+  else
+    echo "green ${elapsed}s" | tee "$VDIR/$sha" "$verdict_run_file" >/dev/null
+    echo "local-ci: GREEN — $summary (${elapsed}s) [run $run_id]"
+  fi
 else
+  # issue #436 AC (2)/(3): a genuine (non-infra, non-lapsed-only) red --
+  # mark this SHA as having failed and reset the consecutive-greens count to
+  # 0, so the NEXT green is recovered:1 (not yet skip-eligible) rather than
+  # silently resuming as if nothing happened.
+  echo 0 > "$failed_marker" 2>/dev/null
   echo "red ${elapsed}s ${failed:-?} failed" | tee "$VDIR/$sha" "$verdict_run_file" >/dev/null
   if [ "$lapsed" = 1 ]; then
     echo "local-ci: RED — $summary (exit $rc, ${elapsed}s); note: $FWF_LOCAL_CI_LAPSE_CHECK_NAME also lapsed this run (streak: $streak) [run $run_id]" >&2

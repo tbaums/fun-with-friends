@@ -29,6 +29,17 @@
 # -- falls through to a local run. This can make the gate faster; it cannot
 # make it more permissive.
 #
+# issue #436: "definitive green" is no longer just "the last run was green" --
+# fwf-local-ci.sh verdict now exits 0 only when the SHA is skip-eligible under
+# its own two-consecutive-greens-after-a-real-red policy (or UNKNOWN, which is
+# also non-zero). This call site is unchanged: the policy is wired entirely
+# through the exit code, so a SHA that failed twice still falls through here
+# to a real re-run until confirmed, with no logic duplicated in this file.
+# Composes with #446 below unmodified: once a fresh run genuinely executes
+# and passes in the retry loop, that run IS the validation for this cycle --
+# the two-consecutive-greens requirement only gates trusting a CACHED prior
+# verdict well enough to skip a run, not a run that just happened for real.
+#
 # issue #446 AC (2): a LAPSED verdict (the suite passed but a required check,
 # e.g. shellcheck, never actually ran -- #443's finding escaped to macOS
 # exactly this way) is not treated as a real failure either. It gets a
