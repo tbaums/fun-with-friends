@@ -13407,9 +13407,17 @@ section "fwf dash (issue #220 AC r): a recorded verdict is visible through the a
 # record call), this goes RED without needing to inspect the state dir.
 DD220RUN="$TMP/run220dash"; mkdir -p "$DD220RUN"
 FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_record '$F220SHA' impl1 green"
+# issue #447: a hyphenated verdict token (green-lint-skipped) seeded on a
+# THIRD PR here -- the dash's own field-extraction regex used to truncate at
+# the first `-`, so this would have displayed as plain "green", the exact
+# silent-misdirection defect #447 exists to prevent, one layer up from the
+# state-dir record itself.
+DD220_LINTSKIP_SHA="0000000000000000000000000000000000d447"
+FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_record '$DD220_LINTSKIP_SHA' impl1 green-lint-skipped"
 printf '%s' '[
   {"number":21,"title":"gated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-220-x","headRefOid":"'"$F220SHA"'","statusCheckRollup":[]},
-  {"number":22,"title":"ungated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-221-y","headRefOid":"0000000000000000000000000000000000face","statusCheckRollup":[]}
+  {"number":22,"title":"ungated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-221-y","headRefOid":"0000000000000000000000000000000000face","statusCheckRollup":[]},
+  {"number":23,"title":"lint-skipped","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-447-z","headRefOid":"'"$DD220_LINTSKIP_SHA"'","statusCheckRollup":[]}
 ]' > "$TMP/dd220-open.json"
 printf '%s' '[]' > "$TMP/dd220-merged.json"
 DD220_ACT="$(FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" FWF_TEMPLATE=dev bash -c "source '$DD'; STAGING_BRANCH=staging INTEGRATION_BRANCH=integration DEFAULT_BRANCH=main; gh_pr() { case \"\$*\" in *'--state open'*) cat '$TMP/dd220-open.json';; *'--state merged'*) cat '$TMP/dd220-merged.json';; esac; }; activity_json")"
@@ -13417,6 +13425,8 @@ assert_eq "a recorded verdict is surfaced on its PR via activity_json (dash's ac
   "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==21) | .gate_verdict')"
 assert_eq "a PR whose SHA was never gated reports unknown, not a stale/misleading verdict" "unknown" \
   "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==22) | .gate_verdict')"
+assert_eq "issue #447: a green-lint-skipped verdict reaches the dash intact, not truncated to plain 'green' at the first hyphen" \
+  "green-lint-skipped" "$(printf '%s' "$DD220_ACT" | jq -r '.building[] | select(.pr==23) | .gate_verdict')"
 
 section "fwf gate: the --tip-cmd path ALSO populates the SHA-keyed store, without touching the role-keyed skip marker"
 FWF_GATE_FORCE=1 f202gate -- true >/dev/null 2>&1
@@ -14374,6 +14384,75 @@ assert_eq "fwf gate-revoke's CLI-written revocation is honoured by gate-promote 
 assert_contains "the CLI round-trip refuses as REVOKED, same as the direct lib.sh path" "$G237P8_OUT" "REVOKED"
 assert_eq "fwf-gate-revoke.sh with no fingerprint argument is a usage error (rc 2), distinct from a refusal" \
   "2" "$(bash "$ROOT/fwf-gate-revoke.sh" >/dev/null 2>&1; echo $?)"
+
+# --------------------------------------------------------------------------
+section "fwf gate (issue #447): a lint-SKIP inside the wrapped command's output must not record the same verdict as a real green"
+
+F447RUN="$TMP/run447"; mkdir -p "$F447RUN"
+F447REPO="$TMP/repo447"; mkdir -p "$F447REPO"
+( cd "$F447REPO" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F447SHA="$(git -C "$F447REPO" rev-parse HEAD)"
+
+# AC(1)/AC(3): a wrapped command that exits 0 but whose output contains this
+# repo's own #418/#427 lint-skip idiom must record green-lint-skipped, never
+# the bare green a real clean-lint run gets -- and must say so loudly on its
+# own stderr, not just encode it silently in the verdict token.
+rc=0; ( cd "$F447REPO" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f447skip -- bash -c 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; exit 0' \
+      ) >/dev/null 2>"$TMP/f447-skip.err" || rc=$?
+assert_eq "a lint-skipped run still exits 0 (the suite itself did not fail, only the lint step was skipped)" "0" "$rc"
+F447_VERDICT_LINE="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA'" 2>/dev/null)"
+assert_eq "AC(1): the recorded verdict token is EXACTLY green-lint-skipped -- not a substring match against plain green" \
+  "green-lint-skipped" "$(printf '%s' "$F447_VERDICT_LINE" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+assert_contains "AC(3): the skip is surfaced loudly on the gate's own stderr at gate time, not only encoded in the verdict token" \
+  "$(cat "$TMP/f447-skip.err" 2>/dev/null)" "lint was SKIPPED this run"
+
+# Discriminating: a run whose output never mentions a lint skip records the
+# ordinary green, unaffected by this change -- the property this ticket
+# protects is "SKIPPED lint is distinguishable", not "lint always downgrades".
+F447REPO2="$TMP/repo447b"; mkdir -p "$F447REPO2"
+( cd "$F447REPO2" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F447SHA2="$(git -C "$F447REPO2" rev-parse HEAD)"
+( cd "$F447REPO2" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f447clean -- true ) >/dev/null 2>&1
+F447_VERDICT_LINE2="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA2'" 2>/dev/null)"
+assert_eq "a normal clean run (no skip idiom in its output) still records plain green, unaffected" \
+  "green" "$(printf '%s' "$F447_VERDICT_LINE2" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# A genuine failure (rc != 0) is never touched by this downgrade, even if the
+# wrapped command's output happens to also contain the marker text -- red is
+# already the strongest signal and is never second-guessed.
+F447REPO3="$TMP/repo447c"; mkdir -p "$F447REPO3"
+( cd "$F447REPO3" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F447SHA3="$(git -C "$F447REPO3" rev-parse HEAD)"
+( cd "$F447REPO3" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f447red -- bash -c 'echo "skip shellcheck (not installed)"; exit 1' ) >/dev/null 2>&1
+F447_VERDICT_LINE3="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA3'" 2>/dev/null)"
+assert_eq "a genuinely failing run records red, never a lint-skip-flavored verdict, regardless of skip text in its output" \
+  "red" "$(printf '%s' "$F447_VERDICT_LINE3" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# The marker is overridable to empty (a profile whose harness never emits
+# this idiom, or explicitly wants the check off, pays nothing).
+F447REPO4="$TMP/repo447d"; mkdir -p "$F447REPO4"
+( cd "$F447REPO4" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F447SHA4="$(git -C "$F447REPO4" rev-parse HEAD)"
+( cd "$F447REPO4" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_LINT_SKIP_MARKER="" \
+  "$ROOT/fwf-gate.sh" f447off -- bash -c 'echo "skip shellcheck (not installed)"; exit 0' ) >/dev/null 2>&1
+F447_VERDICT_LINE4="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA4'" 2>/dev/null)"
+assert_eq "FWF_GATE_LINT_SKIP_MARKER=\"\" disables the check -- the same run records plain green" \
+  "green" "$(printf '%s' "$F447_VERDICT_LINE4" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# AC(2): the promotion path must not accept a lint-skipped verdict as a
+# release-candidate green -- reusing the #237 gate-promote fixture harness
+# (_g237_fixture, defined above) and seeding the role-keyed store directly,
+# the same technique G237P2's red/green cases already use.
+_g237_fixture G447P2
+G447P2_ROOT="$TMP/gate447p2-state"; mkdir -p "$G447P2_ROOT/state/example"
+FWF_RUN_DIR="$G447P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g447p2 '$G447P2_STAGING_SHA' green-lint-skipped"
+G447P2_OUT="$(cd "$G447P2_CONDUCTOR" && FWF_RUN_DIR="$G447P2_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g447p2 integration 2>&1)"
+G447P2_RC=$?
+assert_eq "AC(2): a green-lint-skipped record refuses promotion (rc 1) -- it is not literally 'green'" "1" "$G447P2_RC"
+assert_contains "AC(2): names the actual recorded verdict, not a generic refusal" "$G447P2_OUT" "is 'green-lint-skipped', not green"
 
 # --------------------------------------------------------------------------
 section "gate-promote: adoption in the same PR (issue #237 AC g)"

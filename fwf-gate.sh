@@ -683,6 +683,33 @@ else
   fwf_gate_history_report_case SUITE "$([ "$rc" -eq 0 ] && echo PASS || echo FAIL)" "$_fwf227_branch" "$_fwf227_sha" "$_fwf227_base" "SUITE-level (no GATE_CASE_EXTRACTOR declared)"
 fi
 
+# issue #447: the gate's verdict must not claim "lint ran and passed" when
+# the wrapped command's lint step was itself SKIPPED (OOM-killed under
+# concurrent box load, a RAM-admission timeout, or the linter simply
+# absent -- test/run.sh's #418/#427 dispatch phrases every one of those
+# "skip shellcheck (..."). rc alone can't distinguish that from a real
+# clean lint: a skip never fails the suite, so rc is 0 either way, and
+# #443/#445 showed the store recording a confident green on a tree three
+# independent checks (macOS, the operator's own run, a second reviewer's
+# gate) called red. Defaulted ON, unlike #237's FWF_GATE_CANARY_MARKER --
+# that marker names a profile-specific case-id with no safe universal
+# value; this one names THIS repo's own, already-established skip-message
+# idiom, so a profile whose harness never emits it (or phrases it
+# differently) simply never matches and pays nothing. A profile that wants
+# it off, or phrases its own skip differently, overrides with its own
+# value (including empty, which disables the check).
+FWF_GATE_LINT_SKIP_MARKER="${FWF_GATE_LINT_SKIP_MARKER-skip shellcheck (}"
+_fwf447_lint_skipped=0
+if [ -n "$FWF_GATE_LINT_SKIP_MARKER" ] && grep -qF -- "$FWF_GATE_LINT_SKIP_MARKER" "$wrapped_out_capture" 2>/dev/null; then
+  _fwf447_lint_skipped=1
+  # AC (3): surfaced here, at gate time, so the implementer who just ran
+  # this sees it immediately rather than discovering it later from a
+  # verdict token or a second reviewer's contradicting gate -- the actual
+  # cost this ticket was filed on (an hour lost to a green that meant
+  # "didn't check", not "checked and clean").
+  echo "fwf gate [#447]: lint was SKIPPED this run (matched '$FWF_GATE_LINT_SKIP_MARKER' in the wrapped command's output) -- this run's suite passing does NOT mean lint ran clean. Recording green-lint-skipped, not green." >&2
+fi
+
 rm -f "$wrapped_err_capture" "$wrapped_out_capture"
 
 if [ "$want_e2e" = 1 ]; then
@@ -707,9 +734,14 @@ if [ -n "${FWF_GATE_CANARY_MARKER:-}" ] && [ "$rc" -eq 0 ]; then
     _fwf237_verdict_downgrade=unknown
   fi
 fi
-_fwf237_verdict() { # prints this run's verdict: green|red|unknown
+_fwf237_verdict() { # prints this run's verdict: green|green-lint-skipped|red|unknown
   if [ "$rc" -ne 0 ]; then echo red; return 0; fi
   [ -n "$_fwf237_verdict_downgrade" ] && { echo "$_fwf237_verdict_downgrade"; return 0; }
+  # issue #447: a lint-skip downgrade is independent of (and checked after)
+  # #237's canary downgrade above -- both only ever apply to a candidate
+  # GREEN, and #237's `unknown` (no confirmed path to red at all) is the
+  # stronger finding when both happen to fire on the same run.
+  [ "$_fwf447_lint_skipped" = 1 ] && { echo green-lint-skipped; return 0; }
   echo green
 }
 # issue #237 (k2): fingerprint of what actually ran, folded into every

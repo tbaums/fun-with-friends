@@ -681,7 +681,11 @@ _activity_attach_gate_verdict() {
     sha="$(printf '%s' "$pr" | jq -r '.headRefOid // empty')"
     verdict="unknown"
     if [ -n "$sha" ] && line="$(fwf_gate_verdict_read "$sha" 2>/dev/null)"; then
-      verdict="$(printf '%s' "$line" | sed -n 's/.*verdict=\([a-z]*\).*/\1/p')"
+      # issue #447: `[a-z]*` truncated a hyphenated token (green-lint-skipped)
+      # at its first `-`, so the dashboard would have silently displayed
+      # "green" for exactly the verdict this ticket exists to make
+      # distinguishable -- the same silent-misdirection defect one layer up.
+      verdict="$(printf '%s' "$line" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
       [ -n "$verdict" ] || verdict="unknown"
     fi
     printf '%s' "$pr" | jq -c --arg v "$verdict" '.gate_verdict = $v'
