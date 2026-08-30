@@ -3476,6 +3476,30 @@ EOS
       fwf_resolve_claude_auth >/dev/null 2>&1 || fwf_claude_auth_failure_message fwf
     " 2>&1)" "claude /login"
 
+  # QA repro (#373 review, qa1): the doc comment and README both promise "a
+  # symlinked token file is followed; readability is judged on the target",
+  # but _fwf_file_mode_octal/_fwf_file_owner_uid stat the CANDIDATE PATH
+  # directly -- on Linux a symlink's own mode is always 777 (lrwxrwxrwx,
+  # kernel-enforced, independent of the target's real permissions), so the
+  # group/world check rejects every symlinked candidate regardless of how
+  # secure the target actually is. Fail-closed (not a credential leak), but
+  # it silently breaks a real provisioning pattern (a secrets manager writing
+  # to a canonical path and symlinking it into place) that the ticket itself
+  # calls out as supported.
+  F373_SYMLINK_HOME="$TMP/f373-symlink-home"; mkdir -p "$F373_SYMLINK_HOME/.config/fwf" "$F373_SYMLINK_HOME/.claude"
+  echo '{"fake":"creds"}' > "$F373_SYMLINK_HOME/.claude/.credentials.json"
+  F373_SYMLINK_TARGET_DIR="$TMP/f373-symlink-target"; mkdir -p "$F373_SYMLINK_TARGET_DIR"
+  F373_SYMLINK_TARGET="$F373_SYMLINK_TARGET_DIR/real-token"
+  printf '%s' "sk-symlink-target-token" > "$F373_SYMLINK_TARGET"
+  chmod 600 "$F373_SYMLINK_TARGET"
+  ln -s "$F373_SYMLINK_TARGET" "$F373_SYMLINK_HOME/.config/fwf/claude-oauth-token"
+  F373_SYMLINK_RUN="$TMP/f373-symlink-run"; mkdir -p "$F373_SYMLINK_RUN"
+  F373_SYMLINK_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_SYMLINK_HOME" FWF_RUN_DIR="$F373_SYMLINK_RUN" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  ")"
+  assert_eq "QA repro: a symlink to a 0600-owned-by-me token file resolves via token_file (target's permissions govern, per the documented edge case)" \
+    "token_file" "$F373_SYMLINK_OUT"
+
   # --------------------------------------------------------------------------
   section "respawn circuit breaker (issue #217 section 4): bounded consecutive failures, no unbounded destroy-and-retry"
   # Direct unit tests first (fwf_respawn_breaker_check/fail/reset -- PURE

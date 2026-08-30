@@ -399,9 +399,14 @@ FWF_AUTH_ENV_FILE="${FWF_AUTH_ENV_FILE:-$FWF_RUN/auth.env}"
 
 # Portable (GNU-first, BSD-fallback -- #337's convention, matching
 # fwf_file_mtime) octal-mode / owning-uid reads of a single file, needed only
-# for the token_file source's permission/ownership refusal.
-_fwf_file_mode_octal() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
-_fwf_file_owner_uid()  { stat -c '%u' "$1" 2>/dev/null || stat -f '%u'  "$1" 2>/dev/null; }
+# for the token_file source's permission/ownership refusal. -L dereferences a
+# symlink (both GNU and BSD stat honor it) so a symlinked candidate is judged
+# on the TARGET's permissions/owner, not the symlink's own inode -- on Linux
+# a symlink's own mode is unconditionally 777, which without -L would refuse
+# every symlinked candidate regardless of how the target is actually secured
+# (qa1's #373 review finding).
+_fwf_file_mode_octal() { stat -L -c '%a' "$1" 2>/dev/null || stat -L -f '%Lp' "$1" 2>/dev/null; }
+_fwf_file_owner_uid()  { stat -L -c '%u' "$1" 2>/dev/null || stat -L -f '%u'  "$1" 2>/dev/null; }
 
 # Effective FWF_CLAUDE_TOKEN_FILE candidate list -- unset means "use the
 # default", set-but-empty means "disabled" (${VAR+set} distinguishes the two;
