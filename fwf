@@ -468,6 +468,30 @@ UTILITIES
                          guard (read/safety-net path, before any assignment) —
                          one shared classifier for both. Exits non-zero iff
                          some branch is unsafe to build on right now.
+  shipped <issue> [--sha <merged-head-sha>]
+                         Is this issue's fix actually on __DEFAULT__ — not
+                         just "was its PR merged" (issue #420: #377 closed
+                         "shipped and on main" while its real fix, pushed to
+                         the branch AFTER the PR already merged at an
+                         earlier tip, was never in any PR at all). Reports
+                         TWO questions separately, never one collapsed
+                         verdict: (A) is the merged head an ancestor of
+                         __DEFAULT__ ("the PR shipped"), and (B) did the head
+                         branch grow commits outside that merged head, and if
+                         so is every one of them ALSO on __DEFAULT__ ("the
+                         fix shipped"). Resolves issue -> PR via the same
+                         body-grep `Closes #N` resolver `fwf merge` uses
+                         (never a cross-reference search, which over-matches
+                         every PR that merely mentions the number), and runs
+                         both checks over EVERY linked PR — never picks one.
+                         Exit 0 SHIPPED / 1 NOT SHIPPED / 2 NO COMPARISON (no
+                         linked PR found, or nothing left to compare) / 3 NOT
+                         APPLICABLE (closed for a reason other than
+                         `completed` — a decision closure, not a delivery
+                         one). `--sha` overrides PR resolution entirely for a
+                         multi-PR ticket the query cannot resolve — checks
+                         (A) alone for that exact commit; not the default
+                         path. A REPORT, never an automatic reopen or close.
   worktree-refresh <role>
                          Fetch-then-detach refresh for a READ-ONLY role's
                          worktree (PM/GV/Captain), issue #146 — a detached,
@@ -1148,6 +1172,7 @@ case "$cmd" in
   reconcile) engine fwf-reconcile.sh "$@";;
   worktree-refresh) engine fwf-worktree-refresh.sh "$@";;
   reconcile-guard) engine fwf-reconcile-guard.sh "$@";;
+  shipped)   engine fwf-shipped.sh "$@";;
   shell)
     # First containerization slice (#3): one image with the whole pane
     # toolchain (bash/tmux/git/gh/claude); auth mounted from the host, never

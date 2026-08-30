@@ -11194,6 +11194,299 @@ for t in dev dev-sre refactor; do
 done
 
 # --------------------------------------------------------------------------
+# fwf shipped (issue #420): "the PR shipped" and "the fix shipped" are
+# different claims -- #377 closed "shipped and on main" because its closer's
+# check only ever asked the FIRST one. Real git fixtures (same origin.git/
+# seed/drive trio #114's reconcile tests use), a gh stub driven by per-test
+# JSON fixture FILES (issue.json / prlist.json / prview-<n>.json /
+# prapi-<n>.json under a per-test stub-data dir) so a multi-PR test can give
+# different PRs different bodies without one giant inline case statement.
+section "fwf shipped (issue #420): the PR shipped vs the fix shipped, reported separately"
+
+shp_setup() { # $1=label -> $TMP/shp420-<label>/{origin.git,seed,drive,run,ghbin,ghdata}
+  local label="$1"
+  local base="$TMP/shp420-$label"
+  SHP_ORIGIN="$base/origin.git"; SHP_SEED="$base/seed"; SHP_DRIVE="$base/drive"
+  SHP_RUN="$base/run"; SHP_GHBIN="$base/ghbin"; SHP_GHDATA="$base/ghdata"
+  mkdir -p "$SHP_ORIGIN" "$SHP_SEED" "$SHP_DRIVE" "$SHP_RUN" "$SHP_GHBIN" "$SHP_GHDATA"
+  ( cd "$SHP_ORIGIN" && git init -q --bare )
+  ( cd "$SHP_SEED" && git init -q && git symbolic-ref HEAD refs/heads/main \
+    && git config user.email t@t.co && git config user.name t \
+    && echo a > f && git add -A && git commit -qm c1 \
+    && git remote add origin "$SHP_ORIGIN" && git push -q origin main )
+  ( cd "$SHP_DRIVE" && git init -q && git config user.email t@t.co && git config user.name t \
+    && git remote add origin "$SHP_ORIGIN" && git fetch -q origin )
+  cat > "$SHP_GHBIN/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+d="$SHP_STUB_DATA"
+args=("$@"); jqexpr=""
+for ((i=0; i<${#args[@]}; i++)); do [ "${args[i]}" = "--jq" ] && jqexpr="${args[i+1]}"; done
+case "$1 $2" in
+  "issue view") body="$(cat "$d/issue-$3.json" 2>/dev/null || echo '{"state":"OPEN"}')" ;;
+  "pr list")    body="$(cat "$d/prlist.json" 2>/dev/null || echo '[]')" ;;
+  "pr view")    body="$(cat "$d/prview-$3.json" 2>/dev/null || echo '{"body":""}')" ;;
+  "api "*)      n="${2##*/}"; body="$(cat "$d/prapi-$n.json" 2>/dev/null || echo 'null')" ;;
+  *) echo "shp gh stub: unhandled: $*" >&2; exit 1 ;;
+esac
+if [ -n "$jqexpr" ]; then printf '%s' "$body" | jq -r "$jqexpr"; else printf '%s\n' "$body"; fi
+STUBEOF
+  chmod +x "$SHP_GHBIN/gh"
+}
+# $1=branch -> branch off main (or continue an existing one), one commit, pushed; echoes its sha
+shp_branch_commit() {
+  ( cd "$SHP_SEED" && { git checkout -q "$1" 2>/dev/null || git checkout -qb "$1" main; } \
+    && git commit -q --allow-empty -m "commit on $1" && git push -q origin "$1" ) >/dev/null
+  git -C "$SHP_SEED" rev-parse "$1"
+}
+shp_merge_to_main() { ( cd "$SHP_SEED" && git checkout -q main && git merge -q --ff-only "$1" && git push -q origin main ) >/dev/null; }
+# push one more commit onto $1 (simulating a post-merge push); echoes the new tip sha
+shp_push_extra() {
+  ( cd "$SHP_SEED" && git checkout -q "$1" && echo "$RANDOM$RANDOM" >> f && git commit -qam "extra on $1" && git push -q origin "$1" ) >/dev/null
+  git -C "$SHP_SEED" rev-parse "$1"
+}
+shp_delete_branch() { git -C "$SHP_SEED" push -q origin --delete "$1" >/dev/null 2>&1; }
+shp_run() { # $@ = args to fwf-shipped.sh
+  PATH="$SHP_GHBIN:$PATH" SHP_STUB_DATA="$SHP_GHDATA" \
+    FWF_REPO="$SHP_DRIVE" FWF_RUN_DIR="$SHP_RUN" FWF_PROFILE=example FWF_GHCACHE_REPO=x/y \
+    "$ROOT/fwf-shipped.sh" "$@"
+}
+
+# --- AC(1)/AC(2) RED-first, exactly #377's own shape: a hollow-merged PR
+# (its recorded merged head is an ancestor of main -- (A) passes) whose
+# branch grew a REAL commit after the merge that was never merged anywhere
+# -- (B) must catch it. This is the negative fixture the ticket requires be
+# self-contained (never pinned to a real, mutable branch).
+shp_setup c377shape
+FIXHEAD="$(shp_branch_commit fixbranch)"   # the "claim commit" that gets merged
+shp_merge_to_main fixbranch
+REALFIX="$(shp_push_extra fixbranch)"       # the real fix, pushed AFTER, never merged
+cat > "$SHP_GHDATA/issue-42.json" <<EOF
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":381}]
+EOF
+cat > "$SHP_GHDATA/prview-381.json" <<'EOF'
+{"body":"Closes #42"}
+EOF
+cat > "$SHP_GHDATA/prapi-381.json" <<EOF
+{"merged":true,"head":{"sha":"$FIXHEAD","ref":"fixbranch"},"state":"closed"}
+EOF
+SHP_OUT="$(shp_run 42 2>&1)"; SHP_RC=$?
+assert_eq "AC(1)/(2): #377's exact shape -- (A) passes, (B) catches the stranded real fix -> NOT SHIPPED (rc 1)" "1" "$SHP_RC"
+assert_contains "...names (A) OK" "$SHP_OUT" "(A) OK"
+assert_contains "...names (B) FAIL" "$SHP_OUT" "(B) FAIL"
+assert_contains "...names the actual missing commit sha" "$SHP_OUT" "$REALFIX"
+assert_contains "...the issue-level line also reads NOT SHIPPED" "$SHP_OUT" "issue #42: NOT SHIPPED"
+
+# --- AC(2): the clean direction in the SAME fixture family -- branch
+# deleted immediately after a real merge (the expected shape), nothing
+# stranded.
+shp_setup clean
+CLEANHEAD="$(shp_branch_commit fixbranch)"
+shp_merge_to_main fixbranch
+shp_delete_branch fixbranch
+cat > "$SHP_GHDATA/issue-43.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":381}]
+EOF
+cat > "$SHP_GHDATA/prview-381.json" <<'EOF'
+{"body":"Closes #43"}
+EOF
+cat > "$SHP_GHDATA/prapi-381.json" <<EOF
+{"merged":true,"head":{"sha":"$CLEANHEAD","ref":"fixbranch"},"state":"closed"}
+EOF
+SHP_CLEAN_OUT="$(shp_run 43 2>&1)"; SHP_CLEAN_RC=$?
+assert_eq "AC(2): clean delete-on-merge -> SHIPPED (rc 0)" "0" "$SHP_CLEAN_RC"
+assert_contains "...names (A) OK, (B) no comparison (branch deleted)" "$SHP_CLEAN_OUT" "(B) no comparison"
+assert_contains "...issue-level line reads SHIPPED" "$SHP_CLEAN_OUT" "issue #43: SHIPPED"
+
+# --- staging-lag fixture (the case the ticket names as the one (A) exists
+# for): the merged head lives on a branch ("staging") that is ITSELF not an
+# ancestor of main at all -- a base-relative query would see an EMPTY set
+# and read clean; (A) against origin/main directly must fail instead.
+shp_setup staginglag
+( cd "$SHP_SEED" && git checkout -qb staging main && git push -q origin staging ) >/dev/null
+LAGHEAD="$(shp_branch_commit fixbranch)"
+( cd "$SHP_SEED" && git checkout -q staging && git merge -q --ff-only fixbranch && git push -q origin staging ) >/dev/null
+shp_delete_branch fixbranch
+# main NEVER receives this commit
+cat > "$SHP_GHDATA/issue-44.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":381}]
+EOF
+cat > "$SHP_GHDATA/prview-381.json" <<'EOF'
+{"body":"Closes #44"}
+EOF
+cat > "$SHP_GHDATA/prapi-381.json" <<EOF
+{"merged":true,"head":{"sha":"$LAGHEAD","ref":"fixbranch"},"state":"closed"}
+EOF
+SHP_LAG_OUT="$(shp_run 44 2>&1)"; SHP_LAG_RC=$?
+SHP_LAG_MAIN_SHA="$(git -C "$SHP_DRIVE" rev-parse origin/main 2>/dev/null)"   # captured NOW -- SHP_DRIVE is reused by every later fixture below
+assert_eq "staging-lag: merged head reachable only via staging, never main -> (A) fails -> NOT SHIPPED (rc 1)" "1" "$SHP_LAG_RC"
+assert_contains "...names (A) FAIL" "$SHP_LAG_OUT" "(A) FAIL"
+
+# --- AC(2) multi-PR fixture: two PRs both declare Closes #N, one shipped,
+# one not -- the check must report BOTH, never collapse to one verdict.
+shp_setup multipr
+SHIPHEAD="$(shp_branch_commit shipbranch)"
+shp_merge_to_main shipbranch
+shp_delete_branch shipbranch
+NOSHIPHEAD="$(shp_branch_commit noshipbranch)"
+shp_merge_to_main noshipbranch
+shp_push_extra noshipbranch >/dev/null   # stranded post-merge commit, never on main
+cat > "$SHP_GHDATA/issue-45.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":501},{"number":502}]
+EOF
+cat > "$SHP_GHDATA/prview-501.json" <<'EOF'
+{"body":"Closes #45"}
+EOF
+cat > "$SHP_GHDATA/prview-502.json" <<'EOF'
+{"body":"Closes #45"}
+EOF
+cat > "$SHP_GHDATA/prapi-501.json" <<EOF
+{"merged":true,"head":{"sha":"$SHIPHEAD","ref":"shipbranch"},"state":"closed"}
+EOF
+cat > "$SHP_GHDATA/prapi-502.json" <<EOF
+{"merged":true,"head":{"sha":"$NOSHIPHEAD","ref":"noshipbranch"},"state":"closed"}
+EOF
+SHP_MULTI_OUT="$(shp_run 45 2>&1)"; SHP_MULTI_RC=$?
+assert_eq "AC(2) multi-PR: at least one linked PR fully shipped -> overall SHIPPED (rc 0)" "0" "$SHP_MULTI_RC"
+assert_contains "...PR #501 (clean) reported SHIPPED" "$SHP_MULTI_OUT" "PR #501: SHIPPED"
+assert_contains "...PR #502 (stranded commit) reported NOT SHIPPED, not silently dropped" "$SHP_MULTI_OUT" "PR #502: NOT SHIPPED"
+assert_contains "...issue-level line names the PR that did NOT ship on its own" "$SHP_MULTI_OUT" "502"
+
+# --- a linked PR that was never merged -> NOT SHIPPED, named as such
+shp_setup notmerged
+cat > "$SHP_GHDATA/issue-46.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":381}]
+EOF
+cat > "$SHP_GHDATA/prview-381.json" <<'EOF'
+{"body":"Closes #46"}
+EOF
+cat > "$SHP_GHDATA/prapi-381.json" <<'EOF'
+{"merged":false,"head":{"sha":"deadbeef","ref":"fixbranch"},"state":"open"}
+EOF
+SHP_NM_OUT="$(shp_run 46 2>&1)"; SHP_NM_RC=$?
+assert_eq "an open (unmerged) linked PR -> NOT SHIPPED (rc 1)" "1" "$SHP_NM_RC"
+assert_contains "...names it as not merged" "$SHP_NM_OUT" "not merged"
+
+# --- AC(1) over-match guard: a candidate PR search returns TWO PRs, but
+# only one has a REAL 'Closes #N' in its body -- the other merely mentions
+# the number in prose. Only the real one is checked/reported.
+shp_setup overmatch
+REALHEAD="$(shp_branch_commit realbranch)"
+shp_merge_to_main realbranch
+shp_delete_branch realbranch
+cat > "$SHP_GHDATA/issue-47.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":601},{"number":602}]
+EOF
+cat > "$SHP_GHDATA/prview-601.json" <<'EOF'
+{"body":"This PR is unrelated but mentions #47 in passing discussion, closes nothing."}
+EOF
+cat > "$SHP_GHDATA/prview-602.json" <<'EOF'
+{"body":"Closes #47"}
+EOF
+cat > "$SHP_GHDATA/prapi-602.json" <<EOF
+{"merged":true,"head":{"sha":"$REALHEAD","ref":"realbranch"},"state":"closed"}
+EOF
+SHP_OM_OUT="$(shp_run 47 2>&1)"; SHP_OM_RC=$?
+assert_eq "over-match guard: a prose mention alone does not count as a link -> only the real link resolves -> SHIPPED" "0" "$SHP_OM_RC"
+assert_not_contains "PR #601 (mention-only) never appears in the report" "$SHP_OM_OUT" "PR #601"
+assert_contains "PR #602 (the real Closes-#N link) is the one reported" "$SHP_OM_OUT" "PR #602"
+
+# --- no linked PR found at all -> NO COMPARISON (rc 2), never a false clean
+shp_setup nopr
+cat > "$SHP_GHDATA/issue-48.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[]
+EOF
+SHP_NOPR_OUT="$(shp_run 48 2>&1)"; SHP_NOPR_RC=$?
+assert_eq "no PR found declaring Closes -> NO COMPARISON (rc 2), never a false clean" "2" "$SHP_NOPR_RC"
+assert_contains "...names it as NO COMPARISON" "$SHP_NOPR_OUT" "NO COMPARISON"
+
+# --- edge case: a decision closure (not_planned) must not be dragged
+# through a check it can only fail.
+shp_setup notplanned
+cat > "$SHP_GHDATA/issue-49.json" <<'EOF'
+{"state":"CLOSED","stateReason":"NOT_PLANNED"}
+EOF
+SHP_NP_OUT="$(shp_run 49 2>&1)"; SHP_NP_RC=$?
+assert_eq "a not_planned closure -> NOT APPLICABLE (rc 3), never evaluated" "3" "$SHP_NP_RC"
+assert_contains "...names it as not applicable / decision closure" "$SHP_NP_OUT" "NOT APPLICABLE"
+# ...but a CLOSED+completed issue still runs the real check (this is
+# EXACTLY #377's own shape: closed completed, and still hollow).
+shp_setup closedcompleted
+CCHEAD="$(shp_branch_commit fixbranch)"
+shp_merge_to_main fixbranch
+CCFIX="$(shp_push_extra fixbranch)"
+cat > "$SHP_GHDATA/issue-50.json" <<'EOF'
+{"state":"CLOSED","stateReason":"COMPLETED"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":381}]
+EOF
+cat > "$SHP_GHDATA/prview-381.json" <<'EOF'
+{"body":"Closes #50"}
+EOF
+cat > "$SHP_GHDATA/prapi-381.json" <<EOF
+{"merged":true,"head":{"sha":"$CCHEAD","ref":"fixbranch"},"state":"closed"}
+EOF
+SHP_CC_OUT="$(shp_run 50 2>&1)"; SHP_CC_RC=$?
+assert_eq "closed COMPLETED is NOT skipped -- the real check still runs and can still fail (rc 1)" "1" "$SHP_CC_RC"
+assert_contains "...still names the stranded commit" "$SHP_CC_OUT" "$CCFIX"
+
+# --- edge case: the main sha checked against is always named in the (A)
+# FAIL line, so a stale FAIL is recognisable as one later (re-run a minute
+# after main moves may legitimately pass) -- the sha was captured at fixture
+# time (SHP_LAG_MAIN_SHA), since SHP_DRIVE itself is reused by every later
+# fixture and would no longer point at the right repo by now.
+assert_contains "a (A) FAIL line names the exact main sha it was checked against" "$SHP_LAG_OUT" "$SHP_LAG_MAIN_SHA"
+
+# --- --sha override: bypasses PR resolution, checks (A) alone, says so
+shp_setup shaoverride
+SHAHEAD="$(shp_branch_commit fixbranch)"
+shp_merge_to_main fixbranch
+cat > "$SHP_GHDATA/issue-51.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+SHP_SHA_OUT="$(shp_run 51 --sha "$SHAHEAD" 2>&1)"; SHP_SHA_RC=$?
+assert_eq "--sha override: the named sha IS an ancestor of main -> SHIPPED (rc 0)" "0" "$SHP_SHA_RC"
+assert_contains "...says (B) was not evaluated" "$SHP_SHA_OUT" "(B) not evaluated"
+
+# --- CLI wiring
+assert_contains "'fwf shipped' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "shipped)   engine fwf-shipped.sh"
+assert_contains "help mentions fwf shipped" "$("$ROOT/fwf" help)" "shipped <issue>"
+
+# --- AC(3): a CLOSE step exists in templates/dev/captain.tmpl (there was no
+# such step before this ticket -- the promote-to-DEFAULT release step never
+# mentioned closing issues at all, since a staging-based squash-merge never
+# registers GitHub's own closingIssuesReferences). Copies fwf claim's
+# precedent (templates/dev/implementer.tmpl): a real verb, a stated ceiling.
+CAPTMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
+assert_contains "captain.tmpl names 'fwf shipped' as a real verb in the release step" "$CAPTMPL" "fwf shipped"
+assert_contains "captain.tmpl states the check's ceiling honestly (point-of-belief, not enforcement)" "$CAPTMPL" "point-of-belief"
+for t in dev dev-sre refactor; do
+  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
+  assert_contains "$t/captain (rendered): names fwf shipped" "$rendered" "fwf shipped"
+done
+
+# --------------------------------------------------------------------------
 section "cargo target isolation (issue #151)"
 # fwf_cargo_isolate must guarantee a build in a worktree writes ONLY to that
 # worktree's own target — the fix for the shared-target false-GREEN. Each case
