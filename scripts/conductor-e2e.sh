@@ -9,24 +9,28 @@
 # That is not a slow gate, it is a gate that structurally cannot keep up with
 # the floor, so `integration` starves for hours at a time.
 #
-# #303 already built the "is CI green for this exact SHA" oracle for the release
-# job (fwf-release-ci-gate.sh). This reuses it.
+# issue #409: this used to ALSO consult GitHub's ci.yml verdict (via #303's
+# fwf-release-ci-gate.sh oracle) as a second step before falling through to
+# the local suite. GitHub CI is now permanently disabled (operator notice,
+# ci.yml disabled, release.yml packaging-only) -- with no context ever
+# reporting, that consult polled the FULL 1200s timeout on every cold-cache
+# cycle before falling through anyway, turning a ~20min cold cycle into
+# ~42min. Dropped entirely rather than degraded to a zero-wait check: a
+# check against a permanently-disabled CI system has no path to ever
+# returning green, so keeping it (even non-blocking) is dead weight with no
+# offsetting benefit. Per the operator's own direction: never wait on,
+# retrigger, or block on a GitHub run. fwf-release-ci-gate.sh itself is
+# untouched -- it's still used elsewhere (release.yml branch-protection
+# checks) and still has its own tests; only this caller stops consulting it.
 #
-# FAIL-SAFE BY CONSTRUCTION: the local suite is skipped ONLY on a definitive
-# green (exit 0) from that oracle for THIS EXACT SHA. Pending, red, absent,
-# rate-limited, script-missing -- anything else at all -- falls through to the
-# full local run, i.e. exactly today's behaviour. This can make the gate faster;
-# it cannot make it more permissive.
+# FAIL-SAFE BY CONSTRUCTION, UNCHANGED: the local suite is skipped ONLY on a
+# definitive green (exit 0) from fwf-local-ci.sh for THIS EXACT SHA. Pending,
+# red, absent, script-missing -- anything else at all -- falls through to the
+# full local run. This can make the gate faster; it cannot make it more
+# permissive.
 set -o pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SHA="$(git rev-parse HEAD 2>/dev/null)"
-GATE="$DIR/fwf-release-ci-gate.sh"
-
-# The oracle resolves its policy file from $FWF_REPO; the conductor runs inside
-# the worktree under test, so point it at that tree rather than whatever
-# FWF_REPO happens to be (default expands to a "your-repo" placeholder and the
-# consult then never returns green -- silently costing us the optimisation).
-export FWF_REPO="${FWF_REPO_OVERRIDE:-$DIR}"
 
 # 1) LOCAL CI FIRST (operator direction 2026-08-29): the box has 332G free, 17G
 # RAM and 12 cores, so a suite we already ran here is the fastest and most
@@ -43,20 +47,9 @@ if [ -n "$SHA" ] && [ -x "$LOCAL" ]; then
   fi
 fi
 
-# 2) then GitHub's verdict for the same SHA
-if [ -n "$SHA" ] && [ -x "$GATE" ] && [ -f "$DIR/.github/branch-policy.json" ]; then
-  if out="$("$GATE" "$SHA" 2>&1)"; then
-    echo "conductor-e2e: ci.yml is already GREEN for $SHA — skipping the local re-run (#385)"
-    echo "$out"
-    exit 0
-  fi
-  echo "conductor-e2e: no definitive CI green for $SHA — running the full suite locally" >&2
-  printf '%s\n' "$out" >&2
-fi
-
-# 3) nothing cached anywhere -- run the suite here and RECORD the result, so the
-# next consult (this role's next cycle, or any other role on this box) is a
-# cache hit instead of another full re-run. This is what makes local CI the
+# 2) nothing cached -- run the suite here and RECORD the result, so the next
+# consult (this role's next cycle, or any other role on this box) is a cache
+# hit instead of another full re-run. This is what makes local CI the
 # DEFAULT rather than an opportunistic shortcut.
 if [ -n "$SHA" ] && [ -x "$LOCAL" ]; then
   exec "$LOCAL" run

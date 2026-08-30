@@ -9158,6 +9158,87 @@ case "$RELYML" in
 esac
 
 # --------------------------------------------------------------------------
+# scripts/conductor-e2e.sh (issue #385, fixed by #409): the conductor's e2e
+# payload skips the local re-run on a definitive fwf-local-ci.sh green for
+# the exact SHA, and otherwise runs it. issue #409's own subject: it used to
+# ALSO consult GitHub's now-permanently-disabled ci.yml verdict as a second
+# step, polling up to 1200s on every cold-cache cycle before falling through
+# anyway. That consult is REMOVED (not degraded to a zero-wait check --
+# nothing calling a permanently-dead CI system can ever return green, so a
+# non-blocking version would still be pure dead weight). Driven against a
+# COPY of the real script in an isolated tmp tree (its DIR resolution is
+# `dirname .. /..`, i.e. its own parent dir, so a stub fwf-local-ci.sh has to
+# sit next to a copy, not the real repo's) with a stub fwf-local-ci.sh --
+# never a decoy grep of the logic.
+section "scripts/conductor-e2e.sh (issue #409): the GitHub-CI consult is GONE, not just non-blocking"
+
+# Construction: the removed consult is actually gone from the source, not
+# merely made conditional on something that never triggers.
+CE2E_SRC="$(cat "$ROOT/scripts/conductor-e2e.sh")"
+assert_not_contains "conductor-e2e.sh no longer references fwf-release-ci-gate.sh" "$CE2E_SRC" "fwf-release-ci-gate.sh"
+assert_not_contains "conductor-e2e.sh no longer references branch-policy.json" "$CE2E_SRC" "branch-policy.json"
+assert_contains "fwf-release-ci-gate.sh itself is untouched -- still wired into release.yml" "$RELYML" "fwf-release-ci-gate.sh"
+
+CE2ETMP="$TMP/ce2e"; mkdir -p "$CE2ETMP/scripts"
+cp "$ROOT/scripts/conductor-e2e.sh" "$CE2ETMP/scripts/conductor-e2e.sh"
+# A stub GitHub-consult oracle that would hang for real if conductor-e2e.sh
+# still called it -- present on disk (so a real regression back to the old
+# 2-step design would find it and actually poll) but never invoked.
+cat > "$CE2ETMP/fwf-release-ci-gate.sh" <<'HANGSTUB'
+#!/usr/bin/env bash
+sleep 1200
+exit 1
+HANGSTUB
+chmod +x "$CE2ETMP/fwf-release-ci-gate.sh"
+mkdir -p "$CE2ETMP/.github"; printf '{}' > "$CE2ETMP/.github/branch-policy.json"
+
+ce2e_stub() { # $1=verdict-mode(green|red)  $2=run-marker-file
+  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = verdict ]; then
+  case "$1" in
+    green) echo "local-ci: \$2 is GREEN"; exit 0 ;;
+    *) echo "local-ci: no verdict recorded for \$2" >&2; exit 1 ;;
+  esac
+fi
+if [ "\$1" = run ]; then
+  echo "local-ci: run invoked" > "$2"
+  echo "local-ci: running required suites"
+  exit 0
+fi
+STUB
+  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+}
+
+# AC: a GREEN local-ci verdict skips the re-run, fast, exactly as before #409.
+ce2e_stub green "$CE2ETMP/run-marker-green"
+CE2E_T0=$(date +%s)
+CE2E_GREEN_OUT="$(cd "$ROOT" && bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_GREEN_RC=$?
+CE2E_T1=$(date +%s)
+assert_eq "green verdict: exits 0" "0" "$CE2E_GREEN_RC"
+assert_contains "green verdict: reports the skip" "$CE2E_GREEN_OUT" "local CI already GREEN"
+assert_eq "green verdict: fwf-local-ci.sh 'run' was never invoked" "false" \
+  "$([ -f "$CE2ETMP/run-marker-green" ] && echo true || echo false)"
+CE2E_GREEN_ELAPSED=$(( CE2E_T1 - CE2E_T0 ))
+[ "$CE2E_GREEN_ELAPSED" -lt 30 ] && ok "green verdict: completes fast (${CE2E_GREEN_ELAPSED}s, nowhere near a 1200s poll)" \
+  || bad "green verdict: completes fast" "took ${CE2E_GREEN_ELAPSED}s"
+
+# AC (#409's own regression test): NO verdict cached -- falls straight
+# through to running the suite locally. Before #409 this would have first
+# polled the stub GitHub oracle above for up to 1200s; the stub sleeps for
+# exactly that long, so this assertion's own elapsed time is direct proof
+# the consult never ran, not just that the exit code was eventually right.
+ce2e_stub red "$CE2ETMP/run-marker-nored"
+CE2E_T2=$(date +%s)
+CE2E_RED_OUT="$(cd "$ROOT" && timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RED_RC=$?
+CE2E_T3=$(date +%s)
+assert_eq "no verdict: falls through to a local run (rc 0 from the stub)" "0" "$CE2E_RED_RC"
+assert_contains "no verdict: the local run actually happened" "$CE2E_RED_OUT" "run invoked"
+CE2E_RED_ELAPSED=$(( CE2E_T3 - CE2E_T2 ))
+[ "$CE2E_RED_ELAPSED" -lt 30 ] && ok "no verdict: falls through in under 30s -- the old 1200s GitHub poll never fires (issue #409's own subject)" \
+  || bad "no verdict: falls through fast, no GitHub-CI wait" "took ${CE2E_RED_ELAPSED}s (would have been >=1200s before #409)"
+
+# --------------------------------------------------------------------------
 # fwf-pr-checks-honored.sh (issue #220 AC i/o/p): the QA-side ERGONOMIC
 # pre-merge checkpoint. Real jq diff logic driven with stubbed gh_pr_checks/
 # gh_pr_comments fixtures, reproducing instance 2 (the live incident this
