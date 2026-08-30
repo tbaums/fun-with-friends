@@ -5811,7 +5811,183 @@ assert_eq "AC(c): NOT-GATED still creates the claim artifact (init commit + clai
   "$(cd "$CLAIMCGIT" && git log --oneline | wc -l | tr -d ' ')"
 
 # --------------------------------------------------------------------------
-# fwf ungate (issue #213): the operator's own hand-rolled un-gate ritual
+section "fwf claim: prerequisite LIFECYCLE (declined vs pending), issue #370"
+# AC 10 first, on the local FWF_ISSUES store already set up above -- the
+# heading spelling widen needs no lifecycle backend at all.
+CLAIMI create --title "Widened spelling: HARD DEPENDENCY" --label product-wip \
+  --body '## HARD DEPENDENCY — #217. `fwf scale` is a THIRD launcher with the same auth defect.' >/dev/null   # issue 8
+CLAIMI comment 8 --body "OPERATOR-UNGATE #8 — go" >/dev/null
+CLAIM8_OUT="$(CLAIM 8 2>&1)"
+assert_contains "AC(10): a 'HARD DEPENDENCY' heading (not 'HARD PREREQUISITE') is now read as declared" \
+  "$CLAIM8_OUT" "prerequisites (declared, from a HARD PREREQUISITE heading"
+assert_contains "AC(10): the referenced #217 is reported" "$CLAIM8_OUT" "#217:"
+# AC(10): heading-found vs heading-absent stay DISTINGUISHABLE outputs --
+# issue 4 ("No prereqs declared", created earlier) is the no-heading case.
+CLAIM4_OUT_370="$(CLAIM 4 2>&1)"
+case "$CLAIM4_OUT_370" in
+  *"prerequisites (declared, from a HARD PREREQUISITE heading"*) bad "AC(10): a body with NO heading must not read as declared" ;;
+  *) ok "AC(10): a body with no heading still reports the partial-scan line, distinguishable from a declared hit" ;;
+esac
+
+# --- the rest of AC 1-9/12 need REAL lifecycle data (state, stateReason,
+# PR-vs-issue) the local FWF_ISSUES store cannot represent (issue #370's
+# own body notes this: "the local store has no PR concept and no
+# stateReason at all"). Stub `gh` -- same shape as AZ215GHBIN above, plus
+# ONE new case for the batched `gh api graphql` lifecycle read.
+P370GHBIN="$TMP/p370ghbin"; mkdir -p "$P370GHBIN"
+P370FIX="$TMP/p370fix"; mkdir -p "$P370FIX"
+P370CALLLOG="$TMP/p370-calllog"; : > "$P370CALLLOG"
+export P370FIX   # the stub `gh` below is a separate process (exec'd from PATH),
+                 # so it only sees EXPORTED vars, unlike P370()'s own subshell
+cat > "$P370GHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${P370_CALL_LOG:?}"
+case "$1 $2" in
+  "issue view")
+    n="$3"
+    case "$*" in
+      *"--json body --jq .body")
+        f="$P370FIX/body-$n.txt"
+        if [ -f "$f" ]; then cat "$f"; else echo "gh: could not resolve to an issue with the number of $n." >&2; exit 1; fi
+        ;;
+      *"--json title --jq .title")
+        echo "Fixture $n"
+        ;;
+      *"--json comments --jq .comments")
+        f="$P370FIX/comments-$n.json"
+        if [ -f "$f" ]; then cat "$f"; else echo '[]'; fi
+        ;;
+      *) echo "p370-stub-gh: unhandled issue view invocation: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "api graphql")
+    if [ "${P370_GRAPHQL_FAIL:-0}" = 1 ]; then
+      echo "gh: simulated api failure" >&2; exit 1
+    fi
+    # gh api graphql -f "query=<TEXT>" --jq '...' -- the query text is $4.
+    queryarg="$4"
+    nums="$(printf '%s' "$queryarg" | grep -oE 'n[0-9]+:' | tr -d ':')"
+    obj="{}"
+    for tok in $nums; do
+      num="${tok#n}"
+      f="$P370FIX/lc-$num.json"
+      if [ -f "$f" ]; then
+        obj="$(printf '%s' "$obj" | jq --argjson v "$(cat "$f")" --arg k "$tok" '. + {($k): $v}')"
+      else
+        obj="$(printf '%s' "$obj" | jq --arg k "$tok" '. + {($k): null}')"
+      fi
+    done
+    printf '%s' "$obj"
+    ;;
+  *) echo "p370-stub-gh: unhandled invocation, refusing: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$P370GHBIN/gh"
+P370GIT="$TMP/p370-gitrepo"; mkdir -p "$P370GIT"
+( cd "$P370GIT" && git init -q . && git config user.email t@t.com && git config user.name t \
+  && echo a > f.txt && git add f.txt && git commit -q -m init )
+P370() { ( cd "$P370GIT" && PATH="$P370GHBIN:$PATH" FWF_RUN_DIR="$TMP/p370-run" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example P370_CALL_LOG="$P370CALLLOG" "$ROOT/fwf-claim.sh" "$@" ); }
+# Every fixture issue this section claims must itself be AUTHORIZED (a
+# real, anchored sentinel comment) -- fwf claim refuses on the FIRST
+# `fwf-authz.sh` check before ever reaching the prerequisite/mention
+# scans, so an un-gated fixture would test nothing about this ticket.
+p370_authorize() { printf 'OPERATOR-UNGATE #%s — go' "$1" | jq -R -s '[{"body": .}]' > "$P370FIX/comments-$1.json"; }
+for p370n in 900 905 906 907 908 909 910; do p370_authorize "$p370n"; done
+
+# AC 1/2/12: #370's own worked example -- a prose mention (no heading at
+# all) of a closed-not_planned issue, exercising the WEAK MENTION scan
+# specifically (the declared-heading scan is a different code path,
+# already covered by AC 10 above).
+printf 'Spun out of #901. Out of scope: verification itself — #901 (prerequisite).' > "$P370FIX/body-900.txt"
+printf '{"__typename":"Issue","state":"CLOSED","stateReason":"NOT_PLANNED","closedAt":"2026-08-27T22:51:51Z"}' > "$P370FIX/lc-901.json"
+P370_900_OUT="$(P370 900 2>&1)"
+assert_contains "AC(1): a prose mention of a closed not_planned issue produces a line at claim time" "$P370_900_OUT" "#901: closed not planned"
+assert_contains "AC(2)/(12): the line names the closure date, and reads distinctly from HELD wording" "$P370_900_OUT" "closed not planned on 2026-08-27 — see its closing comment before relying on it"
+case "$P370_900_OUT" in
+  *"#901: NOT YET CLEAR"*) bad "AC(2): a declined mention must never be worded as pending (NOT YET CLEAR)" ;;
+  *) ok "AC(2): a declined mention never reads as pending" ;;
+esac
+assert_contains "AC(4): the mention scan states its own weakness" "$P370_900_OUT" "a weak signal — this does NOT assert a dependency"
+
+# AC 3: closed (completed) renders differently from closed (not planned).
+printf 'See #902 for background.' > "$P370FIX/body-905.txt"
+printf '{"__typename":"Issue","state":"CLOSED","stateReason":"COMPLETED","closedAt":"2026-08-20T00:00:00Z"}' > "$P370FIX/lc-902.json"
+P370_905_OUT="$(P370 905 2>&1)"
+assert_contains "AC(3): a closed-completed mention renders as completed, not declined" "$P370_905_OUT" "#902: closed completed"
+case "$P370_905_OUT" in
+  *"#902: closed not planned"*) bad "AC(3): completed must never render with the not-planned wording" ;;
+  *) ok "AC(3): completed and not-planned are two distinguishable renderings" ;;
+esac
+
+# AC 6: does-not-exist (silent skip) vs exists-but-unreadable (loud UNKNOWN)
+# -- #1118 fixture is the transom-id case from #370's own body (a number
+# this repo never had at all -- no lc-1118.json fixture -> null -> skip).
+printf 'What happened (2026-08-23, transom #1118). The floor adopted a posture.' > "$P370FIX/body-906.txt"
+P370_906_OUT="$(P370 906 2>&1)"
+case "$P370_906_OUT" in
+  *"#1118"*) bad "AC(6): a number that never existed (transom id) must be a SILENT skip" ;;
+  *) ok "AC(6): a nonexistent-number mention is silently skipped, no line at all" ;;
+esac
+# A genuine read failure (the WHOLE batch call fails): every scanned
+# number renders loud, never silently dropped.
+printf 'Mentions #903 somewhere in prose.' > "$P370FIX/body-907.txt"
+P370_907_OUT="$(P370_GRAPHQL_FAIL=1 P370 907 2>&1)"
+assert_contains "AC(6): a read failure on an existing-or-unknown number is LOUD (UNKNOWN), never silent" "$P370_907_OUT" "#903: UNKNOWN — could not verify its lifecycle"
+
+# AC 7: a mention inside a fenced code block is excluded (reusing #218's
+# fwf_strip_fences rather than re-deriving it).
+printf 'Discussion.\n```\nsee #904 for the old bug\n```\nNo other mention.' > "$P370FIX/body-908.txt"
+printf '{"__typename":"Issue","state":"CLOSED","stateReason":"NOT_PLANNED","closedAt":"2026-08-01T00:00:00Z"}' > "$P370FIX/lc-904.json"
+P370_908_OUT="$(P370 908 2>&1)"
+case "$P370_908_OUT" in
+  *"#904"*) bad "AC(7): a mention purely inside a fenced code block must be excluded" ;;
+  *) ok "AC(7): fenced mentions are excluded from the weak scan" ;;
+esac
+
+# AC 8: self-reference and duplicates excluded.
+printf 'This is #909 itself. #909 again. And #909 a third time. See also #905, #905.' > "$P370FIX/body-909.txt"
+printf '{"__typename":"Issue","state":"CLOSED","stateReason":"NOT_PLANNED","closedAt":"2026-08-05T00:00:00Z"}' > "$P370FIX/lc-905.json"
+: > "$P370CALLLOG"
+P370_909_OUT="$(P370 909 2>&1)"
+# Precise line match, not a whole-string glob (a whole-string check would
+# false-positive on "fwf claim #909: claimed." in the same output).
+case "$(printf '%s\n' "$P370_909_OUT" | grep '^    #909:')" in
+  '') ok "AC(8): self-reference excluded" ;;
+  *)  bad "AC(8): an issue must never report itself as a mention" ;;
+esac
+assert_eq "AC(8): a duplicated mention is scanned once, not twice (one graphql call, one alias per number)" "1" \
+  "$(grep -c 'n905:' "$P370CALLLOG" | head -1)"
+
+# AC 9: batching -- a body mentioning many issues costs ONE graphql call,
+# not N sequential reads; and the cap is honoured and announced when it
+# bites, never silently truncated.
+MANY_BODY=""
+for i in $(seq 950 975); do MANY_BODY="$MANY_BODY #$i"; done   # 26 distinct mentions, > cap of 20
+printf '%s' "$MANY_BODY" > "$P370FIX/body-910.txt"
+: > "$P370CALLLOG"
+P370_910_OUT="$(P370 910 2>&1)"
+assert_eq "AC(9): a body with many mentions costs exactly ONE gh api graphql call, not one per mention" "1" \
+  "$(grep -c '^api graphql' "$P370CALLLOG")"
+assert_contains "AC(9): the cap is announced when it bites -- no silent truncation" "$P370_910_OUT" "scanned 20 of 26 distinct #N references (capped)"
+
+# AC 5: warn-only preserved -- exit code and claim outcome are unaffected
+# by a not_planned mention (reusing #900's fixture set up above).
+CLAIM_UGI_RUN="$TMP/p370-warnonly-run"
+P370W() { ( cd "$P370GIT" && PATH="$P370GHBIN:$PATH" FWF_RUN_DIR="$CLAIM_UGI_RUN" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example P370_CALL_LOG="$P370CALLLOG" "$ROOT/fwf-claim.sh" "$@" ); }
+P370W_RC=0; P370W 900 >/dev/null 2>&1 || P370W_RC=$?
+assert_eq "AC(5): a not_planned mention never turns a claim into a refusal (still rc 0)" "0" "$P370W_RC"
+
+# AC 3 (second half): INVALID and INDETERMINATE render distinctly from
+# HELD in the DECLARED-prerequisite scan's authz arm (a different code
+# path from the mention scan above -- exercised via the local FWF_ISSUES
+# store, which fwf-authz.sh itself understands).
+CLAIMI create --title "Declared prereq stays open" --label product-wip >/dev/null   # issue 9
+CLAIMI create --title "Depends on a forged sentinel" --label product-wip \
+  --body "## HARD PREREQUISITE -- #9" >/dev/null   # issue 10
+CLAIMI comment 9 --body "OPERATOR-UNGATE #999 — go" >/dev/null   # INVALID: sentinel-shaped, column 0, wrong issue number
+CLAIMI comment 10 --body "OPERATOR-UNGATE #10 — go" >/dev/null
+CLAIM10_OUT="$(CLAIM 10 2>&1)"
+assert_contains "AC(3): INVALID renders its own loud, distinct line (not folded into NOT YET CLEAR)" "$CLAIM10_OUT" "#9: INVALID"
 # (comment, un-label, cache-bust, verify) as one verb. RESCOPED 2026-08-29:
 # ergonomics only -- #191's signing design was declined; no key/signature
 # work exists here to test. Local-issues backend gives real, driveable
