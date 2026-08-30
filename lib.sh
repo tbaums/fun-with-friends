@@ -4067,3 +4067,37 @@ fwf_ensure_claude() { # $1=pane  $2=launch command (default: $CLAUDE_CMD)
   done
   return 1
 }
+
+# --- shared "protocol marker" predicate (issue #236 AC f) -------------------
+# The anchored/last-wins rule behind GV-SIGNOFF/GV-CHANGES
+# (fwf-dash-data.sh's gv_signoff_state) and QA-APPROVED/QA-CHANGES-REQUESTED
+# (fwf-pr-review-state.sh's resolve_state) is the same rule for both
+# vocabularies: a marker counts ONLY when it opens a comment (jq
+# `test("^...")` with no multiline flag matches solely the true start of
+# the body -- never a later line, a mid-line quotation, or a fenced/backtick
+# mention -- which is also the self-trigger guard, since the author field
+# can't distinguish roles on this shared account), and among matching
+# comments the newest (by createdAt) wins, so a reviewer can withdraw a
+# verdict by posting a later one. One shared jq function so the rule is
+# tested once, not reimplemented per marker vocabulary -- if either caller
+# grows its own copy of this predicate instead of using
+# `last_anchored_marker`, the sharing this exists for has been lost.
+#
+# last_anchored_marker($comments; $patterns):
+#   $comments = [{body, createdAt}, ...]
+#   $patterns = [[regex, state], ...] -- first pattern (list order) whose
+#     regex matches a comment's body wins for THAT comment; resolves "one
+#     comment opens with two markers" deterministically rather than leaving
+#     it to jq's match order.
+#   -> the winning comment as {body, createdAt, state}, or null if no
+#      comment in the thread opens with any pattern.
+# shellcheck disable=SC2034  # consumed by fwf-dash-data.sh / fwf-pr-review-state.sh
+read -r -d '' FWF_ANCHORED_MARKER_JQ <<'JQEOF' || true
+def last_anchored_marker($comments; $patterns):
+  def state_for($body):
+    reduce $patterns[] as $p (null;
+      if . == null and ($body | test($p[0])) then $p[1] else . end);
+  [$comments[] | . as $c | (state_for($c.body // "")) as $s
+    | select($s != null) | $c + {state: $s}]
+  | sort_by(.createdAt) | (last // null);
+JQEOF
