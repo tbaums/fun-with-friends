@@ -5031,7 +5031,7 @@ VS_SKIP="$(FWF_SKIP_VERSION_CHECK=1 vs_run "$VSRUN" 'fwf_version_skew_check')"
 # overlap window: replay each pid's START/END as an open/close and see
 # whether two pids were ever open at once.
 vs_singleflight_verdict() { # $1=call-log-file -> prints "PASS <n>"/"FAIL <n>"/"SKIP <reason>"/"INDETERMINATE <reason>"/"TIMEOUT"
-  local log="$1" i=0 last=-1 now marker status ts pid open=0 max_open=0 calls=0
+  local log="$1" i=0 last=-1 now status pid open=0 max_open=0 calls=0
   while [ "$i" -lt 25 ]; do
     grep -q -F -- "x START" "$log" 2>/dev/null && break
     sleep 0.2; i=$((i + 1))
@@ -5043,7 +5043,10 @@ vs_singleflight_verdict() { # $1=call-log-file -> prints "PASS <n>"/"FAIL <n>"/"
     [ "$now" = "$last" ] && break
     last="$now"; sleep 0.2; i=$((i + 1))
   done
-  while IFS=' ' read -r marker status ts pid; do
+  # $1 is the "x" sentinel and $3 is the raw timestamp (diagnostics only,
+  # per the log-order comment above) -- both deliberately discarded, not
+  # dead code (issue #443).
+  while IFS=' ' read -r _ status _ pid; do
     case "$status" in
       START) calls=$((calls + 1)); open=$((open + 1)); [ "$open" -gt "$max_open" ] && max_open="$open" ;;
       END)   open=$((open - 1)) ;;
