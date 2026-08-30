@@ -2268,6 +2268,21 @@ fwf_cargo_build_slot_release() {
 # caller (fwf_mem_admit) still refuses on UNKNOWN, same outcome as before —
 # but reports it AS unknown, not as a fabricated 0GiB reading.
 fwf_free_ram_gb() {
+  # issue #404: a test-visible seam for the RAM reading, fixed at the
+  # sensor/consumer boundary rather than per-caller. Three assertions across
+  # two files (fwf-scale.sh's AC(h2) budget-vs-RAM-precedence test in
+  # test/run.sh; test/mem-admit-test.sh's SHIPPED-defaults admission check)
+  # were reading THIS box's ambient free RAM and flaking when a concurrent
+  # 2.8G shellcheck run drove it toward 0 -- not a product defect (the
+  # sensor correctly reported what was actually true at that instant), but
+  # an assertion sampling host state it never pinned. A caller that needs a
+  # DETERMINISTIC reading (regardless of what else is running on the box)
+  # sets this once; every fwf_free_ram_gb() call site inherits it for free,
+  # so a future test reading this sensor never has to reinvent its own
+  # workaround. Deliberately NOT gated behind FWF_PROFILE=example or any
+  # other "test mode" flag -- a bare env var is simplest, and a real
+  # deployment has no reason to ever set it.
+  [ -n "${FWF_FREE_RAM_GB_OVERRIDE:-}" ] && { printf '%s' "$FWF_FREE_RAM_GB_OVERRIDE"; return 0; }
   local os psize pages
   os="$(uname -s 2>/dev/null)"
   if [ "$os" = "Darwin" ]; then

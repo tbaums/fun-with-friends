@@ -38,8 +38,17 @@ case "$FREE" in
   ''|*[!0-9]*) bad "fwf_free_ram_gb returns a non-negative integer" "got [$FREE]";;
   *) ok "fwf_free_ram_gb returns a non-negative integer ($FREE GiB)";;
 esac
-[ "${FREE:-0}" -gt 0 ] && ok "fwf_free_ram_gb sees some free RAM on this box" \
-  || bad "fwf_free_ram_gb sees some free RAM on this box" "got [$FREE]"
+# issue #404: "sees SOME free RAM" (a bare >0 check) used to be asserted
+# here too, and it is the wrong shape -- 0 is a perfectly legitimate,
+# correctly-measured reading at a genuine momentary low, not a sensor
+# defect (a concurrent shellcheck run on this box can transiently drive
+# free RAM toward 0). The non-negative-integer check above already covers
+# "the sensor returns a real number, never UNKNOWN-as-fabricated-0"; a
+# second assertion demanding that number be strictly positive adds no
+# correctness value and only adds a live-host flake. Dropped rather than
+# pinned via the FWF_FREE_RAM_GB_OVERRIDE seam (lib.sh) precisely because
+# this section is testing the REAL platform probe against the REAL box --
+# overriding it here would defeat the point.
 
 echo "== admission at the SHIPPED (unmodified) defaults — issue #286 AC (d) =="
 # No threshold overrides above this point: FWF_MEM_ADMIT_FLOOR_GB and
@@ -57,6 +66,16 @@ echo "== admission at the SHIPPED (unmodified) defaults — issue #286 AC (d) ==
 # so this test is fast on either branch rather than reproducing #286's own
 # 900s stall if this box happens to refuse.
 SHIPPED_NEED=$(( FWF_MEM_RESERVE_BUILD_GB + FWF_MEM_ADMIT_FLOOR_GB ))
+# issue #404: FREE is re-measured HERE, immediately before the admission
+# call it's compared against, rather than reusing the one sampled ~30 lines
+# above at the top of the file. fwf_mem_admit takes its own internal
+# reading to decide, so a stale FREE from long before that call is a TOCTOU
+# race against whatever else is using RAM on this box in between (a
+# concurrent shellcheck run can move it meaningfully in that window) --
+# this assertion is deliberately reading the REAL box (see the comment
+# above), so the fix is narrowing the gap between measurement and decision
+# to near-zero, not pinning a synthetic value.
+FREE="$(fwf_free_ram_gb)"
 echo "   shipped: floor=${FWF_MEM_ADMIT_FLOOR_GB}GiB reserve=${FWF_MEM_RESERVE_BUILD_GB}GiB -> a single --cargo-build holder needs >= ${SHIPPED_NEED}GiB free; this box measured ${FREE}GiB"
 T_SHIPPED="$(FWF_MEM_ADMIT_TIMEOUT=5 FWF_MEM_ADMIT_POLL=1 fwf_mem_admit implshipped "$FWF_MEM_RESERVE_BUILD_GB" 2>/dev/null)"; R_SHIPPED=$?
 case "$FREE" in

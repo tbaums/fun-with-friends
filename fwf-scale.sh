@@ -150,6 +150,18 @@ fi
 # --- capacity guardrails on scale-up (issue #156's direction, reached from
 # the opposite side); scale-down is never blocked by either. --force skips
 # both -- see the file header for why that is convention-only, not enforced.
+# issue #404 AC (3): the RAM check runs BEFORE the budget-hold check below,
+# and this order is a DELIBERATE, recorded decision, not an accident left
+# undecided. The two are different KINDS of refusal -- RAM is a resource
+# refusal (transient, about whether the box can physically host another
+# pair right now), a budget HOLD is a policy refusal (deliberate, about
+# whether the operator wants more metered agent loops running at all) -- and
+# RAM-first means a request that can't even be hosted never gets a message
+# about a policy that was never going to be reached anyway. Flipping the
+# order (policy-first) was considered and is not required by #404's
+# evidence: the observed harm was a TEST reading ambient host RAM instead of
+# pinning it, not a user seeing the wrong refusal message. No product
+# change lands here for that reason.
 if [ "${#PLAN_CREATE[@]}" -gt 0 ] && [ "$force" != 1 ]; then
   free_gb="$(fwf_free_ram_gb)"
   per_pair="${FWF_SCALE_RAM_PER_PAIR_GB:-2}"
