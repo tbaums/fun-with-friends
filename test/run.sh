@@ -6315,6 +6315,29 @@ assert_contains "AC(i): a schema-version mismatch is a DETECTED banner, not sile
 assert_contains "AC(i): the banner names BOTH versions (remote's and this dash's expected one)" \
   "$(printf '%s' "$BADVER" | jq -r '.remote.reason')" "999"
 
+# AC (b), the one AC that names a test requirement explicitly ("asserted
+# by test/instrumentation that no ssh process is spawned per render
+# tick") -- a POISONED ssh on PATH across every reader state (no
+# snapshot / fresh / stale / version mismatch), so a future change that
+# adds a "helpful" ssh fallback inside fwf-dash-remote.sh goes RED
+# instead of silently reintroducing the exact #153 violation this
+# ticket's own body calls out as the most likely implementation mistake.
+POISONBIN="$TMP/run206poisonssh"; mkdir -p "$POISONBIN"
+POISON_MARKER="$TMP/run206poisonssh/invoked"
+cat > "$POISONBIN/ssh" <<POISON
+#!/usr/bin/env bash
+: > "$POISON_MARKER"
+exit 1
+POISON
+chmod +x "$POISONBIN/ssh"
+rm -f "$POISON_MARKER"
+PATH="$POISONBIN:$PATH" env $REMOTEENV FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/absent.json" bash "$DR" >/dev/null 2>&1
+PATH="$POISONBIN:$PATH" env $REMOTEENV FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/fresh.json" bash "$DR" >/dev/null 2>&1
+PATH="$POISONBIN:$PATH" env $REMOTEENV FWF_DASH_REMOTE_STALE_SECS=45 FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/stale.json" bash "$DR" >/dev/null 2>&1
+PATH="$POISONBIN:$PATH" env $REMOTEENV FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/badver.json" bash "$DR" >/dev/null 2>&1
+[ -f "$POISON_MARKER" ] && bad "AC(b): fwf-dash-remote.sh must NEVER spawn ssh from the render-tick data path" "poisoned ssh WAS invoked" \
+  || ok "AC(b): fwf-dash-remote.sh spawns no ssh process across no-snapshot/fresh/stale/badver states (a poisoned PATH ssh proves it, not a source grep)"
+
 section "fwf dash --remote (#206 AC f): mutating actions are disabled, full stop"
 ACTENV="FWF_RUN_DIR=$R206RUN FWF_PROFILE=example FWF_DASH_REMOTE_HOST=devbox1"
 ACT_RC=0; env $ACTENV bash "$DA" approve 5 >/dev/null 2>&1 || ACT_RC=$?
