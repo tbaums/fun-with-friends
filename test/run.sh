@@ -100,7 +100,63 @@ assert_log_eventually_contains() {
   done
   bad "$label" "no [$needle] line appeared in $log within ${timeout}s (last line: $(tail -n1 "$log" 2>/dev/null))"
 }
+# issue #431: `timeout`/`gtimeout` (GNU coreutils) do not exist on macOS and
+# there is no BSD substitute, so a wall-clock bound on a subprocess cannot
+# depend on either. Same bounded-poll idiom as assert_log_eventually_contains
+# above (#247 B) -- copied per that comment's own instruction -- applied to a
+# background job instead of a log file. Mirrors GNU `timeout`'s convention:
+# 124 on an actual timeout, the command's own exit code otherwise.
+#
+# `set -m` around the background launch gives the job its OWN process group
+# (pgid == cmd_pid) instead of sharing this shell's -- signalling just
+# cmd_pid on timeout would leave a still-running grandchild (e.g. the real
+# subprocess a `bash -c "..."` wrapper forks) holding this call's own
+# command-substitution pipe open, so $(...) would keep blocking on that
+# orphan long after the "timed-out" parent was gone. `kill -- -$cmd_pid`
+# (the leading `-` addresses the whole group) tears down the group at once.
+fwf_test_run_with_timeout() {
+  local secs="$1" cmd_pid tries i=0
+  shift
+  set -m
+  "$@" &
+  cmd_pid=$!
+  set +m
+  tries=$((secs * 10)) # poll every 0.1s
+  while [ "$i" -lt "$tries" ]; do
+    kill -0 "$cmd_pid" 2>/dev/null || { wait "$cmd_pid"; return $?; }
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -TERM -- "-$cmd_pid" 2>/dev/null
+  sleep 0.2
+  kill -KILL -- "-$cmd_pid" 2>/dev/null
+  wait "$cmd_pid" 2>/dev/null
+  return 124
+}
 section() { printf '\n# %s\n' "$1"; }
+
+section "fwf_test_run_with_timeout (issue #431): the portable timeout replacement is real, not a decoy"
+# A command that finishes on its own: output and exit code both come through
+# unmodified, same as GNU `timeout N` on a command that beats the bound.
+FTRWT_OUT="$(fwf_test_run_with_timeout 5 bash -c 'echo hello; exit 3')"; FTRWT_RC=$?
+assert_eq "fast command: output passes through" "hello" "$FTRWT_OUT"
+assert_eq "fast command: exit code passes through" "3" "$FTRWT_RC"
+# The regression this function exists to prevent: killing only the direct
+# child (not its process GROUP) leaves a still-running GRANDCHILD holding
+# this call's own command-substitution pipe open, so $(...) blocks for the
+# grandchild's full runtime regardless of the timeout firing on schedule.
+# Nesting `bash -c "sleep N"` inside the timed command reproduces exactly
+# that shape; asserting on WALL-CLOCK time (not just the 124 rc) is what
+# actually proves the grandchild died -- a naive kill would still report 124
+# right on schedule while this assertion kept running underneath it.
+FTRWT_T0=$(date +%s)
+FTRWT_TIMEOUT_OUT="$(fwf_test_run_with_timeout 1 bash -c 'bash -c "sleep 20; echo should-not-print"')"; FTRWT_TIMEOUT_RC=$?
+FTRWT_T1=$(date +%s)
+FTRWT_ELAPSED=$(( FTRWT_T1 - FTRWT_T0 ))
+assert_eq "timeout: mimics GNU timeout's rc 124" "124" "$FTRWT_TIMEOUT_RC"
+assert_eq "timeout: no output from the killed command leaks through" "" "$FTRWT_TIMEOUT_OUT"
+[ "$FTRWT_ELAPSED" -lt 5 ] && ok "timeout: the GRANDCHILD is actually dead within the bound (${FTRWT_ELAPSED}s, not the full 20s sleep)" \
+  || bad "timeout: the grandchild is actually dead within the bound" "took ${FTRWT_ELAPSED}s -- only the direct child was killed, the grandchild kept the pipe open"
 
 section "test suite tmux isolation invariants (issue #226 AC e/f/g)"
 # AC(e): the isolation invariant itself, asserted ONCE, suite-wide, right
@@ -3916,10 +3972,16 @@ GHSTUB2
   rm -f "$F210RUN/BUDGET_HOLD"
 
   # --- worktree reuse: a scale-up after a scale-down reuses the KEPT worktree,
-  # never fails or recreates it from scratch.
-  F210REUSE_INODE_BEFORE="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  # never fails or recreates it from scratch. `stat -c` is GNU-only (issue
+  # #431's own sweep) -- fall back to BSD's `stat -f`, and assert the reading
+  # is non-empty first so a stat that fails on BOTH forms doesn't compare two
+  # empty strings and pass vacuously.
+  F210REUSE_WT_DIR="$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")"
+  F210REUSE_INODE_BEFORE="$(stat -c %i "$F210REUSE_WT_DIR" 2>/dev/null || stat -f %i "$F210REUSE_WT_DIR" 2>/dev/null)"
+  [ -n "$F210REUSE_INODE_BEFORE" ] && ok "worktree reuse: got a real inode reading (not a vacuous empty-vs-empty pass)" \
+    || bad "worktree reuse: got a real inode reading" "neither 'stat -c' nor 'stat -f' produced an inode for $F210REUSE_WT_DIR"
   f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1
-  F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  F210REUSE_INODE_AFTER="$(stat -c %i "$F210REUSE_WT_DIR" 2>/dev/null || stat -f %i "$F210REUSE_WT_DIR" 2>/dev/null)"
   assert_eq "a later scale-up REUSES the kept worktree (same inode, never recreated)" "$F210REUSE_INODE_BEFORE" "$F210REUSE_INODE_AFTER"
 
   tmux kill-session -t "${F210SESS}-coord" 2>/dev/null
@@ -9662,7 +9724,7 @@ CE2E_GREEN_ELAPSED=$(( CE2E_T1 - CE2E_T0 ))
 # the consult never ran, not just that the exit code was eventually right.
 ce2e_stub red "$CE2ETMP/run-marker-nored"
 CE2E_T2=$(date +%s)
-CE2E_RED_OUT="$(cd "$ROOT" && timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RED_RC=$?
+CE2E_RED_OUT="$(cd "$ROOT" && fwf_test_run_with_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RED_RC=$?
 CE2E_T3=$(date +%s)
 assert_eq "no verdict: falls through to a local run (rc 0 from the stub)" "0" "$CE2E_RED_RC"
 assert_contains "no verdict: the stub's own output is visible (exec, not swallowed)" "$CE2E_RED_OUT" "running required suites"
