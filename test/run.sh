@@ -2665,6 +2665,34 @@ D193_I_OUT="$(env FAKE_TMUX_DB="$D193_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=ex
 assert_eq "AC(i): a role holding its own gate lock reads BUSY, not stale/down" "busy" \
   "$(printf '%s' "$D193_I_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
 
+# --- issue #450: a role with a LIVE pane whose OWN heartbeat has silently
+# stalled (the qa4 shape: loop cycling, step-0's `fwf tick` never landing)
+# must be distinguishably flagged, not indistinguishable from a fresh one.
+# AC i0's precedence still governs `state` (pane presence -> live/idle,
+# unchanged); this is a SEPARATE field, not a downgrade.
+D450_DB="$TMP/d450db"; mkdir -p "$D450_DB/sessions/default" "$D450_DB/panes/default" "$D450_DB/labels" "$D450_DB/cmds"
+: > "$D450_DB/sessions/default/friends-build"
+printf '%%1\n' > "$D450_DB/panes/default/friends-build"
+printf 'IMPL1 · any issue -> instant draft PR · impl1/*\n' > "$D450_DB/labels/%1"
+printf 'claude\n' > "$D450_DB/cmds/%1"
+D450_RUN="$TMP/d450"; mkdir -p "$D450_RUN/state/example/heartbeat"
+echo default > "$D450_RUN/state/example/tmux_socket"
+touch_at_offset "$D450_RUN/state/example/heartbeat/impl1" -10   # stale enough to trip a 5s test threshold
+D450_STALE_OUT="$(env FAKE_TMUX_DB="$D450_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D450_RUN" FWF_HEARTBEAT_STALE_WARN_SECS=5 bash -c "source '$DD85'; roles_json")"
+assert_eq "issue #450: a live pane whose heartbeat is older than the threshold still reads 'live' (AC i0 unweakened)" "live" \
+  "$(printf '%s' "$D450_STALE_OUT" | jq -r '.[] | select(.role=="impl1") | .state')"
+assert_eq "issue #450: ...but is flagged heartbeat_stale_warning=true" "true" \
+  "$(printf '%s' "$D450_STALE_OUT" | jq -r '.[] | select(.role=="impl1") | .heartbeat_stale_warning')"
+touch_at_offset "$D450_RUN/state/example/heartbeat/impl1" -1   # fresh relative to the same 5s threshold
+D450_FRESH_OUT="$(env FAKE_TMUX_DB="$D450_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D450_RUN" FWF_HEARTBEAT_STALE_WARN_SECS=5 bash -c "source '$DD85'; roles_json")"
+assert_eq "issue #450: a FRESH heartbeat under the same threshold is NOT flagged" "false" \
+  "$(printf '%s' "$D450_FRESH_OUT" | jq -r '.[] | select(.role=="impl1") | .heartbeat_stale_warning')"
+D450_DEFAULT_OUT="$(env FAKE_TMUX_DB="$D450_DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D450_RUN" bash -c "source '$DD85'; roles_json")"
+assert_eq "issue #450: with the real (unset) default threshold, an ordinary few-seconds-old heartbeat is never flagged (no false-positive spam on a normal idle gap)" "false" \
+  "$(printf '%s' "$D450_DEFAULT_OUT" | jq -r '.[] | select(.role=="impl1") | .heartbeat_stale_warning')"
+assert_eq "issue #450: a role with NO pane (e.g. down/stale/unknown/busy/floor_idle) is never flagged -- the field is specific to the live-pane-but-stalled-heartbeat shape" "false" \
+  "$(printf '%s' "$D193_I_OUT" | jq -r '.[] | select(.role=="impl1") | .heartbeat_stale_warning')"
+
 section "fwf dash data (issue #402): Roles roster unions PAIRS with the heartbeat directory"
 # Reuses the #193 fake-tmux db above: friends-build/friends-coord are visible
 # there with zero panes, so any role with no pane still lands on the

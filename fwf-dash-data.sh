@@ -51,6 +51,16 @@ DASH_SNAPSHOT_SCHEMA_VERSION=1
 STATE_DIR="$FWF_STATE_DIR"
 STATUS_JSON="$STATE_DIR/status.json"
 DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"
+# issue #450: a role with a live pane renders "idle"/"live" purely off pane
+# presence (AC i0 above) -- correctly, a healthy role mid-cycle has no
+# reason to look DOWN or STALE. But that same precedence means a role whose
+# own step-0 `fwf tick` has silently stopped firing looks IDENTICAL to a
+# healthy one here: heartbeat_age is already computed and emitted (below),
+# it is just never distinguished from an ordinary fresh value. Long enough
+# that a normal idle gap between cycles never trips it, short enough that a
+# genuinely stalled heartbeat (observed: 995m/1107m before anyone noticed)
+# is caught in one threshold's worth of time instead of by hand-diagnosis.
+DASH_HEARTBEAT_STALE_WARN_SECS="${FWF_HEARTBEAT_STALE_WARN_SECS:-1800}"
 
 # --- resolve the factory's tmux socket (issue #62, supersedes #57) ----------
 # The factory lands on whatever socket $TMUX pointed to when `fwf up`/`fwf
@@ -216,13 +226,14 @@ roles_json() {
     fi_reason="$(printf '%s' "$fi_json" | jq -r '.reason // ""')"
     fi_actor="$(printf '%s' "$fi_json" | jq -r '.actor // ""')"
   fi
-  local role sess token pane state detail cmd hb_age
+  local role sess token pane state detail cmd hb_age hb_warn
   for role in $(_fwf402_roster_names); do
     sess="$(fwf_role_session "$role")"
     token="$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')"
     case "$role" in impl*|qa*) token="$token ·";; esac
     pane="$(fwf_find_pane "$sess" "$token" 2>/dev/null || true)"
     hb_age=""
+    hb_warn=false
     if [ -n "$pane" ]; then
       # Live-pane precedence (issue #193 AC i0): a role with a live pane is
       # NEVER shown idle/stale/unknown off any other signal — heartbeat age,
@@ -232,6 +243,15 @@ roles_json() {
       cmd="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
       case "$cmd" in bash|zsh|sh|fish|"") state="idle";; *) state="live";; esac
       hb_age="$(_fwf193_heartbeat_age "$role")"
+      # issue #450: pane presence proves the role is alive; it says nothing
+      # about whether step-0's OWN heartbeat call is still firing. Flag it
+      # here rather than downgrading `state` — a stalled heartbeat on an
+      # otherwise-healthy pane is a DISTINCT fact, not a liveness verdict,
+      # and AC i0's precedence above must not be weakened by this addition.
+      case "$hb_age" in
+        ''|*[!0-9]*) ;;
+        *) [ "$hb_age" -ge "$DASH_HEARTBEAT_STALE_WARN_SECS" ] && hb_warn=true;;
+      esac
     elif { case "$role" in impl*|qa*|conductor) true;; *) false;; esac; } && [ "$fi_active" = "true" ]; then
       # No pane + a logged floor-down with no later floor-up = deliberately
       # idled by --floor-only, not crashed. floor_idle is a BUILD-plane-only
@@ -274,8 +294,8 @@ roles_json() {
     if [ "$state" = "floor_idle" ]; then
       detail="floor idled by $fi_actor since ${fi_since} — ${fi_reason}"
     fi
-    jq -n --arg role "$role" --arg state "$state" --arg detail "$detail" --arg hb "$hb_age" \
-      '{role:$role, state:$state, detail:$detail, heartbeat_age:(if $hb=="" then null else ($hb|tonumber) end)}'
+    jq -n --arg role "$role" --arg state "$state" --arg detail "$detail" --arg hb "$hb_age" --argjson warn "$hb_warn" \
+      '{role:$role, state:$state, detail:$detail, heartbeat_age:(if $hb=="" then null else ($hb|tonumber) end), heartbeat_stale_warning:$warn}'
   done | jq -s '.'
 }
 
