@@ -131,6 +131,41 @@ fwf_version_skew_warn() {
   return 0
 }
 
+# `fwf doctor`'s install-checkout drift line (issue #442): $FWF_HOME is the
+# directory THIS running fwf/fwf-gate.sh actually executes from -- on a
+# multi-agent box that is very often a SEPARATE install checkout (a role's
+# `fwf` on PATH resolves through a symlink into it), not any role's own
+# worktree, and nothing keeps that install checkout in sync with
+# origin/main. A merged fix can sit on main indefinitely and simply never
+# execute here, silently -- #442 found 19 commits of exactly that drift,
+# invisible until someone went looking by hand. Read-only: never fetches
+# (this runs on every `fwf doctor` call, and a synchronous network hit
+# there is its own cost) -- compares against whatever origin/main this
+# checkout already has locally, so a never-fetched history reads as
+# "could not check", never falsely "up to date". Never blocks: whether/when
+# to actually refresh a live install checkout out from under running
+# agents is an operator call (see the issue), not something this makes
+# unilaterally.
+fwf_doctor_install_head_line() {
+  local dir="${1:-$FWF_HOME}" behind
+  if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf '  fwf install: not a git checkout — cannot check drift from origin/main\n'
+    return 0
+  fi
+  if ! git -C "$dir" rev-parse --verify origin/main >/dev/null 2>&1; then
+    printf '  fwf install: could not check (no origin/main ref here)\n'
+    return 0
+  fi
+  behind="$(git -C "$dir" rev-list --count HEAD..origin/main 2>/dev/null)"
+  if [ -z "$behind" ]; then
+    printf '  fwf install: could not check (git rev-list failed)\n'
+  elif [ "$behind" = 0 ]; then
+    printf '  fwf install: up to date with origin/main\n'
+  else
+    printf '  fwf install: %s commit(s) behind origin/main — merged fixes may not be executing here (issue #442); ask the operator whether to fast-forward this checkout\n' "$behind"
+  fi
+}
+
 # `fwf doctor`'s three-state line: up-to-date / out-of-date / could-not-check.
 # "could not check" fires when the last SUCCESSFUL fetch (ts) is older than
 # FWF_VERSION_CHECK_STALE_MULT staleness windows (or has never happened), so a

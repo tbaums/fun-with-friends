@@ -198,6 +198,22 @@ these releases, supersede them with a note in the next release's notes, or
 accept them as-is with a documented reason. Not decided by this change —
 flagging it here is the deliverable; @captain / the operator makes the call.
 
+## Install-checkout drift (issue #442)
+
+Every role's `fwf`/`fwf-gate.sh` actually executes from `$FWF_HOME` — on a
+multi-agent box that is very often a **separate install checkout**
+(`fwf` on `PATH` resolves through a symlink into it), not any role's own
+worktree. Nothing keeps that install checkout in sync with `origin/main`
+automatically, so a merged fix can sit on `main` indefinitely and simply
+never execute there — #442 found this had happened silently for 19 commits.
+
+`fwf doctor` now reports an `fwf install:` line naming how many commits
+that checkout is behind `origin/main` (read-only, never fetches, never
+blocks). **Whether/when to actually fast-forward a live install checkout
+out from under every role's gate mid-flight is an operator call** — run
+`fwf doctor` on the box before cutting a release to check it, but this
+change does not perform that refresh automatically.
+
 ## Re-cutting a tag
 
 If a release must be redone, delete the tag locally and on the remote, then
