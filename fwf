@@ -392,14 +392,31 @@ UTILITIES
                          branch switch/create; issue #177). Refusals are
                          logged durably for `fwf dash` to surface as a
                          count, never recomputed per render.
-  auth resolve           Re-resolve the claude auth credential (issue #217)
-                         and print its source (env|credentials_file|
-                         keychain), without launching anything — `fwf up`
-                         already does this on every launch; use this to
-                         check what it WOULD resolve to right now.
+  auth resolve           Re-resolve the claude auth credential (issue #217,
+                         #373) and print its source (env|token_file|
+                         credentials_file|keychain), without launching
+                         anything — `fwf up` already does this on every
+                         launch; use this to check what it WOULD resolve to
+                         right now. For token_file, also names the winning
+                         PATH — a source class alone can't say which of
+                         several candidates it was.
   auth clear             Remove the persisted auth sink
                          (~/.fun-with-friends/auth.env) by hand. `fwf down`'s
                          full teardown already does this; idempotent.
+
+  FWF_CLAUDE_TOKEN_FILE (issue #373) — colon-separated candidate paths for
+    the token_file auth source, checked in order after $CLAUDE_CODE_OAUTH_TOKEN
+    and before ~/.claude/.credentials.json/the macOS Keychain. First path
+    that exists, is owned by you, has no group/world permission bit, and is
+    non-empty wins; its value is injected into the auth sink exactly like
+    the env source's is (unlike credentials_file/keychain, which inject
+    nothing because `claude` already reads them itself). Set but empty
+    disables this source entirely; unset uses the default
+    `~/.config/fwf/claude-oauth-token:~/.config/devbox/claude-oauth-token`
+    (the second entry is a compatibility path for one host's existing
+    layout and has no bearing on a fresh install). Rotating the file does
+    not reach running panes until the next `fwf up` — `fwf respawn`
+    deliberately never re-resolves.
   reconcile [--check] [--branch NAME ...] [--against BRANCH]
                          Classify staging/integration against main (BEHIND ->
                          fast-forward reconcile / AHEAD -> normal no-op /
