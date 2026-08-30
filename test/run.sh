@@ -14496,6 +14496,47 @@ G239_DOCTOR_UNKNOWN_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAI
 assert_contains "fwf doctor's api budget degrades to UNKNOWN under a forced failure" "$G239_DOCTOR_UNKNOWN_OUT" "api budget : UNKNOWN"
 
 # --------------------------------------------------------------------------
+section "fwf_doctor_install_head_line: install-checkout drift from origin/main (issue #442)"
+# Hermetic: refs/remotes/origin/main is set directly via update-ref, no real
+# remote needed -- exercises the exact ref fwf_doctor_install_head_line reads.
+G442_REPO="$TMP/g442-repo"; mkdir -p "$G442_REPO"
+( cd "$G442_REPO" && git init -q && git config user.email t@t.co && git config user.name t \
+  && git commit -q --allow-empty -m base )
+
+# (a) origin/main == HEAD -> up to date
+( cd "$G442_REPO" && git update-ref refs/remotes/origin/main HEAD )
+G442_A="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_REPO'")"
+assert_contains "AC(442a): install HEAD == origin/main -> up to date" "$G442_A" "up to date with origin/main"
+
+# (b) origin/main N commits ahead -> names the count and issue #442
+( cd "$G442_REPO" && git commit -q --allow-empty -m ahead1 && git commit -q --allow-empty -m ahead2 \
+  && git update-ref refs/remotes/origin/main HEAD && git reset -q --hard HEAD~2 )
+G442_B="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_REPO'")"
+assert_contains "AC(442b): 2 commits behind -> names the count"     "$G442_B" "2 commit(s) behind origin/main"
+assert_contains "AC(442b): names the issue"                         "$G442_B" "issue #442"
+assert_contains "AC(442b): points at the operator, not a unilateral fix" "$G442_B" "ask the operator"
+
+# (c) no origin/main ref at all -> could not check, not falsely up to date
+G442_C_REPO="$TMP/g442-repo-noremote"; mkdir -p "$G442_C_REPO"
+( cd "$G442_C_REPO" && git init -q && git config user.email t@t.co && git config user.name t \
+  && git commit -q --allow-empty -m base )
+G442_C="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_C_REPO'")"
+assert_contains "AC(442c): no origin/main ref -> could not check" "$G442_C" "could not check"
+assert_not_contains "AC(442c): never falsely reports up to date"  "$G442_C" "up to date"
+
+# (d) not a git checkout at all -> its own distinct state, not a crash
+G442_D_DIR="$TMP/g442-not-a-repo"; mkdir -p "$G442_D_DIR"
+G442_D="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_D_DIR'")"
+assert_contains "AC(442d): not a git checkout -> its own distinct line" "$G442_D" "not a git checkout"
+
+# (e) default (no arg) call site falls back to \$FWF_HOME, unchanged
+G442_E="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line" 2>&1)"
+case "$G442_E" in
+  "  fwf install: "*) ok "AC(442e): no-arg call falls back to \$FWF_HOME, still a well-formed line" ;;
+  *) bad "AC(442e): no-arg call falls back to \$FWF_HOME, still a well-formed line" "got [$G442_E]" ;;
+esac
+
+# --------------------------------------------------------------------------
 section "drift guard: a per-tick gh call count is asserted, not assumed (issue #239)"
 # AC: "a test asserts the per-tick call count for at least one role, so
 # adding a fourth per-tick call to the loop is a visible change rather than

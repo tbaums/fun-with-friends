@@ -831,6 +831,7 @@ doctor() {
   printf '  run dir   : %s\n' "$FWF_RUN"
   _doctor_profile_resolution
   fwf_doctor_version_line
+  fwf_doctor_install_head_line
   _doctor_usage_schema
   _doctor_e2e_cmd_check
   _doctor_api_budget_check
