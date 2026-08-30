@@ -16,8 +16,9 @@ fails closed rather than publishing on an incomplete picture — see
 [`fwf-release-ci-gate.sh`](fwf-release-ci-gate.sh)). Only then does it verify
 `tag == VERSION`, lint (`shellcheck -S warning`), run the
 functional suite, build a tarball with [`scripts/package.sh`](scripts/package.sh),
-cross-compiles prebuilt `fwf-dash` binaries for the three supported platforms
-(darwin-arm64, linux-arm64, linux-x86_64 — Intel Macs build from source), and creates a GitHub Release with the
+builds prebuilt `fwf-dash` binaries for every target in
+[`dash-targets.json`](dash-targets.json) — currently darwin-arm64 (this Mac) and
+linux-x86_64 (devbox); every other platform builds from source — and creates a GitHub Release with the
 tarball, the dash binaries, and `fwf-dash-<ver>-checksums.txt` attached (plus
 auto-generated notes). `fwf dash` depends on those assets for prebuilt
 resolution — see [docs/dash.md](docs/dash.md).
@@ -120,15 +121,16 @@ two-way divergence the pre-publish guard below then has to (correctly) refuse.
    `staging`/`integration` back to `main` (issue #114 — see "Re-syncing
    staging/integration" below); this is normally a no-op now, since `main` never
    moved ahead of them — no manual step needed on the happy path.
-9. **Verify** the published release and the artifacts (the tarball AND the four
-   `fwf-dash-*` assets — 3 binaries + checksums — five total):
+9. **Verify** the published release and the artifacts. The expected set is
+   derived from `dash-targets.json`, never hardcoded: the tarball, one
+   `fwf-dash-<ver>-<slug>` binary per manifest target, and the checksums file —
+   with today's two-target manifest that is four assets total:
    ```bash
    gh release view vX.Y.Z --json assets -q '.assets[].name' | sort
-   # expect exactly these five, and nothing else:
+   # expect exactly these four, and nothing else:
    #   fwf-X.Y.Z.tar.gz
    #   fwf-dash-X.Y.Z-checksums.txt
    #   fwf-dash-X.Y.Z-darwin-arm64
-   #   fwf-dash-X.Y.Z-linux-arm64
    #   fwf-dash-X.Y.Z-linux-x86_64
    gh release download vX.Y.Z -p '*.tar.gz' -D /tmp/rel
    tar -C /tmp/rel -xzf /tmp/rel/fwf-X.Y.Z.tar.gz

@@ -11,6 +11,74 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-30
+
+### Added
+
+- **`fwf ungate <n>`** (#213, code 2c38441, docs 2c38441) — one verb for the
+  operator un-gate: comment, un-label, cache-bust, verify. Provenance is
+  recorded honestly per invocation rather than asserting a board keypress the
+  CLI cannot verify.
+- **`fwf dash --remote <host>`** (#206, code b205206, docs b205206) — read a
+  factory on another machine from a versioned JSON snapshot over ssh, without a
+  subprocess per tile.
+- **`fwf shipped <issue>`** (#420, code a91fbe2, docs a91fbe2) — reports "the PR
+  shipped" and "the fix shipped" separately. #377 closed as shipped for ten
+  hours while its fix was never in any PR; this is the check that tells those
+  apart.
+- **Gate wall-clock on the local-CI verdict, plus `ghcache` metrics/headroom in
+  the captain tick report** (#407, code 1dc5d36, docs 1dc5d36) — the two BUILD
+  items from #321's discovery proposal; everything else in that proposal was
+  explicitly NO-GO.
+- **Documented operator→captain channel** (#192, code 7ac325c, docs 7ac325c) —
+  artifact-first, not a pane paste.
+- **Discovery: factory metrics + observability** (#321, code d96de0a, docs
+  d96de0a) — the written proposal; PARTIAL BUILD recommendation.
+
+### Fixed
+
+- **`test/run.sh` no longer exits 1 on macOS** (#431, code d44bcfb, docs
+  d44bcfb) — three conductor-e2e assertions shelled out to GNU-only `timeout`,
+  absent on macOS, so the macOS runner could not be green. Replaced with a
+  portable bash bound; no platform branch and no coreutils dependency.
+- **GV sign-off gate is no longer forgeable by quotation** (#236, code e45f431,
+  docs none — internal) — anchored and last-wins instead of a thread glob.
+- **`fwf-local-ci.sh` writes per-run verdicts and logs** (#425, code a5cc258,
+  docs none — internal) — a second run at the same SHA no longer silently
+  clobbers the first. One SHA read `red 1337s 2 failed` and then `green 1369s`
+  ten minutes later, from a log with no summary line.
+- **`conductor-e2e.sh` no longer waits on GitHub CI** (#409, code c05256a, docs
+  none — internal) — `ci.yml` is disabled, so the consult burned its full 1200s
+  timeout on every cold cycle before falling through to the local run anyway.
+- **Three tests stop reading ambient host RAM** (#404, code 94088b3, docs none —
+  internal) — consecutive conductor verdicts oscillated green/red on the host
+  sensor alone.
+- **`test/run.sh` bounds its own shellcheck with #156's RAM admission** (#418,
+  code 6f49861, docs none — internal) — 6/18 recent gate runs were false-RED
+  from unadmitted concurrent load.
+- **A shellcheck OOM-kill is a SKIP, never a lint finding** (#427, code 5a5e6ec,
+  docs none — internal) — a SIGKILL was being reported as `shellcheck reported
+  issues`.
+- **`LIST_DEGRADED_FILE` cannot outlive its process** (#405, code 19c0878, docs
+  none — internal) — the PID-named flag left 1358 orphans on the box and could
+  be inherited via PID reuse.
+- **`#405`'s no-orphan check is scoped to its own path** (#417, code 16b4252,
+  docs none — internal) — it counted a shared `/tmp` glob and flaked under
+  concurrent gates.
+- **`fwf dash` Roles tab shows all 12 roles** (#402, code 5c7aae5, docs 5c7aae5)
+  — unions PAIRS with the tick directory instead of deriving one roster from
+  two sources.
+- **Tick/heartbeat bumps on every gate attempt** (#426, code 86a7df9, docs
+  86a7df9) — five roles had tick files 1.5–6h stale while demonstrably working;
+  tick mtime was not liveness.
+- **Stale-claim reclaim: liveness beats age** (#377, code e475bb3, docs e475bb3)
+  — recovered after PR #381 merged an incomplete branch.
+- **`fwf-claim.sh` reports prerequisite lifecycle** (#370, code 5d6247c, docs
+  5d6247c) — declined vs pending, rather than one indistinct refusal.
+- **`fwf_resolve_claude_auth` accepts a token file** (#373, code 2bc83fa, docs
+  2bc83fa) — a fourth auth source; the probe missed an on-disk OAuth token.
+
+
 ## [0.39.0] - 2026-08-29
 
 **The CI-comes-home release.** GitHub Actions evicted five jobs today and was red more often than green, so CI moved onto the factory box: the suite runs on our own hardware, records its own verdict, and the promotion gate reads that instead of waiting. Alongside it, three defects that had each silently blocked the whole floor.
