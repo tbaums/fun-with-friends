@@ -341,13 +341,21 @@ fwf_write_pane_env() {
 # "Not logged in", does zero work, and `fwf dash` still renders it as up
 # (roles_json decides state from tmux pane presence, not auth).
 #
-# One sink, several sources, resolved in a fixed precedence order:
+# One sink, several sources, resolved in a fixed precedence order (issue
+# #373 added source 2; the rest were #217's original three):
 #   1. CLAUDE_CODE_OAUTH_TOKEN already in the resolving shell's environment.
-#   2. ~/.claude/.credentials.json (Linux) -- already durable on disk and
+#   2. A token file named by FWF_CLAUDE_TOKEN_FILE (colon-separated candidate
+#      paths, first READABLE-and-nonempty one wins) -- the durable form of
+#      source 1, for hosts that provision the token to disk instead of an
+#      interactive shell's exported env (e.g. a `.bashrc` line below the
+#      standard non-interactive early `return`, which every ssh/cron/script
+#      invocation skips). Sits directly below `env` because it is the same
+#      class of artifact: an explicitly-provisioned operator token.
+#   3. ~/.claude/.credentials.json (Linux) -- already durable on disk and
 #      readable by any process as this uid; recorded here only so a LATER
 #      failure message can name which source was tried (see the "stale env
 #      var outranks a fresh credentials file" trap below).
-#   3. macOS Keychain -- likewise already durable and native to `claude`
+#   4. macOS Keychain -- likewise already durable and native to `claude`
 #      itself; nothing to inject, recorded for the same diagnostic reason.
 # `fwf up` calls fwf_resolve_claude_auth to (re)write the sink; every pane's
 # claude launch (fwf_claude_cmd) sources it fresh, the same "typed fresh at
@@ -357,29 +365,151 @@ fwf_write_pane_env() {
 # `fwf respawn` does NOT re-resolve -- only `fwf up` does; respawn sources
 # whatever the last `up` wrote, which is exactly why AC(1)'s scenario (respawn
 # from an unauthenticated shell) works: respawn was never the shell that
-# needed the token in the first place.
+# needed the token in the first place. On a token_file host this means
+# ROTATING the file does not reach running panes until the next `fwf up` --
+# same as `env` already behaves, not a defect, just now the normal path.
 #
+# FWF_CLAUDE_TOKEN_FILE: colon-separated candidate paths, checked in order;
+# the first that exists AND is usable wins. Set-but-empty disables the
+# source entirely (an explicit opt-out, not "fall back to the default").
+# Unset uses the default list below. A candidate that EXISTS but is
+# unreadable, empty/whitespace-only, group/world-permissioned, or owned by a
+# different uid is loud (never silently treated as absent) and falls through
+# to the NEXT candidate, then to the next SOURCE if the whole list is
+# exhausted -- it must never resolve as a satisfied source (the permissive-
+# branch shape this codebase keeps producing). A candidate that does not
+# exist at all falls through silently.
+#
+# The default list's second entry, ~/.config/devbox/claude-oauth-token, is a
+# COMPATIBILITY entry with a stated sunset: it exists only because the box
+# that filed #373 already had a token there, not because it is fwf's
+# convention. It is safe to remove once every host uses fwf's own
+# ~/.config/fwf/claude-oauth-token (source-only installs already resolve with
+# no configuration at all -- #373 AC 11).
+FWF_CLAUDE_TOKEN_FILE_DEFAULT="$HOME/.config/fwf/claude-oauth-token:$HOME/.config/devbox/claude-oauth-token"
+
 # Writes atomically (temp file + mv) so a concurrent up/respawn never reads a
 # half-written sink. Dir 0700, file 0600, umask 077 AT WRITE TIME -- the
 # umask matters as much as the resulting mode (a hostile inherited umask must
 # not silently widen it). Echoes the resolved source name
-# (env|credentials_file|keychain|none) to stdout -- never the token itself;
-# the caller decides what to do with "none" (fwf up fails loud, per the
-# "no source resolves" edge case).
+# (env|token_file|credentials_file|keychain|none) to stdout -- never the
+# token itself; the caller decides what to do with "none" (fwf up fails
+# loud, per the "no source resolves" edge case).
 FWF_AUTH_ENV_FILE="${FWF_AUTH_ENV_FILE:-$FWF_RUN/auth.env}"
 
+# Portable (GNU-first, BSD-fallback -- #337's convention, matching
+# fwf_file_mtime) octal-mode / owning-uid reads of a single file, needed only
+# for the token_file source's permission/ownership refusal. -L dereferences a
+# symlink (both GNU and BSD stat honor it) so a symlinked candidate is judged
+# on the TARGET's permissions/owner, not the symlink's own inode -- on Linux
+# a symlink's own mode is unconditionally 777, which without -L would refuse
+# every symlinked candidate regardless of how the target is actually secured
+# (qa1's #373 review finding).
+_fwf_file_mode_octal() { stat -L -c '%a' "$1" 2>/dev/null || stat -L -f '%Lp' "$1" 2>/dev/null; }
+_fwf_file_owner_uid()  { stat -L -c '%u' "$1" 2>/dev/null || stat -L -f '%u'  "$1" 2>/dev/null; }
+
+# Effective FWF_CLAUDE_TOKEN_FILE candidate list -- unset means "use the
+# default", set-but-empty means "disabled" (${VAR+set} distinguishes the two;
+# a plain ${VAR:-default} cannot, since it also treats empty as unset).
+_fwf_claude_token_candidates() {
+  if [ "${FWF_CLAUDE_TOKEN_FILE+set}" = set ]; then
+    printf '%s' "$FWF_CLAUDE_TOKEN_FILE"
+  else
+    printf '%s' "$FWF_CLAUDE_TOKEN_FILE_DEFAULT"
+  fi
+}
+
+# Scans the token_file candidate list for the first usable one. On success,
+# prints "<path>\t<value>" (value has its trailing newline/whitespace
+# stripped -- an `echo`-written and a `printf`-written file must resolve to
+# the same value). On failure (list empty/exhausted), prints nothing and
+# returns 1. Every candidate that EXISTS but is rejected gets a "NOTE\t..."
+# line on stdout FIRST, one per rejection, so a caller can surface each fall-
+# through loudly (#373 §3) without re-deriving the reason itself -- this is
+# the one place that logic lives, consumed by both the resolver and the
+# failure-message generator (AC 4's "one generator" requirement).
+_fwf_claude_token_probe() {
+  local candidates path mode mode3 owner content old_ifs
+  candidates="$(_fwf_claude_token_candidates)"
+  [ -n "$candidates" ] || return 1
+  old_ifs="$IFS"; IFS=':'
+  # shellcheck disable=SC2086  # deliberately UNQUOTED: splitting the colon-separated list into args
+  set -- $candidates
+  IFS="$old_ifs"
+  for path in "$@"; do
+    [ -n "$path" ] || continue
+    [ -e "$path" ] || continue
+    owner="$(_fwf_file_owner_uid "$path")"
+    if [ -n "$owner" ] && [ "$owner" != "$(id -u)" ]; then
+      printf 'NOTE\t%s\towned by uid %s, not the invoking uid -- refusing\n' "$path" "$owner"
+      continue
+    fi
+    # stat strips leading zeros (mode 000 prints as "0", not "000"), so pad
+    # to 3 digits before reading the last two -- an unpadded "0" would
+    # otherwise slice to "0" (length 1) and never equal "00", misreporting
+    # mode 000 as a group/world violation instead of the separate
+    # "unreadable" case it actually is.
+    mode="$(_fwf_file_mode_octal "$path")"
+    mode3="00$mode"; mode3="${mode3: -3}"
+    if [ -n "$mode" ] && [ "${mode3: -2}" != "00" ]; then
+      printf 'NOTE\t%s\tmode %s has a group/world permission bit set -- refusing\n' "$path" "$mode"
+      continue
+    fi
+    if [ ! -r "$path" ]; then
+      printf 'NOTE\t%s\tpresent but unreadable\n' "$path"
+      continue
+    fi
+    content="$(cat "$path" 2>/dev/null)"
+    content="$(printf '%s' "$content" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [ -z "$content" ]; then
+      printf 'NOTE\t%s\tpresent but empty (or whitespace-only)\n' "$path"
+      continue
+    fi
+    printf 'FOUND\t%s\t%s\n' "$path" "$content"
+    return 0
+  done
+  return 1
+}
+
+# #373 AC 6: the token must never appear in a `set -x` trace -- xtrace prints
+# both a command's expanded arguments AND the result of a `var=$(...)`
+# assignment, so a bare `content="$(cat "$path")"` or `token_value="$probe_rest"`
+# would otherwise leak it the moment a caller has tracing on. Disabled here
+# (not deeper, since callers reach the sensitive value via THIS entry point)
+# and restored on every exit so a caller's own tracing resumes afterward.
 fwf_resolve_claude_auth() {
+  local _fwf_auth_xwas=0 _fwf_auth_rc
+  case "$-" in *x*) _fwf_auth_xwas=1; set +x;; esac
+  _fwf_resolve_claude_auth_body
+  _fwf_auth_rc=$?
+  [ "$_fwf_auth_xwas" = 1 ] && set -x
+  return "$_fwf_auth_rc"
+}
+
+_fwf_resolve_claude_auth_body() {
   mkdir -p "$FWF_RUN" 2>/dev/null
   chmod 700 "$FWF_RUN" 2>/dev/null || true
-  local tmp src=""
+  local tmp src="" token_path="" token_value="" probe_status probe_path probe_rest
   if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     src="env"
-  elif [ -f "$HOME/.claude/.credentials.json" ]; then
-    src=credentials_file
-  elif command -v security >/dev/null 2>&1 \
-       && security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1; then
-    src=keychain
   else
+    while IFS="$(printf '\t')" read -r probe_status probe_path probe_rest; do
+      if [ "$probe_status" = NOTE ]; then
+        echo "fwf: token_file candidate $probe_path -- $probe_rest (falling through)" >&2
+      elif [ "$probe_status" = FOUND ]; then
+        src=token_file; token_path="$probe_path"; token_value="$probe_rest"
+      fi
+    done < <(_fwf_claude_token_probe || true)
+    if [ -z "$src" ]; then
+      if [ -f "$HOME/.claude/.credentials.json" ]; then
+        src=credentials_file
+      elif command -v security >/dev/null 2>&1 \
+           && security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1; then
+        src=keychain
+      fi
+    fi
+  fi
+  if [ -z "$src" ]; then
     rm -f "$FWF_AUTH_ENV_FILE"
     printf 'none'
     return 1
@@ -388,18 +518,55 @@ fwf_resolve_claude_auth() {
   (
     umask 077
     {
-      printf '# fwf auth sink (issue #217) -- generated by fwf_resolve_claude_auth. DO NOT COMMIT.\n'
+      printf '# fwf auth sink (issue #217/#373) -- generated by fwf_resolve_claude_auth. DO NOT COMMIT.\n'
       printf 'export FWF_AUTH_SOURCE=%s\n' "$src"
-      # ONLY the env source has a value worth persisting -- sources 2/3 are
-      # already durable on disk/Keychain under this same uid, so `claude`
-      # finds them itself; injecting nothing for those is deliberate, not an
-      # omission (see the doc comment above).
-      [ "$src" = env ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+      [ "$src" = token_file ] && printf 'export FWF_AUTH_SOURCE_PATH=%q\n' "$token_path"
+      # ONLY env and token_file have a value worth persisting -- credentials_file
+      # and keychain are already durable on disk/Keychain under this same uid,
+      # so `claude` finds them itself; injecting nothing for those is
+      # deliberate, not an omission (see the doc comment above). token_file is
+      # NOT like them: it is a path `claude` has never heard of, so skipping
+      # injection here would resolve "successfully" into a dead pane -- #217's
+      # exact symptom, re-created one source further out.
+      [ "$src" = env ]        && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+      [ "$src" = token_file ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$token_value"
     } > "$tmp"
   )
   chmod 600 "$tmp"
   mv -f "$tmp" "$FWF_AUTH_ENV_FILE"
   printf '%s' "$src"
+}
+
+# Single generator for the operator-facing "no credentials found" message --
+# #373 AC 4: both fwf-up.sh and fwf-auth.sh consume this instead of each
+# hardcoding the source list as prose (a 4th source added here would
+# otherwise leave both callers telling a stale story about what was
+# checked). Re-probes every source (this only runs on the failure path, so
+# re-checking costs nothing); names the token_file rejections specifically
+# and drops the "run claude /login" advice whenever one is present, since a
+# present-but-unusable file means a credential already exists and
+# re-authenticating will not fix it.
+fwf_claude_auth_failure_message() { # $1=prefix, e.g. "fwf" or "fwf auth"
+  local prefix="${1:-fwf}" notes="" status path reason advice candidates
+  while IFS="$(printf '\t')" read -r status path reason; do
+    [ "$status" = NOTE ] && notes="${notes}${prefix}: token file $path -- $reason (falling through)\n"
+  done < <(_fwf_claude_token_probe || true)
+  candidates="$(_fwf_claude_token_candidates)"
+  advice="run 'claude /login' first, or export CLAUDE_CODE_OAUTH_TOKEN, then re-run 'fwf up'"
+  [ -n "$notes" ] && advice="a token file candidate exists but was refused (see above) -- fix its permissions/contents, or export CLAUDE_CODE_OAUTH_TOKEN directly"
+  {
+    printf '%s: no claude credentials found -- checked:\n' "$prefix"
+    printf '  env:              %s\n' "$([ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo found || echo absent)"
+    if [ -n "$candidates" ]; then
+      printf '  token_file:       %s\n' "$([ -n "$notes" ] && echo "present but unusable, see below" || echo "absent ($candidates)")"
+    else
+      printf '  token_file:       disabled (FWF_CLAUDE_TOKEN_FILE set empty)\n'
+    fi
+    printf '  credentials_file: %s\n' "$([ -f "$HOME/.claude/.credentials.json" ] && echo found || echo absent)"
+    printf '  keychain:         %s\n' "$( (command -v security >/dev/null 2>&1 && security find-generic-password -s "Claude Code-credentials" -w >/dev/null 2>&1) && echo found || echo absent)"
+    [ -n "$notes" ] && printf '%b' "$notes"
+    printf '%s: %s\n' "$prefix" "$advice"
+  } >&2
 }
 
 # Idempotent removal -- clearing an absent sink succeeds silently, so it's

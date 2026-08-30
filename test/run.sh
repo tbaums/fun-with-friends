@@ -3277,6 +3277,230 @@ EOS
   if [ -e "$F217_DOWNRUN/auth.env" ]; then bad "AC 9: a full 'fwf down' removes the auth sink"; else ok "AC 9: a full 'fwf down' removes the auth sink"; fi
 
   # --------------------------------------------------------------------------
+  section "claude auth (#373): token_file, a fourth source for a host that provisions to disk, not an interactive shell's env"
+  # AC 1's real reproduction, run against the resolver directly: no
+  # interactive shell (bash -c, no CLAUDE_CODE_OAUTH_TOKEN exported), a
+  # scratch FWF_RUN_DIR (the no-source path does `rm -f auth.env`, so an
+  # unisolated repro would delete a live floor's sink), and a token file
+  # present and readable throughout. Must FAIL before this ticket and pass
+  # after -- a test that exports the var first cannot fail (AC 1).
+  F373_HOME1="$TMP/f373-home1"; mkdir -p "$F373_HOME1/.config/fwf"
+  F373_TOKEN1="sk-tokenfile-$$"
+  printf '%s\n' "$F373_TOKEN1" > "$F373_HOME1/.config/fwf/claude-oauth-token"
+  chmod 600 "$F373_HOME1/.config/fwf/claude-oauth-token"
+  F373_RUN1="$TMP/f373-run1"; mkdir -p "$F373_RUN1"
+  F373_OUT1="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_HOME1" FWF_RUN_DIR="$F373_RUN1" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC(1)/AC(11): a host with only fwf's own default token file path resolves with NO configuration, non-interactively" \
+    "token_file" "$F373_OUT1"
+  assert_contains "AC(2): the resolved token's VALUE is written into the sink (not merely the source name)" \
+    "$(cat "$F373_RUN1/auth.env")" "export CLAUDE_CODE_OAUTH_TOKEN=$F373_TOKEN1"
+  assert_contains "AC(2): FWF_AUTH_SOURCE=token_file is recorded" "$(cat "$F373_RUN1/auth.env")" "export FWF_AUTH_SOURCE=token_file"
+  assert_contains "the WINNING PATH is recorded, not just the source class" \
+    "$(cat "$F373_RUN1/auth.env")" "$F373_HOME1/.config/fwf/claude-oauth-token"
+
+  # Edge case: trailing-newline equivalence -- an `echo`-written file (trailing
+  # \n, stripped by F373_TOKEN1's printf above too) and a `printf`-written file
+  # (no \n) must resolve to the identical value.
+  F373_HOME1B="$TMP/f373-home1b"; mkdir -p "$F373_HOME1B/.config/fwf"
+  printf '%s' "$F373_TOKEN1" > "$F373_HOME1B/.config/fwf/claude-oauth-token"
+  chmod 600 "$F373_HOME1B/.config/fwf/claude-oauth-token"
+  F373_RUN1B="$TMP/f373-run1b"; mkdir -p "$F373_RUN1B"
+  env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_HOME1B" FWF_RUN_DIR="$F373_RUN1B" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  " >/dev/null
+  assert_eq "edge case: an echo-written (trailing \\n) and a printf-written (no \\n) token file resolve to the SAME value" \
+    "$(sed -n 's/^export CLAUDE_CODE_OAUTH_TOKEN=//p' "$F373_RUN1/auth.env")" \
+    "$(sed -n 's/^export CLAUDE_CODE_OAUTH_TOKEN=//p' "$F373_RUN1B/auth.env")"
+
+  # AC 3 / AC 9: precedence is asserted pairwise, by resolved VALUE, not assumed.
+  # (a) env still outranks token_file -- the pre-existing interactive path is unchanged.
+  F373_ENVWINS_RUN="$TMP/f373-envwins"; mkdir -p "$F373_ENVWINS_RUN"
+  F373_ENVWINS_OUT="$(HOME="$F373_HOME1" FWF_RUN_DIR="$F373_ENVWINS_RUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-env-wins bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC(3)/AC(9): env still wins over token_file" "env" "$F373_ENVWINS_OUT"
+  assert_contains "AC(3): the resolved value is env's, not the file's" \
+    "$(cat "$F373_ENVWINS_RUN/auth.env")" "export CLAUDE_CODE_OAUTH_TOKEN=sk-env-wins"
+
+  # (b) token_file outranks credentials_file.
+  F373_TCRED_HOME="$TMP/f373-tcred"; mkdir -p "$F373_TCRED_HOME/.config/fwf" "$F373_TCRED_HOME/.claude"
+  printf '%s' "sk-file-beats-cred" > "$F373_TCRED_HOME/.config/fwf/claude-oauth-token"
+  chmod 600 "$F373_TCRED_HOME/.config/fwf/claude-oauth-token"
+  echo '{"fake":"creds"}' > "$F373_TCRED_HOME/.claude/.credentials.json"
+  F373_TCRED_RUN="$TMP/f373-tcred-run"; mkdir -p "$F373_TCRED_RUN"
+  F373_TCRED_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_TCRED_HOME" FWF_RUN_DIR="$F373_TCRED_RUN" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC(3): token_file outranks credentials_file" "token_file" "$F373_TCRED_OUT"
+  assert_contains "AC(3): the resolved value is the file's" \
+    "$(cat "$F373_TCRED_RUN/auth.env")" "export CLAUDE_CODE_OAUTH_TOKEN=sk-file-beats-cred"
+
+  # (c) two readable candidates in the list -- the FIRST wins, and the sink
+  # names the winning path specifically (a list-valued source whose output
+  # can't say which entry won hasn't mitigated the stale-file trap).
+  F373_TWO_HOME="$TMP/f373-two"; mkdir -p "$F373_TWO_HOME"
+  F373_TWO_A="$F373_TWO_HOME/token-a"; F373_TWO_B="$F373_TWO_HOME/token-b"
+  printf '%s' "sk-token-a" > "$F373_TWO_A"; chmod 600 "$F373_TWO_A"
+  printf '%s' "sk-token-b" > "$F373_TWO_B"; chmod 600 "$F373_TWO_B"
+  F373_TWO_RUN="$TMP/f373-two-run"; mkdir -p "$F373_TWO_RUN"
+  F373_TWO_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN FWF_RUN_DIR="$F373_TWO_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_TWO_A:$F373_TWO_B" bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  ")"
+  assert_eq "AC(3): with two readable candidates, the FIRST wins" "token_file" "$F373_TWO_OUT"
+  F373_TWO_SINK="$(cat "$F373_TWO_RUN/auth.env")"
+  assert_contains "AC(3): the resolved value is the FIRST candidate's" "$F373_TWO_SINK" "export CLAUDE_CODE_OAUTH_TOKEN=sk-token-a"
+  assert_contains "AC(3): the sink names the WINNING PATH" "$F373_TWO_SINK" "$F373_TWO_A"
+  assert_not_contains "AC(3): the sink does not also carry the losing candidate's path" "$F373_TWO_SINK" "$F373_TWO_B"
+
+  # Edge case: FWF_CLAUDE_TOKEN_FILE set but EMPTY disables the source
+  # entirely -- it must NOT fall back to the default list.
+  F373_DIS_HOME="$TMP/f373-disabled"; mkdir -p "$F373_DIS_HOME/.config/fwf" "$F373_DIS_HOME/.claude"
+  printf '%s' "sk-should-not-be-used" > "$F373_DIS_HOME/.config/fwf/claude-oauth-token"
+  chmod 600 "$F373_DIS_HOME/.config/fwf/claude-oauth-token"
+  echo '{"fake":"creds"}' > "$F373_DIS_HOME/.claude/.credentials.json"
+  F373_DIS_RUN="$TMP/f373-disabled-run"; mkdir -p "$F373_DIS_RUN"
+  F373_DIS_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_DIS_HOME" FWF_RUN_DIR="$F373_DIS_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="" bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  ")"
+  assert_eq "edge case: FWF_CLAUDE_TOKEN_FILE set to empty disables the source (falls to credentials_file, not the default list)" \
+    "credentials_file" "$F373_DIS_OUT"
+
+  # AC 5: present-but-unusable (unreadable / empty / whitespace-only) reports
+  # distinctly, falls through to the next SOURCE, and never advises
+  # `claude /login` for that fallthrough item's own detection -- each case
+  # asserted separately, each with a valid credentials.json to fall through to.
+  F373_UNREAD_HOME="$TMP/f373-unread"; mkdir -p "$F373_UNREAD_HOME/.claude"
+  echo '{"fake":"creds"}' > "$F373_UNREAD_HOME/.claude/.credentials.json"
+  F373_UNREAD_TOKEN="$TMP/f373-unread-token"; printf '%s' "sk-unreadable" > "$F373_UNREAD_TOKEN"; chmod 000 "$F373_UNREAD_TOKEN"
+  F373_UNREAD_RUN="$TMP/f373-unread-run"; mkdir -p "$F373_UNREAD_RUN"; F373_UNREAD_ERR="$TMP/f373-unread.err"
+  F373_UNREAD_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_UNREAD_HOME" FWF_RUN_DIR="$F373_UNREAD_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_UNREAD_TOKEN" bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  " 2>"$F373_UNREAD_ERR")"
+  chmod 600 "$F373_UNREAD_TOKEN"
+  assert_eq "AC(5): an unreadable (mode 000) token file falls through to credentials_file" "credentials_file" "$F373_UNREAD_OUT"
+  assert_contains "AC(5): the rejection names the path" "$(cat "$F373_UNREAD_ERR")" "$F373_UNREAD_TOKEN"
+  assert_contains "AC(5): the rejection says why (unreadable)" "$(cat "$F373_UNREAD_ERR")" "unreadable"
+
+  F373_EMPTY_HOME="$TMP/f373-empty"; mkdir -p "$F373_EMPTY_HOME/.claude"
+  echo '{"fake":"creds"}' > "$F373_EMPTY_HOME/.claude/.credentials.json"
+  F373_EMPTY_TOKEN="$TMP/f373-empty-token"; : > "$F373_EMPTY_TOKEN"; chmod 600 "$F373_EMPTY_TOKEN"
+  F373_EMPTY_RUN="$TMP/f373-empty-run"; mkdir -p "$F373_EMPTY_RUN"; F373_EMPTY_ERR="$TMP/f373-empty.err"
+  F373_EMPTY_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_EMPTY_HOME" FWF_RUN_DIR="$F373_EMPTY_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_EMPTY_TOKEN" bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  " 2>"$F373_EMPTY_ERR")"
+  assert_eq "AC(5): an EMPTY token file falls through to credentials_file, never resolves as token_file" "credentials_file" "$F373_EMPTY_OUT"
+  assert_contains "AC(5): the rejection names the path" "$(cat "$F373_EMPTY_ERR")" "$F373_EMPTY_TOKEN"
+  assert_contains "AC(5): the rejection says why (empty)" "$(cat "$F373_EMPTY_ERR")" "empty"
+
+  F373_WS_HOME="$TMP/f373-ws"; mkdir -p "$F373_WS_HOME/.claude"
+  echo '{"fake":"creds"}' > "$F373_WS_HOME/.claude/.credentials.json"
+  F373_WS_TOKEN="$TMP/f373-ws-token"; printf '   \n\t \n' > "$F373_WS_TOKEN"; chmod 600 "$F373_WS_TOKEN"
+  F373_WS_RUN="$TMP/f373-ws-run"; mkdir -p "$F373_WS_RUN"; F373_WS_ERR="$TMP/f373-ws.err"
+  F373_WS_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_WS_HOME" FWF_RUN_DIR="$F373_WS_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_WS_TOKEN" bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  " 2>"$F373_WS_ERR")"
+  assert_eq "AC(5): a WHITESPACE-ONLY token file falls through to credentials_file, never resolves as token_file" "credentials_file" "$F373_WS_OUT"
+  assert_contains "AC(5): the rejection names the path" "$(cat "$F373_WS_ERR")" "$F373_WS_TOKEN"
+  assert_contains "AC(5): the rejection says why (whitespace-only)" "$(cat "$F373_WS_ERR")" "whitespace"
+
+  # AC 7: a token file owned by the invoking uid at mode 644/640 -- readable,
+  # no ownership violation, and STILL refused because it is a live OAuth
+  # credential readable by every account on the box. The case an
+  # ownership-only check would miss entirely.
+  for F373_MODE in 644 640; do
+    F373_PERM_HOME="$TMP/f373-perm-$F373_MODE"; mkdir -p "$F373_PERM_HOME/.claude"
+    echo '{"fake":"creds"}' > "$F373_PERM_HOME/.claude/.credentials.json"
+    F373_PERM_TOKEN="$TMP/f373-perm-token-$F373_MODE"
+    printf '%s' "sk-widemode-$F373_MODE" > "$F373_PERM_TOKEN"; chmod "$F373_MODE" "$F373_PERM_TOKEN"
+    F373_PERM_RUN="$TMP/f373-perm-run-$F373_MODE"; mkdir -p "$F373_PERM_RUN"; F373_PERM_ERR="$TMP/f373-perm-$F373_MODE.err"
+    F373_PERM_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_PERM_HOME" FWF_RUN_DIR="$F373_PERM_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_PERM_TOKEN" bash -c "
+      source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    " 2>"$F373_PERM_ERR")"
+    assert_eq "AC(7): mode $F373_MODE (group/world readable, owned by invoking uid) is refused and falls through" \
+      "credentials_file" "$F373_PERM_OUT"
+    assert_contains "AC(7): the mode $F373_MODE rejection names the offending mode" "$(cat "$F373_PERM_ERR")" "$F373_MODE"
+  done
+
+  # AC 6: the token value never appears in a `set -x` trace of the resolver --
+  # xtrace prints both a command's expanded args and a `var=$(...)` result, so
+  # this is a real leak path a naive implementation hits, not a formality.
+  F373_SETX_HOME="$TMP/f373-setx"; mkdir -p "$F373_SETX_HOME/.config/fwf"
+  F373_SETX_SECRET="sk-setx-hygiene-$$"
+  printf '%s' "$F373_SETX_SECRET" > "$F373_SETX_HOME/.config/fwf/claude-oauth-token"
+  chmod 600 "$F373_SETX_HOME/.config/fwf/claude-oauth-token"
+  F373_SETX_RUN="$TMP/f373-setx-run"; mkdir -p "$F373_SETX_RUN"
+  F373_SETX_TRACE="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_SETX_HOME" FWF_RUN_DIR="$F373_SETX_RUN" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'
+    set -x
+    fwf_resolve_claude_auth
+  " 2>&1)"
+  assert_not_contains "AC(6): the token never appears in a 'set -x' trace of the resolver" "$F373_SETX_TRACE" "$F373_SETX_SECRET"
+  assert_contains "AC(6) control: the token IS in the sink itself -- proves the check above isn't vacuous" \
+    "$(cat "$F373_SETX_RUN/auth.env")" "$F373_SETX_SECRET"
+
+  # AC 8: the sink's permissions are unchanged for the new source.
+  assert_eq "AC(8): sink file is 0600 for a token_file resolution" "600" \
+    "$(stat -c '%a' "$F373_RUN1/auth.env" 2>/dev/null || stat -f '%Lp' "$F373_RUN1/auth.env" 2>/dev/null)"
+  assert_eq "AC(8): enclosing run dir is 0700 for a token_file resolution" "700" \
+    "$(stat -c '%a' "$F373_RUN1" 2>/dev/null || stat -f '%Lp' "$F373_RUN1" 2>/dev/null)"
+
+  # AC 4: the failure enumeration is generated in ONE place and consumed by
+  # BOTH fwf-up.sh and fwf-auth.sh -- no hardcoded three/four-source prose
+  # survives at either call site, and neither hardcodes the old literal string.
+  assert_not_contains "AC(4): fwf-up.sh no longer hardcodes the source-list prose" \
+    "$(cat "$ROOT/fwf-up.sh")" 'checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain'
+  assert_not_contains "AC(4): fwf-auth.sh no longer hardcodes the source-list prose" \
+    "$(cat "$ROOT/fwf-auth.sh")" 'checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain'
+  assert_contains "AC(4): fwf-up.sh consumes the shared generator" "$(cat "$ROOT/fwf-up.sh")" "fwf_claude_auth_failure_message"
+  assert_contains "AC(4): fwf-auth.sh consumes the shared generator" "$(cat "$ROOT/fwf-auth.sh")" "fwf_claude_auth_failure_message"
+
+  # AC 5 (advice half): when nothing resolves AND a token_file candidate was
+  # present-but-unusable, the failure message must NOT advise `claude /login`
+  # -- a credential exists, re-authenticating will not fix it.
+  F373_NOLOGIN_HOME="$TMP/f373-nologin"; mkdir -p "$F373_NOLOGIN_HOME"
+  F373_NOLOGIN_TOKEN="$TMP/f373-nologin-token"; : > "$F373_NOLOGIN_TOKEN"; chmod 600 "$F373_NOLOGIN_TOKEN"
+  F373_NOLOGIN_RUN="$TMP/f373-nologin-run"; mkdir -p "$F373_NOLOGIN_RUN"
+  F373_NOLOGIN_MSG="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_NOLOGIN_HOME" FWF_RUN_DIR="$F373_NOLOGIN_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_NOLOGIN_TOKEN" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_claude_auth >/dev/null 2>&1 || fwf_claude_auth_failure_message fwf
+  " 2>&1)"
+  assert_not_contains "AC(5): the overall failure message does not advise 'claude /login' when a token file candidate was refused" \
+    "$F373_NOLOGIN_MSG" "claude /login"
+  assert_contains "the generic advice IS used when nothing was even present" \
+    "$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$TMP/f373-truly-empty" FWF_RUN_DIR="$TMP/f373-truly-empty-run" FWF_PROFILE=example bash -c "
+      mkdir -p '$TMP/f373-truly-empty' '$TMP/f373-truly-empty-run'
+      source '$ROOT/lib.sh'
+      fwf_resolve_claude_auth >/dev/null 2>&1 || fwf_claude_auth_failure_message fwf
+    " 2>&1)" "claude /login"
+
+  # QA repro (#373 review, qa1): the doc comment and README both promise "a
+  # symlinked token file is followed; readability is judged on the target",
+  # but _fwf_file_mode_octal/_fwf_file_owner_uid stat the CANDIDATE PATH
+  # directly -- on Linux a symlink's own mode is always 777 (lrwxrwxrwx,
+  # kernel-enforced, independent of the target's real permissions), so the
+  # group/world check rejects every symlinked candidate regardless of how
+  # secure the target actually is. Fail-closed (not a credential leak), but
+  # it silently breaks a real provisioning pattern (a secrets manager writing
+  # to a canonical path and symlinking it into place) that the ticket itself
+  # calls out as supported.
+  F373_SYMLINK_HOME="$TMP/f373-symlink-home"; mkdir -p "$F373_SYMLINK_HOME/.config/fwf" "$F373_SYMLINK_HOME/.claude"
+  echo '{"fake":"creds"}' > "$F373_SYMLINK_HOME/.claude/.credentials.json"
+  F373_SYMLINK_TARGET_DIR="$TMP/f373-symlink-target"; mkdir -p "$F373_SYMLINK_TARGET_DIR"
+  F373_SYMLINK_TARGET="$F373_SYMLINK_TARGET_DIR/real-token"
+  printf '%s' "sk-symlink-target-token" > "$F373_SYMLINK_TARGET"
+  chmod 600 "$F373_SYMLINK_TARGET"
+  ln -s "$F373_SYMLINK_TARGET" "$F373_SYMLINK_HOME/.config/fwf/claude-oauth-token"
+  F373_SYMLINK_RUN="$TMP/f373-symlink-run"; mkdir -p "$F373_SYMLINK_RUN"
+  F373_SYMLINK_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_SYMLINK_HOME" FWF_RUN_DIR="$F373_SYMLINK_RUN" FWF_PROFILE=example bash -c "
+    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+  ")"
+  assert_eq "QA repro: a symlink to a 0600-owned-by-me token file resolves via token_file (target's permissions govern, per the documented edge case)" \
+    "token_file" "$F373_SYMLINK_OUT"
+
+  # --------------------------------------------------------------------------
   section "respawn circuit breaker (issue #217 section 4): bounded consecutive failures, no unbounded destroy-and-retry"
   # Direct unit tests first (fwf_respawn_breaker_check/fail/reset -- PURE
   # state-file logic), then the real integration through fwf-supervise.sh's

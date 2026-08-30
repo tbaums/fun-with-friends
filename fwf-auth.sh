@@ -17,8 +17,9 @@ source "$DIR/lib.sh"
 
 case "${1:-}" in
   resolve)
-    src="$(fwf_resolve_claude_auth)" || { echo "fwf auth: no claude credentials found (checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain)" >&2; exit 1; }
-    echo "resolved from: $src"
+    src="$(fwf_resolve_claude_auth)" || { fwf_claude_auth_failure_message "fwf auth"; exit 1; }
+    path="$(sed -n 's/^export FWF_AUTH_SOURCE_PATH=//p' "$FWF_AUTH_ENV_FILE" 2>/dev/null)"
+    if [ -n "$path" ]; then echo "resolved from: $src ($path)"; else echo "resolved from: $src"; fi
     ;;
   clear)
     fwf_auth_clear

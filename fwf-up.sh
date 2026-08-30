@@ -213,10 +213,18 @@ fwf_write_pane_env
 # and LOOK up on the dash while doing zero work — the exact failure this
 # ticket exists to prevent.
 _fwf217_auth_src="$(fwf_resolve_claude_auth)" || {
-  echo "fwf: no claude credentials found (checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain) — run 'claude /login' first, or export CLAUDE_CODE_OAUTH_TOKEN, then re-run 'fwf up'" >&2
+  fwf_claude_auth_failure_message fwf
   exit 1
 }
-echo "fwf: claude auth resolved from: $_fwf217_auth_src"
+# #373: a list-valued source (token_file) makes the source CLASS insufficient
+# on its own -- name which candidate path actually won, so the operator can
+# tell "resolved from the file I meant" from "booting off a file I forgot".
+_fwf217_auth_path="$(sed -n 's/^export FWF_AUTH_SOURCE_PATH=//p' "$FWF_AUTH_ENV_FILE" 2>/dev/null)"
+if [ -n "$_fwf217_auth_path" ]; then
+  echo "fwf: claude auth resolved from: $_fwf217_auth_src ($_fwf217_auth_path)"
+else
+  echo "fwf: claude auth resolved from: $_fwf217_auth_src"
+fi
 
 # Say what is about to launch BEFORE ten panes boot (issue #30): a profile/env
 # mismatch should be visible here, not discovered by briefing the captain.
