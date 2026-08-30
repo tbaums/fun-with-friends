@@ -52,10 +52,16 @@ prs_meta() { # $1=pr -> {state, lastCommitAt}
 }
 
 # --- pure logic (given the two JSON blobs above) ----------------------------
-# Column-0-only sentinel match + last-wins + newer-than-addressed all live in
-# ONE jq program so the rules are tested once, not re-derived per caller.
+# The column-0-only sentinel match + last-wins half is the SAME predicate
+# GV-SIGNOFF/GV-CHANGES needs (fwf-dash-data.sh's gv_signoff_state) — issue
+# #236 AC (f) pulled it into lib.sh's shared `last_anchored_marker` jq
+# function so both readers use one tested implementation rather than two
+# independently-drifting ones. The newer-than-addressed + repro-branch logic
+# below is QA-specific and stays layered on top of that shared core.
+QA_MARKER_PATTERNS='[["^QA-APPROVED:","APPROVED"],["^QA-CHANGES-REQUESTED:","CHANGES_REQUESTED"]]'
 resolve_state() { # $1=comments-json  $2=meta-json
-  jq -nr --argjson comments "$1" --argjson meta "$2" '
+  jq -nr --argjson comments "$1" --argjson meta "$2" --argjson patterns "$QA_MARKER_PATTERNS" \
+    "$FWF_ANCHORED_MARKER_JQ"'
     def repro_branch($body):
       ($body | capture("(?<b>qa[0-9]+/repro-[0-9]+)").b) // "none";
 
@@ -64,11 +70,10 @@ resolve_state() { # $1=comments-json  $2=meta-json
     elif ($meta.state == "MERGED" or $meta.state == "CLOSED") then
       "APPROVED"
     else
-      ([$comments[] | select((.body // "") | test("^QA-(CHANGES-REQUESTED|APPROVED):"))]
-       | sort_by(.createdAt) | last) as $qa
+      (last_anchored_marker($comments; $patterns)) as $qa
       | if ($qa == null) then
           "AWAITING_REVIEW"
-        elif ($qa.body | test("^QA-APPROVED:")) then
+        elif ($qa.state == "APPROVED") then
           "APPROVED"
         else
           (([$comments[] | select((.body // "") | test("^IMPL-ADDRESSED:"))]

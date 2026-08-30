@@ -6027,7 +6027,7 @@ DD_FIX='[{"number":9,"title":"x","gated":true,"body":"b"}]'
 # has_invalid_sentinel stubbed false: it shells out to the REAL fwf-authz.sh
 # (a separate process, so it can't see this shell's stubbed di_read), and
 # these tests aren't exercising that path.
-DD_STUB='di_read() { case "$*" in *"view 9"*) echo "GV-SIGNOFF ok";; esac; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+DD_STUB='di_read() { case "$*" in *"view 9"*) echo "[{\"body\":\"GV-SIGNOFF: ok\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]";; esac; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
 assert_eq "dev surfaces the decision" '["9"]' \
   "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
 assert_eq "refactor surfaces none" "[]" \
@@ -6046,26 +6046,116 @@ assert_eq "refactor ALSO surfaces the INVALID-sentinel row (unlike GV-SIGNOFF ab
   "$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$DD'; $DD_STUB_INV; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
 
 # --------------------------------------------------------------------------
-# fwf-dash-data.sh (issue #266 AC b): the dash consumes ghcache's degraded
-# signal rather than letting it silently vanish -- three ways.
-section "dash data: gv_signoff_state is THREE-way -- 'could not tell' never renders as 'no sign-off' (issue #266)"
+# fwf-dash-data.sh (issue #266 AC b, issue #236): the dash consumes
+# ghcache's degraded signal rather than letting it silently vanish, and (as
+# of #236) distinguishes CHANGES from NONE too -- FOUR states total.
+section "dash data: gv_signoff_state is FOUR-way -- 'could not tell' never renders as 'no sign-off' (issue #266/#236)"
 GVS_RC() { FWF_PROFILE=example bash -c "source '$DD'; di_read() { $1; }; gv_signoff_state 9"; }
 assert_eq "signed: found the marker on a validated (rc0) read" "SIGNED" \
-  "$(GVS_RC 'echo GV-SIGNOFF; return 0')"
+  "$(GVS_RC 'echo "[{\"body\":\"GV-SIGNOFF: ok\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')"
 assert_eq "none: no marker, and the read WAS validated (rc0) -- confirmed absent" "NONE" \
-  "$(GVS_RC 'echo nothing here; return 0')"
+  "$(GVS_RC 'echo "[{\"body\":\"nothing here\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')"
 assert_eq "indeterminate: no marker, but the read was DEGRADED (rc2, issue #266's exit code) -- could not tell, never NONE" "INDETERMINATE" \
-  "$(GVS_RC 'echo nothing here; return 2')"
+  "$(GVS_RC 'echo "[{\"body\":\"nothing here\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 2')"
 assert_eq "indeterminate: the read failed outright (rc1) -- also could not tell" "INDETERMINATE" \
   "$(GVS_RC 'return 1')"
 assert_eq "signed still wins even on a degraded read -- the marker WAS actually seen" "SIGNED" \
-  "$(GVS_RC 'echo GV-SIGNOFF; return 2')"
+  "$(GVS_RC 'echo "[{\"body\":\"GV-SIGNOFF: ok\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 2')"
+assert_eq "empty thread reads NONE, not a jq crash on invalid JSON" "NONE" \
+  "$(GVS_RC 'echo; return 0')"
+
+# --------------------------------------------------------------------------
+# issue #236: the marker predicate itself -- anchored (never a quotation),
+# last-wins (withdrawal works), and a genuine third CHANGES state distinct
+# from NONE (AC e). Fixtures below are the ones the ticket names.
+section "dash data: gv_signoff_state -- anchored + last-wins + CHANGES-is-not-NONE (issue #236)"
+
+# AC (a): #233's thread -- zero anchored verdicts, one INCIDENTAL mention,
+# captured as static text per the ticket's own fixture discipline (the live
+# issue has since closed, so this must not be a live lookup). Must not read
+# as SIGNED -- a deliberately-parked, unreviewed ticket is not a decision.
+GVS_236A() { FWF_PROFILE=example bash -c "source '$DD'; di_read() { $1; }; gv_signoff_state 233"; }
+assert_eq "(a) #233 fixture: an incidental mid-prose mention of the marker word is NOT a verdict" "NONE" \
+  "$(GVS_236A 'echo "[{\"body\":\"the review process around GV-SIGNOFF/GV-CHANGES is being discussed, not applied, on this ticket\",\"createdAt\":\"2026-08-25T00:00:00Z\"}]"; return 0')"
+
+# AC (b): PRIMARY FIXTURE #136 -- GV-SIGNOFF then a LATER GV-CHANGES
+# withdrawing it. Static text (both comment bodies) per the ticket.
+GVS_236B() { FWF_PROFILE=example bash -c "source '$DD'; di_read() { $1; }; gv_signoff_state 136"; }
+assert_eq "(b) #136 fixture: SIGNOFF withdrawn by a later CHANGES reads CHANGES, not SIGNED" "CHANGES" \
+  "$(GVS_236B 'echo "[{\"body\":\"GV-SIGNOFF: merge-path spec looks right\",\"createdAt\":\"2026-07-15T20:41:46Z\"},{\"body\":\"GV-CHANGES: withdrawing my 2026-07-15 sign-off -- the amendment changes what promotion means\",\"createdAt\":\"2026-08-24T19:46:31Z\"}]"; return 0')"
+
+# AC (c): the discriminating half of (b) -- re-sign after a withdrawal reads
+# signed again, so (b) cannot pass merely by making withdrawal permanent.
+GVS_236C() { FWF_PROFILE=example bash -c "source '$DD'; di_read() { $1; }; gv_signoff_state 999"; }
+assert_eq "(c) SIGNOFF -> CHANGES -> SIGNOFF reads SIGNED" "SIGNED" \
+  "$(GVS_236C 'echo "[{\"body\":\"GV-SIGNOFF: v1\",\"createdAt\":\"2026-01-01T00:00:00Z\"},{\"body\":\"GV-CHANGES: revisit\",\"createdAt\":\"2026-01-02T00:00:00Z\"},{\"body\":\"GV-SIGNOFF: re-reviewed, stands\",\"createdAt\":\"2026-01-03T00:00:00Z\"}]"; return 0')"
+
+# AC (d): #234's thread -- 17 mentions of the string, because the ticket's
+# OWN subject is that string being substituted, and no anchored verdict was
+# ever actually posted in this fixture comment. Quotation, even repeated
+# quotation, must not count.
+GVS_236D() { FWF_PROFILE=example bash -c "source '$DD'; di_read() { $1; }; gv_signoff_state 234"; }
+assert_eq "(d) quotation-heavy thread with NO anchored verdict reads NONE" "NONE" \
+  "$(GVS_236D 'echo "[{\"body\":\"this ticket is about GV-SIGNOFF vs GV-CHANGES matching mid-line -- see GV-SIGNOFF, GV-CHANGES, GV-SIGNOFF again in backticks: \`GV-SIGNOFF\`\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')"
+
+# AC (e): the three verdict-bearing states are genuinely distinguishable --
+# not a boolean collapsing CHANGES into NONE.
+assert_eq "(e) NONE and CHANGES and SIGNED are three DIFFERENT strings" "3" \
+  "$(printf '%s\n%s\n%s\n' "$(GVS_236C 'echo "[]"; return 0')" "$(GVS_236B 'echo "[{\"body\":\"GV-SIGNOFF: x\",\"createdAt\":\"2026-01-01T00:00:00Z\"},{\"body\":\"GV-CHANGES: y\",\"createdAt\":\"2026-01-02T00:00:00Z\"}]"; return 0')" "$(GVS_236C 'echo "[{\"body\":\"GV-SIGNOFF: x\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')" | sort -u | wc -l | tr -d ' ')"
+
+# Edge case: the no-colon paren form ("GV-SIGNOFF (on the …)") must match,
+# same as the colon form -- #179 carries this form.
+assert_eq "edge: paren form with no colon still SIGNED" "SIGNED" \
+  "$(GVS_236C 'echo "[{\"body\":\"GV-SIGNOFF (on the corrected text)\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')"
+assert_eq "edge: paren form with no colon still matches GV-CHANGES too" "CHANGES" \
+  "$(GVS_236C 'echo "[{\"body\":\"GV-CHANGES (one item outstanding)\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')"
+
+# Edge case: "two anchored verdicts in one comment" -- only the marker at
+# the TRUE start of the body is ever anchored (test("^...") with no
+# multiline flag can't match a second marker sitting on a later line of the
+# same comment), so this resolves deterministically to the first one,
+# rather than depending on jq's internal match order.
+assert_eq "edge: a second marker later in the SAME comment body is not anchored -- only line 1 counts" "SIGNED" \
+  "$(GVS_236C 'echo "[{\"body\":\"GV-SIGNOFF: first\nGV-CHANGES: also appears here but is not at the start\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; return 0')"
+
+# AC (f): one shared helper, not two independent matchers. Assert by
+# construction: both readers call the shared jq function, and the old
+# unanchored whole-thread glob this ticket replaces is gone from the source.
+assert_contains "(f) fwf-dash-data.sh's GV reader calls the shared predicate" \
+  "$(cat "$DD")" 'last_anchored_marker($comments;$patterns)'
+assert_contains "(f) fwf-pr-review-state.sh's QA reader calls the SAME shared predicate" \
+  "$(cat "$ROOT/fwf-pr-review-state.sh")" 'last_anchored_marker($comments; $patterns)'
+assert_not_contains "(f) the old unanchored whole-thread glob is gone" "$(cat "$DD")" '*GV-SIGNOFF*'
+
+# AC (g): a read failure is honoured, never silently read as "no sign-off"
+# -- already exercised above (rc1 -> INDETERMINATE), restated here against
+# the ticket number for traceability.
+assert_eq "(g) a hard read failure (rc1) never renders as NONE" "INDETERMINATE" \
+  "$(GVS_236C 'return 1')"
+
+# AC (h2): an idea-labelled issue never reaches the decision queue
+# structurally, even if it ALSO somehow carries the gate label -- a
+# deliberately-parked idea presented as "the GV approved this" is the exact
+# inversion of what the label means.
+DD_FIX_IDEA='[{"number":9,"title":"x","gated":true,"idea":true,"body":"b"}]'
+DD_STUB_IDEA_SIGNED='di_read() { echo "[{\"body\":\"GV-SIGNOFF: ok\",\"createdAt\":\"2026-01-01T00:00:00Z\"}]"; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+assert_eq "(h2) a gated+idea+SIGNED issue is excluded from the decision queue" "[]" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_IDEA_SIGNED; decisions_json '$DD_FIX_IDEA'" | jq -c '[.[].id]')"
+DD_FIX_NOTIDEA='[{"number":9,"title":"x","gated":true,"idea":false,"body":"b"}]'
+assert_eq "(h2) the same fixture WITHOUT idea=true still surfaces (control)" '["9"]' \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_IDEA_SIGNED; decisions_json '$DD_FIX_NOTIDEA'" | jq -c '[.[].id]')"
+
+# AC (h): the decision queue end-to-end -- a gated ticket with a CURRENT
+# CHANGES verdict (not just NONE) also does not appear as a decision.
+DD_STUB_CHANGES='di_read() { echo "[{\"body\":\"GV-SIGNOFF: v1\",\"createdAt\":\"2026-01-01T00:00:00Z\"},{\"body\":\"GV-CHANGES: revisit\",\"createdAt\":\"2026-01-02T00:00:00Z\"}]"; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+assert_eq "(h) a gated ticket sent back to CHANGES does not appear as a decision" "[]" \
+  "$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_CHANGES; decisions_json '$DD_FIX'" | jq -c '[.[].id]')"
 
 section "dash data: decisions_json surfaces the two 'could not tell' summaries (issue #266 AC b2/b3)"
 # (b2): a ticket whose sign-off state is INDETERMINATE is not silently
 # dropped (the old `has_gv_signoff "$num" || continue` shape) -- it's
 # counted and surfaced as its own summary row, naming the ticket.
-DD_STUB_INDET='di_read() { case "$*" in *"view 9"*) echo x; return 2;; esac; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
+DD_STUB_INDET='di_read() { case "$*" in *"view 9"*) echo "[]"; return 2;; esac; }; status_fresh() { return 1; }; has_invalid_sentinel() { return 1; }'
 DD_INDET_OUT="$(FWF_PROFILE=example FWF_TEMPLATE=dev bash -c "source '$DD'; $DD_STUB_INDET; decisions_json '$DD_FIX'")"
 assert_eq "(b2) the ticket itself is NOT rendered as a normal decision row" "[]" \
   "$(printf '%s' "$DD_INDET_OUT" | jq -c '[.[] | select(.id=="9")]')"

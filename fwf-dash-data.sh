@@ -422,26 +422,48 @@ open_issues_json() {
   local raw rc=0
   raw="$(di_read list --state open --limit 500 --json number,title,labels,body 2>/dev/null)" || rc=$?
   if [ "$rc" = 2 ]; then echo 1 > "$LIST_DEGRADED_FILE" 2>/dev/null; else echo 0 > "$LIST_DEGRADED_FILE" 2>/dev/null; fi
-  printf '%s' "$raw" | jq 'map({number:.number, title:.title, gated:(any(.labels[]?; .name=="'"$WIP_LABEL"'")), body:(.body // "")})' \
+  printf '%s' "$raw" | jq 'map({number:.number, title:.title,
+      gated:(any(.labels[]?; .name=="'"$WIP_LABEL"'")),
+      idea:(any(.labels[]?; .name=="'"$IDEA_LABEL"'")),
+      body:(.body // "")})' \
     2>/dev/null || echo '[]'
 }
 
-# A gated issue's GV sign-off state — THREE-way (issue #266 build note; same
-# shape as fwf authz's INDETERMINATE, #211/#219's convention): SIGNED / NONE /
-# INDETERMINATE. "Could not tell" must never render as "no sign-off" — a
-# degraded read (fwf-ghcache.sh exit 2) that didn't find the marker is
-# INDETERMINATE, not NONE, because the marker could be sitting on a page/
-# snapshot state this read never confirmed. Uses `--json comments` (not
-# `--comments`, which fwf-ghcache.sh's reshape_view doesn't model at all and
-# always falls straight through to the unmodified tier1 fallback, bypassing
-# this signal entirely) so the degraded exit code actually reaches here.
-gv_signoff_state() { # $1=number -> SIGNED | NONE | INDETERMINATE
-  local n="$1" rc=0 thread
-  thread="$(di_read view "$n" --json comments --jq '[.comments[].body] | join("\n")' 2>/dev/null)" || rc=$?
+# A gated issue's GV sign-off state — FOUR-way: SIGNED / CHANGES / NONE /
+# INDETERMINATE (issue #236, replacing the unanchored whole-thread glob this
+# function used to run over the marker's bare name — forgeable by any
+# comment that merely QUOTES the marker, and incapable of honouring a later
+# GV-CHANGES because the whole thread was concatenated into one string
+# before matching, so there was nothing left to say which comment won). Now
+# backed by the
+# shared, per-comment, anchored/last-wins predicate (lib.sh
+# `last_anchored_marker`, also used by fwf-pr-review-state.sh's QA reader —
+# issue #236 AC (f)), so a GV-CHANGES posted after a GV-SIGNOFF correctly
+# withdraws it, and a comment that only discusses or quotes a marker never
+# counts. CHANGES is distinct from NONE (issue #236 AC (e)) — "the GV sent
+# this back" and "the GV has never looked" are different facts, even though
+# `decisions_json` below currently treats them the same for QUEUE purposes
+# (a CHANGES ticket is not awaiting an un-gate keypress either).
+#
+# The INDETERMINATE axis is orthogonal and unchanged from #266: "could not
+# tell" must never render as "no sign-off" — a degraded read (fwf-ghcache.sh
+# exit 2) that didn't find a marker is INDETERMINATE, not NONE, because the
+# marker could be sitting on a page/snapshot state this read never
+# confirmed. Uses `--json comments` (not `--comments`, which
+# fwf-ghcache.sh's reshape_view doesn't model at all and always falls
+# straight through to the unmodified tier1 fallback, bypassing this signal
+# entirely) so the degraded exit code actually reaches here.
+GV_MARKER_PATTERNS='[["^GV-CHANGES:?","CHANGES"],["^GV-SIGNOFF:?","SIGNED"]]'
+gv_signoff_state() { # $1=number -> SIGNED | CHANGES | NONE | INDETERMINATE
+  local n="$1" rc=0 comments verdict
+  comments="$(di_read view "$n" --json comments --jq '[.comments[] | {body: (.body // ""), createdAt}]' 2>/dev/null)" || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then echo INDETERMINATE; return; fi
-  case "$thread" in
-    *GV-SIGNOFF*) echo SIGNED;;
-    *) [ "$rc" = 2 ] && echo INDETERMINATE || echo NONE;;
+  case "$comments" in ''|null) comments='[]';; esac
+  verdict="$(jq -nr --argjson comments "$comments" --argjson patterns "$GV_MARKER_PATTERNS" \
+    "$FWF_ANCHORED_MARKER_JQ"'last_anchored_marker($comments;$patterns) | (.state // "NONE")' 2>/dev/null)" || verdict="NONE"
+  case "$verdict" in
+    NONE) [ "$rc" = 2 ] && echo INDETERMINATE || echo NONE;;
+    *) echo "$verdict";;
   esac
 }
 # Back-compat boolean shape for any caller that just wants "is this a
@@ -478,11 +500,15 @@ decisions_json() { # $1 = open_issues_json
     # (dev-style). In captain-sequenced templates the captain releases these in
     # order, so skip them — they'd otherwise read as false "needs you" rows (#51).
     if ! captain_sequences_releases; then
-    printf '%s\n' "$issues" | jq -r '.[] | select(.gated) | .number' | while read -r num; do
+    # issue #236 AC (h2): an `idea`-labelled issue never reaches the decision
+    # queue structurally, even if it also somehow carries the gate label —
+    # a deliberately-parked idea presented as "the GV approved this — un-gate?"
+    # is the exact inversion of what the label means.
+    printf '%s\n' "$issues" | jq -r '.[] | select(.gated and (.idea|not)) | .number' | while read -r num; do
       [ -n "$num" ] || continue
       state="$(gv_signoff_state "$num")"
       case "$state" in
-        NONE) continue;;
+        NONE|CHANGES) continue;;
         INDETERMINATE) printf '%s\n' "$num" >> "$indet_f"; continue;;
       esac
       title="$(printf '%s' "$issues" | jq -r --argjson n "$num" '.[] | select(.number==$n) | .title')"
