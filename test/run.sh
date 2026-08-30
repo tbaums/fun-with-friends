@@ -14000,6 +14000,190 @@ assert_eq "edge: a fresh run record (this same sweep) survives" "2" \
   "$(ls "$LCIRUN/local-ci/$LCI_PRUNE_SHA2.runs" 2>/dev/null | wc -l | tr -d ' ')"
 
 # --------------------------------------------------------------------------
+section "fwf-local-ci.sh (issue #446): a lint-lapsed run never records the same verdict as a real green"
+
+# AC (1)/(4)/(5): the fixture's fake test/run.sh emits BOTH a clean summary
+# AND the real #418/#427 skip idiom -- this is the "check must be able to
+# fail" fixture AC (5) itself asks for: a fixture built only from clean runs
+# never produces a lapsed verdict and would pass while changing nothing.
+LCI_LAPSE_SHA="$(lci_commit_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 0 failed, 0 skipped"')"
+LCI_LAPSE_RC=0; LCI run >/dev/null 2>&1 || LCI_LAPSE_RC=$?
+assert_eq "AC(1): a lapsed run is refused (rc 1), never treated as a pass" "1" "$LCI_LAPSE_RC"
+LCI_LAPSE_V="$(cat "$LCIRUN/local-ci/$LCI_LAPSE_SHA")"
+case "$LCI_LAPSE_V" in
+  lapsed\ [0-9]*s\ shellcheck) ok "AC(1): the verdict is 'lapsed <N>s shellcheck', distinct from 'green <N>s'" ;;
+  *) bad "AC(1): the verdict is 'lapsed <N>s shellcheck'" "got [$LCI_LAPSE_V]" ;;
+esac
+assert_not_contains "AC(1): the lapsed verdict never starts with the literal word 'green' (no prefix collision)" "$LCI_LAPSE_V" "green"
+LCI_LAPSE_VERDICT_OUT="$(LCI verdict "$LCI_LAPSE_SHA" 2>&1)"; LCI_LAPSE_VERDICT_RC=$?
+assert_eq "AC(1): 'verdict' on a lapsed sha exits 1 (refuses, same as red/absent)" "1" "$LCI_LAPSE_VERDICT_RC"
+assert_contains "AC(1): 'verdict' names it LAPSED, not a generic refusal" "$LCI_LAPSE_VERDICT_OUT" "LAPSED"
+
+# Regression: the identical fixture WITHOUT the marker still records plain
+# green -- this ticket changes what a lapse means, not what a clean run means.
+LCI_CLEAN_SHA="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
+LCI run >/dev/null 2>&1
+assert_contains "regression: a run with no lapse marker still records plain green" \
+  "$(cat "$LCIRUN/local-ci/$LCI_CLEAN_SHA")" "green"
+
+# AC (4): a lapse marker present on a run that ALSO genuinely fails must
+# stay red, never be relabeled -- the suite's own failure is the more
+# urgent, un-maskable claim.
+LCI_REDLAPSE_SHA="$(lci_commit_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 1 failed, 0 skipped"; exit 1')"
+LCI run >/dev/null 2>&1
+LCI_REDLAPSE_V="$(cat "$LCIRUN/local-ci/$LCI_REDLAPSE_SHA")"
+case "$LCI_REDLAPSE_V" in
+  red\ [0-9]*s\ 1\ failed) ok "AC(4): a lapse alongside a real failure still records red, never lapsed or green" ;;
+  *) bad "AC(4): a lapse alongside a real failure still records red" "got [$LCI_REDLAPSE_V]" ;;
+esac
+
+# "red truncated" is untouched by any of this -- no summary line means the
+# lapse check is never reached, consistent with #436's own treatment of a
+# truncated run as a claim about the runner, not about any one check.
+LCI_TRUNCLAPSE_SHA="$(lci_commit_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; exit 1')"
+LCI run >/dev/null 2>&1
+assert_eq "edge: a truncated run (no summary) still records exactly 'red truncated', lapse marker or not" \
+  "red truncated" "$(cat "$LCIRUN/local-ci/$LCI_TRUNCLAPSE_SHA")"
+
+# The marker is overridable to empty -- a profile whose harness never emits
+# this idiom, or wants the check off, pays nothing.
+LCI_OFF_SHA="$(lci_commit_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 0 failed, 0 skipped"')"
+( cd "$LCI_ROOT" && FWF_RUN="$LCIRUN" FWF_LOCAL_CI_LAPSE_MARKER="" bash fwf-local-ci.sh run ) >/dev/null 2>&1
+assert_contains "FWF_LOCAL_CI_LAPSE_MARKER=\"\" disables the check -- the same fixture records plain green" \
+  "$(cat "$LCIRUN/local-ci/$LCI_OFF_SHA")" "green"
+
+# AC (2): a caller that has exhausted its own retries marks the sha
+# indeterminate directly -- a NEW subcommand, not a side effect of `run`.
+LCI_INDET_SHA="$LCI_CLEAN_SHA"
+LCI mark-indeterminate "$LCI_INDET_SHA" "lint gate lapsed 3/3 attempts" >/dev/null 2>&1
+assert_eq "AC(2): mark-indeterminate records the 'indeterminate' verdict word" \
+  "indeterminate lint gate lapsed 3/3 attempts" "$(cat "$LCIRUN/local-ci/$LCI_INDET_SHA")"
+LCI_INDET_VERDICT_OUT="$(LCI verdict "$LCI_INDET_SHA" 2>&1)"; LCI_INDET_VERDICT_RC=$?
+assert_eq "AC(2): 'verdict' on an indeterminate sha exits 1 (refuses, same as lapsed/red)" "1" "$LCI_INDET_VERDICT_RC"
+assert_contains "AC(2): 'verdict' names it INDETERMINATE" "$LCI_INDET_VERDICT_OUT" "INDETERMINATE"
+assert_contains "AC(2): ...and carries the reason through" "$LCI_INDET_VERDICT_OUT" "3/3 attempts"
+
+# --------------------------------------------------------------------------
+section "fwf-local-ci.sh lapse-streak (issue #446 AC 3): a counter any consumer can read without grepping logs"
+
+LCISTREAK_ROOT="$TMP/lci-streak-root"; mkdir -p "$LCISTREAK_ROOT/test"
+cp "$ROOT/fwf-local-ci.sh" "$LCISTREAK_ROOT/fwf-local-ci.sh"
+( cd "$LCISTREAK_ROOT" && git init -q . && git config user.email t@t.com && git config user.name t )
+LCISTREAKRUN="$TMP/lci-streak-run"
+LCISTREAK() { ( cd "$LCISTREAK_ROOT" && FWF_RUN="$LCISTREAKRUN" bash fwf-local-ci.sh "$@" ); }
+lcistreak_fixture() { # $1 = fake test/run.sh body
+  cat > "$LCISTREAK_ROOT/test/run.sh" <<EOF
+#!/usr/bin/env bash
+$1
+EOF
+  ( cd "$LCISTREAK_ROOT" && git add -A && git commit -q -m fixture --allow-empty )
+}
+
+assert_eq "AC(3): with no runs yet, the streak reads 0, not empty/error" "0" "$(LCISTREAK lapse-streak)"
+
+lcistreak_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 0 failed, 0 skipped"'
+LCISTREAK run >/dev/null 2>&1
+assert_eq "AC(3): one lapse -> streak reads 1" "1" "$(LCISTREAK lapse-streak)"
+lcistreak_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 0 failed, 0 skipped"'
+LCISTREAK run >/dev/null 2>&1
+assert_eq "AC(3): a second CONSECUTIVE lapse (different sha) -> streak reads 2" "2" "$(LCISTREAK lapse-streak)"
+
+lcistreak_fixture 'echo "3 passed, 0 failed, 0 skipped"'
+LCISTREAK run >/dev/null 2>&1
+assert_eq "AC(3): a run where the check actually ran resets the streak to 0, whether green..." "0" "$(LCISTREAK lapse-streak)"
+
+lcistreak_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 1 failed, 0 skipped"; exit 1'
+LCISTREAK run >/dev/null 2>&1
+assert_eq "AC(3): ...and a RED run where the check also lapsed still counts toward the streak (orthogonal claims)" "1" "$(LCISTREAK lapse-streak)"
+
+lcistreak_fixture 'echo "3 passed, 1 failed, 0 skipped"; exit 1'
+LCISTREAK run >/dev/null 2>&1
+assert_eq "AC(3): a RED run where the check DID run resets the streak (a real failure with lint intact is not a lapse)" "0" "$(LCISTREAK lapse-streak)"
+
+# --------------------------------------------------------------------------
+section "scripts/conductor-e2e.sh (issue #446 AC 2): a lapsed local-CI verdict is bounded-retried, never trusted or looped forever"
+
+CE2E446_COUNTER="$TMP/ce2e446-counter"
+CE2E446_PLAN="$TMP/ce2e446-plan"
+CE2E446_INDET="$TMP/ce2e446-indet"
+ce2e_stub446() { # $1=cached-verdict-mode(none|green|lapsed)  $2=newline-separated run outcomes(green|red|lapsed)
+  rm -f "$CE2E446_COUNTER" "$CE2E446_INDET"
+  printf '%s\n' "$2" > "$CE2E446_PLAN"
+  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = verdict ]; then
+  case "$1" in
+    green) echo "local-ci: \$2 is GREEN"; exit 0 ;;
+    lapsed) echo "local-ci: \$2 LAPSED (recorded on stub) -- not green" >&2; exit 1 ;;
+    *) echo "local-ci: no verdict recorded for \$2" >&2; exit 1 ;;
+  esac
+fi
+if [ "\$1" = run ]; then
+  n="\$(cat "$CE2E446_COUNTER" 2>/dev/null || echo 0)"; n=\$((n + 1)); echo "\$n" > "$CE2E446_COUNTER"
+  outcome="\$(sed -n "\${n}p" "$CE2E446_PLAN")"
+  [ -n "\$outcome" ] || outcome="\$(tail -1 "$CE2E446_PLAN")"
+  case "\$outcome" in
+    green)  echo "local-ci: GREEN -- stub run \$n"; exit 0 ;;
+    lapsed) echo "local-ci: LAPSED -- stub run \$n, shellcheck never ran"; exit 1 ;;
+    red)    echo "local-ci: RED -- stub run \$n"; exit 1 ;;
+  esac
+fi
+if [ "\$1" = mark-indeterminate ]; then
+  echo "\$2 \$3" > "$CE2E446_INDET"
+  exit 0
+fi
+STUB
+  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+}
+
+# AC (2): first attempt lapses, second attempt is a real green -> succeeds,
+# retried exactly once (bounded, and the bound is not exercised needlessly).
+ce2e_stub446 none "lapsed
+green"
+CE2E446_LG_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E446_LG_RC=$?
+assert_eq "lapse-then-green: exits 0 once the retry succeeds" "0" "$CE2E446_LG_RC"
+assert_eq "lapse-then-green: ran exactly 2 attempts (1 lapse + 1 real run), not more" "2" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+assert_eq "lapse-then-green: mark-indeterminate is never called on a resolved lapse" "false" \
+  "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
+
+# AC (2): every attempt lapses -> exhausts the bound (3 total, N=2 forced
+# re-runs), settles on INDETERMINATE, and never retries a 4th time.
+ce2e_stub446 none "lapsed
+lapsed
+lapsed
+green"
+CE2E446_ALL_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E446_ALL_RC=$?
+assert_eq "all-lapse: exits non-zero -- an exhausted lapse is never a promotable green" "1" "$CE2E446_ALL_RC"
+assert_eq "all-lapse: ran EXACTLY 3 attempts -- bounded, the 4th (planted) green is never reached" "3" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+assert_contains "all-lapse: names INDETERMINATE in its own output" "$CE2E446_ALL_OUT" "INDETERMINATE"
+assert_eq "all-lapse: mark-indeterminate WAS called (the terminal state is recorded, not just logged)" "true" \
+  "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
+
+# AC (2): a genuine RED on the first attempt is terminal -- never retried,
+# never confused with a lapse, even though a green is planted right after it.
+ce2e_stub446 none "red
+green"
+CE2E446_RED_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E446_RED_RC=$?
+assert_eq "real red: exits non-zero" "1" "$CE2E446_RED_RC"
+assert_eq "real red: ran exactly 1 attempt -- a real failure is never retried, unlike a lapse" "1" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+assert_eq "real red: mark-indeterminate is never called -- this is a genuine red, not an exhausted lapse" "false" \
+  "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
+
+# AC (2): a CACHED lapsed verdict is not trusted as skip-worthy -- falls
+# through to a real run exactly like a cached red or absent verdict would.
+ce2e_stub446 lapsed "green"
+CE2E446_CACHED_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E446_CACHED_RC=$?
+assert_eq "cached lapsed verdict: exits 0 once the fresh run is green" "0" "$CE2E446_CACHED_RC"
+assert_not_contains "cached lapsed verdict: never reports the #385 skip message" "$CE2E446_CACHED_OUT" "local CI already GREEN"
+assert_eq "cached lapsed verdict: a real run actually happened (not trusted as a skip)" "1" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+
+# --------------------------------------------------------------------------
+section "captain per-tick report: local-ci lint-lapse streak (issue #446 AC 3)"
+CAP446_TMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
+assert_contains "the STATUS REPORT wires in 'fwf-local-ci.sh lapse-streak'" "$CAP446_TMPL" "fwf-local-ci.sh lapse-streak"
+assert_contains "the note explains a nonzero streak means recent greens may not have exercised lint" "$CAP446_TMPL" "may not have exercised lint at all"
+
+# --------------------------------------------------------------------------
 section "captain per-tick report: ghcache metrics/headroom (issue #407 item 2)"
 CAP_TMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
 assert_contains "AC(6): the STATUS REPORT section wires in 'fwf-ghcache.sh metrics'" "$CAP_TMPL" "fwf-ghcache.sh metrics"
