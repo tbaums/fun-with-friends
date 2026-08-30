@@ -180,6 +180,15 @@ observed `charged` rate over the last hour and an estimated time-to-
 exhaustion (`_doctor_api_budget_check`); like every other `doctor` sub-check
 it is informational and never fails `doctor` overall.
 
+**The captain's own per-tick status report surfaces both** (issue #407,
+`templates/dev/captain.tmpl`'s STATUS REPORT section): the human-facing
+caretaker heartbeat, not just `fwf doctor`, now shows `metrics` and
+`headroom` — read from the existing cache, never a forced refresh, and
+`remaining` is always paired with `reset` (never shown alone, since the
+window resets underneath the reader). Either value missing/cold degrades
+to a visible "UNAVAILABLE" in that spot rather than a blank or a stuck
+report.
+
 **The dash renders exhaustion as a NAMED element** (`fwf-dash-data.sh`'s
 `api_budget_json`, consumed by the Rust dash's `ApiBudget`/
 `render_api_budget_banner`): a full-width red banner reading `API BUDGET
