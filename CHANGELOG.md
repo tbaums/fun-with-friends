@@ -37,6 +37,10 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ### Fixed
 
+- **`test/run.sh` no longer exits 1 on macOS** (#431, code d44bcfb, docs
+  d44bcfb) — three conductor-e2e assertions shelled out to GNU-only `timeout`,
+  absent on macOS, so the macOS runner could not be green. Replaced with a
+  portable bash bound; no platform branch and no coreutils dependency.
 - **GV sign-off gate is no longer forgeable by quotation** (#236, code e45f431,
   docs none — internal) — anchored and last-wins instead of a thread glob.
 - **`fwf-local-ci.sh` writes per-run verdicts and logs** (#425, code a5cc258,
