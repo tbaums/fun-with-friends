@@ -25,6 +25,14 @@ were found once the suite could finally *finish* on macOS —
 `lsof -F c` naming (#337 B). Every one was invisible to a Linux runner **by
 construction**: the code works there, so no Linux test can go red.
 
+A seventh joined the family later: GNU-only `timeout` in `test/run.sh` itself
+(#431) returned `127` (command not found) on macOS from #416 onward, so every
+macOS run reported `EXIT=1` for a reason that had nothing to do with the code
+under test — a guard that fails on everything has stopped discriminating, the
+same as one that never fails. Fixed with a shell-implemented bound
+(`test/run.sh`'s own `_portable_timeout`) rather than a skip, so the assertion
+it guards stays at full strength on both platforms.
+
 ## How to run it
 
 ```sh
