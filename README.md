@@ -1075,6 +1075,25 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   stale-base guard, run before assigning any ticket. `fwf reconcile [--branch
   NAME ...] [--against BRANCH]` — defaults to `staging`+`integration` against
   `main`; exits non-zero iff some branch is unsafe to build on right now.
+- **`fwf shipped <issue>`** (issue #420): "the PR shipped" and "the fix
+  shipped" are different claims — issue #377 closed "shipped and on main"
+  because its closer's check (`git merge-base --is-ancestor <merge-sha>
+  main`) only ever answered the first one; the real fix was pushed to the
+  branch *after* the PR had already merged at an earlier tip, so it was
+  never in any PR at all and the closer's true answer was to the wrong
+  question. `fwf shipped` asks and reports two questions separately for
+  every PR that declares `Closes #N` on the issue (resolved the same
+  body-grep way `fwf merge` does — never a GitHub cross-reference search,
+  which over-matches every PR that merely mentions the number): **(A)** is
+  the PR's merged head an ancestor of `main` ("the PR shipped"), and **(B)**
+  did its branch grow commits *outside* that merged head, and if so is
+  every one of them *also* on `main` ("the fix shipped"). Exit 0 SHIPPED /
+  1 NOT SHIPPED / 2 NO COMPARISON (no linked PR found) / 3 NOT APPLICABLE
+  (closed for a reason other than `completed`). `--sha <sha>` overrides PR
+  resolution for a multi-PR ticket the query can't resolve, checking (A)
+  alone — not the default path. A report only; it never reopens or closes
+  anything itself. The captain's release step runs it before closing any
+  issue a release just promoted.
 - **Upgrade staleness check:** `fwf up` and `fwf doctor` check (never blocking —
   the network call, if any, always runs detached in the background) whether a
   newer fwf release exists and warn if you're behind. `fwf doctor` reports one
