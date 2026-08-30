@@ -485,6 +485,24 @@ has_invalid_sentinel() { # $1=number
 captain_sequences_releases() {
   case "$FWF_TEMPLATE" in refactor) return 0;; *) return 1;; esac
 }
+# issue #236 AC (i), DECLINED — the ticket's own escape hatch, exercised
+# rather than silently skipped. AC (i) asked for a "signed · spec edited
+# since" qualifier by comparing the winning verdict comment's createdAt
+# against the issue's GraphQL `lastEditedAt`. `lastEditedAt` is NOT a
+# `gh issue view --json` field (`gh issue view <n> --json lastEditedAt` ->
+# "Unknown JSON field") -- it exists only via `gh api graphql`, entirely
+# outside fwf-ghcache.sh's REST+ETag cache (di_read's own doc: "anything not
+# provably REST-equivalent... falls back", and this field has no REST
+# equivalent at all). Wiring it in for real means either a raw GraphQL call
+# per gated issue on every dash render (defeats #57's whole point -- "the
+# dash never re-drains the budget") or a second, parallel GraphQL cache
+# subsystem with its own ETag/TTL semantics next to the REST one that
+# already exists. That is not "one extra field on a query the dash already
+# makes" (the ticket's own complexity estimate) -- it's a second cache. The
+# ticket names this exact outcome as acceptable: "if the honest rendering
+# turns out to be useless at that density, say so and drop this AC." Said
+# here, and in the PR body, rather than left unmentioned.
+#
 # Decision rows: gated + GV-SIGNOFF, enriched with the captain's recommendation
 # (status.json) when fresh; plus any release-kind decisions the captain queued.
 decisions_json() { # $1 = open_issues_json
