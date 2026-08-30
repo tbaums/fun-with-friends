@@ -277,6 +277,19 @@ UTILITIES
                          records what you did in an optional comment).
   flag-captain sweep     List every open needs-captain flag: # · [role] ·
                          reason · age — see docs/needs-captain.md.
+  operator-decision <n> <text> | operator-decision --floor <text>
+                         Deliver a human operator's decision to the captain
+                         when the board keypress isn't available (issue
+                         #192) — writes a durable, reviewable comment on
+                         issue/PR <n> (the record) and degrades the captain
+                         pane's send-keys to a fixed-length POINTER naming
+                         the issue, never the message body. Confers NO
+                         authorization (fwf authz is the sole oracle) and
+                         refuses outright if the text contains the operator
+                         un-gate sentinel. --floor posts to the profile's
+                         configured floor issue (FWF_FLOOR_ISSUE) instead of
+                         a specific ticket; refuses if unconfigured. See
+                         docs/operator-decision.md.
   pr-route-check sweep   Raise a needs-captain flag on an open, non-draft PR
                          (against the staging branch, not on an implN/*
                          branch) whose fwf pr-reviewer verdict is NO_MARKER for
@@ -1090,6 +1103,7 @@ case "$cmd" in
   merge)     engine fwf-merge.sh "$@";;
   backfill-context) engine fwf-backfill-context.sh "$@";;
   flag-captain) engine fwf-flag-captain.sh "$@";;
+  operator-decision) engine fwf-operator-decision.sh "$@";;
   pr-route-check) engine fwf-pr-route-check.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;
