@@ -9879,6 +9879,41 @@ CE2E_RED_ELAPSED=$(( CE2E_T3 - CE2E_T2 ))
   || bad "no verdict: falls through fast, no GitHub-CI wait" "took ${CE2E_RED_ELAPSED}s (would have been >=1200s before #409)"
 
 # --------------------------------------------------------------------------
+# issue #436 AC (2): conductor-e2e.sh's skip decision must consume the
+# two-consecutive-greens distinction. Wired ENTIRELY through the exit code
+# fwf-local-ci.sh verdict now returns -- no policy logic duplicated here, so
+# this just proves the single existing call site (line ~43) already honors
+# it. Same safe stub harness as above (a real fall-through execs `run`, so a
+# stub keeps this from recursing into the real suite).
+ce2e_stub_msg() { # $1=verdict-exit-code $2=verdict-stdout $3=run-marker-file
+  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = verdict ]; then
+  echo "$2"
+  exit $1
+fi
+if [ "\$1" = run ]; then
+  echo "local-ci: run invoked" > "$3"
+  echo "local-ci: running required suites"
+  exit 0
+fi
+STUB
+  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+}
+
+ce2e_stub_msg 1 "local-ci: recovered:1, not yet skip-eligible" "$CE2ETMP/run-marker-recov1"
+CE2E_RECOV1_OUT="$(cd "$ROOT" && bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RECOV1_RC=$?
+assert_eq "AC(2): an unconfirmed 'recovered:1' verdict does NOT skip -- falls through to a real run" "0" "$CE2E_RECOV1_RC"
+assert_eq "AC(2): ...and the local run actually happened ('run' mode, not skipped)" "true" \
+  "$([ -f "$CE2ETMP/run-marker-recov1" ] && echo true || echo false)"
+
+ce2e_stub_msg 0 "local-ci: recovered:2, skip-eligible" "$CE2ETMP/run-marker-recov2"
+CE2E_RECOV2_OUT="$(cd "$ROOT" && bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RECOV2_RC=$?
+assert_eq "AC(2): a confirmed 'recovered:2' verdict DOES skip" "0" "$CE2E_RECOV2_RC"
+assert_eq "AC(2): ...and the local run never happened" "false" \
+  "$([ -f "$CE2ETMP/run-marker-recov2" ] && echo true || echo false)"
+
+# --------------------------------------------------------------------------
 # fwf-pr-checks-honored.sh (issue #220 AC i/o/p): the QA-side ERGONOMIC
 # pre-merge checkpoint. Real jq diff logic driven with stubbed gh_pr_checks/
 # gh_pr_comments fixtures, reproducing instance 2 (the live incident this
@@ -13875,8 +13910,10 @@ assert_eq "AC(5): 'verdict' on a truncated line still exits 1" "1" \
   "$(LCI verdict "$LCI_TRUNC_SHA" >/dev/null 2>&1; echo $?)"
 
 # AC 3: backward compatibility -- OLD-format verdict files already on disk
-# (no duration) parse to the SAME verdict they did before this ticket.
-mkdir -p "$LCIRUN/local-ci"
+# (no duration), WITHIN the tracked corpus (a $sha.runs dir exists, issue
+# #436's own UNKNOWN check below is about the dir's ABSENCE, not the key's
+# format) parse to the SAME verdict they did before this ticket.
+mkdir -p "$LCIRUN/local-ci/lci-old-green.runs" "$LCIRUN/local-ci/lci-old-red.runs" "$LCIRUN/local-ci/lci-old-truncated.runs"
 printf 'green' > "$LCIRUN/local-ci/lci-old-green"
 printf 'red 2 failed' > "$LCIRUN/local-ci/lci-old-red"
 printf 'red truncated' > "$LCIRUN/local-ci/lci-old-truncated"
@@ -13892,6 +13929,7 @@ assert_eq "AC(3): an OLD 'red truncated' file still exits 1" "1" \
 # unit-level parse above (this is the AC that actually matters).
 CE2E_RUN="$TMP/ce2e-run"; mkdir -p "$CE2E_RUN/local-ci"
 CE2E_SHA="$(git -C "$ROOT" rev-parse HEAD)"
+mkdir -p "$CE2E_RUN/local-ci/$CE2E_SHA.runs"  # issue #436: a tracked SHA, not UNKNOWN
 printf 'green 42s' > "$CE2E_RUN/local-ci/$CE2E_SHA"
 CE2E_OUT="$(FWF_RUN="$CE2E_RUN" bash "$ROOT/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RC=$?
 assert_eq "AC(4): conductor-e2e.sh exits 0 against a green-with-duration local-ci verdict" "0" "$CE2E_RC"
@@ -14182,6 +14220,104 @@ section "captain per-tick report: local-ci lint-lapse streak (issue #446 AC 3)"
 CAP446_TMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
 assert_contains "the STATUS REPORT wires in 'fwf-local-ci.sh lapse-streak'" "$CAP446_TMPL" "fwf-local-ci.sh lapse-streak"
 assert_contains "the note explains a nonzero streak means recent greens may not have exercised lint" "$CAP446_TMPL" "may not have exercised lint at all"
+
+# --------------------------------------------------------------------------
+# issue #436: a SHA that failed twice must not read 'green' to every
+# consumer -- #429 made the history durable, this makes it CONSUMED. Three
+# fixture shapes per AC (4): clean-only, reds-then-green, and a key with no
+# $sha.runs dir at all (UNKNOWN). Policy per the issue: two consecutive
+# greens after a real red before the skip is taken again.
+section "fwf-local-ci.sh: a SHA that failed twice reads 'green' to every consumer (issue #436)"
+
+# AC (4) shape 1 (control): a clean-only SHA is unaffected -- unchanged
+# behavior, immediate skip-eligible, no $sha.failed marker ever created.
+LCI436_CLEAN_SHA="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
+LCI run >/dev/null 2>&1
+assert_eq "AC(4) shape 1: a clean SHA is skip-eligible on the first green (unchanged)" "0" \
+  "$(LCI verdict "$LCI436_CLEAN_SHA" >/dev/null 2>&1; echo $?)"
+assert_eq "AC(4) shape 1: no failure marker exists for a SHA that never failed" "false" \
+  "$([ -f "$LCIRUN/local-ci/$LCI436_CLEAN_SHA.failed" ] && echo true || echo false)"
+
+# AC (4) shape 2 + AC (1)/(2)/(3): a real red, then greens -- the first
+# green resolves the tree but is not yet CONFIRMED; only the second
+# consecutive green is skip-eligible, and the transition stays visible
+# rather than silently reading as a SHA that never failed.
+LCI_RECOV_SHA="$(lci_commit_fixture 'echo "3 passed, 1 failed, 0 skipped"; exit 1')"
+LCI run >/dev/null 2>&1
+assert_eq "AC(1): after a genuine red, a failure marker is recorded" "true" \
+  "$([ -f "$LCIRUN/local-ci/$LCI_RECOV_SHA.failed" ] && echo true || echo false)"
+cat > "$LCI_ROOT/test/run.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "3 passed, 0 failed, 0 skipped"
+EOF
+LCI run >/dev/null 2>&1
+LCI_RECOV1_RC=0; LCI_RECOV1_OUT="$(LCI verdict "$LCI_RECOV_SHA" 2>&1)" || LCI_RECOV1_RC=$?
+assert_eq "AC(2): the FIRST green after a real red is NOT yet skip-eligible" "1" "$LCI_RECOV1_RC"
+assert_contains "AC(3): the supersession is VISIBLE as 'recovered:1', not silently plain green" \
+  "$LCI_RECOV1_OUT" "recovered:1"
+assert_contains "AC(1): the flat pointer itself carries the distinction, not just a side file" \
+  "$(cat "$LCIRUN/local-ci/$LCI_RECOV_SHA")" "recovered:1"
+LCI run >/dev/null 2>&1
+LCI_RECOV2_RC=0; LCI_RECOV2_OUT="$(LCI verdict "$LCI_RECOV_SHA" 2>&1)" || LCI_RECOV2_RC=$?
+assert_eq "AC(2): the SECOND consecutive green IS skip-eligible" "0" "$LCI_RECOV2_RC"
+assert_contains "AC(3): the confirmation is visible as 'recovered:2'" "$LCI_RECOV2_OUT" "recovered:2"
+
+# AC (4) shape 3 + AC (1): a key with NO $sha.runs directory at all -- the
+# majority pre-#429 shape (every verdict written before that ticket has no
+# per-run history whatsoever). Must resolve to UNKNOWN and never take the
+# skip-eligible branch, regardless of what the key itself says.
+mkdir -p "$LCIRUN/local-ci"
+printf 'green 5s' > "$LCIRUN/local-ci/lci-unknown-sha"
+rm -rf "$LCIRUN/local-ci/lci-unknown-sha.runs"
+LCI_UNKNOWN_RC=0; LCI_UNKNOWN_OUT="$(LCI verdict lci-unknown-sha 2>&1)" || LCI_UNKNOWN_RC=$?
+assert_eq "AC(4) shape 3: a key with no .runs dir at all is NOT skip-eligible" "1" "$LCI_UNKNOWN_RC"
+assert_contains "AC(1): ...and is reported as UNKNOWN, not as GREEN" "$LCI_UNKNOWN_OUT" "UNKNOWN"
+
+# AC (5): the failure fact survives the retention sweep -- it lives in
+# $sha.failed, OUTSIDE $sha.runs/, which is the only thing the sweep (above,
+# issue #425) ever touches. Age out ALL of $LCI_RECOV_SHA's per-run records
+# and force a sweep via an unrelated run; the recovered:2 state (both the
+# flat pointer and the marker driving skip-eligibility) must be unaffected.
+find "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" -type f -exec touch -t 202001010000 {} \;
+LCI_AC5_SHA="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
+FWF_LOCAL_CI_RETAIN_SECS=60 LCI run >/dev/null 2>&1
+assert_eq "AC(5): the sweep DID age out this SHA's own per-run records (sanity: the sweep actually ran)" "0" \
+  "$(ls "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "AC(5): ...but the SHA is still known (the dir itself -- just emptied -- still exists, so still not UNKNOWN)" "true" \
+  "$([ -d "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" ] && echo true || echo false)"
+assert_eq "AC(5): ...and 'verdict' STILL reports skip-eligible recovered:2, not reverted to plain green or UNKNOWN" "0" \
+  "$(LCI verdict "$LCI_RECOV_SHA" >/dev/null 2>&1; echo $?)"
+assert_contains "AC(5): ...the recovered count itself survived the sweep" \
+  "$(LCI verdict "$LCI_RECOV_SHA" 2>&1)" "recovered:2"
+
+# Edge case (decided, not deferred): an infrastructure red (truncated run)
+# must NEVER count as "has failed" -- it says nothing about the tree, only
+# about the runner. Neither creates nor disturbs an existing failure marker.
+LCI_INFRA_SHA="$(lci_commit_fixture 'echo "no summary line at all"; exit 1')"
+LCI run >/dev/null 2>&1
+assert_eq "edge: a truncated (infra) run does NOT create a failure marker" "false" \
+  "$([ -f "$LCIRUN/local-ci/$LCI_INFRA_SHA.failed" ] && echo true || echo false)"
+cat > "$LCI_ROOT/test/run.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "3 passed, 0 failed, 0 skipped"
+EOF
+LCI run >/dev/null 2>&1
+assert_eq "edge: a green immediately after an infra-only red is skip-eligible (never counted as a real failure)" "0" \
+  "$(LCI verdict "$LCI_INFRA_SHA" >/dev/null 2>&1; echo $?)"
+# An infra red occurring BETWEEN a real red and its recovery must not erase
+# the already-recorded failure marker (it is left untouched, not reset).
+LCI_MIXED_SHA="$(lci_commit_fixture 'echo "3 passed, 1 failed, 0 skipped"; exit 1')"
+LCI run >/dev/null 2>&1
+cat > "$LCI_ROOT/test/run.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "no summary line at all"
+exit 1
+EOF
+LCI run >/dev/null 2>&1
+assert_eq "edge: an infra red between a real red and recovery leaves the marker untouched" "true" \
+  "$([ -f "$LCIRUN/local-ci/$LCI_MIXED_SHA.failed" ] && echo true || echo false)"
+assert_eq "edge: ...at count 0, still requiring two full confirming greens (not reset by the infra red)" "0" \
+  "$(cat "$LCIRUN/local-ci/$LCI_MIXED_SHA.failed" 2>/dev/null)"
 
 # --------------------------------------------------------------------------
 section "captain per-tick report: ghcache metrics/headroom (issue #407 item 2)"
