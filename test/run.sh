@@ -5031,7 +5031,7 @@ VS_SKIP="$(FWF_SKIP_VERSION_CHECK=1 vs_run "$VSRUN" 'fwf_version_skew_check')"
 # overlap window: replay each pid's START/END as an open/close and see
 # whether two pids were ever open at once.
 vs_singleflight_verdict() { # $1=call-log-file -> prints "PASS <n>"/"FAIL <n>"/"SKIP <reason>"/"INDETERMINATE <reason>"/"TIMEOUT"
-  local log="$1" i=0 last=-1 now marker status ts pid open=0 max_open=0 calls=0
+  local log="$1" i=0 last=-1 now status pid open=0 max_open=0 calls=0
   while [ "$i" -lt 25 ]; do
     grep -q -F -- "x START" "$log" 2>/dev/null && break
     sleep 0.2; i=$((i + 1))
