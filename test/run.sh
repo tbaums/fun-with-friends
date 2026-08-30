@@ -3924,7 +3924,9 @@ GHSTUB2
   f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1
   F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
   # #275: a same-empty-string pass would be vacuous, not a real assertion.
-  assert_not_contains "a later scale-up REUSES the kept worktree: inode read actually returned a value (not vacuous)" "$F210REUSE_INODE_BEFORE" ""
+  [ -n "$F210REUSE_INODE_BEFORE" ] \
+    && ok "a later scale-up REUSES the kept worktree: inode read actually returned a value (not vacuous)" \
+    || bad "a later scale-up REUSES the kept worktree: inode read actually returned a value (not vacuous)" "got an EMPTY inode read (both stat -c and stat -f failed)"
   assert_eq "a later scale-up REUSES the kept worktree (same inode, never recreated)" "$F210REUSE_INODE_BEFORE" "$F210REUSE_INODE_AFTER"
 
   tmux kill-session -t "${F210SESS}-coord" 2>/dev/null
