@@ -6217,6 +6217,169 @@ assert_eq "absent-field migration fallback: no persisted socket yet, but the CUR
   "$(printf '%s' "$FALLBACKROLES" | jq -r '.[] | select(.role=="impl1") | .state')"
 
 # --------------------------------------------------------------------------
+# fwf dash --remote (issue #206): versioned JSON snapshot, allowlist
+# construction, local-only cost, disabled mutations.
+DR="$ROOT/fwf-dash-remote.sh"
+DA="$ROOT/fwf-dash-act.sh"
+
+section "fwf dash --emit-snapshot (#206): shape, allowlist construction, no leakage"
+SNAPRUN="$TMP/run206snap"; mkdir -p "$SNAPRUN/state/example"
+SNAP1="$(FWF_RUN_DIR="$SNAPRUN" FWF_PROFILE=example bash "$DD" --emit-snapshot)"
+assert_contains "emits schema_version" "$(printf '%s' "$SNAP1" | jq -r 'keys[]')" "schema_version"
+assert_eq "schema_version is the current constant" "1" \
+  "$(printf '%s' "$SNAP1" | jq -r '.schema_version')"
+assert_eq "top-level field set is EXACTLY the documented allowlist (AC i2: a field added here without this list changing is a RED)" \
+  "generated_at
+issues
+profile
+roles
+schema_version" \
+  "$(printf '%s' "$SNAP1" | jq -r 'keys[]' | sort)"
+assert_eq "each role object carries exactly role/state/detail/heartbeat_age" "detail
+heartbeat_age
+role
+state" \
+  "$(printf '%s' "$SNAP1" | jq -r '.roles[0] | keys[]' | sort)"
+assert_eq "each issue object carries exactly number/title/gated (no body)" "gated
+number
+title" \
+  "$(printf '%s' "$SNAP1" | jq -r '[.issues[0] // {number:0,title:"",gated:false} | keys[]] | sort[]')"
+
+# AC (j2): CONSTRUCTION, not subtraction. Wrap roles_json/open_issues_json
+# with a version that smuggles an extra field into the per-item objects
+# (exactly what a passthrough-the-whole-object bug would let through) and
+# confirm the snapshot's explicit field naming drops it anyway.
+J2_OUT="$(FWF_RUN_DIR="$SNAPRUN" FWF_PROFILE=example bash -c "
+  source '$DD'
+  roles_json() { echo '[{\"role\":\"impl1\",\"state\":\"live\",\"detail\":\"\",\"heartbeat_age\":1,\"secret_env_leak\":\"SHOULD_NOT_APPEAR\"}]'; }
+  open_issues_json() { echo '[{\"number\":1,\"title\":\"t\",\"gated\":false,\"body\":\"full body text should not appear\",\"secret_env_leak\":\"SHOULD_NOT_APPEAR\"}]'; }
+  emit_snapshot
+")"
+assert_not_contains "AC(j2): a field smuggled into roles_json's per-item object does not survive construction" \
+  "$J2_OUT" "secret_env_leak"
+assert_not_contains "AC(j2): a smuggled issue field does not survive either" "$J2_OUT" "SHOULD_NOT_APPEAR"
+assert_not_contains "AC(j2)/(j): issue body text never reaches the snapshot" "$J2_OUT" "full body text"
+
+# AC (j): no environment/token ever touches the emitter -- structural (the
+# function never calls env/printenv/reads /proc/*/environ) AND a fixture
+# check: a real, ambient token-shaped env var must not appear in real output.
+assert_not_contains "AC(j) structural: emit_snapshot's own source never reads the process environment" \
+  "$(sed -n '/^emit_snapshot() {/,/^}/p' "$DD")" "printenv"
+FAKE_TOKEN="ghp_fakeTokenShapedString1234567890abcdef"
+SNAP2="$(FWF_RUN_DIR="$SNAPRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN="$FAKE_TOKEN" bash "$DD" --emit-snapshot)"
+assert_not_contains "AC(j): a real ambient token-shaped env var does not leak into the snapshot" "$SNAP2" "$FAKE_TOKEN"
+
+section "fwf dash --remote (#206): schema version constant matches between emitter and reader"
+EMITTER_VER="$(grep -oE '^DASH_SNAPSHOT_SCHEMA_VERSION=[0-9]+' "$DD" | cut -d= -f2)"
+READER_VER="$(grep -oE '^DASH_SNAPSHOT_SCHEMA_VERSION=[0-9]+' "$DR" | cut -d= -f2)"
+assert_eq "fwf-dash-data.sh's and fwf-dash-remote.sh's schema version constants agree" "$EMITTER_VER" "$READER_VER"
+
+section "fwf dash --remote (#206): local reader states -- no snapshot / fresh / stale / version mismatch"
+R206RUN="$TMP/run206reader"; mkdir -p "$R206RUN"
+REMOTEENV="FWF_RUN_DIR=$R206RUN FWF_PROFILE=example FWF_DASH_REMOTE_HOST=devbox1 FWF_DASH_REMOTE_PROFILE=example"
+
+NOSNAP="$(env $REMOTEENV FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/absent.json" bash "$DR")"
+assert_eq "no snapshot yet -> every role reads unknown, never a fabricated state" "true" \
+  "$(printf '%s' "$NOSNAP" | jq '[.roles[] | .state=="unknown"] | all')"
+assert_contains "no snapshot yet: roster is non-empty (never an empty roles array)" \
+  "$(printf '%s' "$NOSNAP" | jq '.roles | length')" "1"
+assert_eq "no snapshot yet -> visibility.factory_visible is false, not a guess" "false" \
+  "$(printf '%s' "$NOSNAP" | jq '.visibility.factory_visible')"
+
+FRESH_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"schema_version":%s,"profile":"example","generated_at":"%s","roles":[{"role":"impl1","state":"live","detail":"x","heartbeat_age":5}],"issues":[{"number":1,"title":"t","gated":false}]}\n' \
+  "$EMITTER_VER" "$FRESH_TS" > "$R206RUN/fresh.json"
+FRESH="$(env $REMOTEENV FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/fresh.json" bash "$DR")"
+assert_eq "AC(a): a fresh, version-matched snapshot passes its role state straight through" "live" \
+  "$(printf '%s' "$FRESH" | jq -r '.roles[] | select(.role=="impl1") | .state')"
+assert_eq "AC(e): the snapshot's age is visible (0s old, not hidden)" "false" \
+  "$(printf '%s' "$FRESH" | jq '.remote.stale')"
+assert_eq "AC(a): issue passes through with number/title/gated" "1" \
+  "$(printf '%s' "$FRESH" | jq '.issues[0].number')"
+
+OLD_EPOCH=$(( $(date -u +%s) - 300 ))
+OLD_TS="$(date -u -d "@$OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"schema_version":%s,"profile":"example","generated_at":"%s","roles":[{"role":"impl1","state":"live","detail":"","heartbeat_age":1}],"issues":[]}\n' \
+  "$EMITTER_VER" "$OLD_TS" > "$R206RUN/stale.json"
+STALE="$(env $REMOTEENV FWF_DASH_REMOTE_STALE_SECS=45 FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/stale.json" bash "$DR")"
+assert_eq "AC(c): a snapshot older than the staleness window reports stale=true" "true" \
+  "$(printf '%s' "$STALE" | jq '.remote.stale')"
+assert_contains "AC(c): the reason names the age" "$(printf '%s' "$STALE" | jq -r '.stamp')" "STALE"
+assert_eq "AC(c): visibility.factory_visible is false while stale" "false" \
+  "$(printf '%s' "$STALE" | jq '.visibility.factory_visible')"
+
+printf '{"schema_version":999,"profile":"example","generated_at":"%s","roles":[],"issues":[]}\n' "$FRESH_TS" > "$R206RUN/badver.json"
+BADVER="$(env $REMOTEENV FWF_DASH_REMOTE_CACHE_FILE="$R206RUN/badver.json" bash "$DR")"
+assert_contains "AC(i): a schema-version mismatch is a DETECTED banner, not silent garbage" \
+  "$(printf '%s' "$BADVER" | jq -r '.remote.reason')" "schema version mismatch"
+assert_contains "AC(i): the banner names BOTH versions (remote's and this dash's expected one)" \
+  "$(printf '%s' "$BADVER" | jq -r '.remote.reason')" "999"
+
+section "fwf dash --remote (#206 AC f): mutating actions are disabled, full stop"
+ACTENV="FWF_RUN_DIR=$R206RUN FWF_PROFILE=example FWF_DASH_REMOTE_HOST=devbox1"
+ACT_RC=0; env $ACTENV bash "$DA" approve 5 >/dev/null 2>&1 || ACT_RC=$?
+[ "$ACT_RC" -ne 0 ] && ok "AC(f): approve refuses when the dash is remote" || bad "AC(f): approve must refuse when remote"
+ACT_OUT="$(env $ACTENV bash "$DA" approve 5 2>&1 || true)"
+assert_contains "AC(f): the refusal names the remote host" "$ACT_OUT" "devbox1"
+assert_contains "AC(f): the refusal gives the ssh -t <host> fwf dash equivalent" "$ACT_OUT" "ssh -t devbox1 fwf dash"
+for verb in reject comment open respawn stop passthrough; do
+  RC=0; env $ACTENV bash "$DA" "$verb" x >/dev/null 2>&1 || RC=$?
+  [ "$RC" -ne 0 ] && ok "AC(f): '$verb' refuses when remote" || bad "AC(f): '$verb' must refuse when remote"
+done
+HELP_RC=0; env $ACTENV bash "$DA" help >/dev/null 2>&1 || HELP_RC=$?
+[ "$HELP_RC" -eq 0 ] && ok "AC(f): help/usage still works when remote (it mutates nothing)" \
+  || bad "AC(f): help should not be disabled by remote mode"
+NONREMOTE_OUT="$(FWF_RUN_DIR="$R206RUN" FWF_PROFILE=example bash "$DA" approve 2>&1 || true)"
+assert_contains "non-remote dash: approve reaches its normal validation, unaffected by the remote guard" \
+  "$NONREMOTE_OUT" "need an issue id"
+
+section "fwf dash --remote (#206 AC b/c/d/e): the background fetcher — atomic write, no-clobber-on-failure, hard timeout"
+F206RUN="$TMP/run206fetch"; mkdir -p "$F206RUN/run"
+F206BIN="$TMP/f206stubbin"; mkdir -p "$F206BIN"
+cat > "$F206BIN/ssh" <<'STUBSSH'
+#!/usr/bin/env bash
+case "${F206_SSH_MODE:-ok}" in
+  fail) exit 255 ;;
+  hang) sleep 30 ;;
+  *) echo "{\"schema_version\":1,\"profile\":\"example\",\"generated_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"roles\":[{\"role\":\"impl1\",\"state\":\"live\",\"detail\":\"\",\"heartbeat_age\":1}],\"issues\":[]}" ;;
+esac
+STUBSSH
+chmod +x "$F206BIN/ssh"
+CACHE_FILE="$F206RUN/run/dash-remote/devbox1:example.json"
+
+FETCH_RC=0
+PATH="$F206BIN:$PATH" FWF_RUN_DIR="$F206RUN/run" FWF_PROFILE=example FWF_DASH_REMOTE_FETCH_ONCE=1 \
+  bash "$ROOT/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || FETCH_RC=$?
+[ "$FETCH_RC" -eq 0 ] && ok "AC(b): a successful fetch-once iteration exits 0" || bad "fetch-once should succeed on a good ssh stub"
+assert_contains "AC(b): the fetcher writes a valid snapshot to the cache file" \
+  "$(cat "$CACHE_FILE" 2>/dev/null | jq -r '.schema_version' 2>/dev/null)" "1"
+
+# No-clobber-on-failure: seed a good cache, then run a FAILING fetch and
+# confirm the last-good snapshot survives untouched (AC c's "keeps
+# showing the last good snapshot" half).
+PATH="$F206BIN:$PATH" FWF_RUN_DIR="$F206RUN/run" FWF_PROFILE=example FWF_DASH_REMOTE_FETCH_ONCE=1 F206_SSH_MODE=fail \
+  bash "$ROOT/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || true
+assert_contains "AC(c): a failed fetch iteration never wipes the last-good cache" \
+  "$(cat "$CACHE_FILE" 2>/dev/null | jq -r '.schema_version' 2>/dev/null)" "1"
+
+# Hard timeout (AC d): a hanging ssh must not block past the configured
+# fetch timeout.
+HSTART="$(date +%s)"
+PATH="$F206BIN:$PATH" FWF_RUN_DIR="$F206RUN/run" FWF_PROFILE=example FWF_DASH_REMOTE_FETCH_ONCE=1 \
+  FWF_DASH_REMOTE_FETCH_TIMEOUT=2 F206_SSH_MODE=hang \
+  bash "$ROOT/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || true
+HEND="$(date +%s)"
+HELAPSED=$(( HEND - HSTART ))
+[ "$HELAPSED" -le 6 ] && ok "AC(d): a hanging ssh is bounded by the hard timeout (took ${HELAPSED}s, timeout=2s)" \
+  || bad "AC(d): fetch should not block past its timeout" "took ${HELAPSED}s"
+
+section "fwf dash --remote (#206 AC g): documented"
+assert_contains "fwf --help mentions --remote" "$("$ROOT/fwf" help)" "dash [--remote"
+assert_contains "docs/dash.md documents --remote" "$(cat "$ROOT/docs/dash.md")" "fwf dash --remote"
+assert_contains "docs/dash.md documents the scrubbing guarantee" "$(cat "$ROOT/docs/dash.md")" "no process environment, no tokens"
+assert_contains "README.md mentions --remote" "$(cat "$ROOT/README.md")" "--remote"
+
+# --------------------------------------------------------------------------
 # fwf dash BINARY RESOLVER (#63): FWF_DASH_BIN → cached arch+version binary →
 # verified release-asset download → source `cargo build` fallback. Fully
 # hermetic: a stubbed PATH (curl/cargo), a fake release tree served via a

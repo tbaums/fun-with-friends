@@ -27,6 +27,16 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$DIR/lib.sh"
+# lib.sh does not define die (same gap fwf-dash.sh's own _dash_die comment
+# names) -- this script calls bare `die` throughout every verb's error
+# path, which was silently resolving to "die: command not found" (exit
+# 127) rather than the intended message whenever this script runs
+# standalone (i.e. exec'd by the compiled dash binary, not sourced from
+# the `fwf` dispatcher, which is the only place die WAS defined). Found
+# while adding issue #206's remote-mode refusal message, which needs its
+# own text to actually print; fixed here rather than routed around, since
+# every OTHER verb's error message had the exact same silent gap.
+die() { echo "fwf dash act: $*" >&2; exit 1; }
 # Drive the factory on tmux's DEFAULT socket regardless of which tmux the dash is
 # displayed in (role respawn/stop + captain passthrough send-keys must reach the
 # factory's panes, not the dash's host session). See fwf-dash-data.sh for why.
@@ -62,6 +72,17 @@ usage() {
 
 main() {
   local verb="${1:-}"; shift || true
+  # issue #206 AC (f), decided in the spec, not picked here: mutating dash
+  # actions are DISABLED whenever the dash is remote, full stop -- an
+  # operator must never act on the LOCAL factory while looking at a
+  # REMOTE one. Help/usage still work (they mutate nothing); every real
+  # verb is refused, naming the host and the read-only equivalent.
+  if [ -n "${FWF_DASH_REMOTE_HOST:-}" ]; then
+    case "$verb" in
+      ""|-h|--help|help) : ;;
+      *) die "act: disabled — this dash is remote (${FWF_DASH_REMOTE_HOST}); mutating actions only ever apply to the LOCAL factory, so they refuse rather than guess which one you mean. Use: ssh -t ${FWF_DASH_REMOTE_HOST} fwf dash" ;;
+    esac
+  fi
   case "$verb" in
     approve)
       local n; n="$(issue_num "${1:-}")"; [ -n "$n" ] || die "approve: need an issue id"

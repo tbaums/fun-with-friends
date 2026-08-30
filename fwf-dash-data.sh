@@ -38,6 +38,16 @@ export FWF_USE_RUNNING_TEMPLATE=1
 source "$DIR/lib.sh"
 command -v jq >/dev/null 2>&1 || { echo '{"error":"jq is required for fwf dash"}'; exit 1; }
 
+# issue #206: the versioned wire format `fwf dash --remote` reads over ssh.
+# ONE constant, read by both the emitter (below) and the local-side remote
+# reader (fwf-dash-remote.sh, which sources this file for it) -- a version
+# bump and the emitter that needs to match it can never drift into two
+# different numbers by construction. Bump this whenever emit_snapshot's
+# field set changes; test/run.sh asserts the emitted field set against the
+# CURRENT value, so an unbumped change to the fields is a RED, not a silent
+# drift (AC i2).
+DASH_SNAPSHOT_SCHEMA_VERSION=1
+
 STATE_DIR="$FWF_STATE_DIR"
 STATUS_JSON="$STATE_DIR/status.json"
 DASH_STALE_SECS="${FWF_DASH_STALE_SECS:-90}"
@@ -779,10 +789,62 @@ detail_view() {
   fi
 }
 
+# --- versioned snapshot (issue #206) -----------------------------------------
+# `fwf dash --emit-snapshot` -> the scrubbed, allowlisted subset of the board
+# this ticket names as safe to leave the box: roles, issues, heartbeat ages,
+# schema version. NOT the full board -- decisions/pipeline/prod/activity/
+# needs_you/unrouted_prs/api_budget/etc. stay local-only; a remote dash is a
+# read-only roles+issues view, not full parity, and that narrowing is what
+# keeps the allowlist short enough to audit.
+#
+# CONSTRUCTION, NOT SUBTRACTION (AC j2): every field below is named
+# explicitly, both at the top level and INSIDE each roles[]/issues[] object --
+# `roles_json`/`open_issues_json` are reused for their derivation logic, but
+# their per-item objects are rebuilt field-by-field here rather than passed
+# through whole, so a field added to either of those functions' internal
+# JSON cannot reach the snapshot without someone naming it on the line below.
+# This is the property the AC (j2) test asserts directly: stub roles_json to
+# return an extra key and confirm it does not survive this reconstruction.
+#
+# NO PROCESS ENVIRONMENT, NO TOKENS, NO FILE CONTENTS ever touch this
+# function -- verified structurally (grep the source), not by scanning
+# output for what looks credential-shaped after the fact (AC j's own
+# framing: that scan is a regression backstop, not the mechanism).
+emit_snapshot() {
+  local floor_idle roles issues gen _sdir
+  floor_idle="$(floor_idle_json)"
+  roles="$(roles_json "$floor_idle")"
+  issues="$(open_issues_json)"
+  gen="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # #291's own lesson, reproduced here rather than reread: open_issues_json
+  # carries every open issue's full body text, so on this repo's corpus the
+  # combined payload blows ARG_MAX passed as --argjson on the command line
+  # -- route through files (--slurpfile) instead, exactly like main() does.
+  _sdir="$(mktemp -d)" || { echo '{"error":"mktemp failed"}'; return 1; }
+  trap 'rm -rf "$_sdir"' RETURN
+  printf '%s' "$roles"  > "$_sdir/roles.json"
+  printf '%s' "$issues" > "$_sdir/issues.json"
+  jq -n \
+    --argjson schema_version "$DASH_SNAPSHOT_SCHEMA_VERSION" \
+    --arg profile "$PROFILE" --arg gen "$gen" \
+    --slurpfile _roles "$_sdir/roles.json" --slurpfile _issues "$_sdir/issues.json" \
+    '{
+       schema_version: $schema_version,
+       profile: $profile,
+       generated_at: $gen,
+       roles: [$_roles[0][] | {role, state, detail, heartbeat_age}],
+       issues: [$_issues[0][] | {number, title, gated}]
+     }'
+}
+
 # Dispatch only when run directly. Sourcing the script (e.g. from the test
 # suite) just loads the functions so they can be unit-tested with stubbed
 # di_read/gh_pr/status — no gh, no tmux (#52).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  if [ "${1:-}" = "--emit-snapshot" ]; then
+    emit_snapshot
+    exit 0
+  fi
   if [ "${1:-}" = "detail" ]; then
     detail_view "${2:-}"
     exit 0
