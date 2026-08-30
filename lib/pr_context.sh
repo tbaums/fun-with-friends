@@ -493,11 +493,19 @@ fwf_history_card_verdict() {
 # commit that was never meant to close an issue (a release bump, a direct
 # golden re-bless) is out of scope for this invariant entirely, not merely
 # a pass -- it is never flagged, not even INDETERMINATE.
+#
+# issue #438: a release-bump commit stays out of scope even when it lands
+# squash-merged as its own PR (subject "release: vX.Y.Z ... (#N)") -- the
+# `(#N)` there is GitHub's squash-merge suffix for the release PR itself,
+# not a signal that the commit was meant to close an issue. Scoping must
+# therefore check the subject's *content* first (does it read as a release
+# bump?) before falling back to the squash-merge shape check below.
 fwf_history_guard_range() {
   local from="$1" to="$2" sha subj verdict rc=0
   while IFS= read -r sha; do
     [ -n "$sha" ] || continue
     subj="$(git log -1 --format=%s "$sha" 2>/dev/null)"
+    printf '%s' "$subj" | grep -qE '^release: v[0-9]' && continue
     printf '%s' "$subj" | grep -qE '\(#[0-9]+\)$' || continue
     verdict="$(fwf_history_card_verdict "$sha")"
     case "$verdict" in

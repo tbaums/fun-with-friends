@@ -1106,6 +1106,7 @@ $SPARSE_CARD
 🏭 Built with fun-with-friends + Claude.
 fwf-Provenance: fwf=1.0@abc"
 h136_commit "release: v1.0.0 (VERSION + CHANGELOG)" "no Closes here, an ordinary maintenance commit"
+h136_commit "release: v1.0.1 (VERSION + CHANGELOG) (#432)" "no Closes here -- a release bump that landed squash-merged as its own PR (issue #438)"
 BASE_SHA="$(cd "$H136WT" && git log --format=%H --grep '^base$' -1)"
 GOOD_SHA="$(cd "$H136WT" && git log --format=%H --grep 'Good merge' -1)"
 NOPROV_SHA="$(cd "$H136WT" && git log --format=%H --grep 'No-provenance merge' -1)"
@@ -1135,6 +1136,12 @@ case "$FULL_RANGE_ERR" in *"$SPARSE_SHA"*) bad "AC(h): the sparse-but-legitimate
 # The maintenance commit (release bump, no "(#N)" subject) is out of scope
 # entirely -- never even INDETERMINATE, not merely passing.
 case "$FULL_RANGE_ERR" in *"release: v1.0.0"*) bad "a non-squash maintenance commit (no (#N) subject) must never be flagged at all" "$FULL_RANGE_ERR";; *) ok "a non-squash maintenance commit (no (#N) subject) is out of scope entirely, never flagged";; esac
+# issue #438: a release-bump commit is STILL out of scope even when its
+# subject ends in "(#N)" because it landed squash-merged as its own PR --
+# scoping must key on content ("release: vX.Y.Z"), not merely on the
+# squash-merge subject shape, or this is indistinguishable from a real
+# issue-linked commit and false-triggers INDETERMINATE.
+case "$FULL_RANGE_ERR" in *"release: v1.0.1"*) bad "AC(#438): a squash-merged release-bump commit ('release: vX.Y.Z ... (#N)') must never be flagged, even though its subject ends in (#N)" "$FULL_RANGE_ERR";; *) ok "AC(#438): a squash-merged release-bump commit is out of scope entirely, never flagged, despite its (#N) suffix";; esac
 # NARROWER range excludes the pre-existing hollow commit already on branch
 # history (the exact #189-audit shape this AC protects against): promoting
 # from AFTER the hollow commit to the tip only inspects what's actually new.
