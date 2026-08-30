@@ -228,6 +228,23 @@ role="${1:-}"
 [ -n "$role" ] || { usage; exit 1; }
 shift
 
+# issue #426: a role deep in one or several back-to-back gate cycles is
+# unambiguously alive and working, but its own loop only bumps
+# state/<profile>/tick/<role> at STEP 0 of a FRESH cycle -- a role that
+# keeps re-launching/retrying gates without a cycle in between (measured:
+# several roles' ticks froze for 1.5-6h while they provably pushed commits
+# and merged PRs the whole time) leaves that file looking dead for hours.
+# Bumping it here too, at the START of every gate attempt -- including one
+# that's about to be SKIPPED (an unchanged --tip-cmd, or a busy per-role
+# lock, both below) -- makes tick freshness track ACTUAL WORK rather than
+# "did the agent's own loop restart recently", the same structural-fix
+# pattern #156's own "hole #1" used: move the guarantee out of per-caller
+# discipline and into the shared tooling every caller already goes
+# through. Best-effort and silenced (`>/dev/null`): a tick-bump failure
+# (e.g. an unwritable state dir) must never abort a real gate run over a
+# liveness nicety.
+fwf_tick_bump "$role" >/dev/null 2>&1 || true
+
 want_e2e=0
 want_cargo_build=0
 tip_cmd=""
