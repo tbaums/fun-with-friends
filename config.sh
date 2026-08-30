@@ -179,6 +179,14 @@ FWF_E2E_DATA_BASE="${FWF_E2E_DATA_BASE:-$FWF_RUN/e2e-data}"
 # keeps concurrent full cargo builds from CPU/IO-thrashing each other.
 FWF_CARGO_BUILD_CONCURRENCY="${FWF_CARGO_BUILD_CONCURRENCY:-2}"
 CARGO_BUILD_LOCK="$FWF_RUN/cargo-build.lock"
+# Static-analysis-tool concurrency bound (issue #418): a SEMAPHORE, same
+# shape as the cargo-build one above — up to this many roles' `test/run.sh`
+# may run the linting step at once via fwf_shellcheck_slot_acquire; the
+# (N+1)th waits. That step is the single biggest RAM/CPU spike measured on
+# this shared box, so only IT is bounded — everything else in test/run.sh
+# still runs fully parallel across roles.
+FWF_SHELLCHECK_CONCURRENCY="${FWF_SHELLCHECK_CONCURRENCY:-2}"
+SHELLCHECK_LOCK="$FWF_RUN/shellcheck.lock"
 
 # --- memory-admission control (issue #156) -----------------------------------
 # The build-serialization mechanism #156's discovery chose (strategy b): gate

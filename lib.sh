@@ -1945,6 +1945,13 @@ FWF_CARGO_BUILD_LOCK_TIMEOUT="${FWF_CARGO_BUILD_LOCK_TIMEOUT:-900}"
 FWF_CARGO_BUILD_LOCK_POLL="${FWF_CARGO_BUILD_LOCK_POLL:-5}"
 FWF_CARGO_BUILD_LOCK_STALE_SECS="${FWF_CARGO_BUILD_LOCK_STALE_SECS:-1800}"
 
+# issue #418: shellcheck itself runs 1-5min, far shorter than a cargo build,
+# so these are tighter than the cargo-build ones above -- a shellcheck
+# holder that's actually wedged should be caught sooner.
+FWF_SHELLCHECK_LOCK_TIMEOUT="${FWF_SHELLCHECK_LOCK_TIMEOUT:-600}"
+FWF_SHELLCHECK_LOCK_POLL="${FWF_SHELLCHECK_LOCK_POLL:-5}"
+FWF_SHELLCHECK_LOCK_STALE_SECS="${FWF_SHELLCHECK_LOCK_STALE_SECS:-1200}"
+
 # --- SHARED kill-safe orphan-tree recovery (issue #156 hole #1) --------------
 # Extracted OUT of the admission-only path so the DEFAULT #138 cargo-build
 # semaphore path is protected too, regardless of FWF_MEM_ADMIT_ENABLE. A gate is
@@ -2232,6 +2239,94 @@ fwf_cargo_build_slot_acquire() {
 fwf_cargo_build_slot_release() {
   [ -n "${1:-}" ] || return 0
   rm -rf "$CARGO_BUILD_LOCK/slot-$1"
+}
+
+# --- shellcheck concurrency bound (issue #418) -------------------------------
+# Same SEMAPHORE shape as the cargo-build slot above, deliberately reusing
+# that shape rather than inventing a second one — measured root cause: this
+# shared box runs 5+ roles' `bash test/run.sh` concurrently, each spawning
+# its OWN full-tree `shellcheck -S warning`, with no admission control
+# between them. shellcheck itself (not the rest of the bash suite) is the
+# single biggest RAM/CPU spike observed, so only THIS step is bounded, not
+# the whole suite run — every other section still runs fully parallel
+# across roles, and #227's own gate-history classifier measured 6/18 (33%)
+# recent runs false-RED from exactly this contention before this fix.
+#
+# Simpler than fwf_cargo_build_slot_acquire in one respect: shellcheck is a
+# direct, synchronous CHILD of its caller (never a detached/backgrounded
+# process), so a killed holder orphans nothing for
+# _fwf_kill_orphan_group to clean up — the dead-PID reap below is
+# sufficient on its own. Everything else (the mkdir-race nonce
+# write-then-verify, the exclusive reap lock) is a genuine mkdir-race
+# hazard shared with the cargo-build slot, not project-specific to Rust
+# builds, so it's kept here too (issue #292's own finding: a bare mkdir
+# "win" is not sufficient under real concurrent load).
+fwf_shellcheck_slot_acquire() { # $1=holder label -> echoes acquired slot number, rc 0; rc 1 = timeout
+  local label="${1:?fwf_shellcheck_slot_acquire needs a holder label}" waited=0 n slot owner rc ts now reap_reason pid2 nonce
+  mkdir -p "$SHELLCHECK_LOCK" 2>/dev/null
+  while true; do
+    for n in $(seq 1 "$FWF_SHELLCHECK_CONCURRENCY"); do
+      slot="$SHELLCHECK_LOCK/slot-$n"
+      if mkdir "$slot" 2>/dev/null; then
+        nonce="$$-$RANDOM-$RANDOM-$(date +%s%N 2>/dev/null || date +%s)"
+        printf 'role=%s\npid=%s\nhost=%s\nacquired=%s\nnonce=%s\n' \
+          "$label" "$$" "$(hostname)" "$(date +%s)" "$nonce" > "$slot/owner"
+        if [ "$(_fwf_e2e_owner_field nonce "$slot/owner")" = "$nonce" ]; then
+          echo "$n"
+          return 0
+        fi
+        continue   # lost the post-mkdir race -- someone else's content is on disk now, do not evict it
+      fi
+      owner="$slot/owner"
+      _fwf_e2e_owner_liveness "$owner"; rc=$?
+      reap_reason=""
+      if [ "$rc" = 1 ]; then
+        reap_reason="dead PID $(_fwf_e2e_owner_field pid "$owner") ($(_fwf_e2e_owner_field role "$owner"))"
+      elif [ "$rc" = 2 ]; then
+        ts="$(_fwf_e2e_owner_field acquired "$owner")"; now="$(date +%s)"
+        if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_SHELLCHECK_LOCK_STALE_SECS" ]; then
+          reap_reason="indeterminate-liveness past the ${FWF_SHELLCHECK_LOCK_STALE_SECS}s backstop"
+        fi
+      fi
+      [ -n "$reap_reason" ] || continue
+      mkdir "$slot.reap" 2>/dev/null || continue   # lost the reap race
+      pid2="$(_fwf_e2e_owner_field pid "$owner")"
+      if [ -n "$pid2" ] && kill -0 "$pid2" 2>/dev/null; then
+        rmdir "$slot.reap" 2>/dev/null
+        continue   # re-verified live -- someone else already reaped+reacquired
+      fi
+      echo "fwf: shellcheck slot $n held by $reap_reason — breaking it" >&2
+      rm -rf "$slot"
+      if mkdir "$slot" 2>/dev/null; then
+        nonce="$$-$RANDOM-$RANDOM-$(date +%s%N 2>/dev/null || date +%s)"
+        printf 'role=%s\npid=%s\nhost=%s\nacquired=%s\nnonce=%s\n' \
+          "$label" "$$" "$(hostname)" "$(date +%s)" "$nonce" > "$slot/owner"
+        rmdir "$slot.reap" 2>/dev/null
+        if [ "$(_fwf_e2e_owner_field nonce "$slot/owner")" = "$nonce" ]; then
+          echo "$n"
+          return 0
+        fi
+        continue
+      fi
+      rmdir "$slot.reap" 2>/dev/null
+    done
+    if [ "$waited" -ge "$FWF_SHELLCHECK_LOCK_TIMEOUT" ]; then
+      # Timeout falls through to running UNGATED, never a hard failure --
+      # missing the bound occasionally is strictly better than wedging the
+      # whole suite behind a semaphore that never frees. The caller decides
+      # what "ungated" means (this function only reports the timeout).
+      echo "fwf: $label timed out after ${FWF_SHELLCHECK_LOCK_TIMEOUT}s waiting for a shellcheck slot (all $FWF_SHELLCHECK_CONCURRENCY busy)" >&2
+      return 1
+    fi
+    sleep "$FWF_SHELLCHECK_LOCK_POLL"
+    waited=$(( waited + FWF_SHELLCHECK_LOCK_POLL ))
+  done
+}
+
+# $1 = the slot number fwf_shellcheck_slot_acquire echoed. No-op if empty.
+fwf_shellcheck_slot_release() {
+  [ -n "${1:-}" ] || return 0
+  rm -rf "$SHELLCHECK_LOCK/slot-$1"
 }
 
 # --- memory-admission control (issue #156, strategy b) -----------------------

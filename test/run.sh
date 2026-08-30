@@ -8127,6 +8127,80 @@ RACE_PEAK_MAX="$(sort -n "$CBRACE_PEAKS" | tail -1)"
 # strengthening this claim to an unconditional guarantee.
 
 # --------------------------------------------------------------------------
+section "shellcheck concurrency SEMAPHORE (issue #418): N slots, same shape as piece C's, without the orphan-group step"
+SCRUN="$TMP/shellcheck418"
+cat > "$TMP/shellcheck-drive.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+case "$1" in
+  symmetry)
+    s="$(fwf_shellcheck_slot_acquire testrole)" && echo "ACQUIRED=$s"
+    [ -f "$SHELLCHECK_LOCK/slot-$s/owner" ] && echo STAMPED
+    grep -q '^role=testrole$' "$SHELLCHECK_LOCK/slot-$s/owner" && echo ROLEOK
+    fwf_shellcheck_slot_release "$s"
+    [ -d "$SHELLCHECK_LOCK/slot-$s" ] && echo STILLTHERE || echo RELEASED
+    ;;
+  two-slots-then-block)
+    s1="$(fwf_shellcheck_slot_acquire holder1)" && echo "S1=$s1"
+    s2="$(fwf_shellcheck_slot_acquire holder2)" && echo "S2=$s2"
+    rc=0; fwf_shellcheck_slot_acquire holder3 2>&1 || rc=$?
+    echo "RC3=$rc"
+    fwf_shellcheck_slot_release "$s1"
+    s4="$(fwf_shellcheck_slot_acquire holder4)" && echo "S4=$s4"
+    ;;
+  dead)
+    mkdir -p "$SHELLCHECK_LOCK/slot-1"
+    printf 'role=zombie\npid=999999999\nhost=%s\nacquired=%s\n' \
+      "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$SHELLCHECK_LOCK/slot-1/owner"
+    rc=0; s="$(fwf_shellcheck_slot_acquire impl9 2>&1)" || rc=$?
+    echo "OUT=$s"
+    echo "RC=$rc"
+    grep -q '^role=impl9$' "$SHELLCHECK_LOCK/slot-1/owner" 2>/dev/null && echo NEWOWNER
+    ;;
+  live)
+    mkdir -p "$SHELLCHECK_LOCK/slot-1"
+    printf 'role=selfheld\npid=%s\nhost=%s\nacquired=%s\n' \
+      "$$" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$SHELLCHECK_LOCK/slot-1/owner"
+    rc=0; fwf_shellcheck_slot_acquire impl9 2>&1 || rc=$?
+    echo "RC=$rc"
+    ;;
+esac
+EOSCRIPT
+
+SC_SYM="$(FWF_RUN_DIR="$SCRUN/sym" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/shellcheck-drive.sh" symmetry)"
+assert_contains "acquire succeeds and returns a slot number" "$SC_SYM" "ACQUIRED=1"
+assert_contains "acquire writes a holder-identity stamp"     "$SC_SYM" "STAMPED"
+assert_contains "stamp carries the caller's role label"      "$SC_SYM" "ROLEOK"
+assert_contains "release removes that slot's dir"            "$SC_SYM" "RELEASED"
+case "$SC_SYM" in *STILLTHERE*) bad "release must remove the slot dir";; esac
+
+SC_TWO="$(FWF_RUN_DIR="$SCRUN/two" FWF_SHELLCHECK_CONCURRENCY=2 FWF_SHELLCHECK_LOCK_TIMEOUT=1 FWF_SHELLCHECK_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/shellcheck-drive.sh" two-slots-then-block)"
+assert_contains "SEMAPHORE: 1st concurrent holder gets a slot" "$SC_TWO" "S1=1"
+assert_contains "SEMAPHORE: 2nd concurrent holder gets a DIFFERENT slot" "$SC_TWO" "S2=2"
+assert_contains "SEMAPHORE: (N+1)th holder times out, not a mutex-of-1" "$SC_TWO" "RC3=1"
+assert_contains "SEMAPHORE: releasing frees a slot for the next waiter" "$SC_TWO" "S4=1"
+
+SC_DEAD="$(FWF_RUN_DIR="$SCRUN/dead" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/shellcheck-drive.sh" dead)"
+assert_contains "dead-PID slot holder is named and broken" "$SC_DEAD" "breaking it"
+assert_contains "dead-PID slot is re-acquired, not deadlocked" "$SC_DEAD" "RC=0"
+assert_contains "the new stamp overwrites the dead one" "$SC_DEAD" "NEWOWNER"
+
+SC_LIVE="$(FWF_RUN_DIR="$SCRUN/live" FWF_SHELLCHECK_CONCURRENCY=1 FWF_SHELLCHECK_LOCK_STALE_SECS=1 FWF_SHELLCHECK_LOCK_TIMEOUT=2 FWF_SHELLCHECK_LOCK_POLL=1 \
+  FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/shellcheck-drive.sh" live)"
+assert_contains "acquire times out rather than hanging" "$SC_LIVE" "timed out"
+assert_contains "acquire returns non-zero on timeout"   "$SC_LIVE" "RC=1"
+case "$SC_LIVE" in *"breaking it"*) bad "a LIVE same-host holder must never be broken, even past the age backstop";; *) ok "live slot holder not broken, even past the age backstop";; esac
+
+# Wiring: test/run.sh's own shellcheck section actually takes the slot --
+# a semaphore nobody calls bounds nothing (this ticket's own thesis, one
+# level in: a correct mechanism with no obliged call site).
+assert_contains "test/run.sh's shellcheck step calls fwf_shellcheck_slot_acquire" \
+  "$(cat "$ROOT/test/run.sh")" "fwf_shellcheck_slot_acquire"
+assert_contains "test/run.sh's shellcheck step releases the slot" \
+  "$(cat "$ROOT/test/run.sh")" "fwf_shellcheck_slot_release"
+
+# --------------------------------------------------------------------------
 # per-role gate single-flight lock (#123 AC1/AC2/AC5): a role that relaunches
 # the gate while its OWN prior run is still in flight must NOT stack a second
 # — it skips this tick instead. Non-blocking (unlike the e2e lock above): a
@@ -11645,9 +11719,24 @@ if command -v shellcheck >/dev/null 2>&1; then
   # at the top of config/profile files (vars consumed in other sourced scripts).
   # Lint only the repo's shipped scripts — not user-local/generated profiles,
   # which live in profiles/ but aren't part of the repo.
-  if shellcheck -s bash -S warning \
-       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
-       "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"; then
+  #
+  # issue #418: this box runs 5+ roles' `bash test/run.sh` concurrently,
+  # each spawning its OWN full-tree shellcheck -- the single biggest
+  # RAM/CPU spike measured, and the root cause of a 33% false-RED rate on
+  # this suite. Take a floor-wide shellcheck slot (fwf_shellcheck_slot_
+  # acquire/release, lib.sh, config.sh's FWF_SHELLCHECK_CONCURRENCY) before
+  # running it, in an ISOLATED subshell so sourcing lib.sh (which needs a
+  # valid FWF_PROFILE and has broad side effects) never touches this
+  # script's own top-level environment -- everything else in the suite
+  # stays exactly as parallel as before; only this one step queues.
+  if FWF_PROFILE=example bash -c '
+      source "'"$ROOT"'/lib.sh" || exit 2
+      slot="$(fwf_shellcheck_slot_acquire "$(basename "'"$ROOT"'")")" || slot=""
+      trap "[ -n \"$slot\" ] && fwf_shellcheck_slot_release \"$slot\"" EXIT
+      shellcheck -s bash -S warning \
+        "'"$ROOT"'/fwf" "'"$ROOT"'"/*.sh "'"$ROOT"'"/lib/*.sh "'"$ROOT"'/profiles/example.sh" \
+        "'"$ROOT"'"/templates/*/template.sh "'"$ROOT"'/eval/run.sh" "'"$ROOT"'/test/run.sh"
+    '; then
     ok "shellcheck clean"
   else
     bad "shellcheck reported issues"

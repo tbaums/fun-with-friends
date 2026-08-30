@@ -378,3 +378,31 @@ GNU procps extension, absent on macOS, where it returned empty on every call —
 so the reuse guard was structurally impossible and **failed open into a
 SIGKILL**. In the harness it killed the test runner, which is why the suite
 could not complete on macOS at all.
+
+## shellcheck concurrency bound (issue #418)
+
+Piece C's cargo-build semaphore only bounds Rust builds — it does nothing for
+the OTHER thing every role's gate runs on every cycle: `bash test/run.sh`
+itself, whose own `shellcheck -S warning` pass over the whole tree is the
+single biggest RAM/CPU spike this box sees. With 5+ roles (conductor,
+impl1-4, qa2-4) each spawning a full-tree shellcheck concurrently and no
+admission control between them, `#227`'s own gate-history classifier
+measured a **33% (6/18) false-RED rate** — `shellcheck` OOM-killed mid-run,
+`fwf_free_ram_gb` measuring 0 free, and pane-fork tests timing out under CPU
+starvation, all transient, all clearing on a later retry against the same
+SHA.
+
+**The fix is the same SEMAPHORE shape as piece C's, applied to shellcheck
+specifically rather than to the whole suite run.** `fwf_shellcheck_slot_
+acquire`/`release` (lib.sh) bound how many roles may run shellcheck
+*simultaneously* to `FWF_SHELLCHECK_CONCURRENCY` (default 2, `config.sh`) —
+everything else in `test/run.sh` still runs fully parallel across roles;
+only this one step queues briefly. `test/run.sh` takes the slot in an
+isolated `bash -c` subshell (sourcing `lib.sh` needs a valid `FWF_PROFILE`
+and has broad side effects that must never leak into the suite's own
+top-level environment) and releases it via a trap, so a killed holder's
+slot is freed by the acquire side's own dead-PID reap on the next
+contender, the same self-healing property as every other lock in this
+file. A timeout falls through to running shellcheck **ungated** rather than
+wedging the suite — missing the bound occasionally is strictly better than
+a suite that never finishes.
