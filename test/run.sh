@@ -13059,6 +13059,108 @@ assert_eq "AC(4): conductor-e2e.sh exits 0 against a green-with-duration local-c
 assert_contains "AC(4): the observed 'local CI already GREEN' skip line is present" "$CE2E_OUT" "local CI already GREEN"
 
 # --------------------------------------------------------------------------
+# issue #425: the shared "$sha.log" was ALSO the run's own log destination,
+# so two runs of the same SHA -- the observed case: a worktree and the
+# conductor both gating the promoted tip -- were two opens of one filename,
+# the second's `>` truncating the first's. Worse, a completed RED's own
+# evidence could be destroyed by a LATER green with no trace either
+# transition happened. Fixed additively: every run also writes an
+# append-only, uniquely-named record under $sha.runs/ (verdict + paired
+# log, never overwritten), while $VDIR/$sha keeps being the same "latest"
+# pointer every existing consumer above already reads unchanged.
+section "fwf-local-ci.sh: per-run records are durable, never clobbered by another run (issue #425)"
+
+# AC (1): two runs of the SAME sha -- run TWO CONCURRENTLY, not sequentially,
+# so this actually exercises the clobbering `>` race the ticket describes,
+# not just "ran it twice in a row." Both must leave independently readable
+# logs; neither may truncate the other's.
+LCI_CONC_SHA="$(lci_commit_fixture 'sleep 0.3; echo "3 passed, 0 failed, 0 skipped"' 0)"
+( LCI run >/dev/null 2>&1 ) &
+LCI_PID1=$!
+( LCI run >/dev/null 2>&1 ) &
+LCI_PID2=$!
+wait "$LCI_PID1" "$LCI_PID2" 2>/dev/null
+# Non-.log files in a $sha.runs dir are the durable verdict records --
+# counted/found via a glob loop (not `ls | grep`) so a run-id containing
+# nothing special still matches predictably either way.
+lci_verdict_count() { local d="$1" n=0 f; for f in "$d"/*; do case "$f" in *.log) continue;; *) [ -e "$f" ] && n=$((n+1));; esac; done; echo "$n"; }
+lci_verdict_first() { local d="$1" f; for f in "$d"/*; do case "$f" in *.log) continue;; *) [ -e "$f" ] && { basename "$f"; return; };; esac; done; }
+
+LCI_CONC_RUNS="$LCIRUN/local-ci/$LCI_CONC_SHA.runs"
+LCI_CONC_COUNT="$(lci_verdict_count "$LCI_CONC_RUNS")"
+assert_eq "(1) two concurrent runs at the same SHA leave TWO independent verdict records, not one" "2" "$LCI_CONC_COUNT"
+LCI_CONC_ALL_GREEN=true
+for f in "$LCI_CONC_RUNS"/*; do
+  case "$f" in
+    *.log) continue ;;
+    *) case "$(cat "$f")" in green\ *) ;; *) LCI_CONC_ALL_GREEN=false ;; esac ;;
+  esac
+done
+assert_eq "(1) both concurrent runs' OWN verdicts are intact (neither read the other's partial state)" "true" "$LCI_CONC_ALL_GREEN"
+for f in "$LCI_CONC_RUNS"/*.log; do
+  assert_contains "(1) each run's own log is genuinely its own (has the real summary line, not truncated)" \
+    "$(cat "$f")" "3 passed, 0 failed, 0 skipped"
+done
+
+# AC (2): a verdict's failure count matches the ^FAIL count in ITS OWN log --
+# only checkable now that a log unambiguously belongs to one run.
+LCI_FAILCOUNT_SHA="$(lci_commit_fixture 'echo "3 passed, 1 failed, 0 skipped"; echo "  FAIL the one thing"; exit 1')"
+LCI run >/dev/null 2>&1
+LCI_FC_RUN_FILE="$(lci_verdict_first "$LCIRUN/local-ci/$LCI_FAILCOUNT_SHA.runs")"
+LCI_FC_RECORDED="$(printf '%s' "$(cat "$LCIRUN/local-ci/$LCI_FAILCOUNT_SHA.runs/$LCI_FC_RUN_FILE")" | sed -n 's/.*red [0-9]*s \([0-9]*\) failed/\1/p')"
+LCI_FC_ACTUAL="$(grep -c '^  FAIL' "$LCIRUN/local-ci/$LCI_FAILCOUNT_SHA.runs/$LCI_FC_RUN_FILE.log")"
+assert_eq "(2) the verdict's recorded failed-count matches its own log's ^FAIL line count" "$LCI_FC_ACTUAL" "$LCI_FC_RECORDED"
+
+# AC (5): THE property that matters most. red at SHA X, a LATER run green at
+# the SAME SHA X -- assert the red is STILL DISCOVERABLE (not erased) and
+# the transition is visible to a consumer, even though the flat "latest"
+# pointer (read by verdict/conductor-e2e.sh) correctly reflects the newer
+# green, exactly as #404 needs for a genuine flake to resolve.
+LCI_TRANS_SHA="$(lci_commit_fixture 'echo "3 passed, 1 failed, 0 skipped"; echo "  FAIL flaky one"; exit 1')"
+LCI run >/dev/null 2>&1
+LCI_TRANS_RUNS_AFTER_RED="$(lci_verdict_count "$LCIRUN/local-ci/$LCI_TRANS_SHA.runs")"
+# Same SHA, re-run with a fixture that now passes (the flake resolved).
+cat > "$LCI_ROOT/test/run.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "3 passed, 0 failed, 0 skipped"
+EOF
+LCI run >/dev/null 2>&1
+assert_eq "(5) the flat 'latest' pointer reflects the newer green (a genuine flake CAN still resolve)" "green" \
+  "$(cat "$LCIRUN/local-ci/$LCI_TRANS_SHA" | cut -d' ' -f1)"
+LCI_TRANS_RUNS_AFTER_GREEN="$(lci_verdict_count "$LCIRUN/local-ci/$LCI_TRANS_SHA.runs")"
+assert_eq "(5) the EARLIER red run's record still exists on disk -- not erased by the later green" \
+  "$(( LCI_TRANS_RUNS_AFTER_RED + 1 ))" "$LCI_TRANS_RUNS_AFTER_GREEN"
+LCI_TRANS_HAS_RED=false
+for f in "$LCIRUN/local-ci/$LCI_TRANS_SHA.runs"/*; do
+  case "$f" in *.log) continue;; esac
+  case "$(cat "$f")" in red\ *) LCI_TRANS_HAS_RED=true;; esac
+done
+assert_eq "(5) the red verdict text itself is still readable, not just a count" "true" "$LCI_TRANS_HAS_RED"
+
+# AC (4)/regression: a truncated run still records the exact literal 'red
+# truncated' in BOTH the flat pointer and its own durable per-run record --
+# the property AC (1)'s rewrite must not lose.
+LCI_TRUNC2_SHA="$(lci_commit_fixture 'echo "no summary line at all"; exit 1')"
+LCI run >/dev/null 2>&1
+assert_eq "(4) truncated: flat pointer still reads exactly 'red truncated'" "red truncated" \
+  "$(cat "$LCIRUN/local-ci/$LCI_TRUNC2_SHA")"
+LCI_TRUNC2_RUN_FILE="$(lci_verdict_first "$LCIRUN/local-ci/$LCI_TRUNC2_SHA.runs")"
+assert_eq "(4) truncated: the durable per-run record ALSO reads exactly 'red truncated'" "red truncated" \
+  "$(cat "$LCIRUN/local-ci/$LCI_TRUNC2_SHA.runs/$LCI_TRUNC2_RUN_FILE")"
+
+# Edge case: retention. A run record older than the retention window is
+# swept on the NEXT run (any SHA); one within the window survives.
+LCI_PRUNE_SHA="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
+LCI run >/dev/null 2>&1
+find "$LCIRUN/local-ci/$LCI_PRUNE_SHA.runs" -type f -exec touch -t 202001010000 {} \;
+LCI_PRUNE_SHA2="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
+FWF_LOCAL_CI_RETAIN_SECS=60 LCI run >/dev/null 2>&1
+assert_eq "edge: a run record older than the retention window is swept" "0" \
+  "$(ls "$LCIRUN/local-ci/$LCI_PRUNE_SHA.runs" 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "edge: a fresh run record (this same sweep) survives" "2" \
+  "$(ls "$LCIRUN/local-ci/$LCI_PRUNE_SHA2.runs" 2>/dev/null | wc -l | tr -d ' ')"
+
+# --------------------------------------------------------------------------
 section "captain per-tick report: ghcache metrics/headroom (issue #407 item 2)"
 CAP_TMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
 assert_contains "AC(6): the STATUS REPORT section wires in 'fwf-ghcache.sh metrics'" "$CAP_TMPL" "fwf-ghcache.sh metrics"
