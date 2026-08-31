@@ -33,18 +33,6 @@
 # scale-up reuses it automatically, the same create-if-absent check a fresh
 # `fwf up` already does.
 #
-# issue #452 AC(4): scale DOWN also clears the removed seat's
-# state/<profile>/heartbeat and tick entries -- otherwise a scaled-down
-# seat and a genuinely wedged one are indistinguishable on disk to any
-# reader (fwf_roster_names, lib.sh), and fwf-respawn.sh's own repair path
-# would resurrect a seat the operator deliberately removed. FORWARD-LOOKING
-# ONLY: a seat scaled down before this shipped may still have a stray
-# entry on disk, and this script does not sweep those retroactively (no
-# reliable way to distinguish "scaled down before this fix" from "still
-# legitimately part of the floor" after the fact, from state alone). If a
-# stray entry causes fwf_roster_names to over-report, clear it by hand:
-# rm -f state/<profile>/heartbeat/<role> state/<profile>/tick/<role>.
-#
 # Session-scoped only: never rewrites FWF_PAIRS in the profile. Says so on
 # success, and separately warns that the CAPTAIN's own already-rendered
 # prompt still reflects the OLD pair count until it is re-armed -- the
@@ -227,16 +215,7 @@ done
 for id in ${PLAN_REMOVE[@]+"${PLAN_REMOVE[@]}"}; do
   p="$(fwf_find_pane "$BUILD_SESSION" "IMPL$id ·" || true)"; [ -n "$p" ] && tmux kill-pane -t "$p" 2>/dev/null
   q="$(fwf_find_pane "$BUILD_SESSION" "QA$id ·" || true)"; [ -n "$q" ] && tmux kill-pane -t "$q" 2>/dev/null
-  # issue #452 AC(4): without this, a scaled-down seat and a genuinely
-  # wedged one are the SAME artifact on disk -- a heartbeat/tick entry
-  # with no live pane -- and fwf_roster_names (lib.sh) can't tell a
-  # deliberate removal from a repair target. Removing the entries HERE,
-  # at the one place a seat is deliberately taken out of the floor, is
-  # what makes "an entry exists" mean "this seat belongs to the floor"
-  # for every reader of that state, not just this script.
-  rm -f "$(fwf_heartbeat_path "impl$id")" "$(fwf_tick_path "impl$id")"
-  rm -f "$(fwf_heartbeat_path "qa$id")" "$(fwf_tick_path "qa$id")"
-  echo "removed impl$id/qa$id (worktree kept -- a later scale-up reuses it; heartbeat/tick state cleared)"
+  echo "removed impl$id/qa$id (worktree kept -- a later scale-up reuses it)"
 done
 
 if [ "${#PLAN_CREATE[@]}" -gt 0 ]; then

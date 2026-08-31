@@ -136,17 +136,6 @@ Two automated checks lean on this signal (issue #133):
   it **escalates once** to a hard kill+relaunch of the pane and re-verifies,
   before reporting success — so a respawn can no longer look "verified" while
   the role never actually ticks (issues #99, #133).
-- **`fwf respawn`'s floor-boundary check asks the running floor what it is,
-  not the profile what it should be** (issue #452). `FWF_PAIRS` at respawn
-  time is the profile *default* — a launch-time override is never persisted,
-  and `fwf scale` deliberately never rewrites the profile either — so a
-  seat is respawnable if it's in either the configured roster **or**
-  `fwf_roster_names`'s live union with `state/<profile>/heartbeat/` (the
-  same union `fwf dash`'s Roles table already uses, issue #402). A refusal
-  names both the configured `FWF_PAIRS` value and the observed roster. `fwf
-  scale --pairs N` (scale-down) clears the removed seat's heartbeat/tick
-  entries, so a deliberately scaled-down seat stays refused rather than
-  resurrected by this wider check.
 
 `fwf stub-sweep` auto-closes claim-only **draft** PRs (zero changed files —
 the claim commit *is* the mutex) left untouched past `FWF_STUB_GRACE_SECS`

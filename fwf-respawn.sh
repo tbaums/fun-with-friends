@@ -39,35 +39,11 @@ case "$role" in
       echo "usage: fwf-respawn.sh <implN|qaN|conductor|pm|gv|captain|extra-role>  (N = 1..$FWF_PAIRS)" >&2; exit 1
     fi;;
 esac
-# Suppression checked FIRST so a suppressed seat always gets ITS OWN,
-# more specific refusal below rather than the generic floor-boundary one
-# just below it -- fwf_roster_names (lib.sh) already excludes suppressed
-# roles from the roster, so checking floor-membership first would shadow
-# this message for exactly the seats it exists to name.
+if [ -n "$id" ] && [ "$id" -gt "$FWF_PAIRS" ]; then
+  echo "fwf-respawn: $role is beyond the configured floor (FWF_PAIRS=$FWF_PAIRS)" >&2; exit 1
+fi
 if fwf_role_suppressed "$role"; then
   echo "fwf-respawn: '$role' is suppressed in template '$FWF_TEMPLATE' — it is not part of this factory." >&2; exit 1
-fi
-# issue #452: ask the floor what it IS, not the profile what it SHOULD BE.
-# FWF_PAIRS here is the profile default -- not necessarily what `fwf up`/
-# `fwf scale` actually launched with (a launch-time override is never
-# persisted, and `fwf scale` deliberately never rewrites the profile
-# either), so a fresh shell can see "2" while the floor genuinely runs 4.
-# A seat is respawnable if it's in the UNION of the configured roster and
-# the running floor's own recorded state (fwf_roster_names, lib.sh) --
-# state/<profile>/heartbeat/<role> is the durable evidence a seat belongs
-# to the floor, an artifact that outlives the process that stopped
-# updating it (#450: a seat wedged 16.5h still has one). AC (5): a
-# genuinely scaled-down seat's entries are removed by `fwf scale`
-# (fwf-scale.sh), so this widens what counts as present -- it does not
-# resurrect a seat the operator deliberately removed.
-if [ -n "$id" ]; then
-  if [ ! -d "$FWF_STATE_DIR/heartbeat" ]; then
-    echo "fwf-respawn: $FWF_STATE_DIR/heartbeat is missing/unreadable -- falling back to the configured floor only (FWF_PAIRS=$FWF_PAIRS)" >&2
-  fi
-  if ! fwf_roster_names | grep -qxF -- "$role"; then
-    echo "fwf-respawn: $role is beyond both the configured floor (FWF_PAIRS=$FWF_PAIRS) and the running floor's own recorded state ($FWF_STATE_DIR/heartbeat) -- observed roster: $(fwf_roster_names | tr '\n' ' ' | sed 's/ $//')" >&2
-    exit 1
-  fi
 fi
 
 tmux has-session -t "$sess" 2>/dev/null || { echo "no tmux session '$sess'" >&2; exit 1; }

@@ -966,32 +966,6 @@ fwf_qa_roster() {
   for id in "${PAIRS[@]}"; do fwf_role_suppressed "qa$id" || echo "qa$id"; done
 }
 
-# The LIVE roster: every role fwf_all_roles() would name, UNIONED with every
-# name carrying a heartbeat file, minus anything suppressed (issue #402,
-# promoted here as a shared primitive when #452 needed the same union for a
-# second consumer, fwf-respawn.sh). FWF_PAIRS is provisioning config, not
-# floor state — `fwf scale` can grow a floor past it, and a launch-time
-# override is never persisted, so a fresh shell (a respawn, a redrawn
-# dashboard) sees only the profile default even on a floor genuinely larger
-# than it. A role's own state/<profile>/heartbeat/<role> entry is the
-# durable evidence the floor actually contains it, an artifact that outlives
-# the process that stopped updating it (#450: a seat wedged 16.5h still has
-# one). An unrecognized heartbeat name is at worst noise; dropping a role
-# that genuinely ticked is the defect both tickets exist to close, and the
-# two mistakes are not symmetric — this errs toward the roster being a
-# superset, never a subset, of what fwf_all_roles() alone would report.
-fwf_roster_names() {
-  {
-    fwf_all_roles
-    if [ -d "$FWF_STATE_DIR/heartbeat" ]; then
-      for _f in "$FWF_STATE_DIR"/heartbeat/*; do
-        [ -e "$_f" ] || continue
-        basename "$_f"
-      done
-    fi
-  } | while IFS= read -r _r; do fwf_role_suppressed "$_r" || printf '%s\n' "$_r"; done | sort -u
-}
-
 # Strip fenced code regions (``` or ~~~, either delimiter/length) from stdin
 # before any column-0 sentinel/marker regex runs against it -- shared by
 # fwf-authz.sh (issue #150/#218's un-gate sentinel) and fwf-pr-reviewer.sh /
