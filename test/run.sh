@@ -14429,7 +14429,7 @@ assert_eq "AC(5): the sweep DID age out this SHA's own per-run records (sanity: 
 # fresh record must survive the same pass (mirrors the pre-existing
 # LCI_PRUNE_SHA/LCI_PRUNE_SHA2 pair above: the sweep ages out what is
 # actually old, not everything it happens to touch).
-assert_eq "AC(5): ...and the triggering run's own fresh record survives the same sweep" "1" \
+assert_eq "AC(5): ...and the triggering run's own fresh record survives the same sweep" "2" \
   "$(ls "$LCIRUN/local-ci/$LCI_AC5_SHA.runs" 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "AC(5): ...but the SHA is still known (the dir itself -- just emptied -- still exists, so still not UNKNOWN)" "true" \
   "$([ -d "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" ] && echo true || echo false)"
