@@ -250,7 +250,19 @@ assert_eq "AC(466 4): TMUX_TMPDIR is still readable and correct from a process w
 # is exactly the bug class this ticket closes, so it must fail the suite,
 # not silently ship. (Excludes this section's own definition/tests, which
 # legitimately mention the literal string as documentation and fixture args.)
-F466_UNGUARDED="$(grep -n 'env -i' "$ROOT/test/run.sh" | grep -v 'fwf_test_isolated_exec\|^[0-9]*:#\|F466_\|drun()' | wc -l | tr -d ' ')"
+#
+# QA review (#474): excluding drun()'s call site from the count BY NAME
+# (a literal 'drun()' grep -v term) blind-spotted the one real production
+# call site this ticket exists to protect -- a regressed, unguarded drun()
+# still contains the substring 'drun()' in its own definition line, so it
+# stayed excluded regardless of whether the guard was actually there.
+# Assert positively on the drun() definition line instead: it must name
+# the guard, not just be absent from an unguarded-line count.
+F466_DRUN_DEF="$(grep -n '^drun() {' "$ROOT/test/run.sh")"
+assert_contains "AC(466 6): the real drun() call site itself names fwf_test_isolated_exec (not excluded by name from the count below)" \
+  "$F466_DRUN_DEF" "fwf_test_isolated_exec"
+
+F466_UNGUARDED="$(grep -n 'env -i' "$ROOT/test/run.sh" | grep -v 'fwf_test_isolated_exec\|^[0-9]*:#\|F466_' | wc -l | tr -d ' ')"
 assert_eq "AC(466 6): every 'env -i' call site outside this guard's own tests routes through fwf_test_isolated_exec" "0" "$F466_UNGUARDED"
 
 # AC 3: end-to-end against a STAND-IN floor this test owns -- never the real
