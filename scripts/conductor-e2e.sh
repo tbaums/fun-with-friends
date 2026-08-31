@@ -69,6 +69,37 @@ if [ -z "$SHA" ] || [ ! -x "$LOCAL" ]; then
   exec bash test/run.sh
 fi
 
+# issue #457: back off entirely (no suite run at all this cycle) once the
+# CROSS-INVOCATION lapse streak (fwf-local-ci.sh lapse-streak, #446 AC 3 --
+# consecutive lapses across ALL runs on this box, reset the moment any run
+# actually executes the check) shows this is not a transient spike but a
+# box that structurally cannot give the check room to run. The bounded
+# retry loop below only bounds ONE invocation's own attempts; without this,
+# every ~2min conductor tick independently re-ran the SAME 3-attempt cycle
+# and rediscovered the same exhaustion -- observed: 78 minutes, 4 full
+# suites, zero verdict advance. Once backed off, still PROBES once per
+# cooldown window (never a permanent block) so recovery is still detected
+# automatically the moment the box actually has room again.
+# issue #457 AC (3) ("consider" -- not a hard requirement, and not built
+# here): reserving RAM more aggressively for a retried lapse, or running
+# the lapsed check alone once the rest of the suite is green, would both
+# shrink the cost of the retries this backoff already bounds. Deliberately
+# out of scope for this ticket -- AC (3) itself only asks that it be
+# considered, and the backoff above already removes the actual harm (a
+# box wasting ~70min/cycle) without needing either. Worth a follow-up if
+# the backoff's own cooldown proves too coarse in practice.
+FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_STREAK="${FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_STREAK:-6}"
+FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_COOLDOWN="${FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_COOLDOWN:-900}"
+streak="$("$LOCAL" lapse-streak 2>/dev/null || echo 0)"
+case "$streak" in ''|*[!0-9]*) streak=0 ;; esac
+if [ "$streak" -ge "$FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_STREAK" ]; then
+  if cd_out="$("$LOCAL" indeterminate-recent "$SHA" "$FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_COOLDOWN" 2>&1)"; then
+    echo "conductor-e2e: lint gate has lapsed $streak consecutive times (>= $FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_STREAK) -- $SHA is $cd_out, backing off rather than spending another full attempt cycle (issue #457)" >&2
+    exit 1
+  fi
+  echo "conductor-e2e: lint gate has lapsed $streak consecutive times (>= $FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_STREAK) -- probing once (cooldown expired, or this SHA not yet marked) before backing off again" >&2
+fi
+
 attempt=1
 while [ "$attempt" -le "$FWF_CONDUCTOR_E2E_MAX_ATTEMPTS" ]; do
   if out="$("$LOCAL" verdict "$SHA" 2>&1)"; then

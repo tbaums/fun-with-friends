@@ -166,6 +166,45 @@ fwf_doctor_install_head_line() {
   fi
 }
 
+# `fwf doctor`'s lapsed-check visibility line (issue #457): a persistently-
+# lapsing check settles into INDETERMINATE (fwf-local-ci.sh mark-
+# indeterminate) and conductor-e2e.sh now backs off rather than re-running
+# indefinitely (issue #457's own bounded-retry fix) -- but that state was
+# previously visible only by reading conductor-e2e.sh's own run logs.
+# `doctor` calls this BEFORE any profile is actually loaded into this
+# process's own environment -- $FWF_REPO/$STAGING_BRANCH are profile-
+# scoped and `_doctor_profile_resolution` (fwf) only resolves them inside
+# its own throwaway subshell, never exporting them here -- so this
+# resolves its own copy the same way, rather than assuming either is set.
+# Read-only throughout: never fetches, and says nothing when there is
+# nothing to report (a healthy or never-lapsed floor gets no line at all,
+# matching fwf_doctor_install_head_line's own convention above).
+fwf_doctor_lapsed_check_line() {
+  command -v resolve_profile >/dev/null 2>&1 || return 0
+  local out repo branch sha vfile content mt now age
+  out="$(FWF_PROFILE="${FWF_PROFILE:-$(resolve_profile 2>/dev/null || true)}" bash -c '
+    source "'"$FWF_DIR"'/lib.sh" 2>/dev/null
+    printf "%s\t%s\n" "$FWF_REPO" "$STAGING_BRANCH"
+  ' 2>/dev/null)" || return 0
+  IFS=$'\t' read -r repo branch <<<"$out"
+  [ -n "$repo" ] || return 0
+  sha="$(git -C "$repo" rev-parse "origin/${branch:-staging}" 2>/dev/null)" || return 0
+  [ -n "$sha" ] || return 0
+  vfile="$FWF_RUN/local-ci/$sha"
+  [ -f "$vfile" ] || return 0
+  content="$(cat "$vfile" 2>/dev/null || echo '')"
+  case "$content" in
+    indeterminate*)
+      mt="$(stat -c %Y "$vfile" 2>/dev/null || stat -f %m "$vfile" 2>/dev/null || echo '')"
+      case "$mt" in
+        ''|*[!0-9]*) printf '  local-ci  : promotion BLOCKED on origin/%s (%s) -- age unknown\n' "${branch:-staging}" "$content" ;;
+        *) now="$(date +%s)"; age=$(( (now - mt) / 60 ))
+           printf '  local-ci  : promotion BLOCKED on origin/%s (%s), %sm ago\n' "${branch:-staging}" "$content" "$age" ;;
+      esac
+      ;;
+  esac
+}
+
 # `fwf doctor`'s three-state line: up-to-date / out-of-date / could-not-check.
 # "could not check" fires when the last SUCCESSFUL fetch (ts) is older than
 # FWF_VERSION_CHECK_STALE_MULT staleness windows (or has never happened), so a

@@ -206,6 +206,38 @@ if [ "$cmd" = mark-indeterminate ]; then
   exit 0
 fi
 
+# issue #457: was this SHA marked INDETERMINATE recently (within the given
+# cooldown, in seconds)? Exit 0 (printing the age) if so, 1 otherwise --
+# including "never marked" and "marked, but the cooldown has expired".
+# conductor-e2e.sh's bounded retry (#446) only bounds ONE invocation; a
+# PERSISTENTLY-lapsing check (the box structurally cannot give the check
+# room to run, not a transient spike) meant every ~2min conductor tick
+# independently re-ran the full 3-attempt cycle, discovering the same
+# exhaustion each time -- 78 minutes and 4 full suites with zero verdict
+# advance, observed on this box. This lets a caller back off instead of
+# repeating a cycle that just failed, without a separate state file: the
+# indeterminate marker mark-indeterminate already writes IS the cooldown
+# clock, read by its own mtime.
+if [ "$cmd" = indeterminate-recent ]; then
+  [ -n "$sha" ] || { echo "usage: $0 indeterminate-recent <sha> <cooldown-secs>" >&2; exit 2; }
+  cooldown="${3:?indeterminate-recent needs a cooldown in seconds}"
+  f="$VDIR/$sha"
+  [ -f "$f" ] || exit 1
+  content="$(cat "$f" 2>/dev/null || echo '')"
+  case "$content" in
+    indeterminate*) ;;
+    *) exit 1 ;;
+  esac
+  mt="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo '')"
+  case "$mt" in ''|*[!0-9]*) exit 1 ;; esac
+  now="$(date +%s)"; age=$((now - mt))
+  if [ "$age" -lt "$cooldown" ]; then
+    echo "indeterminate ${age}s ago (cooldown ${cooldown}s)"
+    exit 0
+  fi
+  exit 1
+fi
+
 # run mode: verify the CURRENT checkout and record under its HEAD sha
 sha="$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" || { echo "not a git tree" >&2; exit 2; }
 trap _fwf_local_ci_prune EXIT   # issue #425: sweep aged-out per-run records on every exit path
