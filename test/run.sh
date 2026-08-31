@@ -3816,10 +3816,17 @@ EOF
   F467_SV_RUN="$TMP/f467iso-run"; mkdir -p "$F467_SV_RUN/state/example"
   echo WEDGED > "$F467_VERDICT_FILE"
 
+  F467_SV_TICK_BEFORE="$(cat "$F467_SV_RUN/state/example/tick/parkrole" 2>/dev/null || echo 0)"
   F467_PASS1="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=0 \
     bash "$F467ISO/fwf-supervise.sh" parkrole 2>&1)"
   assert_contains "a WEDGED role escalates via PARKED_FLAG on its FIRST wedged pass, even with autorespawn OFF (#165 ships dark, but visibility is unconditional)" \
     "$F467_PASS1" "PARKED_FLAG escalation recorded"
+  F467_SV_TICK_AFTER="$(cat "$F467_SV_RUN/state/example/tick/parkrole" 2>/dev/null || echo 0)"
+  if [ "$F467_SV_TICK_AFTER" -gt "$F467_SV_TICK_BEFORE" ]; then
+    ok "AC(1): the PARKED_FLAG escalation itself bumps the role's tick, so it advances even with FWF_SUPERVISE_AUTORESPAWN=0 (not dependent on a respawn)"
+  else
+    bad "AC(1): the PARKED_FLAG escalation itself bumps the role's tick, so it advances even with FWF_SUPERVISE_AUTORESPAWN=0 (not dependent on a respawn)"
+  fi
 
   F467_PASS2="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=0 \
     bash "$F467ISO/fwf-supervise.sh" parkrole 2>&1)"
@@ -3838,12 +3845,13 @@ EOF
   PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=0 \
     bash "$F467ISO/fwf-supervise.sh" parkrole >/dev/null 2>&1
 
-  # AC(1)/(5), through the PRIMARY seam: with autorespawn ON, a WEDGED role
-  # is forcibly re-driven (the existing #165/#217 respawn machinery) --
-  # tick advancing is respawn's own job (fwf-respawn.sh's tick-verify), so
-  # this asserts the wrapper actually DRIVES that path on WEDGED, by
-  # asserting the stubbed fwf-respawn.sh (which this harness makes fail, to
-  # match the #217 breaker test's shape) is invoked at all.
+  # AC(5), through the PRIMARY seam: with autorespawn ON, a WEDGED role is
+  # ALSO forcibly re-driven (the existing #165/#217 respawn machinery), on
+  # top of the unconditional tick bump asserted above -- respawn is what
+  # actually un-parks the pane itself (not just its tick artifact), so this
+  # asserts the wrapper actually DRIVES that path on WEDGED, by asserting the
+  # stubbed fwf-respawn.sh (which this harness makes fail, to match the #217
+  # breaker test's shape) is invoked at all.
   echo WEDGED > "$F467_VERDICT_FILE"
   F467_RESPAWN_LOG="$TMP/f467iso-respawn.log"
   cat > "$F467ISO/fwf-respawn.sh" <<EOF
