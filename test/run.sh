@@ -13996,7 +13996,16 @@ assert_contains "AC(c): refusal names the sha it would have promoted" "$F278_ERR
 # rather than total silence. This is NOT the permissive shape #247 (a5) warns
 # about: any refusal text, or any other unexpected stderr, still fails -- only
 # the one documented, purely-factual line is discounted.
-f278_strip_provenance() { grep -v '^fwf-gate\.sh: running from ' || true; }
+#
+# issue #468 AC 8's obliged call site adds a second such line: --e2e fires
+# `fwf-reap-orphans.sh --live` BEFORE the lock acquire (this same conductor
+# promote command carries --e2e, per __PROMOTE_GATE__), and its own AC 6
+# requires it to log what it swept. On a shared/busy box that sweep can
+# find and report genuinely stale fixture dirs from OTHER runs -- real,
+# expected, purely-factual output, exactly the same shape as the #343
+# provenance-line collision this section already resolved. Same fix:
+# discount the one documented line, not the whole assertion.
+f278_strip_provenance() { grep -v '^fwf-gate\.sh: running from \|^fwf-reap-orphans: ' || true; }
 
 F278_OK_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example eval "$F278_PROMOTE_CMD_LOCAL" 2>&1 1>/dev/null)"; F278_OK_RC=$?
 assert_eq "AC(d): detached HEAD at the correct sha does not refuse" "0" "$F278_OK_RC"
@@ -15641,6 +15650,329 @@ case "$PORT_REFUSE" in
   *"SIGKILL group"*) bad "#332: it must NOT reap on an unanswered question" "$PORT_REFUSE";;
   *) ok "#332: no SIGKILL is emitted when elapsed time is unknown";;
 esac
+
+# ==============================================================================
+section "scripts/conductor-e2e.sh: self-limiting, the PRIMARY mechanism (issue #468 AC 1/2)"
+# An orphaned harness (owner gone) must refuse to spawn a further retry
+# generation -- reproducing the incident directly: a bounded 3-attempt
+# loop that just kept looping as an orphan because nothing ever checked
+# whether its owner was still there.
+R468CE_ROOT="$TMP/r468ce"; mkdir -p "$R468CE_ROOT/scripts"
+cp "$ROOT/scripts/conductor-e2e.sh" "$R468CE_ROOT/scripts/conductor-e2e.sh"
+R468CE_RUNCOUNT="$TMP/r468ce-runcount"; rm -f "$R468CE_RUNCOUNT"
+cat > "$R468CE_ROOT/fwf-local-ci.sh" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = verdict ]; then echo "local-ci: no verdict"; exit 1; fi
+if [ "\$1" = run ]; then
+  c=0; [ -f "$R468CE_RUNCOUNT" ] && c="\$(cat "$R468CE_RUNCOUNT")"
+  echo "\$((c+1))" > "$R468CE_RUNCOUNT"
+  sleep 0.6
+  echo "local-ci: LAPSED (forced by this fixture, every attempt)"
+  exit 1
+fi
+STUB
+chmod +x "$R468CE_ROOT/fwf-local-ci.sh"
+
+R468CE_OUTFILE="$TMP/r468ce-out"; : > "$R468CE_OUTFILE"
+rm -f "$TMP/r468ce.pid"
+(
+  cd "$ROOT" || exit
+  nohup bash "$R468CE_ROOT/scripts/conductor-e2e.sh" >"$R468CE_OUTFILE" 2>&1 &
+  echo $! > "$TMP/r468ce.pid"
+)
+# Bounded-poll for the pidfile itself first (under load the subshell
+# above may not have flushed it to disk by the time we look), THEN for
+# the reparent-to-init to actually complete -- neither is instantaneous.
+for _wpid468 in $(seq 1 40); do
+  [ -s "$TMP/r468ce.pid" ] && break
+  sleep 0.25
+done
+R468CE_PID="$(cat "$TMP/r468ce.pid" 2>/dev/null)"
+for _worph468 in $(seq 1 40); do
+  R468CE_ORPHAN_PPID="$(ps -o ppid= -p "$R468CE_PID" 2>/dev/null | tr -d ' ')"
+  [ "$R468CE_ORPHAN_PPID" = "1" ] && break
+  sleep 0.25
+done
+if [ "$R468CE_ORPHAN_PPID" = "1" ]; then
+  ok "AC(1) precondition: the harness process is genuinely orphaned (ppid=1) before drawing any conclusion from it"
+else
+  bad "AC(1) precondition: the harness process is genuinely orphaned (ppid=1)" "ppid was '$R468CE_ORPHAN_PPID', not 1 -- the rest of this section proves nothing if this failed"
+fi
+for _w468 in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  kill -0 "$R468CE_PID" 2>/dev/null || break
+  sleep 0.5
+done
+kill -0 "$R468CE_PID" 2>/dev/null && kill -KILL "$R468CE_PID" 2>/dev/null   # bounded-wait safety net, never trust it exited on its own
+R468CE_OUT="$(cat "$R468CE_OUTFILE" 2>/dev/null)"
+R468CE_RUNS="$(cat "$R468CE_RUNCOUNT" 2>/dev/null || echo 0)"
+# AC 1's real requirement is "never a FURTHER generation once orphaned" --
+# 0 and 1 both satisfy that (0 means the owner-alive check at script start
+# already caught it, the strictest possible compliance; 1 means the
+# mid-loop re-check caught it after one attempt). Which of the two occurs
+# is a genuine race this fixture cannot pin: reparent-to-init is a kernel-
+# level bookkeeping step that completes as soon as the wrapper subshell
+# exits, which is USUALLY before the newly-exec'd conductor-e2e.sh even
+# gets its first CPU timeslice under real contention -- so ppid is often
+# already 1 by the time $PPID is captured, and 0 is the common case on a
+# loaded box, not the rare one. 2+ is the actual defect this AC exists to
+# catch (a further generation spawned after the owner is confirmed gone).
+case "$R468CE_RUNS" in
+  0|1) ok "AC(1): an orphaned harness never spawns a FURTHER retry generation (ran $R468CE_RUNS time(s), refused before a 2nd)" ;;
+  *) bad "AC(1): an orphaned harness never spawns a further retry generation" "ran $R468CE_RUNS times -- expected 0 or 1" ;;
+esac
+assert_contains "AC(1): the refusal names WHY -- a dead owner, not a generic error" "$R468CE_OUT" "owning process (pid $R468CE_ORPHAN_PPID"
+assert_contains "AC(1): the refusal states it is declining a further generation" "$R468CE_OUT" "refusing to spawn a further retry generation"
+
+# Regression: a LIVE owner throughout must behave exactly as before -- the
+# full #446 bounded-retry suite already exercises this end to end (every
+# one of those invocations runs synchronously as a child of test/run.sh
+# itself, whose PPID never dies mid-test), so this pins the ONE new
+# side-channel this ticket could have broken instead of re-deriving that
+# whole suite: the owner-liveness check must never itself abort a run
+# whose real owner is alive.
+R468CE_RUNCOUNT2="$TMP/r468ce-runcount2"; rm -f "$R468CE_RUNCOUNT2"
+cat > "$R468CE_ROOT/fwf-local-ci.sh" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = verdict ]; then echo "local-ci: no verdict"; exit 1; fi
+if [ "\$1" = run ]; then
+  c=0; [ -f "$R468CE_RUNCOUNT2" ] && c="\$(cat "$R468CE_RUNCOUNT2")"
+  echo "\$((c+1))" > "$R468CE_RUNCOUNT2"
+  echo "local-ci: LAPSED (forced by this fixture, every attempt)"
+  exit 1
+fi
+STUB
+chmod +x "$R468CE_ROOT/fwf-local-ci.sh"
+(cd "$ROOT" && bash "$R468CE_ROOT/scripts/conductor-e2e.sh" >/dev/null 2>&1)
+assert_eq "AC(1) regression: a LIVE-owned harness still runs its FULL bounded retry (3 attempts), never cut short" "3" "$(cat "$R468CE_RUNCOUNT2" 2>/dev/null || echo 0)"
+
+# ==============================================================================
+section "fwf-reap-orphans.sh: process-tree reaping, exact-PID, decoy survives (issue #468 AC 2/3/4/6)"
+REAP468() { # $1=fake server-epoch override, rest = args
+  local epoch="$1"; shift
+  FWF_PROFILE=example FWF_REAP_SERVER_EPOCH_OVERRIDE="$epoch" "$ROOT/fwf-reap-orphans.sh" "$@"
+}
+# Bounded-poll for a pid to reach ppid=1 (genuinely orphaned) -- a fixed
+# sleep after spawning is exactly the kind of race this floor's own tests
+# elsewhere (e.g. #312/#217's retry loops) already learned not to trust
+# under real contention: scheduling a background job, having its
+# immediate parent subshell exit, and the kernel completing the
+# reparent-to-init are none of them instantaneous under a loaded box.
+_r468_wait_orphaned() { # $1=pid -> rc 0 once ppid=1 is observed, rc 1 on timeout
+  local pid="$1" ppid _try
+  for _try in $(seq 1 40); do
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [ "$ppid" = "1" ] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+_r468_spawn_tree() { # $1=root dir -> pid (via stdout), a real orphaned test/run.sh-shaped tree
+  local root="$1" pid _try
+  mkdir -p "$root/test"
+  printf '#!/bin/sh\nsleep 300\n' > "$root/test/run.sh"
+  chmod +x "$root/test/run.sh"
+  ( cd "$root" && nohup bash test/run.sh >/dev/null 2>&1 & echo $! > "$root/.pid" )
+  for _try in $(seq 1 40); do
+    [ -s "$root/.pid" ] && break
+    sleep 0.25
+  done
+  pid="$(cat "$root/.pid" 2>/dev/null)"
+  _r468_wait_orphaned "$pid"
+  printf '%s' "$pid"
+}
+R468_A_PID="$(_r468_spawn_tree "$TMP/r468a")"     # will be judged ORPHANED
+R468_B_PID="$(_r468_spawn_tree "$TMP/r468b")"     # the DECOY: same shape, judged LIVE-OWNED
+R468_A_PPID="$(ps -o ppid= -p "$R468_A_PID" 2>/dev/null | tr -d ' ')"
+R468_B_PPID="$(ps -o ppid= -p "$R468_B_PID" 2>/dev/null | tr -d ' ')"
+if [ "$R468_A_PPID" = 1 ] && [ "$R468_B_PPID" = 1 ]; then
+  ok "AC(2)/(3)/(4) precondition: both candidate trees are genuinely orphaned (ppid=1) before any judgment is drawn"
+else
+  bad "AC(2)/(3)/(4) precondition: both candidate trees are genuinely orphaned (ppid=1)" "A ppid=$R468_A_PPID B ppid=$R468_B_PPID"
+fi
+
+NOW468="$(date +%s)"
+# A: told the fake server started an HOUR AFTER A did -> A predates it -> orphaned.
+R468_DRY_A="$(REAP468 $((NOW468 + 3600)) 2>&1)"
+assert_contains "AC(3): dry-run correctly flags the dead-owner tree as a would-reap candidate" "$R468_DRY_A" "DRY-RUN would reap pid $R468_A_PID"
+# B: told the fake server started an HOUR BEFORE B did -> B is presumed
+# legitimately daemonized under a still-live floor -> the decoy AC (2) names.
+R468_DRY_B="$(REAP468 $((NOW468 - 3600)) 2>&1)"
+case "$R468_DRY_B" in
+  *"pid $R468_B_PID"*) bad "AC(2): a decoy that started AFTER a live owner must never be listed as reapable, even in dry-run" "$R468_DRY_B" ;;
+  *) ok "AC(2): a decoy that started after a live owner is never listed as reapable" ;;
+esac
+
+# Live reap of A: proves the discriminator's "orphaned" verdict actually
+# terminates the tree, not just reports it (AC 3), and does so via exact
+# PID (the fixture's OWN process, never a name-pattern kill -- AC 4).
+R468_LIVE_A="$(REAP468 $((NOW468 + 3600)) --live 2>&1)"
+for _wkill468 in $(seq 1 20); do
+  kill -0 "$R468_A_PID" 2>/dev/null || break
+  sleep 0.25
+done
+if kill -0 "$R468_A_PID" 2>/dev/null; then
+  bad "AC(3): a --live sweep actually terminates the dead-owner tree" "pid $R468_A_PID is still alive after the sweep"
+  kill -KILL "$R468_A_PID" 2>/dev/null
+else
+  ok "AC(3): a --live sweep actually terminates the dead-owner tree"
+fi
+assert_contains "AC(6): the audit line names the PID that was reaped" "$R468_LIVE_A" "reaped pid $R468_A_PID"
+assert_contains "AC(6): the audit line names the owner-dead evidence" "$R468_LIVE_A" "owner dead"
+assert_contains "AC(6): the audit line names the root command reaped" "$R468_LIVE_A" "test/run.sh"
+
+# Live sweep targeting B's own qualifying epoch (the decoy's frame): must
+# survive -- proves AC (4)'s decoy claim under an ACTUAL kill attempt, not
+# just the dry-run report.
+REAP468 $((NOW468 - 3600)) --live >/dev/null 2>&1
+sleep 0.3
+if kill -0 "$R468_B_PID" 2>/dev/null; then
+  ok "AC(2)/(4): the decoy survives an ACTUAL --live sweep, not just a dry-run report"
+else
+  bad "AC(2)/(4): the decoy survives an ACTUAL --live sweep" "pid $R468_B_PID was killed"
+fi
+kill -KILL "$R468_B_PID" 2>/dev/null || true   # test cleanup, not part of the assertion
+
+# --------------------------------------------------------------------------
+section "fwf-reap-orphans.sh: a live-owned candidate is never touched, even under --live (issue #468 AC 7)"
+# A candidate whose DIRECT parent is still alive (never reparented at all)
+# must survive regardless of any server-epoch framing -- the ordinary
+# "safe to run concurrently with a real e2e run" case.
+R468C_ROOT="$TMP/r468c"; mkdir -p "$R468C_ROOT/test"
+printf '#!/bin/sh\nsleep 300\n' > "$R468C_ROOT/test/run.sh"; chmod +x "$R468C_ROOT/test/run.sh"
+# Backgrounded DIRECTLY in this shell (test/run.sh itself), never inside a
+# `( ... & )` subshell wrapper -- a wrapper subshell exits the instant the
+# background job is launched, which reparents the child to init exactly
+# like the orphan fixtures above and defeats the point of this test (a
+# LIVE, non-reparented direct parent). test/run.sh's own process stays
+# alive for the rest of this run, so $! stays correctly parented by it.
+bash -c "cd '$R468C_ROOT' && exec bash test/run.sh" &
+R468_C_PID=$!
+if [ -n "$R468_C_PID" ] && kill -0 "$R468_C_PID" 2>/dev/null; then
+  REAP468 $((NOW468 + 3600)) --live >/dev/null 2>&1
+  sleep 0.3
+  if kill -0 "$R468_C_PID" 2>/dev/null; then
+    ok "AC(7): a live-owned candidate (direct parent alive, never reparented) survives a --live sweep"
+  else
+    bad "AC(7): a live-owned candidate (direct parent alive) survives a --live sweep" "pid $R468_C_PID was killed"
+  fi
+  kill -KILL "$R468_C_PID" 2>/dev/null || true
+else
+  bad "AC(7) precondition: could not locate the live candidate's pid to test against" "pgrep found nothing"
+fi
+
+# --------------------------------------------------------------------------
+section "fwf-reap-orphans.sh: the kill bound fails closed (issue #468 AC 5)"
+R468D_PIDS=""
+for i in 1 2 3; do
+  p="$(_r468_spawn_tree "$TMP/r468d$i")"
+  R468D_PIDS="$R468D_PIDS $p"
+done
+R468D_BOUNDRUN="$TMP/r468d-run"; mkdir -p "$R468D_BOUNDRUN"
+FWF_RUN_DIR="$R468D_BOUNDRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" create --title "bound target" >/dev/null 2>&1   # id 1, the escalation's target
+R468D_OUT="$(FWF_PROFILE=example FWF_ISSUES=local FWF_RUN_DIR="$R468D_BOUNDRUN" FWF_REAP_ESCALATION_ISSUE=1 \
+  FWF_REAP_SERVER_EPOCH_OVERRIDE=$((NOW468 + 3600)) "$ROOT/fwf-reap-orphans.sh" --live --bound 2 2>&1)"; R468D_RC=$?
+assert_eq "AC(5): exceeding the bound refuses and exits distinctly (rc 2), not a silent success" "2" "$R468D_RC"
+assert_contains "AC(5): the refusal names the bound that was exceeded" "$R468D_OUT" "exceed the bound"
+R468D_SURVIVED=1
+for p in $R468D_PIDS; do kill -0 "$p" 2>/dev/null || R468D_SURVIVED=0; done
+[ "$R468D_SURVIVED" = 1 ] && ok "AC(5): exceeding the bound reaps NOTHING -- every candidate survives, fail closed" \
+  || bad "AC(5): exceeding the bound reaps NOTHING" "at least one candidate was killed despite the bound refusal"
+R468D_FLAGGED="$(FWF_RUN_DIR="$R468D_BOUNDRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" view 1 --json labels --jq '.labels[].name' 2>/dev/null)"
+assert_contains "AC(5): a real escalation was actually raised, not just refused silently" "$R468D_FLAGGED" "needs-captain"
+for p in $R468D_PIDS; do kill -KILL "$p" 2>/dev/null || true; done
+
+# --------------------------------------------------------------------------
+section "fwf-reap-orphans.sh: leaked fwf-selftest-* tmux sessions (issue #468 AC 10)"
+if command -v tmux >/dev/null 2>&1; then
+  R468T_DEAD_PID=999999
+  while kill -0 "$R468T_DEAD_PID" 2>/dev/null; do R468T_DEAD_PID=$((R468T_DEAD_PID + 1)); done
+  R468T_DEAD_SESS="fwf-selftest-468dead-${R468T_DEAD_PID}-build"
+  R468T_LIVE_SESS="fwf-selftest-468live-$$-coord"
+  tmux new-session -d -s "$R468T_DEAD_SESS" 2>/dev/null
+  tmux new-session -d -s "$R468T_LIVE_SESS" 2>/dev/null
+  FWF_PROFILE=example FWF_REAP_SERVER_EPOCH_OVERRIDE=$((NOW468 + 3600)) "$ROOT/fwf-reap-orphans.sh" --live >/dev/null 2>&1
+  if tmux has-session -t "$R468T_DEAD_SESS" 2>/dev/null; then
+    bad "AC(10): a leaked selftest session with a confirmed-dead owner pid is removed" "session still exists"
+    tmux kill-session -t "$R468T_DEAD_SESS" 2>/dev/null
+  else
+    ok "AC(10): a leaked selftest session with a confirmed-dead owner pid is removed"
+  fi
+  if tmux has-session -t "$R468T_LIVE_SESS" 2>/dev/null; then
+    ok "AC(10): a selftest session with a LIVE owner pid is left untouched"
+  else
+    bad "AC(10): a selftest session with a LIVE owner pid is left untouched" "session was killed"
+  fi
+  tmux kill-session -t "$R468T_LIVE_SESS" 2>/dev/null
+else
+  skip "fwf-reap-orphans.sh: leaked fwf-selftest-* tmux sessions (issue #468 AC 10) -- no tmux on this host" 2
+fi
+
+# --------------------------------------------------------------------------
+section "fwf-reap-orphans.sh: fixture dirs survive their own EXIT trap and are cleaned anyway (issue #468 AC 11)"
+# test/run.sh:46's own trap NEVER runs on SIGKILL -- reproduced for real:
+# spawn a bash subshell whose only job is to mkdir a fixture dir and then
+# sleep, SIGKILL it (never lets its own trap fire, if it even had one),
+# and confirm the reaper cleans the directory anyway, independent of that
+# trap ever running.
+R468F_DIR="${TMPDIR:-/tmp}/fwf-test.selftest468$$"
+rm -rf "$R468F_DIR"
+bash -c "mkdir -p '$R468F_DIR'; sleep 300" &
+R468F_SHELL_PID=$!
+for _wdir468 in $(seq 1 40); do
+  [ -d "$R468F_DIR" ] && break
+  sleep 0.25
+done
+if [ -d "$R468F_DIR" ]; then
+  ok "AC(11) precondition: the fixture dir exists before the SIGKILL"
+else
+  bad "AC(11) precondition: the fixture dir exists before the SIGKILL" "mkdir never completed in time"
+fi
+kill -KILL "$R468F_SHELL_PID" 2>/dev/null
+wait "$R468F_SHELL_PID" 2>/dev/null
+if [ -d "$R468F_DIR" ]; then
+  ok "AC(11) precondition: a SIGKILL leaves the fixture dir behind (no EXIT trap ever ran) -- reproducing the incident's own mechanism"
+else
+  bad "AC(11) precondition: a SIGKILL leaves the fixture dir behind" "the directory is already gone -- something else cleaned it, this test proves nothing"
+fi
+# Below the sweep's own age floor -- must NOT be swept yet (a run mid-
+# startup must never be raced).
+R468F_DRY_TOO_YOUNG="$(FWF_PROFILE=example FWF_REAP_FIXTURE_MIN_AGE_SECS=999999 "$ROOT/fwf-reap-orphans.sh" 2>&1)"
+case "$R468F_DRY_TOO_YOUNG" in
+  *"$R468F_DIR"*) bad "AC(11): a fixture dir younger than the minimum age is never swept" "$R468F_DRY_TOO_YOUNG" ;;
+  *) ok "AC(11): a fixture dir younger than the minimum age is never swept" ;;
+esac
+# Past the age floor: cleaned, independent of the EXIT trap that never ran.
+R468F_LIVE="$(FWF_PROFILE=example FWF_REAP_FIXTURE_MIN_AGE_SECS=0 "$ROOT/fwf-reap-orphans.sh" --live 2>&1)"
+if [ -d "$R468F_DIR" ]; then
+  bad "AC(11): a SIGKILLed run's fixture dir is cleaned by the sweep, independent of the EXIT trap" "directory still present: $R468F_LIVE"
+else
+  ok "AC(11): a SIGKILLed run's fixture dir is cleaned by the sweep, independent of the EXIT trap"
+fi
+
+# --------------------------------------------------------------------------
+section "fwf-gate.sh: the sweep's obliged call site + cadence (issue #468 AC 8/9)"
+FGSRC="$(cat "$ROOT/fwf-gate.sh")"
+assert_contains "AC(8): fwf-gate.sh's --e2e path invokes the sweep -- a named, obliged call site, not a promise" "$FGSRC" 'fwf-reap-orphans.sh" --live'
+# The call site fires unconditionally inside the want_e2e branch, i.e. on
+# EVERY --e2e gate invocation -- never a separate scheduler this AC's own
+# body warns against ("a new scheduler is a second thing that can die
+# silently"). Assert it precedes the lock acquire, so a busy floor (the
+# lock defers) still gets swept -- exactly when a stray tree is likeliest
+# to be sitting uncollected.
+case "$FGSRC" in
+  *'fwf-reap-orphans.sh" --live'*'fwf_e2e_lock_acquire "$role"'*)
+    ok "AC(8): the sweep call precedes the e2e lock acquire, so it still fires on a busy-floor SKIP" ;;
+  *) bad "AC(8): the sweep call precedes the e2e lock acquire" "either the call or the acquire is missing/reordered" ;;
+esac
+# AC(9): the cadence must beat the ~22min threat this ticket measured.
+# The conductor's own per-cycle interval (config.sh) IS that cadence,
+# since the call site above fires on every one of its cycles.
+assert_contains "AC(9): the conductor's own per-cycle interval is the sweep's cadence (no separate timer)" \
+  "$(cat "$ROOT/config.sh")" 'CONDUCTOR_INTERVAL="${FWF_CONDUCTOR_INTERVAL:-2m}"'
+CONDUCTOR_CADENCE_MIN=2   # shipped CONDUCTOR_INTERVAL default, asserted above
+GENERATION_THREAT_MIN=22  # #468's own measured retry-generation interval
+[ "$CONDUCTOR_CADENCE_MIN" -lt "$GENERATION_THREAT_MIN" ] && ok "AC(9): that cadence (2m default) is faster than the measured ~22min generation interval it must beat" \
+  || bad "AC(9): that cadence is faster than the measured threat" "2m is not faster than 22m"
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1

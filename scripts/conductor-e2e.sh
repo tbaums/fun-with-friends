@@ -57,6 +57,69 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SHA="$(git rev-parse HEAD 2>/dev/null)"
 FWF_CONDUCTOR_E2E_MAX_ATTEMPTS="${FWF_CONDUCTOR_E2E_MAX_ATTEMPTS:-3}"
 
+# issue #468 AC (1)/(2): SELF-LIMITING, the primary mechanism -- a harness
+# run whose owner is gone must not spawn a further retry generation. This
+# is what closes the incident directly: fwf-gate.sh runs this script as a
+# background child of ITSELF (lib.sh's own process-group comments -- "the
+# wrapped command now runs in its OWN process group"), so our $PPID at
+# start IS the real owning process. If that owner dies (fwf-gate.sh's own
+# tree SIGKILLed by the OOM killer, or the session that spawned it torn
+# down), we get reparented to init and $PPID no longer reflects it -- but
+# the value captured at start still does, which is why it is read ONCE
+# here rather than re-read from $PPID at check time.
+#
+# Deliberately self-contained (no `source lib.sh`): this script has never
+# depended on the profile/config machinery lib.sh pulls in, and pulling
+# it in just for one portable helper would make every isolated-copy test
+# of this file (there are several) also need to carry lib.sh's own
+# dependency tree along. `_ce2e_ps_elapsed_secs` below is a copy of
+# lib.sh's `_fwf_ps_elapsed_secs` (issue #332: `ps -o etime=`, portable
+# across GNU/BSD, unlike the GNU-only `etimes`) -- keep the two in sync if
+# either changes.
+_ce2e_ps_elapsed_secs() { # $1=pid
+  local et d h m sec
+  et="$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ')"
+  [ -n "$et" ] || return 0
+  case "$et" in *-*) d="${et%%-*}"; et="${et#*-}";; *) d=0;; esac
+  case "$et" in
+    *:*:*) h="${et%%:*}"; et="${et#*:}"; m="${et%%:*}"; sec="${et##*:}";;
+    *:*)   h=0;           m="${et%%:*}"; sec="${et##*:}";;
+    *)     return 0;;
+  esac
+  case "$d$h$m$sec" in *[!0-9]*) return 0;; esac
+  printf '%s' "$(( 10#$d*86400 + 10#$h*3600 + 10#$m*60 + 10#$sec ))"
+}
+#
+# Corroborated against PID reuse (issue #195's own guard, reused here):
+# the SAME owner's elapsed time only ever grows across our own run: a
+# SMALLER reading than what we captured at start means some UNRELATED
+# process has since taken that PID number, not that our real owner is
+# still there. An unreadable elapsed time (either time) is INDETERMINATE,
+# not proof of reuse -- this check fails OPEN, matching this repo's
+# anti-stall posture for a checkpoint that only refuses ourselves (the
+# DESTRUCTIVE reaper in fwf-reap-orphans.sh is where fail-closed belongs;
+# a false refusal here is nearly free -- the next conductor cycle just
+# retries -- while a false kill there is not).
+_FWF_CE2E_OWNER_PID="$PPID"
+_FWF_CE2E_OWNER_ELAPSED0="$(_ce2e_ps_elapsed_secs "$_FWF_CE2E_OWNER_PID" 2>/dev/null || true)"
+_fwf_ce2e_owner_alive() {
+  [ -n "$_FWF_CE2E_OWNER_PID" ] && [ "$_FWF_CE2E_OWNER_PID" -gt 1 ] 2>/dev/null || return 1
+  kill -0 "$_FWF_CE2E_OWNER_PID" 2>/dev/null || return 1
+  if [ -n "$_FWF_CE2E_OWNER_ELAPSED0" ]; then
+    local now_elapsed
+    now_elapsed="$(_ce2e_ps_elapsed_secs "$_FWF_CE2E_OWNER_PID" 2>/dev/null || true)"
+    if [ -n "$now_elapsed" ] && [ "$now_elapsed" -lt "$_FWF_CE2E_OWNER_ELAPSED0" ]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+_fwf_ce2e_refuse_generation() {
+  echo "conductor-e2e: owning process (pid $_FWF_CE2E_OWNER_PID) is gone -- refusing to spawn a further retry generation (issue #468). This run's own tick is orphaned; exiting rather than looping unbounded." >&2
+  exit 1
+}
+_fwf_ce2e_owner_alive || _fwf_ce2e_refuse_generation
+
 # LOCAL CI FIRST (operator direction 2026-08-29): the box has 332G free, 17G
 # RAM and 12 cores, so a suite we already ran here is the fastest and most
 # reliable oracle available -- GitHub evicted 5 jobs today and had not even
@@ -126,6 +189,11 @@ while [ "$attempt" -le "$FWF_CONDUCTOR_E2E_MAX_ATTEMPTS" ]; do
   if ! printf '%s\n' "$run_out" | grep -q "LAPSED"; then
     exit "$run_rc"
   fi
+  # issue #468 AC (1): re-check before EVERY further generation, not just
+  # once at start -- a single full "$LOCAL" run above is exactly the
+  # ~22min unit the incident measured, so the owner can die at any point
+  # during it, not only before the loop began.
+  _fwf_ce2e_owner_alive || _fwf_ce2e_refuse_generation
   attempt=$((attempt + 1))
 done
 

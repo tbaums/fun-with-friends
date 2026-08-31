@@ -462,6 +462,20 @@ _fwf_gate_signal_cleanup() {
 trap _fwf_gate_signal_cleanup TERM INT HUP
 
 if [ "$want_e2e" = 1 ]; then
+  # issue #468 AC (8)/(9): the OBLIGED call site for the orphan/fixture
+  # sweep -- fires on EVERY --e2e gate invocation, never a new scheduler
+  # (a new scheduler is a second thing that can die silently). Bound to
+  # something that already runs every cycle, exactly as #469's own AC (2)
+  # shape asks: the conductor's own per-cycle interval (config.sh's
+  # CONDUCTOR_INTERVAL, 2m default) is already far faster than the ~22min
+  # retry-generation interval this closes (the incident's own measured
+  # threat), so binding to this call site alone beats it with no extra
+  # cadence logic needed. Runs BEFORE the lock acquire below, so a busy
+  # floor (where the lock defers) still gets swept -- that is exactly
+  # when a stray tree is most likely to be sitting around uncollected.
+  # Best-effort and non-fatal: a sweep failure must never block a real
+  # e2e run, since the reap is a safety net, not a gate.
+  "$DIR/fwf-reap-orphans.sh" --live >&2 || true
   e2e_lease="$(fwf_e2e_lock_acquire "$role")" || { echo "fwf gate: e2e lock busy, deferring" >&2; exit "$EX_SKIPPED"; }
   e2e_held=1
   read -r e2e_lane e2e_port e2e_data_dir <<<"$e2e_lease"

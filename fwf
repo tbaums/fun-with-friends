@@ -1186,6 +1186,7 @@ case "$cmd" in
   claim)     engine fwf-claim.sh "$@";;
   ungate)    engine fwf-ungate.sh "$@";;
   claim-liveness) engine fwf-claim-liveness.sh "$@";;
+  reap-orphans) engine fwf-reap-orphans.sh "$@";;
   auth)      engine fwf-auth.sh "$@";;
   budget-check) engine fwf-budget-check.sh "$@";;
   reconcile) engine fwf-reconcile.sh "$@";;
