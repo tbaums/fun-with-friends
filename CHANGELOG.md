@@ -11,6 +11,42 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-31
+
+### Added
+
+- **`fwf dash` flags a live pane whose heartbeat has stalled** (#450, code
+  9fb136c, docs none — no doc change rode with it) — a pane that keeps cycling
+  its loop while its own tick file stops advancing now reads as stalled instead
+  of healthy.
+
+### Fixed
+
+- **Gate verdicts were non-deterministic on lint findings** (#447, code 9adfb49,
+  docs none — internal) — the same tree could report green or red depending on
+  whether the linter was reachable.
+- **A green local-CI verdict could mean "the check never ran"** (#446, code
+  d056947, docs none — internal) — a skipped check now says so
+  (`green-lint-skipped`) rather than reading as a clean pass.
+- **A SHA that failed twice read "green" to every consumer** (#436, code
+  62976d2, docs none — internal).
+- **A persistently-lapsing check now bounds its retry and settles explicitly**
+  (#457, code 6b57e7a, docs 6b57e7a) — repeated lapses resolve to
+  INDETERMINATE instead of retrying without limit.
+- **`fwf-respawn`'s roster fallback is scoped to the beyond-floor case** (#452,
+  code 0c6d415, docs 0c6d415) — respawning pairs 3-4 on a wider floor no longer
+  refuses on a stale `FWF_PAIRS`.
+- **Respawn tests retry the whole pane/pid discovery chain** (#460, code
+  eefd30f, docs none — internal, tests only).
+- **shellcheck SC2034 findings that blocked the lint gate** (#458, code
+  c9a338d, docs none — internal, tests only) — the captured output is now
+  consumed by real assertions rather than discarded.
+
+### Internal
+
+- The unscoped roster union (`0b63b2b`) was reverted in `8f29fd0` and re-landed
+  scoped as `0c6d415` (#452); the pair nets to no change in this release.
+
 ## [0.40.0] - 2026-08-30
 
 ### Added
