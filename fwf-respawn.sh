@@ -60,7 +60,23 @@ fi
 # genuinely scaled-down seat's entries are removed by `fwf scale`
 # (fwf-scale.sh), so this widens what counts as present -- it does not
 # resurrect a seat the operator deliberately removed.
-if [ -n "$id" ]; then
+#
+# Scoped to id > FWF_PAIRS only (issue #460): a seat already within the
+# profile default passes on the cheap integer comparison alone, same as
+# pre-#452 -- zero subprocess cost. The first version of this fix ran
+# fwf_roster_names (a fork-heavy pipeline: brace-group, `while read`,
+# `sort -u`, plus a `basename` fork per heartbeat entry) unconditionally,
+# for EVERY respawn, including this common in-floor case that never
+# needed it. Under host contention that added synchronous latency was
+# enough to blow through #217/#312's own respawn tests' deliberately
+# tight verify windows (FWF_RESPAWN_VERIFY_MARGIN=1,
+# FWF_HEARTBEAT_POLL_SECS=1), producing "pid not found" / "env not
+# observed in time" failures with nothing actually wrong in auth or env
+# forwarding -- a real regression traced to added cost on the hot path,
+# not a flake and not a forwarding bug. Restricting the roster lookup to
+# only the case it exists for (a seat beyond the profile default) removes
+# that cost from the common path entirely.
+if [ -n "$id" ] && [ "$id" -gt "$FWF_PAIRS" ]; then
   if [ ! -d "$FWF_STATE_DIR/heartbeat" ]; then
     echo "fwf-respawn: $FWF_STATE_DIR/heartbeat is missing/unreadable -- falling back to the configured floor only (FWF_PAIRS=$FWF_PAIRS)" >&2
   fi

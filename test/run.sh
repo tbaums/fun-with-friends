@@ -4098,11 +4098,28 @@ GHSTUB
   F452_NOHB_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" qa5 2>&1)"
   assert_contains "AC(6): a missing heartbeat dir is named, not silently trusted as complete" \
     "$F452_NOHB_OUT" "missing/unreadable -- falling back to the configured floor only"
+
+  # --- issue #460: a seat WITHIN the profile default never consults the
+  # roster/state fallback at all -- same zero-subprocess-cost fast path as
+  # pre-#452, restored after the union check regressed #217/#312's own
+  # tight-window respawn tests by running fwf_roster_names (fork-heavy:
+  # brace-group, `while read`, `sort -u`, plus a `basename` fork per
+  # heartbeat entry) unconditionally on every respawn, including this
+  # common in-floor case that never needed it. Same fixture shape as
+  # AC(6) above (no heartbeat dir at all, no live tmux session) -- if the
+  # fast path is genuinely skipping the fallback, an in-floor respawn
+  # never reaches the heartbeat-dir check and so never names it, unlike
+  # AC(6)'s out-of-floor qa5 case just above.
+  F460_INFLOOR_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" impl1 2>&1)"
+  assert_not_contains "issue #460: a seat WITHIN the profile default never triggers the heartbeat-dir fallback check" \
+    "$F460_INFLOOR_OUT" "missing/unreadable -- falling back to the configured floor only"
+  assert_not_contains "issue #460: ...nor the 'beyond both' refusal path (it was never in scope for the union check)" \
+    "$F460_INFLOOR_OUT" "beyond both the configured floor"
 else
   skip "real-tmux floor-lifecycle wiring tests (tmux not installed)" 60
   skip "real-tmux issue #190 --pairs live-floor tests (tmux not installed)" 10
   skip "real-tmux issue #210 fwf scale tests (tmux not installed)" 35
-  skip "real-tmux issue #452 fwf-respawn floor-size tests (tmux not installed)" 12
+  skip "real-tmux issue #452 fwf-respawn floor-size tests (tmux not installed)" 14
 fi
 
 section "floor-down cooldown guard (issue #88, per-plane by #105): fwf_plane_last_up_epoch / fwf_plane_cooldown_remaining"
