@@ -174,10 +174,10 @@ main() {
   # Run (A)+(B) over EVERY linked PR, report each -- never pick one (issue
   # #420 AC1): a multi-PR issue can have one hollow-merged PR and one real
   # open one, and picking either alone yields a confident, opposite answer.
-  local pr merged head_sha head_ref state main_sha rc_a b_result any_shipped=0 not_shipped_prs=()
+  local pr merged head_sha head_ref state main_sha rc_a b_result any_shipped=0 not_shipped_prs=() landed_sha
   for pr in "${linked_prs[@]}"; do
     local pr_json
-    pr_json="$(_shipped_gh api "repos/$(fwf_repo_slug)/pulls/$pr" --jq '{merged, head_sha:.head.sha, head_ref:.head.ref, state}' 2>/dev/null)"
+    pr_json="$(_shipped_gh api "repos/$(fwf_repo_slug)/pulls/$pr" --jq '{merged, head_sha:.head.sha, head_ref:.head.ref, state, merge_commit_sha:.merge_commit_sha}' 2>/dev/null)"
     if [ -z "$pr_json" ]; then
       echo "PR #$pr: NO COMPARISON -- could not read the PR"
       not_shipped_prs+=("$pr")
@@ -192,15 +192,25 @@ main() {
     fi
     head_sha="$(printf '%s' "$pr_json" | jq -r '.head_sha')"
     head_ref="$(printf '%s' "$pr_json" | jq -r '.head_ref')"
+    # issue #470 AC2: (A) asks "did the LANDED commit reach main" -- for a
+    # squash or rebase merge, that is merge_commit_sha, never head_sha (a
+    # squash's head is never an ancestor of anything; a rebase's head is
+    # rewritten onto the base, so it isn't either). Unconditional, not
+    # strategy-dependent: merge_commit_sha is populated for all three merge
+    # strategies (merge/squash/rebase), so head_sha is only ever a fallback
+    # for the data-absent case (merge_commit_sha literally null), never a
+    # per-strategy choice -- that distinction is what AC2 requires.
+    landed_sha="$(printf '%s' "$pr_json" | jq -r '.merge_commit_sha // empty')"
+    [ -n "$landed_sha" ] || landed_sha="$head_sha"
 
-    main_sha="$(_shipped_check_a "$head_sha")"; rc_a=$?
+    main_sha="$(_shipped_check_a "$landed_sha")"; rc_a=$?
     if [ "$rc_a" -eq 2 ]; then
       echo "PR #$pr: NO COMPARISON -- could not fetch/resolve origin/$DEFAULT_BRANCH"
       not_shipped_prs+=("$pr")
       continue
     fi
     if [ "$rc_a" -ne 0 ]; then
-      echo "PR #$pr: NOT SHIPPED -- (A) FAIL: merged head $head_sha is NOT an ancestor of origin/$DEFAULT_BRANCH ($main_sha)"
+      echo "PR #$pr: NOT SHIPPED -- (A) FAIL: landed commit $landed_sha is NOT an ancestor of origin/$DEFAULT_BRANCH ($main_sha)"
       not_shipped_prs+=("$pr")
       continue
     fi
@@ -208,10 +218,10 @@ main() {
     b_result="$(_shipped_check_b "$head_sha" "$head_ref" "$main_sha")"
     case "$b_result" in
       EMPTY)
-        echo "PR #$pr: SHIPPED -- (A) OK, (B) OK: merged head $head_sha is on origin/$DEFAULT_BRANCH ($main_sha), nothing landed on '$head_ref' after the merge"
+        echo "PR #$pr: SHIPPED -- (A) OK, (B) OK: landed commit $landed_sha is on origin/$DEFAULT_BRANCH ($main_sha), nothing landed on '$head_ref' after the merge"
         any_shipped=1 ;;
       NO_BRANCH)
-        echo "PR #$pr: SHIPPED -- (A) OK, (B) no comparison: head branch '$head_ref' no longer exists (expected shape for a clean delete-on-merge)"
+        echo "PR #$pr: SHIPPED -- (A) OK (landed commit $landed_sha is on origin/$DEFAULT_BRANCH ($main_sha)), (B) no comparison: head branch '$head_ref' no longer exists (expected shape for a clean delete-on-merge)"
         any_shipped=1 ;;
       CLEAN\ *)
         echo "PR #$pr: SHIPPED -- (A) OK, (B) OK: ${b_result#CLEAN } commit(s) landed on '$head_ref' after the merge, all present on origin/$DEFAULT_BRANCH ($main_sha) via another route"
