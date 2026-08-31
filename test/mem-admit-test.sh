@@ -333,6 +333,47 @@ kill -0 "$AC6_PID" 2>/dev/null && ok "AC6: the live group survives an empty-acqu
   || bad "AC6: the live group survives an empty-acquired call" "pid $AC6_PID is gone -- it was killed despite no acquired evidence"
 kill -KILL "$AC6_PID" 2>/dev/null
 
+echo "== qa4 adversarial: a CROSS-HOST reservation whose pgid COLLIDES with a real live local process is still never signalled =="
+# The #478 fix drives _fwf_mem_admit_reap's same-host branch off pgid
+# liveness instead of pid liveness. That raises a question the ticket's
+# own edge-case list doesn't spell out explicitly: what if a cross-host
+# reservation's numeric pgid happens to match a REAL, currently-alive
+# LOCAL process? The staleness branch never calls kill -0 on it -- but if
+# some future refactor let it fall through to _fwf_kill_orphan_group with
+# the reservation's actual "host" field, the pre-existing top-of-function
+# guard (`[ "$host" = "$(hostname)" ] || return 0`) must be what stops a
+# same-numbered-but-foreign-host pgid from ever being signalled, not an
+# accident of the staleness math. Assert that guard directly against a
+# REAL live local pgid, not just an impossible one.
+perl -e '
+  use POSIX qw(setpgid);
+  setpgid(0,0) or die "setpgid: $!";
+  open(STDIN,  "<", "/dev/null");
+  open(STDOUT, ">", "/dev/null");
+  open(STDERR, ">", "/dev/null");
+  sleep 120;
+' &
+QA4_COLLIDE_PID=$!
+STRAYS+=("$QA4_COLLIDE_PID")
+QA4_COLLIDE_PGID=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  QA4_COLLIDE_PGID="$(ps -o pgid= -p "$QA4_COLLIDE_PID" 2>/dev/null | tr -d ' ')"
+  [ "$QA4_COLLIDE_PGID" = "$QA4_COLLIDE_PID" ] && break
+  sleep 0.2
+done
+[ "$QA4_COLLIDE_PGID" = "$QA4_COLLIDE_PID" ] || bad "qa4 adversarial precondition: constructed a real live process group" "pgid=$QA4_COLLIDE_PGID pid=$QA4_COLLIDE_PID"
+# A reservation claiming a FOREIGN host, but stamping OUR real live pgid
+# and pgleader=1, with an ancient acquired timestamp (so age-based
+# staleness alone would treat it as reapable).
+printf 'role=qa4collide478\npid=999999999\npgid=%s\npgleader=1\nhost=some-other-host-qa4-478\nreserved_gb=1\nacquired=%s\n' \
+  "$QA4_COLLIDE_PGID" "$(( $(date +%s) - 999999 ))" > "$MEM_ADMIT/res-qa4collide478"
+FWF_MEM_ADMIT_STALE_SECS=1 _fwf_mem_admit_reap
+[ ! -f "$MEM_ADMIT/res-qa4collide478" ] && ok "qa4 adversarial: the stale cross-host reservation is still dropped from the store" \
+  || bad "qa4 adversarial: the stale cross-host reservation is dropped from the store" "entry survived -- reap silently skipped it"
+kill -0 "$QA4_COLLIDE_PID" 2>/dev/null && ok "qa4 adversarial: a cross-host record can NEVER SIGKILL a same-numbered LOCAL pgid (host guard holds)" \
+  || bad "qa4 adversarial: a cross-host record never signals a colliding local pgid" "pid $QA4_COLLIDE_PID is gone -- a foreign-host record killed a real local process group"
+kill -KILL "$QA4_COLLIDE_PID" 2>/dev/null
+
 echo "== fwf-gate.sh: it becomes a process-group leader (pgid == pid) =="
 # Wrap a command that records the GATE's own pid and pgid, then exits fast.
 PGF="$TMP/gate-pgid.txt"
