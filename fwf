@@ -311,6 +311,16 @@ UTILITIES
                          (issue #385). Auto-clears once the PR gets an
                          explicit fwf-Reviewer: marker. Run every captain
                          tick, same as flag-captain sweep.
+  gate-verdict-watchdog sweep [--role ROLE]
+                         Raise a needs-captain flag if a recorded GREEN
+                         gate-tip verdict for ROLE (default "conductor")
+                         has not been promoted into the integration branch
+                         within FWF_GATE_VERDICT_WATCHDOG_WINDOW_SECS
+                         (default 1200s) — a correct verdict nobody acted
+                         on (issue #469). Suppressed by a superseding
+                         verdict or an active release freeze; re-announces
+                         on the same interval while the stall persists. Run
+                         every captain tick, same as flag-captain sweep.
   usage [--clear-hold|--clear-unknown-log]
                          Per-role token usage + an estimated $ equivalent,
                          read from each role's own Claude Code session
@@ -1175,6 +1185,7 @@ case "$cmd" in
   flag-captain) engine fwf-flag-captain.sh "$@";;
   operator-decision) engine fwf-operator-decision.sh "$@";;
   pr-route-check) engine fwf-pr-route-check.sh "$@";;
+  gate-verdict-watchdog) engine fwf-gate-verdict-watchdog.sh "$@";;
   usage)     engine fwf-usage.sh "$@";;
   supervise) engine fwf-supervise.sh "$@";;
   gate)      engine fwf-gate.sh "$@";;
