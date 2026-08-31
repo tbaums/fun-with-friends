@@ -14303,6 +14303,8 @@ green"
 CE2E446_LG_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E446_LG_RC=$?
 assert_eq "lapse-then-green: exits 0 once the retry succeeds" "0" "$CE2E446_LG_RC"
 assert_eq "lapse-then-green: ran exactly 2 attempts (1 lapse + 1 real run), not more" "2" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+assert_contains "lapse-then-green: output narrates the lapse that triggered the retry" "$CE2E446_LG_OUT" "LAPSED"
+assert_contains "lapse-then-green: output narrates the eventual real green" "$CE2E446_LG_OUT" "GREEN"
 assert_eq "lapse-then-green: mark-indeterminate is never called on a resolved lapse" "false" \
   "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
 
@@ -14326,6 +14328,8 @@ green"
 CE2E446_RED_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E446_RED_RC=$?
 assert_eq "real red: exits non-zero" "1" "$CE2E446_RED_RC"
 assert_eq "real red: ran exactly 1 attempt -- a real failure is never retried, unlike a lapse" "1" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+assert_contains "real red: output narrates the real red, not a lapse" "$CE2E446_RED_OUT" "RED"
+assert_not_contains "real red: output never claims a lapse it didn't have" "$CE2E446_RED_OUT" "LAPSED"
 assert_eq "real red: mark-indeterminate is never called -- this is a genuine red, not an exhausted lapse" "false" \
   "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
 
@@ -14336,6 +14340,148 @@ CE2E446_CACHED_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/
 assert_eq "cached lapsed verdict: exits 0 once the fresh run is green" "0" "$CE2E446_CACHED_RC"
 assert_not_contains "cached lapsed verdict: never reports the #385 skip message" "$CE2E446_CACHED_OUT" "local CI already GREEN"
 assert_eq "cached lapsed verdict: a real run actually happened (not trusted as a skip)" "1" "$(cat "$CE2E446_COUNTER" 2>/dev/null)"
+
+# --------------------------------------------------------------------------
+section "scripts/conductor-e2e.sh (issue #457): a PERSISTENTLY-lapsing check backs off across invocations, never spins forever"
+# #446's own bound (3 attempts, tested just above) only bounds ONE
+# invocation -- #457's own incident was every ~2min conductor tick
+# independently re-running that SAME 3-attempt cycle against a box that
+# structurally could not give the check room to run: 78 minutes, 4 full
+# suites, zero verdict advance. The fix consults fwf-local-ci.sh's own
+# pre-existing lapse-streak counter (#446 AC 3) BEFORE starting a fresh
+# cycle, so this stub controls it directly rather than trying to build up
+# a real streak via repeated runs.
+CE2E457_COUNTER="$TMP/ce2e457-counter"
+CE2E457_PLAN="$TMP/ce2e457-plan"
+CE2E457_INDET="$TMP/ce2e457-indet"
+ce2e_stub457() { # $1=streak $2=indeterminate-recent age text ("" = not recently marked) $3=newline run outcomes
+  rm -f "$CE2E457_COUNTER" "$CE2E457_INDET"
+  printf '%s\n' "$3" > "$CE2E457_PLAN"
+  local streak_val="$1" indet_val="$2"
+  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = verdict ]; then
+  echo "local-ci: no verdict recorded for \$2" >&2; exit 1
+fi
+if [ "\$1" = lapse-streak ]; then
+  echo "$streak_val"; exit 0
+fi
+if [ "\$1" = indeterminate-recent ]; then
+  if [ -n "$indet_val" ]; then echo "$indet_val"; exit 0; else exit 1; fi
+fi
+if [ "\$1" = run ]; then
+  n="\$(cat "$CE2E457_COUNTER" 2>/dev/null || echo 0)"; n=\$((n + 1)); echo "\$n" > "$CE2E457_COUNTER"
+  outcome="\$(sed -n "\${n}p" "$CE2E457_PLAN")"
+  [ -n "\$outcome" ] || outcome="\$(tail -1 "$CE2E457_PLAN")"
+  case "\$outcome" in
+    green)  echo "local-ci: GREEN -- stub run \$n"; exit 0 ;;
+    lapsed) echo "local-ci: LAPSED -- stub run \$n, shellcheck never ran"; exit 1 ;;
+    red)    echo "local-ci: RED -- stub run \$n"; exit 1 ;;
+  esac
+fi
+if [ "\$1" = mark-indeterminate ]; then
+  echo "\$2 \$3" > "$CE2E457_INDET"
+  exit 0
+fi
+STUB
+  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+}
+
+# AC (1) control: a LOW streak (below the backoff threshold) is unaffected
+# -- the existing #446 retry loop runs exactly as it did before this ticket.
+ce2e_stub457 2 "" "lapsed
+green"
+CE2E457_LOW_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E457_LOW_RC=$?
+assert_eq "low streak: exits 0, unaffected by the new check" "0" "$CE2E457_LOW_RC"
+assert_not_contains "low streak: never mentions backing off" "$CE2E457_LOW_OUT" "backing off"
+assert_eq "low streak: still ran 2 real attempts (lapse then green), same as before this ticket" "2" "$(cat "$CE2E457_COUNTER" 2>/dev/null)"
+
+# AC (1): a HIGH streak but this exact SHA was NOT recently marked
+# indeterminate -- probes ONCE (still gives the box one real chance) rather
+# than either extreme (retrying blind forever, or refusing without ever
+# checking again).
+ce2e_stub457 8 "" "green"
+CE2E457_PROBE_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E457_PROBE_RC=$?
+assert_eq "high streak, not recently marked: probes once, exits 0 on a genuine green" "0" "$CE2E457_PROBE_RC"
+assert_contains "high streak, not recently marked: says it is probing" "$CE2E457_PROBE_OUT" "probing once"
+assert_eq "high streak, not recently marked: exactly 1 real attempt happened" "1" "$(cat "$CE2E457_COUNTER" 2>/dev/null)"
+
+# AC (1): a HIGH streak AND this exact SHA was JUST marked indeterminate --
+# backs off IMMEDIATELY, spending ZERO suite runs this cycle. This is the
+# actual #457 fix: the case that used to burn ~70 minutes rediscovering the
+# same exhaustion is now a single, fast, no-op refusal.
+ce2e_stub457 8 "indeterminate 12s ago (cooldown 900s)" "green"
+CE2E457_BACKOFF_OUT="$(cd "$ROOT" && _portable_timeout 30 bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E457_BACKOFF_RC=$?
+assert_eq "high streak, recently marked: exits non-zero (never a silent green)" "1" "$CE2E457_BACKOFF_RC"
+assert_contains "high streak, recently marked: names the backoff explicitly" "$CE2E457_BACKOFF_OUT" "backing off"
+assert_contains "high streak, recently marked: names the streak count" "$CE2E457_BACKOFF_OUT" "lapsed 8 consecutive times"
+assert_eq "high streak, recently marked: ZERO suite runs this cycle (the fix -- no counter file at all)" "" \
+  "$(cat "$CE2E457_COUNTER" 2>/dev/null)"
+
+# --------------------------------------------------------------------------
+section "fwf-local-ci.sh indeterminate-recent (issue #457): the cooldown clock, keyed off mark-indeterminate's own marker file"
+LCI457_ROOT="$TMP/lci457-root"; mkdir -p "$LCI457_ROOT/test"
+cp "$ROOT/fwf-local-ci.sh" "$LCI457_ROOT/fwf-local-ci.sh"
+( cd "$LCI457_ROOT" && git init -q . && git config user.email t@t.com && git config user.name t )
+LCI457RUN="$TMP/lci457-run"
+LCI457() { ( cd "$LCI457_ROOT" && FWF_RUN="$LCI457RUN" bash fwf-local-ci.sh "$@" ); }
+LCI457_SHA="deadbeef457"
+
+LCI457 indeterminate-recent "$LCI457_SHA" 900 >/dev/null 2>&1
+assert_eq "AC(1): never marked -> not recent (exit 1)" "1" "$?"
+
+LCI457 mark-indeterminate "$LCI457_SHA" "lint gate lapsed 3/3 attempts" >/dev/null 2>&1
+LCI457_RECENT_OUT="$(LCI457 indeterminate-recent "$LCI457_SHA" 900)"; LCI457_RECENT_RC=$?
+assert_eq "AC(1): just marked, well inside the cooldown -> recent (exit 0)" "0" "$LCI457_RECENT_RC"
+assert_contains "AC(1): names the age" "$LCI457_RECENT_OUT" "0s ago"
+assert_contains "AC(1): names the cooldown window" "$LCI457_RECENT_OUT" "cooldown 900s"
+
+LCI457 indeterminate-recent "$LCI457_SHA" 0 >/dev/null 2>&1
+assert_eq "AC(1): a zero-second cooldown treats even a fresh mark as expired" "1" "$?"
+
+LCI457_OTHER_SHA="cafebabe457"
+echo "green 100s" > "$LCI457RUN/local-ci/$LCI457_OTHER_SHA"
+LCI457 indeterminate-recent "$LCI457_OTHER_SHA" 900 >/dev/null 2>&1
+assert_eq "AC(1): a GREEN verdict is never mistaken for a recent indeterminate mark" "1" "$?"
+
+# --------------------------------------------------------------------------
+section "fwf doctor: lapsed-check visibility (issue #457 AC 2) -- promotion-blocked state visible without reading run logs"
+# fwf_doctor_lapsed_check_line runs BEFORE any profile is loaded into
+# doctor()'s own environment -- _doctor_profile_resolution (fwf) only
+# resolves FWF_REPO/STAGING_BRANCH inside its own throwaway subshell, so
+# this function resolves its own copy the same way. Exercised through the
+# REAL `fwf doctor` command (FWF_PROFILE_PATH, out-of-tree -- #188's own
+# pattern) rather than a bare function call, so a regression in that
+# resolution shows up here too.
+D457_REPO="$TMP/d457-repo"; mkdir -p "$D457_REPO"
+( cd "$D457_REPO" && git init -q && git config user.email t@t.co && git config user.name t \
+  && git commit -q --allow-empty -m base )
+D457_SHA="$(cd "$D457_REPO" && git rev-parse HEAD)"
+( cd "$D457_REPO" && git update-ref refs/remotes/origin/staging HEAD )
+D457RUN="$TMP/d457-run"; mkdir -p "$D457RUN/local-ci"
+D457_PROF="$TMP/d457-profile.sh"
+cat > "$D457_PROF" <<EOF
+FWF_REPO="$D457_REPO"; WT_PREFIX="d457"; WT_BASE="$TMP"
+STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
+GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
+EOF
+d457_doctor() { ( cd "$ROOT" && env -u FWF_PROFILE FWF_PROFILE_PATH="$D457_PROF" FWF_RUN_DIR="$D457RUN" bash "$ROOT/fwf" doctor 2>&1 ); }
+
+# (a) not blocked at all (no verdict file for this tip) -> no line
+assert_not_contains "AC(2a): nothing recorded for the tip -> silent, no false alarm" "$(d457_doctor)" "local-ci"
+
+# (b) a healthy GREEN tip -> still silent
+echo "green 120s" > "$D457RUN/local-ci/$D457_SHA"
+assert_not_contains "AC(2b): a healthy green tip -> silent, no noise on the common case" "$(d457_doctor)" "local-ci"
+
+# (c) genuinely blocked -> names it, without anyone reading a run log
+echo "indeterminate lint gate lapsed 3/3 attempts" > "$D457RUN/local-ci/$D457_SHA"
+D457_C="$(d457_doctor)"
+assert_contains "AC(2c): names the block explicitly" "$D457_C" "promotion BLOCKED"
+assert_contains "AC(2c): names the branch" "$D457_C" "origin/staging"
+assert_contains "AC(2c): names the underlying reason, not just 'blocked'" "$D457_C" "lint gate lapsed 3/3 attempts"
+assert_contains "AC(2c): names an age, not just that it happened at some point" "$D457_C" "m ago"
+assert_contains "AC(2c): doctor still reaches the usage-schema line after this (never aborts mid-run)" "$D457_C" "usage schema"
 
 # --------------------------------------------------------------------------
 section "captain per-tick report: local-ci lint-lapse streak (issue #446 AC 3)"
@@ -14403,6 +14549,8 @@ assert_contains "AC(1): ...and is reported as UNKNOWN, not as GREEN" "$LCI_UNKNO
 find "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" -type f -exec touch -t 202001010000 {} \;
 LCI_AC5_SHA="$(lci_commit_fixture 'echo "3 passed, 0 failed, 0 skipped"')"
 FWF_LOCAL_CI_RETAIN_SECS=60 LCI run >/dev/null 2>&1
+assert_eq "AC(5): the unrelated run that triggered the sweep is itself a genuinely distinct commit" "false" \
+  "$([ "$LCI_AC5_SHA" = "$LCI_RECOV_SHA" ] && echo true || echo false)"
 assert_eq "AC(5): the sweep DID age out this SHA's own per-run records (sanity: the sweep actually ran)" "0" \
   "$(ls "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "AC(5): ...but the SHA is still known (the dir itself -- just emptied -- still exists, so still not UNKNOWN)" "true" \

@@ -214,6 +214,34 @@ out from under every role's gate mid-flight is an operator call** — run
 `fwf doctor` on the box before cutting a release to check it, but this
 change does not perform that refresh automatically.
 
+## A persistently-lapsing check blocks promotion, visibly and boundedly (issue #457)
+
+`scripts/conductor-e2e.sh` skips a required check (e.g. shellcheck, OOM-killed
+under concurrent box load — issues #446/#427/#418) rather than trusting a
+`green` that never actually ran it. A **transient** lapse gets up to
+`FWF_CONDUCTOR_E2E_MAX_ATTEMPTS` (default 3) forced re-runs within one
+conductor cycle before settling on `INDETERMINATE`. A **persistent** lapse —
+the box structurally cannot give the check room to run, not a one-off spike —
+used to defeat that bound anyway: every ~2-minute conductor tick independently
+restarted the same 3-attempt cycle from scratch, discovering the same
+exhaustion each time (observed: 78 minutes, 4 full suites, zero verdict
+advance).
+
+`conductor-e2e.sh` now consults `fwf-local-ci.sh`'s cross-invocation
+`lapse-streak` counter (issue #446 AC 3) before starting a fresh cycle: once
+the streak reaches `FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_STREAK` (default 6) and
+this exact SHA was marked `INDETERMINATE` within the last
+`FWF_CONDUCTOR_E2E_LAPSE_BACKOFF_COOLDOWN` seconds (default 900), it backs
+off immediately instead of spending another full attempt cycle. It still
+**probes once per cooldown window** rather than blocking permanently, so
+recovery (the box quiets down, the check runs, the streak resets to 0) is
+still detected automatically.
+
+**Visible without reading run logs:** `fwf doctor` reports a
+`local-ci  : promotion BLOCKED on origin/<branch> (...)` line whenever
+`origin/$STAGING_BRANCH`'s tip is recorded `INDETERMINATE` — read-only, never
+fetches, silent on a healthy or never-lapsed tip.
+
 ## Re-cutting a tag
 
 If a release must be redone, delete the tag locally and on the remote, then
