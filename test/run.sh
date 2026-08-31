@@ -12380,6 +12380,99 @@ SHP_SHA_OUT="$(shp_run 51 --sha "$SHAHEAD" 2>&1)"; SHP_SHA_RC=$?
 assert_eq "--sha override: the named sha IS an ancestor of main -> SHIPPED (rc 0)" "0" "$SHP_SHA_RC"
 assert_contains "...says (B) was not evaluated" "$SHP_SHA_OUT" "(B) not evaluated"
 
+# --- issue #470 AC(1)/(2): squash-merge shape -- the recorded PR head is
+# the pre-squash branch tip (never an ancestor of anything a squash strategy
+# produces), but GitHub's own merge_commit_sha IS the real object that landed
+# on main. This goes RED without the merge_commit_sha resolution.
+shp_setup squash
+( cd "$SHP_SEED" && git checkout -qb sqbranch main && echo "sq-$RANDOM$RANDOM" >> f && git commit -qam "sq fix" && git push -q origin sqbranch ) >/dev/null
+SQ_FIXSHA="$(git -C "$SHP_SEED" rev-parse sqbranch)"
+( cd "$SHP_SEED" && git checkout -q main && git merge -q --squash sqbranch && git commit -qm "squash merge sqbranch" && git push -q origin main ) >/dev/null
+SQ_MERGESHA="$(git -C "$SHP_SEED" rev-parse main)"
+shp_delete_branch sqbranch
+cat > "$SHP_GHDATA/issue-52.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":701}]
+EOF
+cat > "$SHP_GHDATA/prview-701.json" <<'EOF'
+{"body":"Closes #52"}
+EOF
+cat > "$SHP_GHDATA/prapi-701.json" <<EOF
+{"merged":true,"head":{"sha":"$SQ_FIXSHA","ref":"sqbranch"},"state":"closed","merge_commit_sha":"$SQ_MERGESHA"}
+EOF
+SHP_SQ_OUT="$(shp_run 52 2>&1)"; SHP_SQ_RC=$?
+assert_eq "AC(1)/(2): a squash-merged PR whose SQUASH commit is on main -> SHIPPED (rc 0) -- goes RED without the merge_commit_sha fix" "0" "$SHP_SQ_RC"
+assert_contains "...names the landed (squash) commit, not the pre-squash head, as what was checked" "$SHP_SQ_OUT" "$SQ_MERGESHA"
+
+# --- issue #470 AC(3): (A) resolves merge_commit_sha, but (B) must keep
+# comparing against head_sha -- a naive find-and-replace of head_sha with
+# merge_commit_sha throughout would make (B)'s rev-list treat the ENTIRE
+# branch history as "outside" (merge_commit_sha has no ancestry relation to
+# the branch at all), wrongly reporting the already-shipped pre-squash
+# commit as a stranded/missing one. Assert directly: only the genuinely
+# stranded EXTRA commit (pushed after the squash) is named as missing.
+shp_setup squashstranded
+( cd "$SHP_SEED" && git checkout -qb sqbranch2 main && echo "sq2-$RANDOM$RANDOM" >> f && git commit -qam "sq fix 2" && git push -q origin sqbranch2 ) >/dev/null
+SQ2_FIXSHA="$(git -C "$SHP_SEED" rev-parse sqbranch2)"
+( cd "$SHP_SEED" && git checkout -q main && git merge -q --squash sqbranch2 && git commit -qm "squash merge sqbranch2" && git push -q origin main ) >/dev/null
+SQ2_MERGESHA="$(git -C "$SHP_SEED" rev-parse main)"
+SQ2_EXTRA="$(shp_push_extra sqbranch2)"
+cat > "$SHP_GHDATA/issue-53.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":702}]
+EOF
+cat > "$SHP_GHDATA/prview-702.json" <<'EOF'
+{"body":"Closes #53"}
+EOF
+cat > "$SHP_GHDATA/prapi-702.json" <<EOF
+{"merged":true,"head":{"sha":"$SQ2_FIXSHA","ref":"sqbranch2"},"state":"closed","merge_commit_sha":"$SQ2_MERGESHA"}
+EOF
+SHP_SQ2_OUT="$(shp_run 53 2>&1)"; SHP_SQ2_RC=$?
+assert_eq "AC(3): (A) OK (squash commit on main), (B) FAIL (genuinely stranded post-merge commit) -> NOT SHIPPED (rc 1)" "1" "$SHP_SQ2_RC"
+assert_contains "...(A) OK" "$SHP_SQ2_OUT" "(A) OK"
+assert_contains "...(B) FAIL" "$SHP_SQ2_OUT" "(B) FAIL"
+assert_contains "...names the genuinely stranded extra commit" "$SHP_SQ2_OUT" "$SQ2_EXTRA"
+# The pre-squash head legitimately appears as the reference boundary ("outside
+# the merged head (<sha>)"); what must never happen is it ALSO appearing as one
+# of the MISSING commits themselves -- that only shows up right after "): ".
+if printf '%s' "$SHP_SQ2_OUT" | grep -q "): ${SQ2_FIXSHA}\( \|$\)"; then
+  bad "AC(3): the pre-squash head is never reported as a MISSING/stranded commit -- its content already shipped via the squash"
+else
+  ok "AC(3): the pre-squash head is never reported as a MISSING/stranded commit -- its content already shipped via the squash"
+fi
+
+# --- issue #470 AC(5): merge_commit_sha present but genuinely absent from
+# main (squashed onto a lagging branch, never promoted) -> NOT SHIPPED --
+# same shape as the pre-existing staging-lag fixture, through merge_commit_sha.
+shp_setup squashlag
+( cd "$SHP_SEED" && git checkout -qb staging3 main && git push -q origin staging3 ) >/dev/null
+( cd "$SHP_SEED" && git checkout -qb sqbranch3 main && echo "sq3-$RANDOM$RANDOM" >> f && git commit -qam "sq fix 3" && git push -q origin sqbranch3 ) >/dev/null
+SQ3_FIXSHA="$(git -C "$SHP_SEED" rev-parse sqbranch3)"
+( cd "$SHP_SEED" && git checkout -q staging3 && git merge -q --squash sqbranch3 && git commit -qm "squash merge sqbranch3 onto staging3" && git push -q origin staging3 ) >/dev/null
+SQ3_MERGESHA="$(git -C "$SHP_SEED" rev-parse staging3)"
+shp_delete_branch sqbranch3
+# main NEVER receives this commit
+cat > "$SHP_GHDATA/issue-54.json" <<'EOF'
+{"state":"OPEN"}
+EOF
+cat > "$SHP_GHDATA/prlist.json" <<'EOF'
+[{"number":703}]
+EOF
+cat > "$SHP_GHDATA/prview-703.json" <<'EOF'
+{"body":"Closes #54"}
+EOF
+cat > "$SHP_GHDATA/prapi-703.json" <<EOF
+{"merged":true,"head":{"sha":"$SQ3_FIXSHA","ref":"sqbranch3"},"state":"closed","merge_commit_sha":"$SQ3_MERGESHA"}
+EOF
+SHP_SQ3_OUT="$(shp_run 54 2>&1)"; SHP_SQ3_RC=$?
+assert_eq "AC(5): merge_commit_sha absent from main (squashed onto a lagging branch) -> NOT SHIPPED (rc 1)" "1" "$SHP_SQ3_RC"
+assert_contains "...names (A) FAIL" "$SHP_SQ3_OUT" "(A) FAIL"
+assert_contains "...names the actual (absent) merge commit" "$SHP_SQ3_OUT" "$SQ3_MERGESHA"
+
 # --- CLI wiring
 assert_contains "'fwf shipped' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "shipped)   engine fwf-shipped.sh"
 assert_contains "help mentions fwf shipped" "$("$ROOT/fwf" help)" "shipped <issue>"
