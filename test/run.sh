@@ -268,7 +268,7 @@ assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 section "implementer prompt carries the atomic-claim protocol"
 IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
 assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
-assert_contains "claim is verified after post" "$IMPL_RUN" "RE-CHECK you won"
+assert_contains "claim race adjudication is code, not a prose re-check (issue #462)" "$IMPL_RUN" "posting a STAND-DOWN comment naming the winner"
 assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
 
 section "implementer resumes its own in-flight draft, never idles behind it (#99 Fix 1)"
