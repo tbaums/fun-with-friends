@@ -355,35 +355,6 @@ instead of stalling silently (issue #99).
   to be "stale" — that's the answer to "who watches the watcher" for a
   process that, unlike the dash, never holds compiled state across calls.
 
-- **A role that cannot proceed on some input is refused-and-routed, never
-  left silently parked** (issue #467, closing the class of incident #466
-  triggered: an orphaned test harness handed the conductor a role-prompt
-  path outside its own profile, and the safe refusal became an indefinite
-  halt nobody was reading). Two seams, deliberately not one:
-  `fwf_resolve_role_prompt_path` (`lib.sh`) validates a candidate role-prompt
-  path against the role's OWN rendered prompt
-  (`$FWF_RUN/prompts/<profile>-<role>.prompt`), resolving symlinks/`..`
-  traversal via `realpath -m` so a foreign path is judged on its REAL
-  target — a missing/unreadable candidate also refuses rather than
-  erroring or silently passing. `fwf refuse-prompt <role> <path>` is the
-  code seam a role calls INSTEAD of parking on such a path: it refuses,
-  bumps that role's own tick (issue #99's durable heartbeat, never the pane
-  glyph), and escalates. The PRIMARY seam is `fwf supervise` itself — it
-  catches parking from ANY cause, not only a bad prompt path: every `WEDGED`
-  pass now also raises a `PARKED_FLAG` escalation through the same routed
-  channel as `WEDGED`/`LANE_STALE`/`WORKTREE_STALE`/`CONFIG_DRIFT` above,
-  unconditionally (unlike the respawn action, still gated behind
-  `FWF_SUPERVISE_AUTORESPAWN` per #165's "ships dark"). Both seams share one
-  dedupe primitive (`fwf_parked_flag_check`/`fwf_parked_flag_record`,
-  `lib.sh`): keyed on `(role, resolved input)`, persisted under
-  `$FWF_STATE_DIR/parked-flag/` (survives the very respawn that clears the
-  parked pane) with a stated expiry (`FWF_PARKED_FLAG_EXPIRY_SECS`, default
-  1800s) — a path re-injected every ~22 minutes (the observed #466 cadence)
-  produces exactly one durable record per window, never a flood, while a
-  genuinely new occurrence after expiry escalates again. There is no
-  issue/PR number for a parked-pane event (it isn't a ticket), so this uses
-  the durable-state-file-plus-tick fallback rather than `fwf flag-captain`.
-
   **Per-plane `up`/`down` flag matrix** (issue #155 — `--coord-only` is the
   non-destructive mirror of `--build-only`, for standing up just coordination
   from a cold/fully-down state, e.g. to groom the `product-wip` backlog
@@ -830,10 +801,6 @@ fwf gate-rust-scope --against BRANCH [--safe GLOB]...  SHADOW classifier for whe
 fwf flag-captain <n> --role R --reason TEXT         raise a persisted "needs-captain" flag on issue/PR
   fwf flag-captain <n> --clear [--note TEXT]        <n> for the captain's per-tick sweep to pick up
   fwf flag-captain sweep                            (issue #113) — see docs/needs-captain.md
-fwf refuse-prompt <role> <path>                     the code seam a role calls instead of parking on an
-                                                    unresolvable/foreign role-prompt path (issue #467):
-                                                    refuses, bumps <role>'s tick, and escalates (deduped
-                                                    on role+resolved path, $FWF_STATE_DIR/parked-flag/log)
 fwf pr-route-check sweep                            flag an open, non-draft, non-implN/* PR stuck at
                                                     NO_MARKER past FWF_PR_ROUTE_GRACE_SECS (default
                                                     300s) via flag-captain, auto-clearing once routed
