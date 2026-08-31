@@ -10061,12 +10061,21 @@ CE2E_RECOV1_OUT="$(cd "$ROOT" && bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"
 assert_eq "AC(2): an unconfirmed 'recovered:1' verdict does NOT skip -- falls through to a real run" "0" "$CE2E_RECOV1_RC"
 assert_eq "AC(2): ...and the local run actually happened ('run' mode, not skipped)" "true" \
   "$([ -f "$CE2ETMP/run-marker-recov1" ] && echo true || echo false)"
+# issue #458: not just the exit code -- the reason for the fall-through
+# (the verdict's own 'recovered:1' text) must be visible in the log a
+# reader would actually see, not just implied by the mechanical result.
+assert_contains "AC(2): the fall-through's own output names 'recovered:1' (the fact, not just the effect)" \
+  "$CE2E_RECOV1_OUT" "recovered:1"
 
 ce2e_stub_msg 0 "local-ci: recovered:2, skip-eligible" "$CE2ETMP/run-marker-recov2"
 CE2E_RECOV2_OUT="$(cd "$ROOT" && bash "$CE2ETMP/scripts/conductor-e2e.sh" 2>&1)"; CE2E_RECOV2_RC=$?
 assert_eq "AC(2): a confirmed 'recovered:2' verdict DOES skip" "0" "$CE2E_RECOV2_RC"
 assert_eq "AC(2): ...and the local run never happened" "false" \
   "$([ -f "$CE2ETMP/run-marker-recov2" ] && echo true || echo false)"
+# issue #458: same standard as above -- the skip decision's own confirming
+# text ('recovered:2') must survive into the output, not just the effect.
+assert_contains "AC(2): the skip decision's own output names 'recovered:2' (the confirmation, not just the effect)" \
+  "$CE2E_RECOV2_OUT" "recovered:2"
 
 # --------------------------------------------------------------------------
 # fwf-pr-checks-honored.sh (issue #220 AC i/o/p): the QA-side ERGONOMIC
@@ -14340,6 +14349,11 @@ assert_contains "lapse-then-green: output narrates the lapse that triggered the 
 assert_contains "lapse-then-green: output narrates the eventual real green" "$CE2E446_LG_OUT" "GREEN"
 assert_eq "lapse-then-green: mark-indeterminate is never called on a resolved lapse" "false" \
   "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
+# issue #458: not just the exit code and the counter -- the retry's own
+# announcement (the human-facing evidence a reader of a real gate log
+# would see) must actually name the second attempt, not just happen to
+# have run one.
+assert_contains "lapse-then-green: the retry announcement names attempt 2/3" "$CE2E446_LG_OUT" "attempt 2/3"
 
 # AC (2): every attempt lapses -> exhausts the bound (3 total, N=2 forced
 # re-runs), settles on INDETERMINATE, and never retries a 4th time.
@@ -14365,6 +14379,12 @@ assert_contains "real red: output narrates the real red, not a lapse" "$CE2E446_
 assert_not_contains "real red: output never claims a lapse it didn't have" "$CE2E446_RED_OUT" "LAPSED"
 assert_eq "real red: mark-indeterminate is never called -- this is a genuine red, not an exhausted lapse" "false" \
   "$([ -f "$CE2E446_INDET" ] && echo true || echo false)"
+# issue #458: the distinguishing claim this whole section exists to prove
+# (#446 AC 4/AC 1: a genuine failure and an exhausted lapse are different
+# claims) must hold in the OUTPUT a reader actually sees, not just in the
+# retry-count side effect -- a real red must never present as INDETERMINATE.
+assert_not_contains "real red: never reports INDETERMINATE (a genuine red is a definite failure, not an exhausted lapse)" \
+  "$CE2E446_RED_OUT" "INDETERMINATE"
 
 # AC (2): a CACHED lapsed verdict is not trusted as skip-worthy -- falls
 # through to a real run exactly like a cached red or absent verdict would.
@@ -14586,6 +14606,12 @@ assert_eq "AC(5): the unrelated run that triggered the sweep is itself a genuine
   "$([ "$LCI_AC5_SHA" = "$LCI_RECOV_SHA" ] && echo true || echo false)"
 assert_eq "AC(5): the sweep DID age out this SHA's own per-run records (sanity: the sweep actually ran)" "0" \
   "$(ls "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" 2>/dev/null | wc -l | tr -d ' ')"
+# issue #458: the sweep's trigger SHA is also a positive control -- its OWN
+# fresh record must survive the same pass (mirrors the pre-existing
+# LCI_PRUNE_SHA/LCI_PRUNE_SHA2 pair above: the sweep ages out what is
+# actually old, not everything it happens to touch).
+assert_eq "AC(5): ...and the triggering run's own fresh record survives the same sweep" "2" \
+  "$(ls "$LCIRUN/local-ci/$LCI_AC5_SHA.runs" 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "AC(5): ...but the SHA is still known (the dir itself -- just emptied -- still exists, so still not UNKNOWN)" "true" \
   "$([ -d "$LCIRUN/local-ci/$LCI_RECOV_SHA.runs" ] && echo true || echo false)"
 assert_eq "AC(5): ...and 'verdict' STILL reports skip-eligible recovered:2, not reverted to plain green or UNKNOWN" "0" \
