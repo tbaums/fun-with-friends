@@ -3140,17 +3140,21 @@ EOS
       FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F312_SECRET \
       FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
       "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
-  IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
-  SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
-  # AC(b)-style bounded retry, matching the #143 case above.
+  # issue #460: retry the WHOLE chain (pane -> shell pid -> child pid), not
+  # just the last pgrep step -- under a busy floor the pane/shell-pid reads
+  # right after respawn returns can themselves be a beat behind, and a
+  # single-shot read of either one silently pins IMPL1_PANE_312/
+  # SHELL_PID_312 stale for every retry that follows.
+  IMPL1_PANE_312=""
+  SHELL_PID_312=""
   IMPL1_PID_312=""
-  if [ -n "$SHELL_PID_312" ]; then
-    for _f312_try in 1 2 3 4 5; do
-      IMPL1_PID_312="$(pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true)"
-      [ -n "$IMPL1_PID_312" ] && break
-      sleep 0.2
-    done
-  fi
+  for _f312_try in 1 2 3 4 5; do
+    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
+    IMPL1_PID_312="$([ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true)"
+    [ -n "$IMPL1_PID_312" ] && break
+    sleep 0.2
+  done
   if [ -n "$IMPL1_PID_312" ]; then
     assert_contains "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" \
       "$(ps eww "$IMPL1_PID_312" 2>/dev/null)" "F312_SECRET=$F312_SECRET"
@@ -3201,9 +3205,21 @@ EOS
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
       "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
-  F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
-  F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
-  F217E2E_CHILD_PID="$([ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true)"
+  # issue #460: a bounded retry on the WHOLE discovery chain (pane -> shell
+  # pid -> child pid), matching the #312 case's own retry above -- this was
+  # previously a single-shot lookup with no tolerance for scheduling delay
+  # on a busy floor, unlike #312's. respawn.sh's own arm/verify already
+  # waits for the new pane's heartbeat before returning, but under load the
+  # child process can still be a beat behind settling into its final PID by
+  # the time THIS process gets scheduled to look for it.
+  F217E2E_CHILD_PID=""
+  for _f217_try in 1 2 3 4 5; do
+    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
+    F217E2E_CHILD_PID="$([ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true)"
+    [ -n "$F217E2E_CHILD_PID" ] && break
+    sleep 0.2
+  done
   if [ -n "$F217E2E_CHILD_PID" ]; then
     assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
