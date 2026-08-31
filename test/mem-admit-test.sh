@@ -218,6 +218,121 @@ _fwf_mem_admit_kill_group "$(hostname)" 1 notanint 2>/dev/null; ok "kill_group r
 # (these four are guard-verifications: each returns 0 without killing anything,
 # proving the fail-safe conditions that stop it hitting an unrelated pane shell.)
 
+echo "== issue #478 AC 1/2: the reaper tests the entity it would SIGKILL, not a proxy that is dead by construction =="
+# Reproduces the incident's root cause directly, per the ticket's own
+# guidance: "the trigger state can be constructed... without needing to
+# race anything." A consumer that acquires through a newly-spawned shell
+# (test/run.sh's shellcheck admission) stamps a THROWAWAY sub-shell pid
+# that is dead the instant command substitution returns -- on every
+# healthy acquisition -- while the recorded pgid is the caller's REAL,
+# live process group. Construct exactly that state: a dead stamping pid,
+# a genuinely live pgid belonging to a real (simulated-sibling) process
+# group. If this section goes red on today's tree, the #478 diagnosis is
+# wrong and should be discarded rather than worked around.
+perl -e '
+  use POSIX qw(setpgid);
+  setpgid(0,0) or die "setpgid: $!";
+  open(STDIN,  "<", "/dev/null");
+  open(STDOUT, ">", "/dev/null");
+  open(STDERR, ">", "/dev/null");
+  sleep 120;
+' &
+SIB478_PID=$!
+STRAYS+=("$SIB478_PID")
+SIB478_PGID=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  SIB478_PGID="$(ps -o pgid= -p "$SIB478_PID" 2>/dev/null | tr -d ' ')"
+  [ "$SIB478_PGID" = "$SIB478_PID" ] && break
+  sleep 0.2
+done
+[ "$SIB478_PGID" = "$SIB478_PID" ] && ok "AC1/2 precondition: constructed a real live process group (pgid $SIB478_PGID)" \
+  || bad "AC1/2 precondition: constructed a real live process group" "pgid=$SIB478_PGID pid=$SIB478_PID"
+# stamping pid 999999999 is dead by construction (never existed) -- the
+# exact shape of a healthy sub-shell acquisition the instant it returns.
+printf 'role=sib478\npid=999999999\npgid=%s\npgleader=1\nhost=%s\nreserved_gb=1\nacquired=%s\n' \
+  "$SIB478_PID" "$(hostname)" "$(date +%s)" > "$MEM_ADMIT/res-sib478"
+_fwf_mem_admit_reap
+[ -f "$MEM_ADMIT/res-sib478" ] && ok "AC1/2: a reservation whose stamping pid is dead but whose pgid is a LIVE sibling is NOT reaped" \
+  || bad "AC1/2: dead-stamp/live-pgid reservation is not reaped" "the reservation entry was dropped -- the reaper is still trusting the dead proxy"
+kill -0 "$SIB478_PID" 2>/dev/null && ok "AC1/2: the live sibling's process group SURVIVES the reap (this is the incident itself, closed)" \
+  || bad "AC1/2: the live sibling's process group survives the reap" "pid $SIB478_PID is gone -- it was wrongly SIGKILLed"
+rm -f "$MEM_ADMIT/res-sib478"
+kill -KILL "$SIB478_PID" 2>/dev/null
+
+echo "== issue #478 Defect 2 / AC 3: pgleader is a self-test, not inheritable (both directions) =="
+export FWF_MEM_ADMIT_FLOOR_GB=0
+# Direction A -- FALSE claim suppressed: a genuinely NEW shell that merely
+# INHERITS the exported _FWF_GATE_IS_PGLEADER (never performed its own
+# setpgid re-exec, so _FWF_GATE_PGLEADER_PID names a DIFFERENT pid than
+# its own $$) must not stamp pgleader=1.
+A478_TOKEN="$(_FWF_GATE_IS_PGLEADER=1 _FWF_GATE_PGLEADER_PID=999999999 bash -c "source '$ROOT/lib.sh'; fwf_mem_admit inherit478 1")"
+A478_PL="$(_fwf_e2e_owner_field pgleader "$MEM_ADMIT/$A478_TOKEN")"
+[ "$A478_PL" = 0 ] && ok "AC3 direction A: a sub-shell merely inheriting _FWF_GATE_IS_PGLEADER never claims pgleader=1" \
+  || bad "AC3 direction A: an inherited pgleader claim is suppressed" "got pgleader=[$A478_PL]"
+fwf_mem_admit_release "$A478_TOKEN"
+# Direction B -- TRUE claim preserved: the genuine in-process case (the
+# exact pid that set the flag, matching fwf-gate.sh:139-142's own
+# pairing) must still claim it. $$ inside a command-substitution subshell
+# is the PARENT's own pid (bash does not reset it there), so this pairs
+# correctly without needing a real fwf-gate.sh re-exec.
+export _FWF_GATE_IS_PGLEADER=1
+export _FWF_GATE_PGLEADER_PID="$$"
+B478_TOKEN="$(fwf_mem_admit genuine478 1)"
+B478_PL="$(_fwf_e2e_owner_field pgleader "$MEM_ADMIT/$B478_TOKEN")"
+[ "$B478_PL" = 1 ] && ok "AC3 direction B: the genuine in-process pgleader (self-test pairing holds) still claims pgleader=1" \
+  || bad "AC3 direction B: a genuine pgleader claim is preserved" "got pgleader=[$B478_PL]"
+fwf_mem_admit_release "$B478_TOKEN"
+unset _FWF_GATE_IS_PGLEADER _FWF_GATE_PGLEADER_PID
+
+echo "== issue #478 AC 5: the reap message states only the evidence actually obtained =="
+printf 'role=staleremote478\npid=123456\npgid=123456\npgleader=1\nhost=some-other-host-478\nreserved_gb=1\nacquired=%s\n' \
+  "$(( $(date +%s) - 999999 ))" > "$MEM_ADMIT/res-staleremote478"
+AC5_OUT="$(FWF_MEM_ADMIT_STALE_SECS=1 _fwf_mem_admit_reap 2>&1 >/dev/null)"
+[ ! -f "$MEM_ADMIT/res-staleremote478" ] && ok "AC5 precondition: the stale cross-host reservation was actually reaped (a real reap, not a no-op)" \
+  || bad "AC5 precondition: the stale cross-host reservation was reaped" "entry survived -- the message assertions below would be vacuous"
+case "$AC5_OUT" in
+  *"whose holder died"*) bad "AC5: the literal 'whose holder died' is never emitted when death was not established" "$AC5_OUT" ;;
+  *) ok "AC5: the literal 'whose holder died' is never emitted on a stale/cross-host path (death was never confirmed, only inferred from age)" ;;
+esac
+case "$AC5_OUT" in
+  *"staleremote478"*) ok "AC5: the emitted line names the role" ;;
+  *) bad "AC5: the emitted line names the role" "$AC5_OUT" ;;
+esac
+case "$AC5_OUT" in
+  *"123456"*) ok "AC5: the emitted line names the pgid" ;;
+  *) bad "AC5: the emitted line names the pgid" "$AC5_OUT" ;;
+esac
+
+echo "== issue #478 AC 6: an unsupplied 'acquired' timestamp fails CLOSED, not through =="
+# A live, non-own, non-1 pgid with pgleader=1 but NO acquired timestamp
+# (a torn/incomplete owner file, or a caller that omitted \$4) must REFUSE
+# via the same fail-closed voice as the #332/#195 refusals -- not silently
+# skip the whole reuse-guard block into an unconditional kill.
+perl -e '
+  use POSIX qw(setpgid);
+  setpgid(0,0) or die "setpgid: $!";
+  open(STDIN,  "<", "/dev/null");
+  open(STDOUT, ">", "/dev/null");
+  open(STDERR, ">", "/dev/null");
+  sleep 120;
+' &
+AC6_PID=$!
+STRAYS+=("$AC6_PID")
+AC6_PGID=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  AC6_PGID="$(ps -o pgid= -p "$AC6_PID" 2>/dev/null | tr -d ' ')"
+  [ "$AC6_PGID" = "$AC6_PID" ] && break
+  sleep 0.2
+done
+AC6_OUT="$(_fwf_kill_orphan_group "$(hostname)" 1 "$AC6_PGID" 2>&1)"
+case "$AC6_OUT" in
+  *"refusing to signal"*) ok "AC6: no 'acquired' timestamp supplied -> refuses (fails closed), never a silent fall-through kill" ;;
+  *) bad "AC6: an unsupplied acquired timestamp fails closed" "got: $AC6_OUT" ;;
+esac
+kill -0 "$AC6_PID" 2>/dev/null && ok "AC6: the live group survives an empty-acquired call (was never signalled)" \
+  || bad "AC6: the live group survives an empty-acquired call" "pid $AC6_PID is gone -- it was killed despite no acquired evidence"
+kill -KILL "$AC6_PID" 2>/dev/null
+
 echo "== fwf-gate.sh: it becomes a process-group leader (pgid == pid) =="
 # Wrap a command that records the GATE's own pid and pgid, then exits fast.
 PGF="$TMP/gate-pgid.txt"
