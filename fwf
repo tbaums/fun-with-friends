@@ -1250,6 +1250,33 @@ case "$cmd" in
     source "$FWF_DIR/lib.sh"
     role="${1:-}"; [ -n "$role" ] || die "tick: usage: fwf tick <role>"
     fwf_tick_bump "$role";;
+  refuse-prompt)
+    # issue #467: the code seam a role calls INSTEAD OF parking on an
+    # unresolvable/foreign role-prompt path — refuse, escalate (deduped,
+    # AC3/AC4), and let the caller's own loop keep ticking (AC1/AC5). Also
+    # the tiny, no-engine-indirection style `tick` above uses, since every
+    # role that might call this is mid-cycle, not spawning a fresh worktree.
+    FWF_PROFILE="$(resolve_profile_liveness)"
+    source "$FWF_DIR/lib.sh"
+    role="${1:-}"; path="${2:-}"
+    [ -n "$role" ] && [ -n "$path" ] || die "refuse-prompt: usage: fwf refuse-prompt <role> <path>"
+    # AC7: a missing/unreadable path must still take THIS branch (refuse +
+    # continue), never a permissive one and never a blocking one -- realpath
+    # -m resolves a nonexistent target too, so this never fails to produce
+    # a dedupe key even when the candidate path doesn't exist on disk.
+    resolved="$(realpath -m -- "$path" 2>/dev/null || true)"
+    [ -n "$resolved" ] || resolved="$path"
+    if fwf_parked_flag_check "$role" "$resolved"; then
+      fwf_parked_flag_record "$role" "$resolved" "role-prompt path refused: unresolvable or foreign to $role's own profile"
+      echo "REFUSED: $role rejected role-prompt path '$resolved' -- escalation recorded ($FWF_STATE_DIR/parked-flag/log)"
+    else
+      echo "REFUSED: $role rejected role-prompt path '$resolved' -- already escalated within the last ${FWF_PARKED_FLAG_EXPIRY_SECS}s (deduped)"
+    fi
+    # Belt-and-suspenders on AC1 ("tick advances on the next cycle"): this
+    # call is cheap and idempotent with the role's own step-0 `fwf tick`, so
+    # bumping here too costs nothing and removes any dependency on template
+    # wiring for the liveness signal to be fresh immediately after a refusal.
+    fwf_tick_bump "$role" >/dev/null;;
   stub-sweep)
     # issue #133: auto-close claim-only draft PRs (zero changed files) that a
     # dead loop opened and abandoned. Idempotent; safe to run from a caretaker.
