@@ -109,13 +109,17 @@ can't formally `--request-changes` on implN's own PR — it posts
 with `IMPL-ADDRESSED:`), read via `fwf pr-review-state <pr>`. See
 [docs/shared-account.md](shared-account.md) for the full protocol.
 
-**Claims, races, and assignments.** Implementers claim atomically: a
-`CLAIM implN` comment, then a re-check that the first claim in the thread is
-theirs — losers yield instantly. A claim with no PR yet is checked for
-liveness with `fwf claim-liveness` (issue #377), not age alone: a claimant
-mid-`fwf gate` also has no PR yet, and a real gate run routinely exceeds 15
-minutes, so only a confirmed-dead claimant (or one with no liveness signal
-ever, past a 15-minute fallback) is abandoned. When the captain releases a
+**Claims, races, and assignments.** Implementers claim atomically:
+`fwf claim <n> implN` posts the `CLAIM implN` comment itself and refuses —
+posting a `STAND-DOWN` comment naming the winner — unless its own claim is
+the first still-live one on the thread (issue #462; this is code-enforced
+compare-and-set, not a prose re-check, so two seats racing inside the
+loop-latency window converge on one owner). A claim with no PR yet is
+checked for liveness with `fwf claim-liveness` (issue #377), not age alone: a
+claimant mid-`fwf gate` also has no PR yet, and a real gate run routinely
+exceeds 15 minutes, so only a confirmed-dead claimant (or one with no
+liveness signal ever, past a 15-minute fallback) is abandoned. When the
+captain releases a
 *batch*, it pre-assigns with
 `ASSIGNED implN` comments so the batch doesn't stampede. If you see those
 comments in your issues, that's the machinery working.

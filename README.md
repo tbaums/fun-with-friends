@@ -174,15 +174,19 @@ instead of stalling silently (issue #99).
   It writes no code: it thinks, it doesn't authorize.
 - **IMPL1–3** (generalists): each surveys open issues + in-flight PRs, skips PM
   drafts and any issue already resolved on a shared branch, and picks the
-  **lowest-collision, oldest** eligible issue. Claiming is **atomic**: the
-  implementer posts a `CLAIM implN` comment, re-checks that the first claim in
-  the thread is its own (losers yield with zero wasted work; a claim with no
-  PR yet is checked for liveness via `fwf claim-liveness` — issue #377 —
-  which reuses the same pane-liveness signal as the conductor's build-plane
-  guard, since a claimant mid-`fwf gate` is indistinguishable from an
-  abandoned one on age alone; only a confirmed-dead claimant, or one with no
-  liveness signal ever recorded past a 15-minute fallback, is reclaimable),
-  and only then branches and opens a draft PR
+  **lowest-collision, oldest** eligible issue. A prior claim with no PR yet is
+  checked for liveness via `fwf claim-liveness` — issue #377 — which reuses
+  the same pane-liveness signal as the conductor's build-plane guard, since a
+  claimant mid-`fwf gate` is indistinguishable from an abandoned one on age
+  alone; only a confirmed-dead claimant, or one with no liveness signal ever
+  recorded past a 15-minute fallback, is reclaimable. Claiming itself is
+  **atomic and code-enforced**: `fwf claim <n> implN` posts the `CLAIM implN`
+  comment, busts the gh-cache read of the thread, and refuses — posting a
+  `STAND-DOWN` comment naming the winner — unless its own claim is the first
+  still-live one on the thread (issue #462; this closes a race two seats
+  racing inside the loop-latency window used to hit, where a prose
+  post-then-recheck let both proceed), and only then branches and opens a
+  draft PR
   (`Closes #N`). One issue = one branch = one PR, and a behavior-changing PR
   **updates its own docs in the same PR** (definition of done). They loop: address review
   feedback, wait while a PR is in review, or claim the next issue once one
@@ -1215,7 +1219,8 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   `QA-CHANGES-REQUESTED`/`QA-APPROVED`/`IMPL-ADDRESSED` marker protocol
   (`fwf pr-review-state`) that replaces them. Also covers `fwf authz` (the
   sole authorization oracle) and `fwf claim` (a fail-fast, skippable
-  ergonomic checkpoint at intent-formation time — not a control).
+  ergonomic checkpoint at intent-formation time — not a control — that also
+  adjudicates a same-issue claim race in code when given a role, issue #462).
 - [docs/needs-captain.md](docs/needs-captain.md) — the persisted
   `needs-captain` flag any role raises on an issue/PR (`fwf flag-captain`),
   swept by the captain every tick so it can't go unseen (issue #113).
