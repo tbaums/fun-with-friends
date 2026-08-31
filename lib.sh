@@ -2045,15 +2045,13 @@ fwf_e2e_lock_acquire() {
         # acquirer gets a lock that says "free" while the port is still held
         # (this ticket's own reported incident). Same shared helper #156
         # already uses for the cargo-build slot and mem-admit token.
-        _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts" \
-          "e2e lane $n: dead PID ${pid:-unknown} (${holder:-unknown})"
+        _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
         rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
       elif [ "$rc" = 2 ]; then
         now="$(date +%s)"
         if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
           echo "fwf: e2e lane $n indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
-          _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts" \
-            "e2e lane $n: indeterminate-liveness past the ${FWF_E2E_LOCK_STALE_SECS}s backstop"
+          _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
           rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
         fi
       fi
@@ -2179,22 +2177,8 @@ _fwf_ps_elapsed_secs() { # $1=pid
 # comment at the comparison site in _fwf_kill_orphan_group (issue #195).
 : "${_FWF_PGID_START_SLOP:=2}"
 
-# issue #478 Defect 2 / issue #195: `_FWF_GATE_IS_PGLEADER` is a plain
-# exported env var, so ANY descendant -- including a throwaway `bash -c` /
-# `sh -c` sub-shell that shares none of the parent's kill-safety guarantee
-# -- inherits it and wrongly claims "I lead this process group" for a
-# group it does not lead. fwf-gate.sh:139-142 already solved this exact
-# hazard for its own re-exec check by pairing the flag with the PID that
-# actually set it (exec() preserves PID across a genuine self-re-exec, but
-# differs for anything merely inheriting the exported var). This is that
-# same pairing, exposed as a shared self-test so every library read site
-# can use it instead of the bare `${_FWF_GATE_IS_PGLEADER:-0}` pattern.
-_fwf_gate_is_pgleader() {
-  [ "${_FWF_GATE_IS_PGLEADER:-0}" = 1 ] && [ "${_FWF_GATE_PGLEADER_PID:-}" = "$$" ]
-}
-
-_fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional) $5=why (issue #478 AC 5: evidence phrase for the emitted line; no default overclaim)
-  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" why="${5:-}" ownpgid elapsed now start_epoch anc
+_fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
+  local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid elapsed now start_epoch anc
   [ "$pgleader" = 1 ] || return 0
   [ "$host" = "$(hostname)" ] || return 0
   case "$pgid" in ''|*[!0-9]*) return 0;; esac
@@ -2269,29 +2253,8 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
         ;;
       esac
     fi
-  else
-    # issue #478 AC 6: the pre-existing structure let an EMPTY/unsupplied
-    # `acquired` skip this whole reuse-guard block and fall straight
-    # through to the unconditional kill below -- an unrecognized input
-    # (a caller that omitted $4, or a torn/incomplete owner file lacking
-    # an `acquired=` line) took the PERMISSIVE branch instead of refusing,
-    # the same "UNKNOWN falls into allow" shape this family keeps
-    # producing (#211, #286 AC f). An unanswered question about WHEN the
-    # recorded group started means reuse cannot be ruled out, exactly as
-    # much as the unparseable-elapsed case just above -- so it gets the
-    # same refusal, not a silent pass-through.
-    echo "fwf#211: refusing to signal pgid $pgid -- no 'acquired' timestamp was supplied, so PID/PGID reuse cannot be ruled out (failing closed, issue #478 AC 6)" >&2
-    return 0
   fi
-  # issue #478 AC 5: state only the evidence actually obtained. The old
-  # unconditional "whose holder died" was literally true of the STAMPING
-  # pid in the mem-admit defect this ticket fixes and catastrophically
-  # false of the GROUP -- that overclaim is what sent the first
-  # cross-role kill's attribution to the unrelated #119 flake. Every
-  # caller now supplies what it actually established; a caller that does
-  # not is still identifiable by the generic fallback rather than a false
-  # "died" claim.
-  echo "fwf#156: reaping orphaned build tree (pgid $pgid) — ${why:-holder liveness could not be confirmed} — SIGKILL group" >&2
+  echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
   kill -KILL -"$pgid" 2>/dev/null
   return 0
 }
@@ -2416,8 +2379,7 @@ fwf_cargo_build_slot_acquire() {
         "$(_fwf_e2e_owner_field host "$owner")" \
         "$(_fwf_e2e_owner_field pgleader "$owner")" \
         "$(_fwf_e2e_owner_field pgid "$owner")" \
-        "$(_fwf_e2e_owner_field acquired "$owner")" \
-        "cargo build slot $n: $reap_reason"
+        "$(_fwf_e2e_owner_field acquired "$owner")"
       rm -rf "$slot"
       if mkdir "$slot" 2>/dev/null; then
         # issue #292: same write-then-verify as the fresh-mkdir branch above
@@ -2553,46 +2515,29 @@ _fwf_mem_admit_reserved_sum() {
 # same guarded group-SIGKILL, not an admission-only copy.
 _fwf_mem_admit_kill_group() { _fwf_kill_orphan_group "$@"; }
 
-# Reap dead/stale reservations INSIDE the decision mutex. issue #478 Defect 1
-# (root cause of the cross-role SIGKILL incident): the OLD test here was
-# `kill -0 "$pid"`, where `pid` is whatever stamped the reservation. For an
-# IN-PROCESS caller (fwf-gate.sh:549) that pid IS the real long-lived
-# holder, so testing it was correct. But a consumer that acquires through a
-# newly-spawned shell (test/run.sh's shellcheck admission, `bash -c
-# "...fwf_mem_admit..."`) stamps the THROWAWAY sub-shell's own pid, which
-# exits and is dead-by-construction the INSTANT command substitution
-# returns -- on every healthy acquisition, not just a real kill. The old
-# test then asked its liveness question about that dead proxy and acted
-# (group-SIGKILL) on the recorded pgid, which is the caller's actual
-# long-lived process group -- a live sibling's entire suite. The fix: test
-# the liveness of the entity we would actually SIGKILL (the pgid, which
-# for a genuine holder IS its own process-group leader's pid, exactly the
-# identity `_fwf_kill_orphan_group`'s own guards already treat it as), not
-# a proxy that can be dead while the real holder is very much alive.
-# Cross-host/unparseable falls back to the same age-based staleness this
-# always had -- unaffected by this fix, since no local pid or pgid can be
-# checked for a different host anyway.
+# Reap dead/stale reservations INSIDE the decision mutex. A reservation whose
+# stamping pid is confirmed dead (same host) — or, cross-host/unparseable, one
+# past FWF_MEM_ADMIT_STALE_SECS — is dropped; if it was stamped by a pgleader,
+# its orphaned build tree is SIGKILLed first (hole #1) so the RAM is actually
+# reclaimed before the slot is granted. Same same-host/dead-PID vs
+# indeterminate-age reasoning as _fwf_e2e_owner_liveness.
 _fwf_mem_admit_reap() {
-  local f role host pid ts now pgid pgleader why
+  local f host pid ts now pgid pgleader
   now="$(date +%s)"
   for f in "$MEM_ADMIT"/res-*; do
     [ -e "$f" ] || continue
-    role="$(_fwf_e2e_owner_field role "$f")"
     host="$(_fwf_e2e_owner_field host "$f")"
-    pgid="$(_fwf_e2e_owner_field pgid "$f")"
+    pid="$(_fwf_e2e_owner_field pid "$f")"
     ts="$(_fwf_e2e_owner_field acquired "$f")"
-    if [ "$host" = "$(hostname)" ] && [ -n "$pgid" ]; then
-      kill -0 "$pgid" 2>/dev/null && continue   # the entity we would signal is alive — keep, regardless of the stamping pid's own lifetime
-      why="pgid $pgid (the reservation's own process-group leader) confirmed dead — kill -0 failed"
+    if [ "$host" = "$(hostname)" ] && [ -n "$pid" ]; then
+      kill -0 "$pid" 2>/dev/null && continue   # live same-host holder — keep
     else
       case "$ts" in ''|*[!0-9]*) continue;; esac  # indeterminate + unageable — keep (can't safely reap)
       [ $(( now - ts )) -ge "$FWF_MEM_ADMIT_STALE_SECS" ] || continue
-      why="cross-host or pgid unreadable, and past the ${FWF_MEM_ADMIT_STALE_SECS}s staleness backstop (liveness unverifiable, not confirmed dead)"
     fi
-    pid="$(_fwf_e2e_owner_field pid "$f")"
     pgleader="$(_fwf_e2e_owner_field pgleader "$f")"
-    echo "fwf#156: mem-admit reservation '${role:-unknown}' (stamping pid $pid, pgid $pgid) reaped — $why" >&2
-    _fwf_mem_admit_kill_group "$host" "$pgleader" "$pgid" "$ts" "$why"
+    pgid="$(_fwf_e2e_owner_field pgid "$f")"
+    _fwf_mem_admit_kill_group "$host" "$pgleader" "$pgid" "$ts"
     rm -f "$f"
   done
 }
@@ -2653,13 +2598,7 @@ fwf_mem_admit() {
   case "$reserve" in ''|*[!0-9]*) reserve=0;; esac
   mkdir -p "$MEM_ADMIT" 2>/dev/null
   qstart="$(date +%s)"; last_report=$(( qstart - FWF_MEM_ADMIT_REPORT_SECS - 1 ))
-  # issue #478 Defect 2: the bare env-var read let a `bash -c` sub-shell
-  # consumer (test/run.sh's shellcheck admission) inherit a kill-safety
-  # claim it never earned -- see _fwf_gate_is_pgleader above. This is the
-  # ONE read site AC 8 requires fixing here: it is the sole fwf_mem_admit
-  # caller reached through a genuinely newly-spawned shell on a live
-  # cross-role path (audited in the PR).
-  if _fwf_gate_is_pgleader; then pgleader=1; else pgleader=0; fi
+  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
   pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
   case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
   free=""; reserved=""; free_display="?"
@@ -2825,8 +2764,7 @@ fwf_gate_lock_acquire() {
   # rc=3 (treated as wedged/anomalous) both mean "we are done trusting this
   # holder", so both must free what it was actually holding, not just the
   # lock file.
-  _fwf_kill_orphan_group "$(_fwf_gate_owner_field host "$owner")" "$(_fwf_gate_owner_field pgleader "$owner")" "$(_fwf_gate_owner_field pgid "$owner")" "$(_fwf_gate_owner_field acquired "$owner")" \
-    "gate lock '$role': $reason"
+  _fwf_kill_orphan_group "$(_fwf_gate_owner_field host "$owner")" "$(_fwf_gate_owner_field pgleader "$owner")" "$(_fwf_gate_owner_field pgid "$owner")" "$(_fwf_gate_owner_field acquired "$owner")"
   rm -rf "$dir"
   if mkdir "$dir" 2>/dev/null; then
     pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
