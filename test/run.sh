@@ -268,7 +268,7 @@ assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 section "implementer prompt carries the atomic-claim protocol"
 IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
 assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
-assert_contains "claim is verified after post" "$IMPL_RUN" "RE-CHECK you won"
+assert_contains "claim race adjudication is code, not a prose re-check (issue #462)" "$IMPL_RUN" "posting a STAND-DOWN comment naming the winner"
 assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
 
 section "implementer resumes its own in-flight draft, never idles behind it (#99 Fix 1)"
@@ -6630,6 +6630,110 @@ CLAIMI comment 9 --body "OPERATOR-UNGATE #999 — go" >/dev/null   # INVALID: se
 CLAIMI comment 10 --body "OPERATOR-UNGATE #10 — go" >/dev/null
 CLAIM10_OUT="$(CLAIM 10 2>&1)"
 assert_contains "AC(3): INVALID renders its own loud, distinct line (not folded into NOT YET CLEAR)" "$CLAIM10_OUT" "#9: INVALID"
+
+# --------------------------------------------------------------------------
+section "fwf claim: atomic claim-race adjudication (issue #462)"
+# The template's old two-step protocol (the agent posts "CLAIM implN" by
+# hand, then re-checks the thread itself to see if it won) was PROSE: two
+# seats racing inside the loop-latency window could both comply with it
+# perfectly and BOTH still proceed, since nothing there ever refused. This
+# moves the whole thing into fwf-claim.sh itself -- CODE, per AC 3 -- and
+# is only engaged when a [role] arg is given.
+CLAIMI create --title "Race target" --label product-wip >/dev/null   # issue 11
+CLAIMI comment 11 --body "OPERATOR-UNGATE #11 — go" >/dev/null
+
+# AC 1: the FIRST of two concurrent claims wins outright.
+CLAIM_RACE_WINNER_OUT="$(CLAIM 11 impl-race-a 2>&1)"; CLAIM_RACE_WINNER_RC=$?
+assert_eq "AC(1): the first of two racing claims proceeds (rc 0)" "0" "$CLAIM_RACE_WINNER_RC"
+assert_contains "AC(1): the winner's own artifact commit still lands" "$CLAIM_RACE_WINNER_OUT" "claimed."
+
+# AC 1/3: the SECOND, later claim on the SAME issue LOSES the race --
+# code-enforced, not a prose re-check the agent could skip or misjudge.
+CLAIM_RACE_LOSER_OUT="$(CLAIM 11 impl-race-b 2>&1)"; CLAIM_RACE_LOSER_RC=$?
+assert_eq "AC(1)/(3): the second racing claim is REFUSED (rc 1), not a second winner" "1" "$CLAIM_RACE_LOSER_RC"
+assert_contains "AC(3): the refusal names the 'race' cause, distinct from policy/infrastructure" "$CLAIM_RACE_LOSER_OUT" "race cause"
+assert_contains "AC(1): the refusal names the actual winner" "$CLAIM_RACE_LOSER_OUT" "impl-race-a's claim is first and live"
+
+# AC 1 (commit-level proof): only ONE claim artifact commit exists for
+# issue 11, not two -- the losing seat never reached the commit step.
+assert_eq "AC(1): exactly one claim artifact commit landed, not two" "1" \
+  "$(cd "$CLAIMGIT" && git log --oneline --grep 'claim #11:' | wc -l | tr -d ' ')"
+
+# AC 2: the losing seat SAYS SO on the thread -- a STAND-DOWN comment
+# naming both itself and the winner, never a silent stand-down.
+CLAIM11_COMMENTS="$(CLAIMI view 11 --json comments --jq '[.comments[].body] | join("\n---\n")')"
+assert_contains "AC(2): a STAND-DOWN comment lands on the issue thread" "$CLAIM11_COMMENTS" "STAND-DOWN #11: impl-race-b"
+assert_contains "AC(2): the STAND-DOWN comment names the winner" "$CLAIM11_COMMENTS" "impl-race-a's claim is first and live"
+
+# Regression: a role-LESS call (the pre-#462 call shape, exercised by
+# every AC(a)-(j) test above) must behave exactly as before -- no race
+# adjudication engaged, and in particular it never posts its own CLAIM
+# comment (that remains the caller's job, same as pre-#462).
+CLAIMI create --title "No role, no race check" --label product-wip >/dev/null   # issue 12
+CLAIMI comment 12 --body "OPERATOR-UNGATE #12 — go" >/dev/null
+claimrc 12 >/dev/null
+CLAIM12_COMMENTS="$(CLAIMI view 12 --json comments --jq '[.comments[].body] | join("\n")')"
+case "$CLAIM12_COMMENTS" in
+  *"CLAIM "*) bad "AC(regression): a role-less claim must never post its own CLAIM comment" ;;
+  *) ok "AC(regression): a role-less claim leaves comment-posting to the caller, exactly as before #462" ;;
+esac
+
+# --- AC 4: the compare-and-set must bust the ghcache, not read through a
+# stale snapshot -- exercised against the REAL gh backend (the local
+# FWF_ISSUES store above has no cache to bust). A minimal, STATEFUL stub
+# `gh` (persists posted comments to a fixture file and replays the ACTUAL
+# --jq expression fwf-claim.sh passes, via real jq, so this also proves
+# the jq expression itself parses and filters correctly -- not just that
+# some string was returned).
+CLAIMGHBIN="$TMP/claimghbin"; mkdir -p "$CLAIMGHBIN"
+CLAIMGHFIX="$TMP/claimghfix"; mkdir -p "$CLAIMGHFIX"
+CLAIMGHCALLLOG="$TMP/claimgh-calllog"; : > "$CLAIMGHCALLLOG"
+export CLAIMGHFIX
+cat > "$CLAIMGHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CLAIMGH_CALL_LOG:?}"
+case "$1 $2" in
+  "issue comment")
+    n="$3"; body="$5"
+    f="$CLAIMGHFIX/comments-$n.json"
+    [ -f "$f" ] || echo '[]' > "$f"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    tmp="$(mktemp)"
+    jq --arg body "$body" --arg createdAt "$now" '. + [{"body":$body,"createdAt":$createdAt}]' "$f" > "$tmp" && mv "$tmp" "$f"
+    exit 0
+    ;;
+  "issue view")
+    n="$3"
+    case "$*" in
+      *"--json comments --jq"*)
+        f="$CLAIMGHFIX/comments-$n.json"
+        [ -f "$f" ] || echo '[]' > "$f"
+        jqexpr=""; prev=""
+        for a in "$@"; do [ "$prev" = "--jq" ] && jqexpr="$a"; prev="$a"; done
+        jq -r "$jqexpr" "$f"
+        ;;
+      *"--json body --jq .body") echo "" ;;
+      *"--json title --jq .title") echo "AC4 fixture $n" ;;
+      *) echo "claimgh-stub: unhandled issue view: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "claimgh-stub: unhandled: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$CLAIMGHBIN/gh"
+CLAIMGHGIT="$TMP/claimgh-gitrepo"; mkdir -p "$CLAIMGHGIT"
+( cd "$CLAIMGHGIT" && git init -q . && git config user.email t@t.com && git config user.name t \
+  && echo a > f.txt && git add f.txt && git commit -q -m init )
+CLAIMGHROOT="$TMP/claimgh-cache"; mkdir -p "$CLAIMGHROOT/x__y/views"
+touch "$CLAIMGHROOT/x__y/views/650-comments.ts"   # pre-seed a STALE stamp
+CLAIMGH() { ( cd "$CLAIMGHGIT" && PATH="$CLAIMGHBIN:$PATH" FWF_RUN_DIR="$TMP/claimgh-run" FWF_GHCACHE_DIR="$CLAIMGHROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example CLAIMGH_CALL_LOG="$CLAIMGHCALLLOG" "$ROOT/fwf-claim.sh" "$@" ); }
+CLAIMGH 650 impl-ac4 >/dev/null 2>&1
+[ ! -f "$CLAIMGHROOT/x__y/views/650-comments.ts" ] && \
+  ok "AC(4): a role'd claim busts the issue's cached comment-thread .ts stamp" || \
+  bad "AC(4): a role'd claim busts the issue's cached comment-thread .ts stamp"
+assert_contains "AC(4): the claim comment itself was posted via real gh, not skipped" \
+  "$(cat "$CLAIMGHCALLLOG")" "issue comment 650"
+
 # (comment, un-label, cache-bust, verify) as one verb. RESCOPED 2026-08-29:
 # ergonomics only -- #191's signing design was declined; no key/signature
 # work exists here to test. Local-issues backend gives real, driveable

@@ -216,7 +216,7 @@ and every refusal/success message repeat this, deliberately, because the
 terminal is where a reader concludes a check was passed — not the docs.
 
 ```
-fwf claim <issue-number>
+fwf claim <issue-number> [role]
 ```
 
 runs `fwf authz` first and branches on its verdict:
@@ -226,6 +226,45 @@ runs `fwf authz` first and branches on its verdict:
 | `AUTHORIZED` / `NOT-GATED` | proceed |
 | `INDETERMINATE` | **warn** ("infrastructure" cause) and still proceed — claiming is cheap and reversible, so refusing on a mere read failure would manufacture the exact stall this exists to relieve |
 | `HELD` / `INVALID` | **refuse**, exit 1, naming the verdict and a "policy" cause, plus the exact `fwf authz <n>` to run next |
+
+### Claim-race adjudication (issue #462)
+
+Before #462, the implementer template asked the agent to post a `CLAIM
+implN` comment by hand, then re-check the thread itself to see if its
+comment landed first — a PROSE compare-and-set. Two seats claiming the
+same issue inside the loop-latency window (a few seconds apart, four
+observed occurrences in one night) could both comply with that prose
+perfectly and both proceed, because nothing there ever refused — the
+ticket then sat unadjudicated until a human noticed, ~25 minutes each
+time.
+
+`fwf claim` now closes that race itself when `[role]` is given:
+
+1. **Posts** `CLAIM <role>` (folding what used to be a separate, earlier
+   `gh issue comment` call the agent ran by hand into this one tool
+   call).
+2. **Busts the ghcache** view of the issue's comment thread
+   (`fwf-ghcache.sh invalidate issue <n>`, the same write-through
+   primitive the operator-approve path already uses) before reading it
+   back — a compare-and-set against a snapshot up to `TTL`-seconds stale
+   is not a compare-and-set.
+3. **Re-reads** the thread and finds the FIRST claim comment that is
+   still LIVE, via `fwf_claim_liveness_blocks` (`lib.sh`) — the SAME
+   liveness signal `fwf claim-liveness`, the conductor's build-plane
+   guard, and `fwf scale`'s idle-impl check already use, so this fourth
+   call site can never disagree with the other three about who currently
+   holds a claim. An old, abandoned claim is not live, so it never
+   blocks a fresh attempt — only a genuinely concurrent claim can.
+4. If another seat's claim is that first live one, `fwf claim` **refuses**
+   (exit 1, a "race" cause distinct from "policy"/"infrastructure") and
+   posts a `STAND-DOWN #<n>: <role> — <winner> claimed first...` comment
+   on the issue itself — the losing seat is TOLD on the thread, not
+   silently dropped.
+
+`[role]` is optional: omitted, `fwf claim <n>` behaves exactly as before
+#462 (the caller is assumed to have already posted its own CLAIM comment
+and re-checked it won) — this remains an ergonomic checkpoint, not a
+control, skippable either way.
 
 It also scans the issue body for a declared `## HARD PREREQUISITE(S)` /
 `## HARD DEPENDENC(Y|IES)` heading (issue #370 widened the accepted
