@@ -3687,6 +3687,184 @@ EOF
     ok "healing (non-WEDGED verdict) clears the breaker state"
   fi
 
+  # --------------------------------------------------------------------------
+  section "parked-role escalation (issue #467): a role that cannot proceed is refused-and-routed, never left parked"
+  # AC(6)/(7): fwf_resolve_role_prompt_path -- direct unit tests, no daemon.
+  F467UNIT="$TMP/f467-unit-run"; mkdir -p "$F467UNIT/state/example" "$F467UNIT/prompts"
+  printf 'hello\n' > "$F467UNIT/prompts/example-impl1.prompt"
+  F467_VALID="$(FWF_PROFILE=example FWF_RUN_DIR="$F467UNIT" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_role_prompt_path impl1 '$F467UNIT/prompts/example-impl1.prompt'
+  ")"
+  assert_eq "AC(6): a role's OWN already-rendered prompt path still resolves (no regression)" \
+    "$F467UNIT/prompts/example-impl1.prompt" "$F467_VALID"
+
+  F467_FOREIGN_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467UNIT" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_role_prompt_path impl1 '/tmp/fwf-test.fixture/prompts/example-gv.prompt' >/dev/null; echo \$?
+  ")"
+  assert_eq "a foreign path outside the role's own profile is refused" "1" "$F467_FOREIGN_RC"
+
+  F467_MISSING_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467UNIT" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_role_prompt_path impl1 '/tmp/does/not/exist-$$.prompt' >/dev/null; echo \$?
+  ")"
+  assert_eq "AC(7): a missing/unreadable path takes the refuse branch (never permissive, never blocking)" "1" "$F467_MISSING_RC"
+
+  # Symlink/`..` traversal (named edge case): a path that only LOOKS foreign
+  # (or only looks legitimate) via indirection must be judged on its REAL
+  # target, never the literal string.
+  F467_ELSEWHERE="$TMP/f467-elsewhere"; mkdir -p "$F467_ELSEWHERE"
+  ln -sf "$F467UNIT/prompts/example-impl1.prompt" "$F467_ELSEWHERE/via-symlink.prompt"
+  F467_SYMLINK="$(FWF_PROFILE=example FWF_RUN_DIR="$F467UNIT" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_role_prompt_path impl1 '$F467_ELSEWHERE/via-symlink.prompt'
+  ")"
+  assert_eq "a symlink resolving to the role's own prompt is accepted on its REAL target" \
+    "$F467UNIT/prompts/example-impl1.prompt" "$F467_SYMLINK"
+  F467_DOTDOT_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467UNIT" bash -c "
+    source '$ROOT/lib.sh'
+    fwf_resolve_role_prompt_path impl1 '$F467UNIT/prompts/../prompts/example-gv.prompt' >/dev/null; echo \$?
+  ")"
+  assert_eq "'..' traversal to a DIFFERENT role's prompt is still refused on its real target" "1" "$F467_DOTDOT_RC"
+
+  # AC(4): dedupe on (role, input) with a stated expiry, persisted (not
+  # in-memory -- each check below is its own fresh bash -c process, so a
+  # pass here already demonstrates the state survives across processes the
+  # same way it must survive a real respawn).
+  F467DEDUP="$TMP/f467-dedup-run"; mkdir -p "$F467DEDUP/state/example"
+  F467_CHECK1_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467DEDUP" bash -c "
+    source '$ROOT/lib.sh'; fwf_parked_flag_check r1 pathA; echo \$?
+  ")"
+  assert_eq "first check for a fresh (role, input) pair allows escalation" "0" "$F467_CHECK1_RC"
+  FWF_PROFILE=example FWF_RUN_DIR="$F467DEDUP" bash -c "
+    source '$ROOT/lib.sh'; fwf_parked_flag_record r1 pathA 'unit test'
+  "
+  F467_CHECK2_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467DEDUP" bash -c "
+    source '$ROOT/lib.sh'; fwf_parked_flag_check r1 pathA; echo \$?
+  ")"
+  assert_eq "AC(4): a second check within the expiry window is deduped (across a FRESH process -- respawn-durable)" "1" "$F467_CHECK2_RC"
+  F467_CHECK_OTHER_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467DEDUP" bash -c "
+    source '$ROOT/lib.sh'; fwf_parked_flag_check r1 pathB; echo \$?
+  ")"
+  assert_eq "a DIFFERENT input for the same role is its own dedupe key (not swallowed by pathA's flag)" "0" "$F467_CHECK_OTHER_RC"
+  # Expiry: hand-backdate the flag file past FWF_PARKED_FLAG_EXPIRY_SECS --
+  # a genuinely new occurrence after expiry must escalate again.
+  F467_KEY_FILE="$(FWF_PROFILE=example FWF_RUN_DIR="$F467DEDUP" bash -c "
+    source '$ROOT/lib.sh'; _fwf_parked_flag_file r1 pathA
+  ")"
+  printf 'flagged_at=1\nrole=r1\ninput=pathA\n' > "$F467_KEY_FILE"
+  F467_CHECK3_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F467DEDUP" FWF_PARKED_FLAG_EXPIRY_SECS=1800 bash -c "
+    source '$ROOT/lib.sh'; fwf_parked_flag_check r1 pathA; echo \$?
+  ")"
+  assert_eq "AC(4): a flag older than the stated expiry no longer dedupes -- a new occurrence escalates" "0" "$F467_CHECK3_RC"
+
+  # --------------------------------------------------------------------------
+  section "parked-role escalation (issue #467): 'fwf refuse-prompt' -- the code seam replacing an interactive park"
+  F467CLI="$TMP/f467-cli-run"; mkdir -p "$F467CLI/state/example"
+  F467_CLI_OUT1="$(FWF_PROFILE=example FWF_RUN_DIR="$F467CLI" "$ROOT/fwf" refuse-prompt impl1 /tmp/fwf-test.fixture/example-gv.prompt 2>&1)"
+  assert_contains "first refusal names the rejected role and path" "$F467_CLI_OUT1" "REFUSED: impl1 rejected role-prompt path"
+  assert_contains "first refusal records the escalation (not deduped -- fresh key)" "$F467_CLI_OUT1" "escalation recorded"
+  assert_contains "AC(3): the escalation is recorded in a durable, named location" "$F467_CLI_OUT1" "$F467CLI/state/example/parked-flag/log"
+  F467_LOG_CONTENT="$(cat "$F467CLI/state/example/parked-flag/log" 2>/dev/null)"
+  assert_contains "the durable log line names role and the rejected path" "$F467_LOG_CONTENT" "role=impl1 input=/tmp/fwf-test.fixture/example-gv.prompt"
+
+  F467_CLI_OUT2="$(FWF_PROFILE=example FWF_RUN_DIR="$F467CLI" "$ROOT/fwf" refuse-prompt impl1 /tmp/fwf-test.fixture/example-gv.prompt 2>&1)"
+  assert_contains "AC(4): a repeated refusal of the SAME path is deduped, not a second escalation" "$F467_CLI_OUT2" "deduped"
+  F467_LOG_LINES="$(wc -l < "$F467CLI/state/example/parked-flag/log" 2>/dev/null | tr -d ' ')"
+  assert_eq "the durable log gets exactly ONE line across two refusals of the same path (no flood)" "1" "$F467_LOG_LINES"
+
+  # AC(1)/(5): tick advances as a direct effect of the refusal call -- never
+  # asserted from pane contents (#99), only the durable tick file.
+  F467_TICK_BEFORE="$(cat "$F467CLI/state/example/tick/impl1" 2>/dev/null || echo 0)"
+  FWF_PROFILE=example FWF_RUN_DIR="$F467CLI" "$ROOT/fwf" refuse-prompt impl1 /tmp/fwf-test.fixture/another-path.prompt >/dev/null 2>&1
+  F467_TICK_AFTER="$(cat "$F467CLI/state/example/tick/impl1" 2>/dev/null || echo 0)"
+  if [ "$F467_TICK_AFTER" -gt "$F467_TICK_BEFORE" ]; then
+    ok "AC(1): the role's tick advances as a direct effect of refuse-prompt, asserted via the tick FILE, not pane contents"
+  else
+    bad "AC(1): the role's tick advances as a direct effect of refuse-prompt, asserted via the tick FILE, not pane contents"
+  fi
+
+  # AC(7): a missing role-prompt path is refused, non-blocking (the command
+  # returns immediately -- no interactive prompt), and still escalates.
+  F467_CLI_MISSING="$(FWF_PROFILE=example FWF_RUN_DIR="$F467CLI" timeout 10 "$ROOT/fwf" refuse-prompt impl1 /tmp/fwf-test.fixture/missing-$$.prompt 2>&1)"
+  assert_contains "AC(7): a missing/unreadable path still completes (non-blocking) and is refused, not adopted" "$F467_CLI_MISSING" "REFUSED: impl1 rejected role-prompt path"
+
+  # --------------------------------------------------------------------------
+  section "parked-role escalation (issue #467): fwf-supervise.sh -- the PRIMARY loop/tick wrapper seam, catches parking from ANY cause"
+  # Same isolation shape as the #217 breaker integration test above: a
+  # throwaway copy of fwf-supervise.sh with fwf-pane-liveness.sh stubbed to
+  # a fixed verdict and fwf-respawn.sh stubbed to a no-op failure, so this
+  # exercises supervise's OWN escalation wiring without a real tmux floor.
+  F467ISO="$TMP/f467iso"; mkdir -p "$F467ISO/lib" "$F467ISO/profiles"
+  cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F467ISO/"
+  cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F467ISO/lib/"
+  cp "$ROOT/profiles/example.sh" "$F467ISO/profiles/"
+  ln -sf "$ROOT/templates" "$F467ISO/templates"
+  ln -sf "$ROOT/fwf-usage-data.sh" "$F467ISO/fwf-usage-data.sh"
+  F467_VERDICT_FILE="$TMP/f467iso-verdict"
+  cat > "$F467ISO/fwf-pane-liveness.sh" <<EOF
+#!/usr/bin/env bash
+cat "$F467_VERDICT_FILE"
+EOF
+  chmod +x "$F467ISO/fwf-pane-liveness.sh"
+  cat > "$F467ISO/fwf-respawn.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$F467ISO/fwf-respawn.sh"
+  F467_SV_RUN="$TMP/f467iso-run"; mkdir -p "$F467_SV_RUN/state/example"
+  echo WEDGED > "$F467_VERDICT_FILE"
+
+  F467_SV_TICK_BEFORE="$(cat "$F467_SV_RUN/state/example/tick/parkrole" 2>/dev/null || echo 0)"
+  F467_PASS1="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=0 \
+    bash "$F467ISO/fwf-supervise.sh" parkrole 2>&1)"
+  assert_contains "a WEDGED role escalates via PARKED_FLAG on its FIRST wedged pass, even with autorespawn OFF (#165 ships dark, but visibility is unconditional)" \
+    "$F467_PASS1" "PARKED_FLAG escalation recorded"
+  F467_SV_TICK_AFTER="$(cat "$F467_SV_RUN/state/example/tick/parkrole" 2>/dev/null || echo 0)"
+  if [ "$F467_SV_TICK_AFTER" -gt "$F467_SV_TICK_BEFORE" ]; then
+    ok "AC(1): the PARKED_FLAG escalation itself bumps the role's tick, so it advances even with FWF_SUPERVISE_AUTORESPAWN=0 (not dependent on a respawn)"
+  else
+    bad "AC(1): the PARKED_FLAG escalation itself bumps the role's tick, so it advances even with FWF_SUPERVISE_AUTORESPAWN=0 (not dependent on a respawn)"
+  fi
+
+  F467_PASS2="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=0 \
+    bash "$F467ISO/fwf-supervise.sh" parkrole 2>&1)"
+  if printf '%s' "$F467_PASS2" | grep -q "PARKED_FLAG escalation recorded"; then
+    bad "AC(4): a role that stays WEDGED across consecutive passes does not re-escalate within the expiry (no flood)"
+  else
+    ok "AC(4): a role that stays WEDGED across consecutive passes does not re-escalate within the expiry (no flood)"
+  fi
+  F467_SV_LOG_LINES="$(wc -l < "$F467_SV_RUN/state/example/parked-flag/log" 2>/dev/null | tr -d ' ')"
+  assert_eq "exactly one durable escalation record across two consecutive WEDGED passes" "1" "$F467_SV_LOG_LINES"
+
+  # Healing then re-wedging is a genuinely NEW parked episode -- it must
+  # escalate again even though the OLD flag hasn't expired, because the
+  # role recovered in between (mirrors the breaker's own reset-on-healthy).
+  echo HEALTHY > "$F467_VERDICT_FILE"
+  PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=0 \
+    bash "$F467ISO/fwf-supervise.sh" parkrole >/dev/null 2>&1
+
+  # AC(5), through the PRIMARY seam: with autorespawn ON, a WEDGED role is
+  # ALSO forcibly re-driven (the existing #165/#217 respawn machinery), on
+  # top of the unconditional tick bump asserted above -- respawn is what
+  # actually un-parks the pane itself (not just its tick artifact), so this
+  # asserts the wrapper actually DRIVES that path on WEDGED, by asserting the
+  # stubbed fwf-respawn.sh (which this harness makes fail, to match the #217
+  # breaker test's shape) is invoked at all.
+  echo WEDGED > "$F467_VERDICT_FILE"
+  F467_RESPAWN_LOG="$TMP/f467iso-respawn.log"
+  cat > "$F467ISO/fwf-respawn.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$F467_RESPAWN_LOG"
+exit 1
+EOF
+  chmod +x "$F467ISO/fwf-respawn.sh"
+  PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F467_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
+    FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F467ISO/fwf-supervise.sh" parkrole >/dev/null 2>&1
+  assert_eq "AC(1)/(5): the loop/tick wrapper actually drives a fresh respawn attempt on a re-wedged role (the mechanism that makes tick advance), not just a log line" \
+    "1" "$(wc -l < "$F467_RESPAWN_LOG" 2>/dev/null | tr -d ' ')"
+
   # --- boot-time worktree refresh (issue #146 AC4) ---------------------------
   # `fwf up` should land every read-only role's worktree at 0-behind
   # $DEFAULT_BRANCH, not just leave it wherever it happened to be at

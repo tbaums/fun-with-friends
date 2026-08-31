@@ -211,6 +211,35 @@ for role in $roles; do
     fwf_respawn_breaker_reset "$role"
     continue
   fi
+
+  # issue #467 AC(1)/(3)/(4): "a role that parks on an unresolvable input"
+  # is one CAUSE of WEDGED, not a separate verdict — the loop/tick wrapper
+  # is the PRIMARY seam because it catches parking from ANY cause, not only
+  # the role-prompt-path injection #466 exercised. Escalate here,
+  # UNCONDITIONALLY (unlike the respawn action below, which stays gated
+  # behind FWF_SUPERVISE_AUTORESPAWN per #165's "ships dark"), so the
+  # finding is never silently dropped just because auto-respawn happens to
+  # be off. Deduped on (role, "supervise:<role>") with a stated, persisted
+  # expiry (fwf_parked_flag_check/_record, lib.sh) — a role re-wedging every
+  # pass produces exactly one escalation per expiry window, never a flood,
+  # while a fresh occurrence after expiry escalates again.
+  if fwf_parked_flag_check "$role" "supervise:$role"; then
+    fwf_parked_flag_record "$role" "supervise:$role" \
+      "WEDGED (tick+tokens both flat past FWF_WEDGE_MIN_SECS) -- specific cause not identifiable by this wrapper; inspect the role's pane"
+    printf 'supervise: %-10s PARKED_FLAG escalation recorded (WEDGED) -- durable record at %s\n' \
+      "$role" "$FWF_STATE_DIR/parked-flag/log"
+    # AC1/AC5: "tick advances on the next cycle" must hold on its own, not only
+    # when FWF_SUPERVISE_AUTORESPAWN=1 (default 0, #165's "ships dark") drives
+    # a real respawn. Bump here, UNCONDITIONALLY, the moment escalation fires —
+    # exactly once per dedupe window (fwf_parked_flag_check above already gates
+    # this branch), so the next fwf-pane-liveness.sh baseline sees a fresh tick
+    # and does not re-flag WEDGED until a full FWF_WEDGE_MIN_SECS passes again,
+    # which is well inside the parked-flag expiry that already suppresses a
+    # repeat escalation -- this never masks a still-parked role for longer than
+    # the dedupe window already tolerates.
+    fwf_tick_bump "$role" >/dev/null
+  fi
+
   if [ "$autorespawn" = "1" ]; then
     if fwf_respawn_breaker_check "$role"; then
       printf 'supervise: %-10s WEDGED -> respawning (FWF_SUPERVISE_AUTORESPAWN=1)\n' "$role"
