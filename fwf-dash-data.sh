@@ -201,17 +201,14 @@ visibility_json() {
 # unrecognized name showing up is at worst noise on the board; dropping
 # a role that genuinely ticked is the exact defect this ticket exists to
 # close, and the two mistakes are not symmetric.
-_fwf402_roster_names() {
-  {
-    fwf_all_roles
-    if [ -d "$FWF_STATE_DIR/heartbeat" ]; then
-      for _f in "$FWF_STATE_DIR"/heartbeat/*; do
-        [ -e "$_f" ] || continue
-        basename "$_f"
-      done
-    fi
-  } | while IFS= read -r _r; do fwf_role_suppressed "$_r" || printf '%s\n' "$_r"; done | sort -u
-}
+#
+# issue #452: this exact union is now a shared lib.sh primitive
+# (fwf_roster_names) -- fwf-respawn.sh needed the same logic for the same
+# reason, and a second consumer is the point at which this codebase
+# promotes a helper rather than growing a second hand-rolled copy that
+# can silently diverge from the first. Kept as a thin, locally-named
+# wrapper so every existing call site below is unchanged.
+_fwf402_roster_names() { fwf_roster_names; }
 
 # --- roles (tmux pane liveness, overlaid with status.json detail) -----------
 # $1 = floor_idle_json (so a pane-less floor role can render a deliberate IDLE

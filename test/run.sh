@@ -3977,10 +3977,149 @@ GHSTUB2
   assert_contains "fwf-scale.sh runs the real boot health-gate on new panes" "$F210SRC" "fwf_verify_boot_ticks"
   assert_contains "fwf-scale.sh creates panes via the shared fwf_create_role_pane (not hand-rolled tmux split logic)" "$F210SRC" "fwf_create_role_pane "
   assert_not_contains "fwf-scale.sh never deletes a worktree on scale-down" "$F210SRC" "worktree remove"
+
+  # --------------------------------------------------------------------------
+  section "fwf-respawn.sh / fwf-scale.sh (issue #452): floor size comes from the running floor, not the profile default"
+  # A fresh, independent 2-pair floor -- impl1/qa1/impl2/qa2 + coord --
+  # never shares state with #210's own fixture above.
+  F452WT="$TMP/wt452"
+  mkdir -p "$F452WT/ex-impl1" "$F452WT/ex-qa1" "$F452WT/ex-impl2" "$F452WT/ex-qa2" "$F452WT/ex-impl3" "$F452WT/ex-qa3" "$F452WT/ex-conductor" "$F452WT/ex-pm" "$F452WT/ex-gv" "$F452WT/ex-captain"
+  F452RUN="$TMP/run452"; mkdir -p "$F452RUN/state/example/heartbeat"
+  F452SESS="fwf-selftest-452-$$"
+  f452() {
+    env FWF_PROFILE=example FWF_RUN_DIR="$F452RUN" FWF_SESSION="$F452SESS" FWF_MIN_FREE_GB=0 \
+        FWF_REPO="$F85REPO" FWF_WT_BASE="$F452WT" FWF_CLAUDE_CMD="$F85CLAUDE" \
+        FWF_SKIP_BOOT_GATE=1 "$@"
+  }
+  f452 env FWF_PAIRS=2 "$ROOT/fwf-up.sh" >/dev/null 2>&1
+
+  # Simulate a floor that has actually ticked -- state/<profile>/heartbeat/
+  # <role> is written by each role's own loop (fwf_tick_bump), never by
+  # fwf-up.sh itself, and the stub claude here never loops -- so seeding it
+  # by hand stands in for "ticked at some point", the durable artifact
+  # #452's own reasoning (and #450) relies on. impl3/qa3 get an entry with
+  # NO real pane -- a floor that grew to 3 pairs.
+  for r in impl1 qa1 impl2 qa2 impl3 qa3; do touch "$F452RUN/state/example/heartbeat/$r"; done
+
+  # A respawn that survives the floor-boundary check still runs its full,
+  # genuinely multi-minute tick-verification tail (unrelated to this
+  # ticket, already covered by #99/#116/#133's own tests) -- backgrounded
+  # and bounded so this section stays fast: poll only until the OUTPUT
+  # shows the check was passed (it started real pane work), never for the
+  # whole command to finish.
+  f452_bg_until_past_floor_check() { # $1=role $2=logfile -> sets F452_BG_PID
+    f452 env FWF_PAIRS=2 FWF_RESPAWN_VERIFY_MARGIN=0 "$ROOT/fwf-respawn.sh" "$1" >"$2" 2>&1 &
+    F452_BG_PID=$!
+    local i=0
+    while [ "$i" -lt 50 ]; do
+      grep -qE "respawning $1 in pane|creating a fresh $1 pane|beyond both the configured floor" "$2" 2>/dev/null && break
+      kill -0 "$F452_BG_PID" 2>/dev/null || break   # exited (e.g. an early refusal) -- stop polling
+      sleep 0.2; i=$((i + 1))
+    done
+  }
+
+  # --- AC (1): the literal can-it-fail fixture -- FWF_PAIRS=2, state shows a
+  # 3rd pair, respawn of the seat outside FWF_PAIRS must not be refused by
+  # the floor-boundary check. qa3 never had a real pane (heartbeat only) --
+  # fwf-respawn.sh's own pre-existing recovery path (pane not found ->
+  # create + arm fresh) is what "succeeds" for a seat whose pane is gone.
+  F452_QA3_LOG="$TMP/f452-qa3.log"
+  f452_bg_until_past_floor_check qa3 "$F452_QA3_LOG"
+  kill "$F452_BG_PID" 2>/dev/null; wait "$F452_BG_PID" 2>/dev/null || true
+  F452_QA3_OUT="$(cat "$F452_QA3_LOG" 2>/dev/null)"
+  assert_not_contains "AC(1): FWF_PAIRS=2, state shows a 3rd pair -- the floor-boundary refusal never fires for qa3" \
+    "$F452_QA3_OUT" "beyond both the configured floor"
+  assert_contains "AC(1): respawn actually proceeded to real pane work (recovery path engaged)" \
+    "$F452_QA3_OUT" "creating a fresh qa3 pane"
+
+  # --- AC (2): a seat that HAD a real pane which died is still respawnable,
+  # via the SAME recovery path -- kill the pane AC(1) just created,
+  # heartbeat entry untouched (a genuine wedge/crash, never a scale-down).
+  QA3_PANE_452="$(f452 bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F452SESS}-build' 'QA3 ·'" 2>/dev/null || true)"
+  if [ -n "$QA3_PANE_452" ]; then
+    tmux kill-pane -t "$QA3_PANE_452" 2>/dev/null
+    F452_QA3B_LOG="$TMP/f452-qa3b.log"
+    f452_bg_until_past_floor_check qa3 "$F452_QA3B_LOG"
+    kill "$F452_BG_PID" 2>/dev/null; wait "$F452_BG_PID" 2>/dev/null || true
+    F452_QA3B_OUT="$(cat "$F452_QA3B_LOG" 2>/dev/null)"
+    assert_not_contains "AC(2): a seat whose pane died (heartbeat intact) is not refused either" \
+      "$F452_QA3B_OUT" "beyond both the configured floor"
+    assert_contains "AC(2): the dead-pane recovery path engaged again" "$F452_QA3B_OUT" "creating a fresh qa3 pane"
+  else
+    bad "AC(2): a seat whose pane died (heartbeat intact) is not refused either" "AC(1) never created a real qa3 pane to kill"
+  fi
+
+  # --- AC (3): the refusal, when it correctly fires, names BOTH numbers --
+  # qa5 is outside FWF_PAIRS=2 AND never had a heartbeat entry at all.
+  F452_QA5_OUT="$(f452 env FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" qa5 2>&1)"; F452_QA5_RC=$?
+  assert_eq "AC(3): a seat genuinely outside both sources refuses (exit 1)" "1" "$F452_QA5_RC"
+  assert_contains "AC(3): the refusal names the configured floor" "$F452_QA5_OUT" "FWF_PAIRS=2"
+  assert_contains "AC(3): the refusal names the observed roster, not just a bare number" "$F452_QA5_OUT" "observed roster:"
+  assert_contains "AC(3): the observed roster actually lists a real seat (impl1)" "$F452_QA5_OUT" "impl1"
+
+  # AC(1)/(2)'s qa3 recovery pane has no matching impl3 -- fwf-scale.sh
+  # correctly refuses to guess a pair count against an inconsistent floor,
+  # so it has to go before scale-down is exercised below (out of scope for
+  # THIS ticket's own ACs, just a side effect of proving AC(1)/(2)).
+  QA3_CLEANUP_PANE_452="$(f452 bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F452SESS}-build' 'QA3 ·'" 2>/dev/null || true)"
+  [ -n "$QA3_CLEANUP_PANE_452" ] && tmux kill-pane -t "$QA3_CLEANUP_PANE_452" 2>/dev/null
+  rm -f "$F452RUN/state/example/heartbeat/impl3" "$F452RUN/state/example/heartbeat/qa3"
+
+  # --- AC (4)/(5): scale-down removes the seat's state, and a removed seat
+  # stays refused -- not resurrected by the very union this ticket adds.
+  # fwf-scale.sh's own idle check calls `gh`; stub it exactly as #210's own
+  # tests do (this repo has no real GitHub remote to query).
+  F452GHBIN="$TMP/f452ghbin"; mkdir -p "$F452GHBIN"
+  cat > "$F452GHBIN/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr list") printf '' ;;
+  "issue list") echo "[]" ;;
+  *) exit 1 ;;
+esac
+GHSTUB
+  chmod +x "$F452GHBIN/gh"
+  PATH="$F452GHBIN:$PATH" f452 "$ROOT/fwf-scale.sh" --pairs 1 >/dev/null 2>&1
+  F452_IMPL2_HB_RC=0; [ -e "$F452RUN/state/example/heartbeat/impl2" ] && F452_IMPL2_HB_RC=1
+  F452_QA2_HB_RC=0; [ -e "$F452RUN/state/example/heartbeat/qa2" ] && F452_QA2_HB_RC=1
+  assert_eq "AC(4): scale-down removes the seat's heartbeat entry (impl2)" "0" "$F452_IMPL2_HB_RC"
+  assert_eq "AC(4): scale-down removes the seat's heartbeat entry (qa2)" "0" "$F452_QA2_HB_RC"
+  F452_QA2_AFTER_OUT="$(f452 env FWF_PAIRS=1 "$ROOT/fwf-respawn.sh" qa2 2>&1)"; F452_QA2_AFTER_RC=$?
+  assert_eq "AC(5): a genuinely scaled-down seat is still refused (not resurrected)" "1" "$F452_QA2_AFTER_RC"
+  assert_contains "AC(5): the refusal fires for the right reason" "$F452_QA2_AFTER_OUT" "beyond both the configured floor"
+
+  tmux kill-session -t "${F452SESS}-coord" 2>/dev/null
+  tmux kill-session -t "${F452SESS}-build" 2>/dev/null
+
+  # --- AC (6): an absent/unreadable state dir degrades to the configured
+  # roster and SAYS SO -- no tmux needed, the refusal fires before any
+  # tmux command runs.
+  F452_NOHB_RUN="$TMP/run452-nohb"; mkdir -p "$F452_NOHB_RUN/state/example"
+  F452_NOHB_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" qa5 2>&1)"
+  assert_contains "AC(6): a missing heartbeat dir is named, not silently trusted as complete" \
+    "$F452_NOHB_OUT" "missing/unreadable -- falling back to the configured floor only"
+
+  # --- issue #460: a seat WITHIN the profile default never consults the
+  # roster/state fallback at all -- same zero-subprocess-cost fast path as
+  # pre-#452, restored after the union check regressed #217/#312's own
+  # tight-window respawn tests by running fwf_roster_names (fork-heavy:
+  # brace-group, `while read`, `sort -u`, plus a `basename` fork per
+  # heartbeat entry) unconditionally on every respawn, including this
+  # common in-floor case that never needed it. Same fixture shape as
+  # AC(6) above (no heartbeat dir at all, no live tmux session) -- if the
+  # fast path is genuinely skipping the fallback, an in-floor respawn
+  # never reaches the heartbeat-dir check and so never names it, unlike
+  # AC(6)'s out-of-floor qa5 case just above.
+  F460_INFLOOR_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" impl1 2>&1)"
+  assert_not_contains "issue #460: a seat WITHIN the profile default never triggers the heartbeat-dir fallback check" \
+    "$F460_INFLOOR_OUT" "missing/unreadable -- falling back to the configured floor only"
+  assert_not_contains "issue #460: ...nor the 'beyond both' refusal path (it was never in scope for the union check)" \
+    "$F460_INFLOOR_OUT" "beyond both the configured floor"
 else
   skip "real-tmux floor-lifecycle wiring tests (tmux not installed)" 60
   skip "real-tmux issue #190 --pairs live-floor tests (tmux not installed)" 10
   skip "real-tmux issue #210 fwf scale tests (tmux not installed)" 35
+  skip "real-tmux issue #452 fwf-respawn floor-size tests (tmux not installed)" 14
 fi
 
 section "floor-down cooldown guard (issue #88, per-plane by #105): fwf_plane_last_up_epoch / fwf_plane_cooldown_remaining"
