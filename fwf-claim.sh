@@ -14,7 +14,7 @@
 # terminal is where a reader draws the "was this authorized?" conclusion,
 # not the docs.
 #
-# Usage: fwf claim <issue-number>
+# Usage: fwf claim <issue-number> [role]
 #   On success: prints the prerequisite scan (if any), the ergonomic-not-
 #   control statement, and creates the claim artifact -- an empty commit
 #   `claim #<n>: <title>` (the definition pinned by this ticket, AC i0/i2:
@@ -22,8 +22,26 @@
 #   contention concern -- the caller is assumed to already be on the
 #   right branch).
 #
+#   issue #462: when [role] is given, this ALSO performs the atomic
+#   claim-race adjudication that used to live as PROSE in the implementer
+#   template ("post a CLAIM comment, then re-check you won"). Two seats
+#   racing inside the loop-latency window used to both comply with that
+#   prose perfectly and both proceed -- a test cannot exercise prose, and
+#   nothing enforced it. With [role], this script itself posts "CLAIM
+#   <role>", busts the ghcache read of the issue thread (a compare-and-set
+#   against a stale cached snapshot is not a compare-and-set, #462 AC 4),
+#   and refuses -- posting a STAND-DOWN comment so the loser is TOLD, not
+#   silent (#462 AC 2) -- unless its own claim is the FIRST LIVE one on
+#   the thread (liveness via the SAME fwf_claim_liveness_blocks signal
+#   fwf-claim-liveness.sh already uses, so an old abandoned claim never
+#   blocks a fresh one). [role] omitted preserves the pre-#462 behavior
+#   exactly (the caller is assumed to have already posted its own CLAIM
+#   comment and re-checked it won) -- this script is an ergonomic
+#   checkpoint, not a control, and remains skippable either way.
+#
 # Exit codes: 0 = claimed (AUTHORIZED or NOT-GATED, INDETERMINATE warns but
-#   still proceeds). 1 = REFUSED (HELD or INVALID) or a usage error.
+#   still proceeds). 1 = REFUSED (HELD, INVALID, a lost claim race, or a
+#   usage error).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -40,7 +58,7 @@ _issue_read() { # $1=issue-number ; rest = --json <field> --jq <expr>
   fi
 }
 
-usage() { echo "usage: fwf claim <issue-number>   # fail-fast authorization checkpoint at intent-formation time (issue #243) -- NOT a security control, see 'fwf claim --help'" >&2; }
+usage() { echo "usage: fwf claim <issue-number> [role]   # fail-fast authorization + claim-race checkpoint (issues #243, #462) -- NOT a security control, see 'fwf claim --help'" >&2; }
 
 # issue #243 AC (h): the ergonomic-not-control statement, verbatim, on
 # BOTH --help and the success path -- the terminal is where a reader
@@ -57,6 +75,8 @@ esac
 
 num="${1:-}"
 case "$num" in ''|*[!0-9]*) usage; exit 1;; esac
+role="${2:-}"
+case "$role" in *[!A-Za-z0-9_-]*) echo "fwf claim: invalid role '$role' (letters/digits/-/_ only)" >&2; exit 1;; esac
 
 # --- refusal event log, durable across ticks (issue #243 AC f) --------------
 # EVENT-SOURCED, never recomputed per render: fwf-dash-data.sh reading this
@@ -79,7 +99,7 @@ _record_refusal() { # $1=issue-number $2=verdict
   fi
 }
 
-refuse() { # $1=verdict-line $2=cause-class(policy|infrastructure)
+refuse() { # $1=verdict-line $2=cause-class(policy|infrastructure|race)
   echo "fwf claim #$num: REFUSED — $2 cause" >&2
   echo "  $1" >&2
   echo "  next: fwf authz $num" >&2
@@ -90,6 +110,99 @@ refuse() { # $1=verdict-line $2=cause-class(policy|infrastructure)
   echo "$ERGONOMIC_NOTICE" >&2
   _record_refusal "$num" "$2"
   exit 1
+}
+
+# --- issue #462: atomic claim-race adjudication -----------------------------
+# Only engaged when a [role] arg is given (see usage note above). Three
+# steps, all CODE (the whole point: the template's old "post a comment,
+# then re-check you won" was PROSE -- both racing seats could comply with
+# it perfectly and both still proceed, since nothing there ever refused).
+#
+# 1. Post "CLAIM <role>" ourselves (folding what used to be a separate,
+#    earlier `gh issue comment` call the agent ran by hand into this one
+#    tool call -- one fewer place for the two steps to drift apart).
+# 2. Bust the ghcache view of this issue's comment thread (AC 4: a
+#    compare-and-set against a snapshot up to TTL=60s stale is not a
+#    compare-and-set -- reuses the SAME write-through primitive
+#    fwf-dash-act.sh's operator-approve path already calls). Skipped for
+#    the local test/dev issue store, which has no cache to bust.
+# 3. Re-read the thread and find the FIRST LIVE "CLAIM <role>" comment,
+#    reusing fwf_claim_liveness_blocks (lib.sh) -- the SAME liveness
+#    signal fwf-claim-liveness.sh, the conductor's build-plane guard and
+#    fwf-scale.sh already use, so this 4th call site can never disagree
+#    with the other three about who currently holds a claim. An old,
+#    abandoned claim is skipped (not live), so it never blocks a fresh
+#    attempt -- only a genuinely CONCURRENT claim can beat us.
+_claim_comments_tsv() { # $1=issue-number -> "createdAt\trole" per CLAIM comment, in order
+  if [ "${FWF_ISSUES:-}" = "local" ]; then
+    "$DIR/fwf-issues.sh" view "$1" --json comments --jq \
+      '(.comments // []) | map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$"))) | .[] | "\(.createdAt)\t\(.body | sub("^CLAIM ";""))"'
+  else
+    gh issue view "$1" --json comments --jq \
+      '(.comments // []) | map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$"))) | .[] | "\(.createdAt)\t\(.body | sub("^CLAIM ";""))"'
+  fi
+}
+
+# -> the role of the first LIVE claim comment on stdout, rc 0. Empty
+# stdout + rc 0 means no CLAIM comment exists at all. rc 1 = the thread
+# could not be read (infrastructure failure, not "no claims") -- callers
+# must not treat that the same as "no claims found".
+_first_live_claim_role() { # $1=issue-number
+  local data now created body claimant epoch age
+  data="$(_claim_comments_tsv "$1")" || return 1
+  [ -z "$data" ] && return 0
+  now="$(date -u +%s)"
+  while IFS=$'\t' read -r created body; do
+    [ -z "$body" ] && continue
+    claimant="$body"
+    epoch="$(fwf_iso_to_epoch "$created" 2>/dev/null || true)"
+    case "$epoch" in ''|*[!0-9]*) epoch="$now";; esac
+    age=$(( now - epoch )); [ "$age" -ge 0 ] || age=0
+    if fwf_claim_liveness_blocks "$claimant" "$age"; then
+      printf '%s' "$claimant"
+      return 0
+    fi
+  done <<<"$data"
+  return 0
+}
+
+_post_issue_comment() { # $1=issue-number $2=body
+  if [ "${FWF_ISSUES:-}" = "local" ]; then
+    "$DIR/fwf-issues.sh" comment "$1" --body "$2" >/dev/null 2>&1
+  else
+    gh issue comment "$1" --body "$2" >/dev/null 2>&1
+  fi
+}
+
+_adjudicate_claim_race() { # $1=issue-number $2=role
+  local n="$1" me="$2" winner rc
+  _post_issue_comment "$n" "CLAIM $me"
+  # write-through cache bust (AC 4) -- no-op, harmlessly, for the local
+  # backend and for a real gh call with the cache already off.
+  if [ "${FWF_ISSUES:-}" != "local" ]; then
+    "$DIR/fwf-ghcache.sh" invalidate issue "$n" >/dev/null 2>&1 || true
+  fi
+  winner="$(_first_live_claim_role "$n")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # Read failure post-post: same anti-stall philosophy as authz's own
+    # INDETERMINATE branch below -- claiming is cheap/reversible, and
+    # refusing on a mere read failure would manufacture the exact stall
+    # #462 exists to relieve. WARN, don't refuse.
+    echo "fwf claim #$n: WARNING — could not re-read the claim thread to adjudicate the race (infrastructure cause), proceeding as claimed" >&2
+    return 0
+  fi
+  if [ -z "$winner" ]; then
+    # We just posted our own comment above; a still-empty read here means
+    # the write-through bust above didn't take (or this backend serves an
+    # eventually-consistent view) -- fail open, same anti-stall reasoning.
+    echo "fwf claim #$n: WARNING — could not confirm our own claim landed on the thread (infrastructure cause), proceeding as claimed" >&2
+    return 0
+  fi
+  if [ "$winner" != "$me" ]; then
+    _post_issue_comment "$n" "STAND-DOWN #$n: $me — $winner's claim is first and live; standing down (issue #462 claim-race adjudication)"
+    refuse "$me lost the claim race on #$n: $winner's claim is first and live" "race"
+  fi
+  return 0
 }
 
 # --- issue #370: LIFECYCLE, reported alongside AUTHORIZATION but never
@@ -344,6 +457,10 @@ $line"
   [ -n "$lines" ] && printf '%s\n' "$lines" | sed '/^$/d' >&2
   return 0
 }
+
+if [ -n "$role" ]; then
+  _adjudicate_claim_race "$num" "$role"
+fi
 
 verdict_out="$("$DIR/fwf-authz.sh" "$num" 2>&1)"; rc=$?
 case "$rc" in
