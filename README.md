@@ -625,6 +625,32 @@ success, failure, or a kill — so no role has to manage them by hand; see
   e2e holding a floor-wide lock), so it only ever reads the existing
   record and tells the caller what command would produce a fresh one.
 
+- **A recorded GREEN verdict is a claim on the pipeline, not a passive
+  record — unconsumed for 27 minutes, nothing noticed (issue #469).**
+  `fwf gate-verdict-watchdog sweep [--role ROLE]` (default role
+  `conductor`, the only role that ever gates the promotion path) reads
+  that role's own gate-tip record above and raises a `needs-captain` flag
+  (issue #113, one durable tracking issue per stall, mirroring
+  `fwf-reconcile-guard.sh`'s #179 shape) if a GREEN verdict has sat
+  unpromoted into `INTEGRATION_BRANCH` for
+  `FWF_GATE_VERDICT_WATCHDOG_WINDOW_SECS` (default 1200s/20m — set above
+  this incident's own measured healthy verdict-to-integration interval of
+  ~330s, so a normal promotion never false-fires). Cleared automatically
+  the moment any ONE of: integration advances past the flagged SHA, a
+  newer verdict (green or red) supersedes it, or a release freeze
+  (`release-hold`) is declared — a RED verdict is never flagged at all,
+  since not promoting a red is correct behaviour. A stall that persists
+  past the flag re-announces on the same window as a numbered backoff
+  (`re-announcement #N`), so an hours-long stall is not represented by one
+  flag going stale in a thread nobody is re-reading.
+
+  **The obliged call site** (issue #462's own lesson: a checker nobody must
+  invoke is this factory's most-repeated defect) is
+  `templates/dev/captain.tmpl`'s per-tick sweep, on the SAME line as `fwf
+  pr-route-check sweep`/`fwf flag-captain sweep` — so its own liveness
+  rides the captain's ordinary tick (issue #99) rather than a second,
+  independently-schedulable loop that could die silently on its own.
+
 - **`fwf tick`'s heartbeat trusts the worktree, not ambient env** (issue #182)
   — `fwf tick <role>` has no `--profile` flag, so any ambient `FWF_PROFILE` it
   sees can only be leftover env from an unrelated shell, never a deliberate
@@ -805,6 +831,11 @@ fwf pr-route-check sweep                            flag an open, non-draft, non
                                                     NO_MARKER past FWF_PR_ROUTE_GRACE_SECS (default
                                                     300s) via flag-captain, auto-clearing once routed
                                                     (issue #385) — see docs/shared-account.md
+fwf gate-verdict-watchdog sweep [--role ROLE]       flag a GREEN gate-tip verdict (default role
+                                                    "conductor") left unpromoted past
+                                                    FWF_GATE_VERDICT_WATCHDOG_WINDOW_SECS (default
+                                                    1200s) via flag-captain, auto-clearing once
+                                                    promoted/superseded/frozen (issue #469)
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)

@@ -15803,6 +15803,230 @@ case "$PORT_REFUSE" in
   *) ok "#332: no SIGKILL is emitted when elapsed time is unknown";;
 esac
 
+# ---------------------------------------------------------------------------
+section "fwf gate-verdict-watchdog (#469): a recorded GREEN verdict is a claim, not a passive record"
+
+GVW="$ROOT/fwf-gate-verdict-watchdog.sh"
+
+# $1=role $2=verdict $3=tip -> writes a real gate-tip record via lib.sh so
+# tip_record's own read path is exercised, not a hand-authored file.
+GVW_SEED_TIP() {
+  FWF_RUN_DIR="$GVWRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record '$1' '$3' '$2'"
+}
+GVW_RECORDED_AT() { # $1=role -> the epoch lib.sh actually stamped, from the real file
+  awk -F= '/^recorded=/{print $2}' "$GVWRUN/state/example/gate-tip/$1"
+}
+
+# $1=role $2=now-epoch $3=integration-includes(0|1) $4=freeze-active(0|1)
+# rest = extra overrides appended verbatim -> stdout of `main sweep --role
+# $1`, with RAISE/CLEAR/CLOSE calls logged to gvw-calls.log. Mirrors the
+# fwf-pr-route-check.sh PRCRUN pattern (#385) exactly: source the real
+# script, override its small seams, call main directly -- so the DECISION
+# LOGIC is exercised without a real git remote or gh account for most cases.
+GVWRUN_LOG="$TMP/gvw-calls.log"
+GVWRUN() {
+  local role="$1" now="$2" integ_rc="$3" freeze_rc="$4"; shift 4
+  rm -f "$GVWRUN_LOG"
+  FWF_RUN_DIR="$GVWRUN" FWF_PROFILE=example FWF_GATE_VERDICT_WATCHDOG_NOW_EPOCH="$now" bash -c "
+    source '$GVW'
+    integration_includes() { return $integ_rc; }
+    release_freeze_active() { return $freeze_rc; }
+    tracking_target() { echo 9001; }
+    tracking_issue_find() { echo 9001; }
+    tracking_issue_close() { printf 'CLOSE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GVWRUN_LOG'; }
+    flag_captain_raise() { printf 'RAISE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GVWRUN_LOG'; }
+    flag_captain_clear() { printf 'CLEAR\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GVWRUN_LOG'; }
+    $*
+    main sweep --role '$role'
+  "
+}
+
+GVWRUN="$TMP/gvw469-state"; mkdir -p "$GVWRUN/state/example"
+
+section "fwf gate-verdict-watchdog (#469 AC 2): no gate-tip record at all -- nothing to watch, never an error"
+OUT469_NONE="$(GVWRUN norole 1000000000 1 1)"
+assert_eq "AC(2) precondition: an absent record is a real, confident 'nothing to watch', rc 0" "0" "$?"
+assert_contains "names the role and says there is nothing to watch" "$OUT469_NONE" "no gate-tip record for role 'norole'"
+
+GVW_SEED_TIP g469role green deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+G469_RECORDED="$(GVW_RECORDED_AT g469role)"
+
+section "fwf gate-verdict-watchdog (#469 AC 3): a green verdict inside the window is never flagged"
+G469_NOW_INSIDE=$((G469_RECORDED + 100))
+OUT469_INSIDE="$(GVWRUN g469role "$G469_NOW_INSIDE" 1 1)"
+assert_eq "AC(3): no RAISE call for a verdict only 100s old (default window 1200s)" "" "$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(3): says why -- still within the window" "$OUT469_INSIDE" "within the 1200s window"
+
+section "fwf gate-verdict-watchdog (#469 AC 3): a normal promotion completing at the incident's own ~5.5-minute recovery interval never flags"
+G469_NOW_5M="$((G469_RECORDED + 330))"   # this incident's own measured healthy interval
+OUT469_5M="$(GVWRUN g469role "$G469_NOW_5M" 0 1)"
+assert_eq "AC(3): integration NOT yet advanced but still inside the window at 330s -- no flag" "" "$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(3): says why -- integration already reflects the promoted tip" "$OUT469_5M" "already reflected in"
+
+section "fwf gate-verdict-watchdog (#469 AC 1): a green verdict past the window, with integration left behind, IS flagged"
+G469_NOW_STALL=$((G469_RECORDED + 1300))
+OUT469_STALL="$(GVWRUN g469role "$G469_NOW_STALL" 1 1)"
+CALLS469_STALL="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(1): the tracking issue is actually raised via the flag-captain bridge" "$CALLS469_STALL" "RAISE	9001"
+assert_contains "AC(1): the reason names the stalled sha" "$CALLS469_STALL" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+assert_contains "AC(1): the reason names the elapsed time and the window" "$CALLS469_STALL" "1300s ago (>= 1200s window)"
+assert_contains "reports the flag in its own output too" "$OUT469_STALL" "flagged"
+
+section "fwf gate-verdict-watchdog (#469 AC 4): once per stalled SHA -- an immediate re-poll does not re-raise"
+GVW_SEED_TIP g469b green feedfacefeedfacefeedfacefeedfacefeedface
+G469B_RECORDED="$(GVW_RECORDED_AT g469b)"
+G469B_NOW="$((G469B_RECORDED + 1300))"
+GVWRUN g469b "$G469B_NOW" 1 1 >/dev/null
+G469B_NOW2="$((G469B_RECORDED + 1305))"
+OUT469B_2="$(GVWRUN g469b "$G469B_NOW2" 1 1)"
+assert_eq "AC(4): no second RAISE moments later (idempotent, not once-per-poll)" "" "$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "says it is waiting for the backoff interval" "$OUT469B_2" "waiting for the next 1200s backoff interval"
+
+section "fwf gate-verdict-watchdog (#469 AC 9): a persisting stall re-announces on the stated backoff, not once and never again"
+G469B_NOW3="$((G469B_RECORDED + 1300 + 1200 + 1))"
+OUT469B_3="$(GVWRUN g469b "$G469B_NOW3" 1 1)"
+CALLS469B_3="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(9): a second announcement fires once a full window has elapsed since the first" "$CALLS469B_3" "RAISE	9001"
+assert_contains "AC(9): the re-announcement is numbered, so 4 hours of silence cannot masquerade as 1 flag" "$CALLS469B_3" "re-announcement #2"
+assert_contains "reports the re-flag in its own output too" "$OUT469B_3" "re-flagged"
+
+section "fwf gate-verdict-watchdog (#469 AC 1): acted on -- integration has advanced -- clears an active flag"
+GVW_SEED_TIP g469c green 1111111111111111111111111111111111111111
+G469C_RECORDED="$(GVW_RECORDED_AT g469c)"
+G469C_NOW="$((G469C_RECORDED + 1300))"
+GVWRUN g469c "$G469C_NOW" 1 1 >/dev/null   # first flag it
+OUT469C_ACTED="$(GVWRUN g469c "$G469C_NOW" 0 1)"   # now integration includes it
+CALLS469C="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "the previously-raised flag is cleared" "$CALLS469C" "CLEAR	9001"
+assert_contains "the tracking issue is closed, not just left open" "$CALLS469C" "CLOSE	9001"
+assert_contains "names why: integration advanced" "$CALLS469C" "has advanced to include"
+assert_contains "reports it in its own output" "$OUT469C_ACTED" "cleared"
+
+section "fwf gate-verdict-watchdog (#469 AC 5): superseded by a newer GREEN for a newer tip -- no flag, even though the older SHA was never promoted"
+GVW_SEED_TIP g469d green 2222222222222222222222222222222222222222
+G469D_RECORDED="$(GVW_RECORDED_AT g469d)"
+G469D_NOW="$((G469D_RECORDED + 1300))"
+GVWRUN g469d "$G469D_NOW" 1 1 >/dev/null   # flag the OLD sha
+GVW_SEED_TIP g469d green 3333333333333333333333333333333333333333   # a NEWER commit gates green too
+G469D2_RECORDED="$(GVW_RECORDED_AT g469d)"
+# The new tip's OWN elapsed time is what governs whether IT gets flagged --
+# use ITS recorded epoch, not the old sha's, so a too-fresh new tip is
+# actually too-fresh in this assertion (a discriminating fix: reusing
+# G469D_NOW here would already be past the window relative to the new
+# tip's own recorded time too, making this assertion vacuously pass).
+OUT469D="$(GVWRUN g469d "$((G469D2_RECORDED + 50))" 1 1)"
+CALLS469D="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(5): the OLD sha's flag is cleared as superseded" "$CALLS469D" "CLEAR	9001"
+assert_contains "AC(5): names it a supersession, not a resolution" "$CALLS469D" "superseded by a newer GREEN"
+assert_not_contains "AC(5): the brand-new (too-fresh) tip is NOT itself flagged this same sweep" "$CALLS469D" "RAISE"
+assert_contains "reports the new tip is merely too-fresh, not itself stalled" "$OUT469D" "within the 1200s window"
+
+section "fwf gate-verdict-watchdog (#469 AC 7): a RED verdict is never flagged, even with integration left behind"
+GVW_SEED_TIP g469e red 4444444444444444444444444444444444444444
+G469E_RECORDED="$(GVW_RECORDED_AT g469e)"
+G469E_NOW="$((G469E_RECORDED + 1300))"
+OUT469E="$(GVWRUN g469e "$G469E_NOW" 1 1)"
+assert_eq "AC(7): a red verdict never raises" "" "$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(7): says why -- not green" "$OUT469E" "'red' (not green)"
+
+section "fwf gate-verdict-watchdog (#469 AC 6): an active release freeze suppresses the flag -- a deliberate hold is not a stall"
+GVW_SEED_TIP g469f green 5555555555555555555555555555555555555555
+G469F_RECORDED="$(GVW_RECORDED_AT g469f)"
+G469F_NOW="$((G469F_RECORDED + 1300))"
+OUT469F="$(GVWRUN g469f "$G469F_NOW" 1 0)"   # freeze_rc=0 -> release_freeze_active succeeds
+assert_eq "AC(6): no raise while a freeze is active" "" "$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "AC(6): names it a deliberate hold, not a stall" "$OUT469F" "deliberate hold, not a stall"
+
+section "fwf gate-verdict-watchdog (#469): a freeze declared AFTER a flag was already raised clears it"
+GVW_SEED_TIP g469g green 6666666666666666666666666666666666666666
+G469G_RECORDED="$(GVW_RECORDED_AT g469g)"
+G469G_NOW="$((G469G_RECORDED + 1300))"
+GVWRUN g469g "$G469G_NOW" 1 1 >/dev/null              # flagged first
+OUT469G="$(GVWRUN g469g "$G469G_NOW" 1 0)"            # a freeze declared afterward
+CALLS469G="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "the earlier flag is cleared once a freeze is recognized" "$CALLS469G" "CLEAR	9001"
+assert_contains "reports the clear in its own output too" "$OUT469G" "cleared the flag"
+
+section "fwf gate-verdict-watchdog (#469 AC 1): a controllable clock -- the test never sleeps for the real window"
+# The above sections all drive the 1200s window via FWF_GATE_VERDICT_WATCHDOG_NOW_EPOCH,
+# never a real sleep; this is a discriminating self-check that the override
+# actually takes effect rather than the function quietly falling back to a
+# real `date`.
+G469_CLOCK_ECHO="$(FWF_PROFILE=example FWF_RUN_DIR="$GVWRUN" FWF_GATE_VERDICT_WATCHDOG_NOW_EPOCH=424242 bash -c "source '$GVW'; now_epoch")"
+assert_eq "the controllable-clock override is actually honoured" "424242" "$G469_CLOCK_ECHO"
+
+section "fwf gate-verdict-watchdog (#469): the real gate-tip store is what's read -- not a re-derivation"
+GVW_SEED_TIP g469h stale 7777777777777777777777777777777777777777
+G469H_RECORDED="$(GVW_RECORDED_AT g469h)"
+OUT469H="$(GVWRUN g469h "$((G469H_RECORDED + 1300))" 1 1)"
+assert_eq "a 'stale' verdict is not green either -- never flagged" "" "$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "reports the actual recorded verdict token" "$OUT469H" "'stale' (not green)"
+
+# --------------------------------------------------------------------------
+section "fwf gate-verdict-watchdog (#469): integration_includes against a REAL git remote -- not a stub"
+
+_g469_git_fixture() { # sets G469GIT_CLONE / _STAGING_SHA -- a real
+  # origin+clone with genuinely divergent staging/integration (unlike
+  # _g237_fixture above, the second commit is made AFTER switching back
+  # onto staging, so it actually reaches remote staging and remote
+  # integration is genuinely left behind).
+  local bare src
+  bare="$TMP/gvw469-origin.git"; git init --bare -q "$bare"
+  src="$TMP/gvw469-src"; git clone -q "$bare" "$src" 2>/dev/null
+  ( cd "$src" && git config user.email t@t.com && git config user.name t \
+    && echo a > f.txt && git add f.txt && git commit -q -m init && git branch -M staging \
+    && git push -q origin staging && git switch -q -c integration && git push -q origin integration \
+    && git switch -q staging \
+    && echo b > f.txt && git commit -q -am second && git push -q origin staging )
+  G469GIT_STAGING_SHA="$(cd "$src" && git rev-parse staging)"
+  G469GIT_CLONE="$TMP/gvw469-clone"; git clone -q "$bare" "$G469GIT_CLONE" 2>/dev/null
+}
+_g469_git_fixture
+
+G469GITRUN="$TMP/gvw469git-state"; mkdir -p "$G469GITRUN"
+G469GIT_BEFORE="$(FWF_REPO="$G469GIT_CLONE" FWF_PROFILE=example FWF_RUN_DIR="$G469GITRUN" bash -c "
+  source '$GVW'; integration_includes '$G469GIT_STAGING_SHA' && echo YES || echo NO
+")"
+assert_eq "before promotion: a REAL git ancestor check correctly says NOT included" "NO" "$G469GIT_BEFORE"
+
+( cd "$TMP/gvw469-src" && git fetch -q origin && git switch -q --detach origin/integration \
+  && git merge --ff-only -q "$G469GIT_STAGING_SHA" && git push -q origin HEAD:integration )
+G469GIT_AFTER="$(FWF_REPO="$G469GIT_CLONE" FWF_PROFILE=example FWF_RUN_DIR="$G469GITRUN" bash -c "
+  source '$GVW'; integration_includes '$G469GIT_STAGING_SHA' && echo YES || echo NO
+")"
+assert_eq "after promotion: the real ancestor check now says included" "YES" "$G469GIT_AFTER"
+
+# --------------------------------------------------------------------------
+section "fwf gate-verdict-watchdog (#469 QA follow-up): the gate-tip record vanishing after a flag was raised clears the flag rather than orphaning it"
+# qa2's own repro (PR #476 review): once a flag is active, the tip record
+# disappearing (state wipe, corruption, role retirement) must not hit the
+# EARLIEST guard (no-record -> "nothing to watch") and skip past resolve_flag
+# entirely -- that would leave the needs-captain flag permanently stuck,
+# since every future sweep would keep reporting "nothing to watch" without
+# ever clearing it, contradicting this same tracking issue's own
+# self-closing promise.
+GVW_SEED_TIP g469i green 8888888888888888888888888888888888888888
+G469I_RECORDED="$(GVW_RECORDED_AT g469i)"
+G469I_NOW="$((G469I_RECORDED + 1300))"
+GVWRUN g469i "$G469I_NOW" 1 1 >/dev/null   # flag it first
+rm -f "$GVWRUN/state/example/gate-tip/g469i"   # the record vanishes
+OUT469I="$(GVWRUN g469i "$G469I_NOW" 1 1)"
+CALLS469I="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "the stale flag is cleared, not silently orphaned, once the record it watched is gone" "$CALLS469I" "CLEAR	9001"
+assert_contains "the tracking issue is closed too" "$CALLS469I" "CLOSE	9001"
+assert_contains "names why: the record is gone, not merely unread" "$CALLS469I" "no longer present"
+assert_contains "reports the missing-record case in its own output too" "$OUT469I" "no gate-tip record for role 'g469i' -- nothing to watch"
+
+# --------------------------------------------------------------------------
+section "fwf gate-verdict-watchdog (#469 AC 2/AC 8): the obliged call site -- wired into the captain's own per-tick sweep"
+
+assert_contains "CLI help documents the subcommand" "$("$ROOT/fwf" help)" "gate-verdict-watchdog sweep"
+assert_contains "fwf dispatches gate-verdict-watchdog to its own script" "$(grep -c 'gate-verdict-watchdog) engine fwf-gate-verdict-watchdog.sh' "$ROOT/fwf")" "1"
+assert_contains "AC(2)/AC(8): the dev captain template runs the sweep every tick, named alongside pr-route-check/flag-captain (its own already-obliged call site)" \
+  "$(cat "$ROOT/templates/dev/captain.tmpl")" "fwf gate-verdict-watchdog sweep"
+assert_eq "AC(8): the watchdog rides the SAME line as the other two mandatory sweeps -- not a second, independently-schedulable step" \
+  "1" "$(grep -c 'fwf pr-route-check sweep.*fwf gate-verdict-watchdog sweep.*fwf flag-captain sweep' "$ROOT/templates/dev/captain.tmpl")"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1
 exit "$_rc"
