@@ -286,6 +286,77 @@ fwf_sanitize_pr_text() {
   '
 }
 
+# --- issue #512: ONE table, not two mirrored lists ---------------------------
+# The guard below used to carry its own hand-written alternations, kept in
+# sync with fwf_sanitize_pr_text by hand. #135 and #234 each re-aligned them;
+# both re-alignments left entries behind, and the second miss shipped inside
+# the fix for the first. `impl__ID__` and `qa__ID__` sat in the guard with NO
+# sanitizer rule at all, so they blocked issue #472's body for quoting a
+# template placeholder out of source -- refusing a QA-approved, CLEAN PR.
+#
+# MEMBERSHIP RULE (the thing that would have prevented #135, #234 and #512):
+#   An entry belongs here ONLY if its presence in rendered output would mean
+#   fwf_sanitize_pr_text FAILED to substitute something. A token the sanitizer
+#   must never touch can never indicate that failure -- it can only produce
+#   false positives. `impl__ID__` is a template placeholder in a public repo
+#   that ships templates/*/*.tmpl by name; giving the sanitizer a rule for it
+#   would corrupt on-topic prose in exactly the tickets that discuss template
+#   routing, so it does not belong in the sanitizer OR in this guard.
+#
+# Each row is  mode%token-regex%specimen  ('%' is the field separator; no
+# token regex contains one). The specimen is a literal string that the
+# sanitizer MUST transform -- test/run.sh feeds every specimen through
+# fwf_sanitize_pr_text and fails if any comes back unchanged, so an entry
+# with no sanitizer rule fails a test instead of a merge. That check is
+# behavioural, not a parse of the sanitizer's source: it cannot go blind when
+# someone reformats a sed rule.
+#
+#   mode csb = case-sensitive, word-bounded
+#   mode csr = case-sensitive, raw (composite pattern; matches mid-token)
+#   mode cib = case-insensitive, word-bounded
+# Case per mode mirrors the sanitizer's OWN per-rule case behaviour: a blanket
+# -i previously matched the lowercase "wip" inside the legitimate label name
+# "product-wip" against the uppercase-only `WIP` rule.
+_fwf_pr_ctx_guard_table() {
+  cat <<'_FWF_PR_CTX_TABLE_'
+csb%LI-[0-9]+%LI-4210
+csb%WIP%WIP
+csb%__PROVENANCE__%__PROVENANCE__
+csb%__CREDIT__%__CREDIT__
+csb%__CONTEXT__%__CONTEXT__
+csb%origin/staging%origin/staging
+csb%origin/integration%origin/integration
+csr%impl[0-9]+/issue-[0-9]+-[a-z0-9-]+%impl1/issue-472-qa-tmpl-idle-routing
+csr%/?\.fun-with-friends/[A-Za-z0-9_./-]*%.fun-with-friends/state
+cib%Owner:%Owner: somebody
+cib%GV-SIGNOFF%GV-SIGNOFF
+cib%GV-CHANGES%GV-CHANGES
+cib%QA-APPROVED:%QA-APPROVED:
+cib%QA-CHANGES-REQUESTED:%QA-CHANGES-REQUESTED:
+cib%IMPL-ADDRESSED:%IMPL-ADDRESSED:
+cib%CLAIM (impl|qa)[0-9]+%CLAIM impl1
+cib%ASSIGNED (impl|qa)[0-9]+%ASSIGNED qa1
+cib%FWF_[A-Z_]+%FWF_PROFILE
+cib%fwf-self-[A-Za-z0-9-]+%fwf-self-abcd1234
+_FWF_PR_CTX_TABLE_
+}
+
+# Join the token regexes for one mode into a '|' alternation. Empty output +
+# rc 1 when a mode has no rows -- callers MUST fail closed on that (issue
+# #512: an empty alternation would make grep -E match every line, or, worse,
+# a silently-skipped branch would stop checking anything at all).
+_fwf_pr_ctx_guard_alts() {
+  local want="$1" mode rx alts=
+  while IFS='%' read -r mode rx _spec; do
+    [ "$mode" = "$want" ] || continue
+    alts="${alts:+$alts|}$rx"
+  done <<_FWF_PR_CTX_ALTS_
+$(_fwf_pr_ctx_guard_table)
+_FWF_PR_CTX_ALTS_
+  [ -n "$alts" ] || return 1
+  printf '%s' "$alts"
+}
+
 # --- runtime fail-closed guard (PM item 2) ------------------------------------
 # Scans the ACTUAL rendered output (what is about to become a public PR body
 # or squash-merge commit) for anything the sanitizer should have already
@@ -295,42 +366,31 @@ fwf_sanitize_pr_text() {
 # back unchanged (rc 0); on a hit, nothing is emitted, the offending line(s)
 # go to stderr, and rc is 1.
 fwf_pr_body_guard() {
-  local text hit
+  local text hit csb csr cib pat_cs pat_ci
   text="$(cat)"
-  # issue #135: this backstop's word-list had drifted from what the
-  # sanitizer above it actually targets. #234 narrowed fwf_sanitize_pr_text
-  # to substitute PROTOCOL MARKERS ONLY -- never a bare role/jargon word a
-  # human legitimately types (this repo is public and ships 31 role-template
-  # files by name) -- but this guard kept blocking those same bare words
-  # (impl[0-9]+, qa[0-9]+, captain, conductor, worktree, floor, gv, pm,
-  # product-wip, release-hold, "*staging branch*"/"*integration branch*"
-  # prose) as if they were unsanitized leaks. A backstop that flags content
-  # its own front-line control was deliberately told to leave alone isn't a
-  # stricter guard, it's a DIFFERENT, un-reviewed policy -- and it made
-  # fail-open's own flagship fixture (#195, whose real body legitimately
-  # says "confirmed in source by GV" and "started under fwf gate --e2e in
-  # one worktree") unsatisfiable: real ticket prose the sanitizer correctly
-  # leaves untouched would still get the whole card refused. Narrowed to
-  # exactly the sanitizer's actual substitution targets above, so this
-  # guard catches a sanitizer GAP (something that should have been
-  # substituted and wasn't), not a policy that never shipped in the
-  # sanitizer to begin with.
-  # Split case-sensitive vs case-insensitive, matching the sanitizer's OWN
-  # per-rule case behavior exactly -- a blanket -i previously matched the
-  # lowercase "wip" inside the legitimate label name "product-wip" against
-  # the bare `WIP` term (whose sanitizer rule is deliberately uppercase-only,
-  # unlike Owner:/CLAIM/GV-SIGNOFF/FWF_*/QA-*, which the sanitizer's own
-  # _fwf_pr_ctx_wordsub does match case-insensitively) -- a false positive on
-  # ordinary ticket prose that a single combined -i pass can't avoid.
-  hit="$( { printf '%s\n' "$text" | grep -nE \
-      '(^|[^A-Za-z0-9_])(LI-[0-9]+|WIP|__PROVENANCE__|__CREDIT__|__CONTEXT__|origin/staging|origin/integration)([^A-Za-z0-9_]|$)|impl[0-9]+/issue-[0-9]+-[a-z0-9-]+|/?\.fun-with-friends/[A-Za-z0-9_./-]*' \
-      2>/dev/null;
-    printf '%s\n' "$text" | grep -inE \
-      '(^|[^A-Za-z0-9_])(impl__ID__|qa__ID__|Owner:|GV-SIGNOFF|GV-CHANGES|QA-APPROVED:|QA-CHANGES-REQUESTED:|IMPL-ADDRESSED:|CLAIM (impl|qa)[0-9]+|ASSIGNED (impl|qa)[0-9]+|FWF_[A-Z_]+|fwf-self-[A-Za-z0-9-]+)([^A-Za-z0-9_]|$)' \
-      2>/dev/null; } || true)"
+  csb="$(_fwf_pr_ctx_guard_alts csb)" || csb=
+  csr="$(_fwf_pr_ctx_guard_alts csr)" || csr=
+  cib="$(_fwf_pr_ctx_guard_alts cib)" || cib=
+  # Anti-vacuity: a guard that checks nothing must refuse, never pass. If the
+  # table lost a whole mode, this backstop is not "clean" -- it is broken.
+  if [ -z "$csb" ] || [ -z "$csr" ] || [ -z "$cib" ]; then
+    echo "fwf#512: PR/commit body guard is INOPERATIVE — the token table yielded no entries for at least one mode (csb/csr/cib). Refusing rather than passing an unchecked body." >&2
+    return 1
+  fi
+  pat_cs="(^|[^A-Za-z0-9_])($csb)([^A-Za-z0-9_]|\$)|$csr"
+  pat_ci="(^|[^A-Za-z0-9_])($cib)([^A-Za-z0-9_]|\$)"
+  hit="$( { printf '%s\n' "$text" | grep -nE "$pat_cs" 2>/dev/null;
+    printf '%s\n' "$text" | grep -inE "$pat_ci" 2>/dev/null; } || true)"
   if [ -n "$hit" ]; then
     echo "fwf: PR/commit body BLOCKED (issue #106 guard) — fwf-internal token(s) survived sanitization:" >&2
     printf '%s\n' "$hit" >&2
+    # issue #512: name the token, not just the line. Without this the operator
+    # sees 100 characters of prose and has to guess which of ~19 alternatives
+    # fired -- which is exactly how #512 was misdiagnosed on first filing.
+    { printf '%s\n' "$text" | grep -oE "$pat_cs" 2>/dev/null;
+      printf '%s\n' "$text" | grep -oinE "$pat_ci" 2>/dev/null; } \
+      | sed -E 's/^[0-9]+://' | sed -E 's/^[^A-Za-z0-9_]//; s/[^A-Za-z0-9_]$//' \
+      | sort -u | sed 's/^/  matched token: /' >&2
     return 1
   fi
   printf '%s' "$text"
