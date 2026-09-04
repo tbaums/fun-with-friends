@@ -631,6 +631,35 @@ if [ "$rc" -ne 0 ]; then
   _fwf_gate_diagnose_port_collision "$wrapped_err_capture"
 fi
 
+# issue #479: a run ended by an external signal (OOM, operator Ctrl-C, the
+# box going down) must not be reported as a content verdict -- "FAILED --
+# SUITE" plus a merge-base baseline is a claim about THIS diff, and a run
+# that never reached a conclusion has no such claim to make. Inverting
+# #447's question rather than trying to detect the kill: a signalled
+# child's `wait` status is 128+N in $rc, byte-for-byte identical to an
+# intentional `exit 137` -- there is no WIFSIGNALED bit exposed to a POSIX
+# shell, so $rc alone can never distinguish them (rev 1 of this ticket got
+# that backwards). Detect COMPLETION instead: the wrapped command
+# affirmatively records that it reached a conclusion (this repo's own
+# harness already does, in "N passed, N failed, N skipped"); absence of
+# that record on an ambiguous (128+N-range) $rc is what makes the run
+# indeterminate. $rc only ever GATES the question here -- it is never the
+# answer -- so a completing run whose own exit code happens to land in the
+# signal range (AC 5: a suite that exits 137 of its own accord) still
+# wrote its completion record and is a real FAIL, not indeterminate.
+# MUST run before the #227 history writes below and before
+# wrapped_out_capture is removed (713) -- #447's marker check sits AFTER
+# both, so it cannot be reused at its own position for this ticket; moving
+# the check ahead (rather than moving the history writes after the rm) is
+# the smaller, more local change.
+FWF_GATE_COMPLETION_MARKER="${FWF_GATE_COMPLETION_MARKER-[0-9][0-9]* passed, [0-9][0-9]* failed, [0-9][0-9]* skipped}"
+_fwf479_indeterminate=0
+if [ "$rc" -ge 128 ] && [ -n "$FWF_GATE_COMPLETION_MARKER" ] \
+   && ! grep -qE -- "$FWF_GATE_COMPLETION_MARKER" "$wrapped_out_capture" 2>/dev/null; then
+  _fwf479_indeterminate=1
+  echo "fwf gate [#479]: the wrapped command ended with rc=$rc (a signal-range exit) and left no completion record (matched against '$FWF_GATE_COMPLETION_MARKER') -- this run did NOT reach a conclusion (an OOM kill, an operator's Ctrl-C, and the box itself going down are all indistinguishable from here). Recording indeterminate, not a content verdict; this run is excluded from case history." >&2
+fi
+
 # issue #227: flake-vs-broken discrimination. Per-case when the profile
 # declares GATE_CASE_EXTRACTOR (a shell command read on stdin, emitting
 # "PASS <case-id>" / "FAIL <case-id>" lines); SUITE-level (case-id "SUITE",
@@ -638,11 +667,20 @@ fi
 # (AC d). Computed from plain `git ...` (cwd-relative), the same convention
 # already used for $verdict_head below -- FWF_REPO was already restored to
 # the CALLER's own value above (issue #175) and may not be this worktree.
+#
+# issue #479 (AC 2, AC 3, AC 4): this whole section is SKIPPED on an
+# indeterminate run -- neither branch (per-case OR SUITE-level) gets to
+# write a case-history record or print a baseline/flakiness stanza, since
+# neither is a fact about the diff. AC 4's "any case-id killed mid-run
+# gets the same treatment" is why this guards BOTH branches identically
+# rather than special-casing SUITE.
 _fwf227_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 _fwf227_sha="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 _fwf227_base="$(git merge-base HEAD "origin/$STAGING_BRANCH" 2>/dev/null || true)"
 _fwf237_canary_seen_fail=0
-if [ -n "${GATE_CASE_EXTRACTOR:-}" ]; then
+if [ "$_fwf479_indeterminate" = 1 ]; then
+  : # issue #479: no history write, no content verdict -- see the message already printed above.
+elif [ -n "${GATE_CASE_EXTRACTOR:-}" ]; then
   _fwf227_saw_case=0
   # Deliberately NOT `IFS= read` -- that disables field splitting entirely,
   # so with only two read-vars the whole line would land in $_fwf227_status
@@ -734,7 +772,16 @@ if [ -n "${FWF_GATE_CANARY_MARKER:-}" ] && [ "$rc" -eq 0 ]; then
     _fwf237_verdict_downgrade=unknown
   fi
 fi
-_fwf237_verdict() { # prints this run's verdict: green|green-lint-skipped|red|unknown
+_fwf237_verdict() { # prints this run's verdict: green|green-lint-skipped|red|indeterminate|unknown
+  # issue #479 (AC 6, AC 7): checked FIRST, ahead of the plain `rc -ne 0 ->
+  # red` line below -- an indeterminate run's rc IS non-zero (that is what
+  # made it ambiguous in the first place), so this must short-circuit
+  # before that line would otherwise claim it as a real, content red.
+  # Deliberately NOT #237's `unknown`: that token is already taken for a
+  # candidate-GREEN downgrade ("no confirmed path to red"); an
+  # indeterminate run is a candidate-RED that cannot be vouched for --
+  # conflating the two would make `unknown` mean two opposite things.
+  [ "$_fwf479_indeterminate" = 1 ] && { echo indeterminate; return 0; }
   if [ "$rc" -ne 0 ]; then echo red; return 0; fi
   [ -n "$_fwf237_verdict_downgrade" ] && { echo "$_fwf237_verdict_downgrade"; return 0; }
   # issue #447: a lint-skip downgrade is independent of (and checked after)
