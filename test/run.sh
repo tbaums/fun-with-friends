@@ -3278,9 +3278,16 @@ FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$_f505_derived}"
 # Polls at 0.2s and returns the instant the value appears, so an idle box is
 # no slower than the old 5-try loop; the budget only costs time when the
 # thing genuinely is not there yet.
+# $2 (optional): a per-call budget in seconds, overriding the default. Some
+# cases deliberately drive fwf-respawn.sh with a SHRUNKEN window (e.g. #217
+# AC(1) passes FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 because its
+# stub claude never ticks and the verify is MEANT to time out fast). For
+# those, the ambient IMPL_INTERVAL is the wrong input entirely -- deriving
+# from it makes a case that should fail in seconds take minutes instead.
+# Budget from the values the call site actually used.
 _wait_pane_child() {
-  local resolver="$1" got="" tenths=0 budget_tenths
-  budget_tenths=$(( FWF_TEST_PANE_CHILD_WAIT_SECS * 10 ))
+  local resolver="$1" budget="${2:-$FWF_TEST_PANE_CHILD_WAIT_SECS}" got="" tenths=0 budget_tenths
+  budget_tenths=$(( budget * 10 ))
   while [ "$tenths" -lt "$budget_tenths" ]; do
     got="$("$resolver" 2>/dev/null || true)"
     if [ -n "$got" ]; then printf '%s' "$got"; return 0; fi
@@ -3450,13 +3457,18 @@ _wait_pane_child() {
     [ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true
   }
   _f217_t0=$SECONDS
-  F217E2E_CHILD_PID="$(_wait_pane_child _f217_resolve || true)"
+  # This call site drove respawn with FWF_IMPL_INTERVAL=1s and
+  # FWF_RESPAWN_VERIFY_MARGIN=1 above, so respawn's own window here is
+  # ~2*(1+1)=4s, not the ambient 2m. Budget accordingly -- 30s is ample
+  # headroom over 4s on a loaded box, and keeps a genuine failure fast
+  # instead of parking the suite for the default 300s.
+  F217E2E_CHILD_PID="$(_wait_pane_child _f217_resolve 30 || true)"
   _PANE_CHILD_WAITED=$(( SECONDS - _f217_t0 ))
   if [ -n "$F217E2E_CHILD_PID" ]; then
     assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
   else
-    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "no child pid for the impl1 pane within ${_PANE_CHILD_WAITED}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s) after respawn"
+    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "no child pid for the impl1 pane within ${_PANE_CHILD_WAITED}s (budget 30s, sized to this case's own FWF_IMPL_INTERVAL=1s/margin=1 respawn) after respawn"
   fi
   tmux kill-session -t "${F217E2E_SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F217E2E_SESS}-build" 2>/dev/null
