@@ -12402,8 +12402,38 @@ ci_f() { printf '%s' "$2" | cut -d'|' -f"$1"; }
 # Like ci_run, but with cargo/sccache's directory stripped from PATH — for
 # asserting the "sccache not installed -> no-op" fail-open branch regardless
 # of whether THIS box happens to have sccache installed.
+#
+# issue #500: this used to hardcode a "standard" allowlist
+# (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin) and assume it
+# was clean. It never stripped anything, despite what the comment above said.
+# On 2026-09-03 a root-owned sccache shim landed in /usr/local/bin -- the
+# second entry of that list -- and the case failed on every run, on every
+# branch, for a day, reading as an fwf_cargo_isolate defect rather than a
+# broken fixture. Build the PATH by STRIPPING instead: drop any candidate
+# directory that actually contains cargo or sccache, so a shim dropped into
+# any of them is handled rather than silently defeating the case.
+_nosccache_path() {
+  local d out=
+  for d in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+    [ -d "$d" ] || continue
+    # if/then, not `[ ... ] && continue`: the latter yields a non-zero status
+    # for the loop body's last command when the test is false, which is a
+    # trap under `set -e` and a shellcheck complaint besides.
+    if [ -e "$d/sccache" ] || [ -e "$d/cargo" ]; then continue; fi
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
 ci_run_nosccache() {
-  FWF_PROFILE=example PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash -c '
+  local _p; _p="$(_nosccache_path)"
+  # (#500 AC b) If the precondition cannot be met, say SO -- as a broken
+  # fixture, never as a verdict about RUSTC_WRAPPER. A case whose setup
+  # silently fails is what let #500 read as a product defect for a day.
+  if PATH="$_p" command -v sccache >/dev/null 2>&1; then
+    printf 'BROKEN-FIXTURE(sccache still reachable on scrubbed PATH)|%s|%s' "$_p" "BROKEN-FIXTURE"
+    return 0
+  fi
+  FWF_PROFILE=example PATH="$_p" bash -c '
     source "'"$ROOT"'/lib.sh" 2>/dev/null
     wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
     '"$1"'
@@ -12458,6 +12488,16 @@ else
 fi
 
 # H. sccache NOT installed -> no forced tooling, unchanged from today (fail-open).
+# (#500 AC c) Regression guard, asserted BEFORE the behaviour cases: the
+# scrubbed PATH must genuinely have no sccache on it. This goes RED if a new
+# sccache appears in a directory the scrub does not cover, which is the exact
+# failure mode #500 was -- and it names the fixture as the culprit rather than
+# blaming fwf_cargo_isolate.
+_NSP="$(_nosccache_path)"
+assert_eq "#500: the scrubbed PATH has no reachable sccache (fixture precondition)" \
+  "" "$(PATH="$_NSP" command -v sccache 2>/dev/null)"
+assert_not_contains "#500: the scrubbed PATH dropped the dir holding sccache" "$_NSP" "$(dirname "$(command -v sccache 2>/dev/null || echo /nonexistent/x)")"
+
 RN="$(ci_run_nosccache ':')"
 assert_eq "no sccache on PATH -> RUSTC_WRAPPER stays unset" "UNSET" "$(printf '%s' "$RN" | cut -d'|' -f1)"
 assert_eq "  ...and isolate still succeeds"                 "0"     "$(printf '%s' "$RN" | cut -d'|' -f3)"
