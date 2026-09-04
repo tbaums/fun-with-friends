@@ -15768,6 +15768,139 @@ assert_eq "AC(2): a green-lint-skipped record refuses promotion (rc 1) -- it is 
 assert_contains "AC(2): names the actual recorded verdict, not a generic refusal" "$G447P2_OUT" "is 'green-lint-skipped', not green"
 
 # --------------------------------------------------------------------------
+section "fwf gate (issue #479): an externally-killed run is reported as indeterminate, never a content verdict"
+
+F479RUN="$TMP/run479"; mkdir -p "$F479RUN"
+
+# AC(1): today's main maps ANY signal-range rc through the plain
+# rc-eq-0-else-FAIL expression, so a run that never reached a conclusion is
+# reported exactly like a real test failure -- this goes RED on today's
+# main. Asserted on the DISTINCT verdict token, not merely a non-zero exit
+# code: today's code already exits non-zero on a kill, which is exactly
+# what makes the bug invisible.
+F479REPO="$TMP/repo479"; mkdir -p "$F479REPO"
+( cd "$F479REPO" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F479SHA="$(git -C "$F479REPO" rev-parse HEAD)"
+rc=0; ( cd "$F479REPO" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f479kill -- bash -c 'echo "partial output, never reached a conclusion"; kill -9 "$$"' \
+      ) >/dev/null 2>"$TMP/f479-kill.err"; rc=$?
+assert_eq "the wrapped command's own exit lands in the signal range 128+N (137 == SIGKILL)" "137" "$rc"
+F479_VERDICT_LINE="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA'" 2>/dev/null)"
+assert_eq "AC(1)/AC(6): the recorded verdict is EXACTLY indeterminate -- not red, not green, not any other unrecognised-case fallback" \
+  "indeterminate" "$(printf '%s' "$F479_VERDICT_LINE" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# AC(2): the run's own stderr must not read as a content verdict about the
+# diff -- no "FAILED -- SUITE" line, no merge-base baseline stanza, no
+# flakiness/history stanza. All three asserted absent explicitly.
+F479_ERR="$(cat "$TMP/f479-kill.err" 2>/dev/null)"
+assert_not_contains "AC(2): no content verdict line (FAILED -- SUITE)" "$F479_ERR" "FAILED — SUITE"
+assert_not_contains "AC(2): no merge-base baseline stanza" "$F479_ERR" "baseline:"
+assert_not_contains "AC(2): no flakiness/history stanza" "$F479_ERR" "history ("
+assert_contains "the run instead says plainly, in its own output, that it did not reach a conclusion" \
+  "$F479_ERR" "did NOT reach a conclusion"
+
+# AC(3): the indeterminate run is absent from the case history the #227
+# classifier reads -- record a real green first, then a killed run on a
+# fresh commit, then assert the case's pass rate and "last green" are
+# UNCHANGED by the killed run.
+F479REPO2="$TMP/repo479b"; mkdir -p "$F479REPO2"
+( cd "$F479REPO2" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F479BRANCH2="$(git -C "$F479REPO2" rev-parse --abbrev-ref HEAD)"
+( cd "$F479REPO2" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f479green -- bash -c 'echo "3 passed, 0 failed, 0 skipped"' ) >/dev/null 2>&1
+F479_SUM_BEFORE="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_history_summary SUITE '$F479BRANCH2'")"
+F479_TOTAL_BEFORE="$(printf '%s\n' "$F479_SUM_BEFORE" | sed -n 's/^total=//p')"
+F479_FAILED_BEFORE="$(printf '%s\n' "$F479_SUM_BEFORE" | sed -n 's/^failed=//p')"
+F479_LASTGREEN_BEFORE="$(printf '%s\n' "$F479_SUM_BEFORE" | sed -n 's/^last_green=//p')"
+( cd "$F479REPO2" && git commit -q --allow-empty -m c2 )
+( cd "$F479REPO2" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f479kill2 -- bash -c 'echo "partial"; kill -9 "$$"' ) >/dev/null 2>&1
+F479_SUM_AFTER="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_history_summary SUITE '$F479BRANCH2'")"
+F479_TOTAL_AFTER="$(printf '%s\n' "$F479_SUM_AFTER" | sed -n 's/^total=//p')"
+F479_FAILED_AFTER="$(printf '%s\n' "$F479_SUM_AFTER" | sed -n 's/^failed=//p')"
+F479_LASTGREEN_AFTER="$(printf '%s\n' "$F479_SUM_AFTER" | sed -n 's/^last_green=//p')"
+assert_eq "AC(3): the killed run's total is NOT counted in case history" "$F479_TOTAL_BEFORE" "$F479_TOTAL_AFTER"
+assert_eq "AC(3): the killed run does not inflate the failed count" "$F479_FAILED_BEFORE" "$F479_FAILED_AFTER"
+assert_eq "AC(3): 'last green' is unmoved by a killed run" "$F479_LASTGREEN_BEFORE" "$F479_LASTGREEN_AFTER"
+# Ordering constraint, resolved: the completion check (and _fwf479_indeterminate
+# assignment) now runs BEFORE fwf-gate.sh's #227 history-write block, moved
+# ahead rather than deferring the history write past the wrapped_out_capture
+# rm -- so the guard above can gate the write itself instead of racing it.
+
+# AC(4): a genuine test failure (real rc!=0, WITH a completion record) is
+# still reported exactly as before -- red, with its baseline and history
+# stanza intact. A fix that suppresses real failures is worse than the bug.
+F479REPO3="$TMP/repo479c"; mkdir -p "$F479REPO3"
+( cd "$F479REPO3" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F479SHA3="$(git -C "$F479REPO3" rev-parse HEAD)"
+rc=0; ( cd "$F479REPO3" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f479red -- bash -c 'echo "3 passed, 1 failed, 0 skipped"; exit 1' \
+      ) >/dev/null 2>"$TMP/f479-red.err" || rc=$?
+assert_eq "AC(4): a genuine failure still exits non-zero" "1" "$rc"
+F479_VERDICT_LINE3="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA3'" 2>/dev/null)"
+assert_eq "AC(4): a genuine test failure is still recorded red, not swept into indeterminate" \
+  "red" "$(printf '%s' "$F479_VERDICT_LINE3" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+assert_contains "AC(4): the content verdict line is still printed for a real failure" "$(cat "$TMP/f479-red.err")" "FAILED — SUITE"
+assert_contains "AC(4): the merge-base baseline stanza is still printed for a real failure" "$(cat "$TMP/f479-red.err")" "baseline:"
+
+# AC(5): the case that distinguishes completion-detection from an exit-code
+# allowlist -- a suite that exits 137 OF ITS OWN ACCORD, having already
+# written its own completion record, is a real FAIL, never indeterminate.
+F479REPO4="$TMP/repo479d"; mkdir -p "$F479REPO4"
+( cd "$F479REPO4" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F479SHA4="$(git -C "$F479REPO4" rev-parse HEAD)"
+rc=0; ( cd "$F479REPO4" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+        "$ROOT/fwf-gate.sh" f479selfexit -- bash -c 'echo "3 passed, 0 failed, 0 skipped"; exit 137' \
+      ) >/dev/null 2>&1 || rc=$?
+assert_eq "the suite's own chosen exit code happens to land in the signal range too" "137" "$rc"
+F479_VERDICT_LINE4="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA4'" 2>/dev/null)"
+assert_eq "AC(5): a completing run whose OWN exit code is signal-range is red, not indeterminate -- rc only ever gates the question, never answers it" \
+  "red" "$(printf '%s' "$F479_VERDICT_LINE4" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# Edge case: killed before ANY output at all -- wrapped_out_capture may be
+# empty; the grep must treat that as "no completion record", not error out.
+F479REPO5="$TMP/repo479e"; mkdir -p "$F479REPO5"
+( cd "$F479REPO5" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F479SHA5="$(git -C "$F479REPO5" rev-parse HEAD)"
+( cd "$F479REPO5" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" f479empty -- bash -c 'kill -9 "$$"' ) >/dev/null 2>&1
+F479_VERDICT_LINE5="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA5'" 2>/dev/null)"
+assert_eq "edge case: killed before ANY output is still indeterminate, not an error/crash" \
+  "indeterminate" "$(printf '%s' "$F479_VERDICT_LINE5" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# Edge case: FWF_GATE_COMPLETION_MARKER="" disables the check -- a profile
+# whose harness never emits a completion record pays nothing and a killed
+# run degrades to today's (red) behavior, same #447 overridable-default
+# convention including the empty-value disable.
+F479REPO6="$TMP/repo479f"; mkdir -p "$F479REPO6"
+( cd "$F479REPO6" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
+F479SHA6="$(git -C "$F479REPO6" rev-parse HEAD)"
+( cd "$F479REPO6" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_COMPLETION_MARKER="" \
+  "$ROOT/fwf-gate.sh" f479off -- bash -c 'echo "partial"; kill -9 "$$"' ) >/dev/null 2>&1
+F479_VERDICT_LINE6="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA6'" 2>/dev/null)"
+assert_eq "FWF_GATE_COMPLETION_MARKER=\"\" disables the check -- a killed run degrades to today's plain red" \
+  "red" "$(printf '%s' "$F479_VERDICT_LINE6" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
+
+# A(4): the fix is not SUITE-specific -- a case-id killed mid-run in
+# per-case (GATE_CASE_EXTRACTOR) mode gets the same treatment: no content
+# verdict line, and the indeterminate message is still printed.
+G479E_STUB="$TMP/gate479-stub.sh"
+cat > "$G479E_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+printf '  ok   case one\n'
+kill -9 "$$"
+STUBEOF
+chmod +x "$G479E_STUB"
+G479E_EXTRACTOR='awk "/^  ok   / { print \"PASS \" substr(\$0,8) } /^  FAIL / { print \"FAIL \" substr(\$0,8) }"'
+G479E_ROOT="$TMP/gate479-e2e"; mkdir -p "$G479E_ROOT/state/example"
+G479E_OUT="$(FWF_RUN_DIR="$G479E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G479E_EXTRACTOR" \
+  "$ROOT/fwf-gate.sh" g479erole -- bash "$G479E_STUB" 2>&1)"
+assert_contains "A(4): a killed run in per-case (GATE_CASE_EXTRACTOR) mode ALSO says it did not reach a conclusion" \
+  "$G479E_OUT" "did NOT reach a conclusion"
+assert_not_contains "A(4): per-case mode's own content-verdict line is not printed for a killed run either" \
+  "$G479E_OUT" "per-case (GATE_CASE_EXTRACTOR)]: FAILED"
+
+# --------------------------------------------------------------------------
 section "gate-promote: adoption in the same PR (issue #237 AC g)"
 assert_not_contains "dev conductor template no longer has the raw, unguarded promote sequence" \
   "$(cat "$ROOT/templates/dev/conductor.tmpl")" 'git merge --ff-only "$(fwf gate-tip'
