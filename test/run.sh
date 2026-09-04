@@ -151,6 +151,161 @@ else
   ok "AC(g): the teardown mechanism removes its temp dir"
 fi
 
+section "test suite tmux isolation invariants (issue #466): env-scrubbing calls cannot silently un-isolate a write"
+# #466: an orphaned e2e harness generation injected a role prompt into the
+# REAL conductor pane, 27 minutes after a GREEN gate verdict, because
+# something in that generation's tree lost tmux isolation and a bare `tmux`
+# resolved outside the sandbox. The delivery channel itself was never
+# identified, so the fix is a structural invariant rather than a patch to one
+# call site: a harness process that scrubs its OWN environment before
+# spawning a child (an `env -i`-style call, the one live instance being
+# drun() above) must either (a) explicitly re-inject TMUX_TMPDIR into that
+# child's env, or (b) refuse loudly rather than let a downstream tmux write
+# silently resolve wherever the ambient default happens to be.
+#
+# fwf_test_isolated_exec is the single choke point every such call must
+# route through (AC 1/2). It asserts two independent things, in order:
+#   1. THIS shell (before any scrubbing) is still correctly isolated --
+#      TMUX_TMPDIR points inside this run's own $TMP, not somewhere else and
+#      not unset. Positive, not "not default" (#62/#466 correction: the real
+#      floor is not necessarily on the default socket either -- AC 5).
+#   2. If the command about to run is itself an `env -i`-style scrub, its OWN
+#      argv must carry TMUX_TMPDIR=<the same value> forward explicitly --
+#      an env-scrub that simply forgot to re-inject it is exactly the failure
+#      mode this exists to catch, and it fails loudly here instead of
+#      quietly producing a child with no isolation signal at all.
+# Deliberately checks the CURRENT process's OWN environment only (never a
+# parent's) -- an orphan keeps whatever env it was forked with regardless of
+# whether its original parent is later reaped (AC 4), so there is nothing to
+# read from a "live parent" in the first place.
+fwf_test_isolated_exec() {
+  case "${TMUX_TMPDIR:-}" in
+    "$TMP"/*) : ;;
+    *)
+      printf 'FATAL(#466): fwf_test_isolated_exec refusing -- TMUX_TMPDIR=%s is not this run'"'"'s own sandbox (%s); a tmux write reached from here could land outside it\n' \
+        "${TMUX_TMPDIR:-<unset>}" "$TMP" >&2
+      return 90 ;;
+  esac
+  if [ "${1:-}" = env ]; then
+    case " $* " in
+      *" TMUX_TMPDIR=$TMUX_TMPDIR "*) : ;;
+      *)
+        printf 'FATAL(#466): fwf_test_isolated_exec refusing -- env-scrubbing call does not re-inject TMUX_TMPDIR=%s into its own argv, so a downstream write could resolve unisolated\n' \
+          "$TMUX_TMPDIR" >&2
+        return 91 ;;
+    esac
+  fi
+  "$@"
+}
+
+# AC 1/5: a correctly isolated call succeeds, including when $TMUX names a
+# NON-default socket -- the guard's own check is "under TMUX_TMPDIR", never
+# "not default", so it must not accidentally start passing/failing based on
+# what $TMUX happens to hold.
+F466_OK="$(TMUX='/some/named/mysock,1,0' fwf_test_isolated_exec env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="$PATH" true 2>&1; echo "rc=$?")"
+assert_eq "AC(466 1/5): a correctly-isolated env-scrub call succeeds regardless of \$TMUX naming a non-default socket" "rc=0" "$F466_OK"
+
+# AC 2 (outer): the CURRENT shell's own TMUX_TMPDIR is wrong/unset -> refuse
+# loudly before even looking at the wrapped command.
+F466_OUTER="$(TMUX_TMPDIR=/tmp/somewhere-else fwf_test_isolated_exec env -i TMUX_TMPDIR=/tmp/somewhere-else PATH="$PATH" true 2>&1; echo "rc=$?")"
+assert_contains "AC(466 2): a call with TMUX_TMPDIR pointed outside this run's \$TMP is refused" "$F466_OUTER" "FATAL(#466)"
+assert_contains "AC(466 2): the refusal exits non-zero (90), never silently proceeding" "$F466_OUTER" "rc=90"
+# `env` execs an external binary and cannot invoke a bash FUNCTION by name
+# (fwf_test_isolated_exec isn't on PATH), so "unset" is simulated with a
+# subshell instead of `env -u` -- this subshell's unset is scoped to the
+# $(...) it runs in and never reaches the outer script's own TMUX_TMPDIR.
+F466_UNSET="$(unset TMUX_TMPDIR; fwf_test_isolated_exec env -i PATH="$PATH" true 2>&1; echo "rc=$?")"
+assert_contains "AC(466 2): an unset TMUX_TMPDIR is refused, not treated as an implicit pass" "$F466_UNSET" "FATAL(#466)"
+
+# AC 2 (inner): outer shell is fine, but the wrapped env-scrub forgot to
+# re-inject TMUX_TMPDIR -- this is the drun()-shaped bug this ticket exists
+# to close, reproduced directly against the guard.
+F466_FORGOT="$(fwf_test_isolated_exec env -i HOME=/tmp PATH="$PATH" true 2>&1; echo "rc=$?")"
+assert_contains "AC(466 2): an env-scrub call that omits TMUX_TMPDIR from its own argv is refused" "$F466_FORGOT" "FATAL(#466)"
+assert_contains "AC(466 2): ...with a distinct exit code (91) from the outer-shell refusal" "$F466_FORGOT" "rc=91"
+
+# AC 4: the guard reads only ITS OWN process's environment, never a parent's
+# -- proven by running it from a genuinely orphaned process (double-fork:
+# the intermediate subshell backgrounds a child then exits immediately,
+# reparenting that child to PID 1 before it runs the check), which is
+# exactly the shape of the incident (an owning session already gone by the
+# time the harness generation acted).
+F466_ORPHAN_OUT="$TMP/f466-orphan.out"
+( TMUX_TMPDIR="$TMUX_TMPDIR" bash -c '
+    i=0
+    while [ "$(ps -o ppid= -p $$ 2>/dev/null | tr -d " ")" != 1 ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+    case "${TMUX_TMPDIR:-}" in
+      "'"$TMP"'"/*) echo "isolated: ok" ;;
+      *) echo "isolated: FAIL ($TMUX_TMPDIR)" ;;
+    esac
+  ' > "$F466_ORPHAN_OUT" 2>&1 & )
+F466_ORPHAN_TRIES=0
+while [ ! -s "$F466_ORPHAN_OUT" ] && [ "$F466_ORPHAN_TRIES" -lt 50 ]; do sleep 0.1; F466_ORPHAN_TRIES=$((F466_ORPHAN_TRIES+1)); done
+assert_eq "AC(466 4): TMUX_TMPDIR is still readable and correct from a process whose owning session already died (orphaned, PPID=1)" \
+  "isolated: ok" "$(cat "$F466_ORPHAN_OUT" 2>/dev/null || echo "<no output — orphan probe never wrote>")"
+
+# AC 6 (no regression, class guard): 'env -i' appears in exactly the one
+# fwf_test_isolated_exec-routed call site -- mirrors AC(f)'s own pattern
+# above. A future env-scrubbing call added without going through the guard
+# is exactly the bug class this ticket closes, so it must fail the suite,
+# not silently ship. (Excludes this section's own definition/tests, which
+# legitimately mention the literal string as documentation and fixture args.)
+#
+# QA review (#474): excluding drun()'s call site from the count BY NAME
+# (a literal 'drun()' grep -v term) blind-spotted the one real production
+# call site this ticket exists to protect -- a regressed, unguarded drun()
+# still contains the substring 'drun()' in its own definition line, so it
+# stayed excluded regardless of whether the guard was actually there.
+# Assert positively on the drun() definition line instead: it must name
+# the guard, not just be absent from an unguarded-line count.
+F466_DRUN_DEF="$(grep -n '^drun() {' "$ROOT/test/run.sh")"
+assert_contains "AC(466 6): the real drun() call site itself names fwf_test_isolated_exec (not excluded by name from the count below)" \
+  "$F466_DRUN_DEF" "fwf_test_isolated_exec"
+
+F466_UNGUARDED="$(grep -n 'env -i' "$ROOT/test/run.sh" | grep -v 'fwf_test_isolated_exec\|^[0-9]*:#\|F466_' | wc -l | tr -d ' ')"
+assert_eq "AC(466 6): every 'env -i' call site outside this guard's own tests routes through fwf_test_isolated_exec" "0" "$F466_UNGUARDED"
+
+# AC 3: end-to-end against a STAND-IN floor this test owns -- never the real
+# one. A third tmux server, on its own socket outside TMUX_TMPDIR entirely,
+# plays "the production floor". A simulated harness generation whose
+# isolation is INTACT must never reach it; the guard's refusal path must
+# also never reach it (that's the point of refusing). Must still pass if the
+# fixture dir (here, $TMP itself) is renamed -- nothing below is keyed on a
+# literal path string, only on "is it under $TMP".
+F466_STANDIN_DIR="$TMP/f466-standin-floor"; mkdir -p "$F466_STANDIN_DIR"
+F466_STANDIN_SOCK="$F466_STANDIN_DIR/sock"
+F466_STANDIN_SESSION="fwf-selftest-466-standin-floor"
+tmux -S "$F466_STANDIN_SOCK" new-session -d -s "$F466_STANDIN_SESSION" 2>/dev/null
+F466_STANDIN_BEFORE="$(tmux -S "$F466_STANDIN_SOCK" list-panes -t "$F466_STANDIN_SESSION" -F '#{pane_id}' 2>/dev/null)"
+# A correctly-isolated harness write: TMUX_TMPDIR is OUR real sandbox (PATH
+# carried forward so `tmux` still resolves under the scrub) -- a bare
+# `tmux` inside it must land on OUR server, never the stand-in.
+fwf_test_isolated_exec env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="$PATH" tmux new-session -d -s fwf-selftest-466-isolated-write >/dev/null 2>&1
+F466_STANDIN_AFTER_GOOD="$(tmux -S "$F466_STANDIN_SOCK" list-panes -t "$F466_STANDIN_SESSION" -F '#{pane_id}' 2>/dev/null)"
+assert_eq "AC(466 3): a correctly-isolated harness write never touches the stand-in floor's panes" "$F466_STANDIN_BEFORE" "$F466_STANDIN_AFTER_GOOD"
+if tmux has-session -t fwf-selftest-466-isolated-write 2>/dev/null; then
+  ok "AC(466 3): the isolated write landed on OUR sandbox server instead (proves it went SOMEWHERE, not that the assertion above is vacuous)"
+else
+  bad "AC(466 3): the isolated write landed on OUR sandbox server instead" "session not found on \$TMUX_TMPDIR's server"
+fi
+# A harness write whose isolation was lost (the incident shape): an
+# env-scrub call whose own argv carries a TMUX_TMPDIR pointing OUTSIDE this
+# run's sandbox is refused by the guard's inner check -- BEFORE tmux is ever
+# invoked, so the stand-in floor's panes stay untouched too, even though the
+# argv below explicitly targets the stand-in's own socket.
+F466_BAD_RC=0
+fwf_test_isolated_exec env -i TMUX_TMPDIR=/tmp/f466-not-our-sandbox PATH="$PATH" tmux -S "$F466_STANDIN_SOCK" new-session -d -s fwf-selftest-466-would-be-injection >/dev/null 2>&1 || F466_BAD_RC=$?
+F466_STANDIN_AFTER_BAD="$(tmux -S "$F466_STANDIN_SOCK" list-panes -t "$F466_STANDIN_SESSION" -F '#{pane_id}' 2>/dev/null)"
+assert_eq "AC(466 3): a write with lost isolation is refused before it ever reaches tmux (rc 91: the wrapped argv's own TMUX_TMPDIR doesn't match)" "91" "$F466_BAD_RC"
+assert_eq "AC(466 3): ...and the stand-in floor's panes are unchanged by the refused attempt" "$F466_STANDIN_BEFORE" "$F466_STANDIN_AFTER_BAD"
+if tmux -S "$F466_STANDIN_SOCK" has-session -t fwf-selftest-466-would-be-injection 2>/dev/null; then
+  bad "AC(466 3): the refused write must not have created a session anywhere, including the stand-in"
+else
+  ok "AC(466 3): the refused write created no session anywhere, including the stand-in"
+fi
+tmux kill-session -t fwf-selftest-466-isolated-write 2>/dev/null
+tmux -S "$F466_STANDIN_SOCK" kill-server 2>/dev/null
+
 # Build a git fixture repo: mkfix <name> then drop files into $FIX.
 mkfix() { FIX="$TMP/$1"; mkdir -p "$FIX"; ( cd "$FIX" && git init -q && git config user.email t@t.co && git config user.name t ); }
 commitfix() { ( cd "$FIX" && git add -A && git commit -qm init ); }
@@ -7874,7 +8029,13 @@ DEMPTY="$TMP/dash-empty-crate"; mkdir -p "$DEMPTY/target/release"   # crate seam
 DREL="$TMP/dash-release"; DASSET="fwf-dash-${DVER}-${DSLUG}"
 mkdir -p "$DREL/v$DVER"; mkdashbin "$DREL/v$DVER/$DASSET" downloaded
 ( cd "$DREL/v$DVER" && dsha "$DASSET" > "fwf-dash-${DVER}-checksums.txt" )
-drun() { env -i HOME="$TMP/dhome" PATH="$DBIN:/usr/bin:/bin" TMPDIR="$TMP" FWF_PROFILE=example "$@" bash "$ROOT/fwf-dash.sh" 2>&1; }
+# issue #466 AC2: this is the one env-scrubbing call site in the suite --
+# `env -i` drops TMUX_TMPDIR unless re-injected, and a bare `tmux` anywhere
+# downstream of that would then resolve to the system default socket rather
+# than staying in the sandbox. Routed through fwf_test_isolated_exec (defined
+# above) and TMUX_TMPDIR explicitly re-injected into the scrubbed env, same
+# as HOME/PATH/TMPDIR already are.
+drun() { fwf_test_isolated_exec env -i HOME="$TMP/dhome" PATH="$DBIN:/usr/bin:/bin" TMPDIR="$TMP" TMUX_TMPDIR="$TMUX_TMPDIR" FWF_PROFILE=example "$@" bash "$ROOT/fwf-dash.sh" 2>&1; }
 
 if [ -z "$DSLUG" ]; then
   skip "dash resolver (unsupported host arch)" 15
