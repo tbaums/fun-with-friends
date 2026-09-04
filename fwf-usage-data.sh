@@ -56,12 +56,24 @@ _fwf_usage_slug() {
 # claude-opus-4-8's row is explicitly out of scope. Add a row here, dated and
 # sourced (a2), the moment a published rate exists; until then (b) below is
 # what keeps the TOTAL honest about the omission.
-_FWF_PRICE_TABLE='{
+# issue #506: the TABLE is injectable for tests, the same way the CLOCK
+# already is via FWF_USAGE_NOW_EPOCH just below -- and for the same reason.
+# A test that needs one priced, one stale and one unpriced model cannot get
+# all three from the real table without depending on which models happen to
+# be expired today, and that kind of ambient dependency is how the
+# priced/stale/unpriced distinction drifted apart unnoticed. Production
+# leaves FWF_PRICE_TABLE_JSON unset and gets the table below.
+#
+# The default is kept in its OWN variable rather than inlined as a `:-`
+# fallback: a single-quoted JSON literal inside `${x:-...}` loses its
+# quoting and the table stops parsing.
+_FWF_PRICE_TABLE_DEFAULT='{
   "claude-opus-4-8":  {"input":5.00,  "output":25.00, "cache_write":6.25, "cache_read":0.50, "valid_until":null},
   "claude-sonnet-5":  {"input":2.00,  "output":10.00, "cache_write":2.50, "cache_read":0.20, "valid_until":"2026-08-31"},
   "claude-haiku-4-5": {"input":1.00,  "output":5.00,  "cache_write":1.25, "cache_read":0.10, "valid_until":null},
   "claude-fable-5":   {"input":10.00, "output":50.00, "cache_write":12.50,"cache_read":1.00, "valid_until":null}
 }'
+_FWF_PRICE_TABLE="${FWF_PRICE_TABLE_JSON:-$_FWF_PRICE_TABLE_DEFAULT}"
 
 # issue #289 (f2): the clock is INJECTABLE, never bare `date +%s` inline in
 # the check itself -- a date-driven check tested against the real clock is

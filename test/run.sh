@@ -11064,6 +11064,63 @@ assert_eq "(b2) and it is strictly greater than zero -- impl2 really does hold r
   "true" "$(printf '%s' "$RUN2DATA" | jq -r '.total.excluded_tokens_pct > 0')"
 assert_eq "(b) the per-row null is UNCHANGED -- this ticket's fix is at the aggregate, not the row" "null" \
   "$(printf '%s' "$RUN2DATA" | jq -c '.roles[] | select(.role=="impl2") | .cost_usd')"
+
+# --- issue #506: excluded == UNPRICED, never "unpriced OR stale" ------------
+# The bug this pins: excluded_tokens selected `price_state != "priced"`, so a
+# seat whose model merely EXPIRED was counted as excluded even though
+# cost_usd still includes it (at the old rate). Invisible while every model
+# was in date; the day claude-sonnet-5 passed its valid_until the total read
+# "excluded seats hold 100.0% ... priced at $0" directly above a $10k figure
+# computed from those very seats.
+#
+# Both runs below use the SAME fixture and differ ONLY in the seeded price
+# table, so any change in excluded_tokens_pct is attributable to the
+# priced->stale transition and nothing else. The table is seeded rather than
+# taken from the real one precisely so this case cannot rot the way the bug
+# did -- it must not matter which real models happen to be expired today.
+U506_FRESH='{"claude-sonnet-5":{"input":2.00,"output":10.00,"cache_write":2.50,"cache_read":0.20,"valid_until":null}}'
+U506_STALE='{"claude-sonnet-5":{"input":2.00,"output":10.00,"cache_write":2.50,"cache_read":0.20,"valid_until":"2000-01-01"}}'
+U506_RUN() { FWF_PRICE_TABLE_JSON="$1" FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" \
+  FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$UD"; }
+U506_FRESHDATA="$(U506_RUN "$U506_FRESH")"
+U506_STALEDATA="$(U506_RUN "$U506_STALE")"
+
+# Precondition: the seeding actually moved impl1 priced -> stale. Asserted
+# FIRST so a broken fixture reports as a broken fixture, never as a verdict
+# about excluded_tokens_pct (the #500 lesson).
+assert_eq "#506 fixture: impl1 is priced under the fresh table" "priced" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '.roles[] | select(.role=="impl1") | .price_state')"
+assert_eq "#506 fixture: impl1 is stale under the expired table" "stale" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.roles[] | select(.role=="impl1") | .price_state')"
+assert_eq "#506 fixture: impl2 is unpriced under both" "unpriced" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.roles[] | select(.role=="impl2") | .price_state')"
+
+# THE REGRESSION: a seat going priced -> stale must NOT change how many
+# tokens are "excluded". Before the fix this jumped to 100.
+assert_eq "#506: excluded_tokens_pct is UNCHANGED when a priced seat goes stale (excluded means unpriced, not 'not priced')" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '.total.excluded_tokens_pct')" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.total.excluded_tokens_pct')"
+assert_eq "#506: a stale seat is NOT swept into excluded -- impl2's unpriced tokens are the whole of it" \
+  "true" "$(printf '%s' "$U506_STALEDATA" | jq -r '
+    ([.roles[] | select(.price_state=="unpriced") | (.tokens.input+.tokens.cache_creation+.tokens.cache_read+.tokens.output)] | add // 0) as $excl |
+    ([.roles[] | (.tokens.input+.tokens.cache_creation+.tokens.cache_read+.tokens.output)] | add // 0) as $grand |
+    (if $grand > 0 then (($excl / $grand) * 100) else 0 end) == .total.excluded_tokens_pct')"
+
+# The stale magnitude is not lost -- it moves to its OWN field.
+assert_eq "#506: stale_priced_tokens_pct is zero while nothing is stale" "0" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '.total.stale_priced_tokens_pct')"
+assert_eq "#506: stale_priced_tokens_pct becomes nonzero once a seat expires" "true" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.total.stale_priced_tokens_pct > 0')"
+# partial stays true for EITHER condition -- "is this complete?" and "how
+# much is missing?" are different questions and must not collapse together.
+assert_eq "#506: total.partial stays true with a stale seat present" "true" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.total.partial')"
+assert_eq "#506: a stale seat is still NAMED in stale_priced_seats" "true" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '(.total.stale_priced_seats | length) > 0')"
+# The price table itself must remain injectable -- if this seam is removed,
+# every assertion above silently starts reading the real table again.
+assert_eq "#506: FWF_PRICE_TABLE_JSON actually overrides the built-in table" "true" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '[.roles[] | select(.model=="claude-opus-4-8")] | length == 0')"
 CLIOUT289="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
 assert_contains "CLI: TOTAL line carries a visible PARTIAL marker" "$CLIOUT289" "PARTIAL"
 assert_contains "CLI: the excluded seat is named on the display path too" "$CLIOUT289" "impl2 (claude-totally-unknown)"
