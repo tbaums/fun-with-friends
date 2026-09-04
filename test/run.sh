@@ -3380,6 +3380,15 @@ _wait_pane_child() {
     assert_contains "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" \
       "$(ps eww "$IMPL1_PID_312" 2>/dev/null)" "F312_SECRET=$F312_SECRET"
   else
+    # _f312_resolve runs inside a command substitution, so it executes in a
+    # SUBSHELL and its assignments to IMPL1_PANE_312/SHELL_PID_312 never
+    # reach here. Without this re-resolve both would read empty on every
+    # failure and the branch below would always blame fwf_find_pane --
+    # silently destroying #226 AC(b)'s whole point, which is naming WHICH of
+    # the three steps came up empty. Re-resolve once, on the failure path
+    # only, purely for the diagnostic.
+    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
     if [ -z "$IMPL1_PANE_312" ]; then
       bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "fwf_find_pane returned empty after respawn"
     elif [ -z "$SHELL_PID_312" ]; then
