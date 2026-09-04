@@ -9704,9 +9704,13 @@ assert_not_contains "the old unconditional branch-prefix survey line is gone" "$
 # must not be flagged.
 #
 # Asserts the CLASS, not the string: any #194-routed qa.tmpl whose closing
-# "Report one line..." line still names the implN/ branch-prefix token is
-# flagged, regardless of how the surrounding sentence is worded -- a future
-# rewrite that re-narrows the queue in different words also fails this.
+# "Report one line..." line still re-narrows the queue to the seat's own
+# implementer is flagged, regardless of how the surrounding sentence is
+# worded -- a future rewrite that re-narrows the queue in different words
+# also fails this. The denylist below therefore matches both the literal
+# impl__ID__ branch-prefix token AND the word "implementer" (case-
+# insensitive), since #501's review showed a rewrite can re-narrow the
+# queue in prose ("your implementer") without ever naming the branch token.
 section "qa idle-report line matches the seat's resolved queue, not a branch prefix (issue #472)"
 for QA_VARIANT_472 in dev refactor ideation defect-report consulting validate; do
   QA_TMPL_472_SRC="$(cat "$ROOT/templates/$QA_VARIANT_472/qa.tmpl")"
@@ -9714,7 +9718,7 @@ for QA_VARIANT_472 in dev refactor ideation defect-report consulting validate; d
     *'fwf pr-reviewer'*)
       QA_TMPL_472_IDLE_LINE="$(printf '%s\n' "$QA_TMPL_472_SRC" | grep -E 'Report one line per PR')"
       case "$QA_TMPL_472_IDLE_LINE" in
-        *'impl__ID__/'*)
+        *'impl__ID__'*|*[Ii]mplementer*)
           bad "$QA_VARIANT_472/qa.tmpl: idle-report line does not re-narrow a #194-routed queue to a branch prefix" \
             "$QA_TMPL_472_IDLE_LINE"
           ;;
@@ -9728,6 +9732,19 @@ for QA_VARIANT_472 in dev refactor ideation defect-report consulting validate; d
       ;;
   esac
 done
+# Regression (issue #501 adversarial review): a re-narrowing worded without
+# the literal impl__ID__ token -- e.g. prose naming "your implementer" --
+# must still be caught by the denylist above.
+QA_TMPL_472_REWORDED_DRIFT='Report one line per PR (merged / changes-requested / waiting). If your implementer has no ready PR this cycle, say "qa__ID__: idle" and wait for the next cycle.'
+case "$QA_TMPL_472_REWORDED_DRIFT" in
+  *'impl__ID__'*|*[Ii]mplementer*)
+    ok "issue #472 check catches a differently-worded branch-prefix re-narrowing (AC 5: class, not string)"
+    ;;
+  *)
+    bad "issue #472 check catches a differently-worded branch-prefix re-narrowing (AC 5: class, not string)" \
+      "'$QA_TMPL_472_REWORDED_DRIFT' still re-narrows the queue to the seat's own implementer, but is not flagged"
+    ;;
+esac
 # A seat with a genuinely empty resolved queue must still report idle (AC 3).
 assert_contains "dev/qa.tmpl idle report still fires on an empty resolved queue" "$DEVQA_194" \
   '"qa1: idle"'
