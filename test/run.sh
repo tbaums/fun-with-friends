@@ -3286,13 +3286,23 @@ FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$_f505_derived}"
 # from it makes a case that should fail in seconds take minutes instead.
 # Budget from the values the call site actually used.
 _wait_pane_child() {
-  local resolver="$1" budget="${2:-$FWF_TEST_PANE_CHILD_WAIT_SECS}" got="" tenths=0 budget_tenths
-  budget_tenths=$(( budget * 10 ))
-  while [ "$tenths" -lt "$budget_tenths" ]; do
+  local resolver="$1" budget="${2:-$FWF_TEST_PANE_CHILD_WAIT_SECS}" got="" _t0=$SECONDS
+  # WALL CLOCK, not an iteration count. An earlier draft counted only its own
+  # sleeps (0.2s each, `tenths -lt budget*10`) and ignored how long the
+  # resolver itself took. The resolver is not cheap -- it spawns a bash that
+  # sources lib.sh, then a tmux query, then pgrep -- so under load each pass
+  # cost ~0.11s on top of the sleep. The result, measured on a real run:
+  #
+  #   no child pid for the impl1 pane within 464s (budget 300s)
+  #
+  # 55% over a bound that was supposed to be a bound. A deadline that counts
+  # only the cheap half of its loop is not a deadline; it is a guess that
+  # drifts with box load, which is the same class of defect as the ~1s budget
+  # this ticket exists to fix.
+  while [ $(( SECONDS - _t0 )) -lt "$budget" ]; do
     got="$("$resolver" 2>/dev/null || true)"
     if [ -n "$got" ]; then printf '%s' "$got"; return 0; fi
     sleep 0.2
-    tenths=$(( tenths + 2 ))
   done
   return 1
 }
