@@ -189,13 +189,18 @@ main() {
   # percentage is what tells an operator the reported figure could be less
   # than half the truth.
   if [ "$(printf '%s' "$data" | jq -r '.total.partial')" = "true" ]; then
-    local unpriced_seats stale_seats excl_pct
+    local unpriced_seats stale_seats excl_pct stale_pct
     unpriced_seats="$(printf '%s' "$data" | jq -r '.total.unpriced_seats | join(", ")')"
     stale_seats="$(printf '%s' "$data" | jq -r '.total.stale_priced_seats | join(", ")')"
     excl_pct="$(printf '%s' "$data" | jq -r '.total.excluded_tokens_pct')"
-    printf '\n⚠ TOTAL is PARTIAL — excluded seats hold %.1f%% of all factory tokens, priced at $0 above:\n' "$excl_pct"
-    [ -n "$unpriced_seats" ] && printf '  unpriced (no price-table row): %s\n' "$unpriced_seats"
-    [ -n "$stale_seats" ] && printf '  stale-priced (past valid_until, still counted above at the OLD rate): %s\n' "$stale_seats"
+    stale_pct="$(printf '%s' "$data" | jq -r '.total.stale_priced_tokens_pct // 0')"
+    # issue #506: report the two magnitudes SEPARATELY. Folding them together
+    # produced the contradiction this fixes -- "excluded seats hold 100.0% ...
+    # priced at $0" printed directly beneath a non-zero dollar total that was
+    # computed from those very seats.
+    printf '\n⚠ TOTAL is PARTIAL:\n'
+    [ -n "$unpriced_seats" ] && printf '  unpriced (no price-table row, contributing $0 above) — %.1f%% of all factory tokens: %s\n' "$excl_pct" "$unpriced_seats"
+    [ -n "$stale_seats" ] && printf '  stale-priced (past valid_until, counted above at the OLD rate) — %.1f%% of all factory tokens: %s\n' "$stale_pct" "$stale_seats"
   fi
 
   printf '\n%s\n' "$(printf '%s' "$data" | jq -r '"note: " + .caveat')"

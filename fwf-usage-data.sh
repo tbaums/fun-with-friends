@@ -56,12 +56,24 @@ _fwf_usage_slug() {
 # claude-opus-4-8's row is explicitly out of scope. Add a row here, dated and
 # sourced (a2), the moment a published rate exists; until then (b) below is
 # what keeps the TOTAL honest about the omission.
-_FWF_PRICE_TABLE='{
+# issue #506: the TABLE is injectable for tests, the same way the CLOCK
+# already is via FWF_USAGE_NOW_EPOCH just below -- and for the same reason.
+# A test that needs one priced, one stale and one unpriced model cannot get
+# all three from the real table without depending on which models happen to
+# be expired today, and that kind of ambient dependency is how the
+# priced/stale/unpriced distinction drifted apart unnoticed. Production
+# leaves FWF_PRICE_TABLE_JSON unset and gets the table below.
+#
+# The default is kept in its OWN variable rather than inlined as a `:-`
+# fallback: a single-quoted JSON literal inside `${x:-...}` loses its
+# quoting and the table stops parsing.
+_FWF_PRICE_TABLE_DEFAULT='{
   "claude-opus-4-8":  {"input":5.00,  "output":25.00, "cache_write":6.25, "cache_read":0.50, "valid_until":null},
   "claude-sonnet-5":  {"input":2.00,  "output":10.00, "cache_write":2.50, "cache_read":0.20, "valid_until":"2026-08-31"},
   "claude-haiku-4-5": {"input":1.00,  "output":5.00,  "cache_write":1.25, "cache_read":0.10, "valid_until":null},
   "claude-fable-5":   {"input":10.00, "output":50.00, "cache_write":12.50,"cache_read":1.00, "valid_until":null}
 }'
+_FWF_PRICE_TABLE="${FWF_PRICE_TABLE_JSON:-$_FWF_PRICE_TABLE_DEFAULT}"
 
 # issue #289 (f2): the clock is INJECTABLE, never bare `date +%s` inline in
 # the check itself -- a date-driven check tested against the real clock is
@@ -283,8 +295,27 @@ jq -nc --argjson roles "$roles_json" --argjson stale_secs "$FWF_USAGE_STALE_SECS
   ($roles | map(select(.state != "unknown" and .price_state == "unpriced")) | map("\(.role) (\(.model))")) as $unpriced_seats |
   ($roles | map(select(.state != "unknown" and .price_state == "stale")) | map("\(.role) (\(.model))")) as $stale_priced_seats |
   ($roles | map((.tokens.input//0)+(.tokens.cache_creation//0)+(.tokens.cache_read//0)+(.tokens.output//0)) | add // 0) as $grand_tokens |
-  ($roles | map(select(.state != "unknown" and .price_state != "priced")) |
+  # issue #506: UNPRICED only -- not `!= "priced"`, which also swept in
+  # stale-priced rows. _fwf_usage_price_state returns THREE values (priced /
+  # stale / unpriced) and the two non-priced ones mean different things:
+  #   unpriced -> no price-table row at all; contributes 0 to cost_usd, so
+  #               those tokens really are missing from the total.
+  #   stale    -> HAS a row, past valid_until; cost_usd DOES include it (at
+  #               the old rate), so those tokens are reflected, just at a
+  #               price we no longer trust.
+  # Counting stale as excluded contradicted both this fields own contract
+  # (tokens this cost_usd figure does NOT reflect) and the CLI line that
+  # renders it (... priced at zero above -- stale rows are not priced at
+  # zero). It stayed invisible while every model was in date, then read 100
+  # percent the day claude-sonnet-5 expired, while a 10k total computed FROM
+  # those same seats was printed directly above it. Both could not be true.
+  ($roles | map(select(.state != "unknown" and .price_state == "unpriced")) |
     map((.tokens.input//0)+(.tokens.cache_creation//0)+(.tokens.cache_read//0)+(.tokens.output//0)) | add // 0) as $excluded_tokens |
+  # The stale magnitude is still worth reporting -- it answers a DIFFERENT
+  # question (how much of this total is priced at a rate we no longer trust)
+  # so it gets its own number rather than being folded in.
+  ($roles | map(select(.state != "unknown" and .price_state == "stale")) |
+    map((.tokens.input//0)+(.tokens.cache_creation//0)+(.tokens.cache_read//0)+(.tokens.output//0)) | add // 0) as $stale_priced_tokens |
   {generated_at: $generated_at,
    stale_secs: $stale_secs,
    caveat: "estimated $ equivalent — not your account'\''s actual rolling-window usage",
@@ -308,6 +339,11 @@ jq -nc --argjson roles "$roles_json" --argjson stale_secs "$FWF_USAGE_STALE_SECS
      # tokens (grand total across every role, priced or not) is held by
      # seats this cost_usd figure does NOT reflect. 0 when nothing is
      # excluded or there is no usage yet.
-     excluded_tokens_pct: (if $grand_tokens > 0 then (($excluded_tokens / $grand_tokens) * 100) else 0 end)
+     excluded_tokens_pct: (if $grand_tokens > 0 then (($excluded_tokens / $grand_tokens) * 100) else 0 end),
+     # (#506) companion to the above: fraction held by seats that ARE in
+     # cost_usd but at an out-of-date rate. Deliberately distinct from
+     # excluded_tokens_pct -- missing entirely and counted at a stale price
+     # are different failures and an operator needs to tell them apart.
+     stale_priced_tokens_pct: (if $grand_tokens > 0 then (($stale_priced_tokens / $grand_tokens) * 100) else 0 end)
    }}'
 fi

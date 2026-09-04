@@ -3225,17 +3225,99 @@ EOS
   # a process's environ as captured at ITS OWN exec() time, never live-updated
   # by that shell's own later `export`, so the sourced var only shows up on
   # the CHILD it forks (the claude stub) — walk to that child.
+# issue #505: ONE budget for every "wait for a pane's child process to exist"
+# poll in this file. Derived from the respawn path's OWN verify window rather
+# than picked independently: fwf-respawn.sh:147 waits
+# `interval + FWF_RESPAWN_VERIFY_MARGIN`, and fwf_verify_respawn_tick applies
+# that window TWICE around one re-nudge. So fwf itself is willing to wait
+# ~2x(interval+margin) for a seat to come up -- roughly 180s at a 60s loop.
+#
+# These assertions used to allow 5 x 0.2s = ~1s for exactly that operation.
+# That is not a small mis-tune: it is ~180x short, and on a loaded box it made
+# #312 and #217 AC(1) fail on EVERY run while the behaviour under test was
+# fine. #460 already fixed the retry SHAPE (retry the whole discovery chain);
+# only the budget was left at its original single-shot-race value.
+#
+# Deriving it here means tuning FWF_RESPAWN_VERIFY_MARGIN moves both together
+# instead of letting them drift apart again.
+# The interval is READ, not assumed. An earlier draft of this hardcoded 60
+# and was already wrong on this very floor: IMPL_INTERVAL is 2m, so the
+# respawn path's own window is 2*(120+30) = 300s, and a 180s assertion budget
+# would have sat BELOW what fwf itself tolerates -- reintroducing this exact
+# bug at a larger seat interval. Derive it from the same value, or the
+# coupling is decorative.
+_f505_iv="${IMPL_INTERVAL:-2m}"
+case "$_f505_iv" in
+  *[0-9]s) _f505_iv=$(( ${_f505_iv%s} ));;
+  *[0-9]m) _f505_iv=$(( ${_f505_iv%m} * 60 ));;
+  *[0-9]h) _f505_iv=$(( ${_f505_iv%h} * 3600 ));;
+  *[0-9])  _f505_iv=$(( _f505_iv ));;
+  *)       _f505_iv=120;;
+esac
+_f505_derived=$(( 2 * (_f505_iv + ${FWF_RESPAWN_VERIFY_MARGIN:-30}) ))
+# ...and a FLOOR, because the coupling cuts both ways: someone TIGHTENING
+# FWF_RESPAWN_VERIFY_MARGIN would otherwise shrink this budget below what the
+# box demonstrably needs. Three live respawns measured >90s each on 2026-09-04
+# (one exceeding a 120s wrapper timeout), so 180s is the observed floor, not a
+# round number. Take whichever is larger.
+[ "$_f505_derived" -lt 180 ] && _f505_derived=180
+FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$_f505_derived}"
+
+# Poll $1 (a FUNCTION NAME, invoked with no args -- the same idiom
+# fwf_verify_respawn_tick uses, so there is no eval/quoting hazard) until it
+# prints a non-empty value or the budget expires.
+#
+# Prints the value and returns 0 on success; returns 1 on timeout.
+#
+# NOTE (#505): callers invoke this in a command substitution, so it runs in a
+# SUBSHELL and NOTHING it assigns survives the call. An earlier draft set a
+# global _PANE_CHILD_WAITED here and read it back in the failure messages; it
+# read 0 every time. Each call site therefore measures elapsed time itself,
+# in its own scope, via SECONDS.
+#
+# Polls at 0.2s and returns the instant the value appears, so an idle box is
+# no slower than the old 5-try loop; the budget only costs time when the
+# thing genuinely is not there yet.
+# $2 (optional): a per-call budget in seconds, overriding the default. Some
+# cases deliberately drive fwf-respawn.sh with a SHRUNKEN window (e.g. #217
+# AC(1) passes FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 because its
+# stub claude never ticks and the verify is MEANT to time out fast). For
+# those, the ambient IMPL_INTERVAL is the wrong input entirely -- deriving
+# from it makes a case that should fail in seconds take minutes instead.
+# Budget from the values the call site actually used.
+_wait_pane_child() {
+  local resolver="$1" budget="${2:-$FWF_TEST_PANE_CHILD_WAIT_SECS}" got="" _t0=$SECONDS
+  # WALL CLOCK, not an iteration count. An earlier draft counted only its own
+  # sleeps (0.2s each, `tenths -lt budget*10`) and ignored how long the
+  # resolver itself took. The resolver is not cheap -- it spawns a bash that
+  # sources lib.sh, then a tmux query, then pgrep -- so under load each pass
+  # cost ~0.11s on top of the sleep. The result, measured on a real run:
+  #
+  #   no child pid for the impl1 pane within 464s (budget 300s)
+  #
+  # 55% over a bound that was supposed to be a bound. A deadline that counts
+  # only the cheap half of its loop is not a deadline; it is a guess that
+  # drifts with box load, which is the same class of defect as the ~1s budget
+  # this ticket exists to fix.
+  while [ $(( SECONDS - _t0 )) -lt "$budget" ]; do
+    got="$("$resolver" 2>/dev/null || true)"
+    if [ -n "$got" ]; then printf '%s' "$got"; return 0; fi
+    sleep 0.2
+  done
+  return 1
+}
+
   SHELL_PID="$([ -n "$IMPL1_PANE" ] && tmux display -p -t "$IMPL1_PANE" '#{pane_pid}' 2>/dev/null || true)"
   # AC(b): bounded retry -- ONLY on pgrep, the single step AC(0) showed racing.
-  # Up to ~1s total (5 x 0.2s); FWF_SKIP_BOOT_GATE=1 stays in effect above, so
-  # this retry lives in the test's own polling, never fwf's boot gate.
+  # FWF_SKIP_BOOT_GATE=1 stays in effect above, so this retry lives in the
+  # test's own polling, never fwf's boot gate. Budget: #505's shared constant
+  # (was 5 x 0.2s = ~1s, ~180x short of what respawn itself waits).
+  _f226_resolve() { pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true; }
   IMPL1_PID=""
   if [ -n "$SHELL_PID" ]; then
-    for _f226_try in 1 2 3 4 5; do
-      IMPL1_PID="$(pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
-      [ -n "$IMPL1_PID" ] && break
-      sleep 0.2
-    done
+    _f226_t0=$SECONDS
+    IMPL1_PID="$(_wait_pane_child _f226_resolve || true)"
+    _PANE_CHILD_WAITED=$(( SECONDS - _f226_t0 ))
   fi
   if [ -n "$IMPL1_PID" ]; then
     assert_contains "FWF_PANE_ENV var reaches the pane's actual process env" \
@@ -3249,7 +3331,7 @@ EOS
     elif [ -z "$SHELL_PID" ]; then
       bad "FWF_PANE_ENV var reaches the pane's actual process env" "tmux pane_pid returned empty for pane $IMPL1_PANE"
     else
-      bad "FWF_PANE_ENV var reaches the pane's actual process env" "pgrep -P $SHELL_PID returned empty after 5 retries (~1s) -- the pane's child process never forked in time"
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "pgrep -P $SHELL_PID found no child within ${_PANE_CHILD_WAITED}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s) -- the pane's child process never forked within the budget"
     fi
   fi
   assert_eq "pane-env file is chmod 600" "600" \
@@ -3303,23 +3385,34 @@ EOS
   IMPL1_PANE_312=""
   SHELL_PID_312=""
   IMPL1_PID_312=""
-  for _f312_try in 1 2 3 4 5; do
+  # Re-resolves the WHOLE chain each try (#460's fix) on #505's budget.
+  _f312_resolve() {
     IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
-    IMPL1_PID_312="$([ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true)"
-    [ -n "$IMPL1_PID_312" ] && break
-    sleep 0.2
-  done
+    [ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true
+  }
+  _f312_t0=$SECONDS
+  IMPL1_PID_312="$(_wait_pane_child _f312_resolve || true)"
+  _PANE_CHILD_WAITED=$(( SECONDS - _f312_t0 ))
   if [ -n "$IMPL1_PID_312" ]; then
     assert_contains "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" \
       "$(ps eww "$IMPL1_PID_312" 2>/dev/null)" "F312_SECRET=$F312_SECRET"
   else
+    # _f312_resolve runs inside a command substitution, so it executes in a
+    # SUBSHELL and its assignments to IMPL1_PANE_312/SHELL_PID_312 never
+    # reach here. Without this re-resolve both would read empty on every
+    # failure and the branch below would always blame fwf_find_pane --
+    # silently destroying #226 AC(b)'s whole point, which is naming WHICH of
+    # the three steps came up empty. Re-resolve once, on the failure path
+    # only, purely for the diagnostic.
+    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
     if [ -z "$IMPL1_PANE_312" ]; then
       bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "fwf_find_pane returned empty after respawn"
     elif [ -z "$SHELL_PID_312" ]; then
       bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "tmux pane_pid returned empty for pane $IMPL1_PANE_312"
     else
-      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "pgrep -P $SHELL_PID_312 returned empty after 5 retries (~1s)"
+      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "pgrep -P $SHELL_PID_312 found no child within ${_PANE_CHILD_WAITED}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s)"
     fi
   fi
   unset F312_SECRET
@@ -3368,18 +3461,39 @@ EOS
   # child process can still be a beat behind settling into its final PID by
   # the time THIS process gets scheduled to look for it.
   F217E2E_CHILD_PID=""
-  for _f217_try in 1 2 3 4 5; do
+  _f217_resolve() {
     F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
-    F217E2E_CHILD_PID="$([ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true)"
-    [ -n "$F217E2E_CHILD_PID" ] && break
-    sleep 0.2
-  done
+    [ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true
+  }
+  _f217_t0=$SECONDS
+  # This call site drove respawn with FWF_IMPL_INTERVAL=1s and
+  # FWF_RESPAWN_VERIFY_MARGIN=1 above, so respawn's own window here is
+  # ~2*(1+1)=4s, not the ambient 2m. Budget accordingly -- 30s is ample
+  # headroom over 4s on a loaded box, and keeps a genuine failure fast
+  # instead of parking the suite for the default 300s.
+  F217E2E_CHILD_PID="$(_wait_pane_child _f217_resolve 30 || true)"
+  _PANE_CHILD_WAITED=$(( SECONDS - _f217_t0 ))
   if [ -n "$F217E2E_CHILD_PID" ]; then
     assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
   else
-    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "could not find impl1 pane's child pid after respawn"
+    # #226 AC(b) discrimination, extended to THIS site: name WHICH step of
+    # the chain came up empty. The resolver runs in a subshell so its
+    # intermediates do not survive -- re-resolve once here, on the failure
+    # path only, purely for the diagnostic. Without this the message says
+    # "no child pid" whether the PANE was missing, the pane_pid was empty,
+    # or the child genuinely never forked -- three very different bugs. That
+    # ambiguity is currently blocking the diagnosis of this exact failure.
+    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
+    if [ -z "$F217E2E_PANE" ]; then
+      bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "fwf_find_pane returned empty after respawn -- the impl1 pane itself was never found (waited ${_PANE_CHILD_WAITED}s, budget 30s)"
+    elif [ -z "$F217E2E_SHELL_PID" ]; then
+      bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "tmux pane_pid returned empty for pane $F217E2E_PANE (waited ${_PANE_CHILD_WAITED}s, budget 30s)"
+    else
+      bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "pane $F217E2E_PANE (shell pid $F217E2E_SHELL_PID) exists but forked NO CHILD within ${_PANE_CHILD_WAITED}s (budget 30s, sized to this case's own FWF_IMPL_INTERVAL=1s/margin=1 respawn)"
+    fi
   fi
   tmux kill-session -t "${F217E2E_SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F217E2E_SESS}-build" 2>/dev/null
@@ -11020,6 +11134,63 @@ assert_eq "(b2) and it is strictly greater than zero -- impl2 really does hold r
   "true" "$(printf '%s' "$RUN2DATA" | jq -r '.total.excluded_tokens_pct > 0')"
 assert_eq "(b) the per-row null is UNCHANGED -- this ticket's fix is at the aggregate, not the row" "null" \
   "$(printf '%s' "$RUN2DATA" | jq -c '.roles[] | select(.role=="impl2") | .cost_usd')"
+
+# --- issue #506: excluded == UNPRICED, never "unpriced OR stale" ------------
+# The bug this pins: excluded_tokens selected `price_state != "priced"`, so a
+# seat whose model merely EXPIRED was counted as excluded even though
+# cost_usd still includes it (at the old rate). Invisible while every model
+# was in date; the day claude-sonnet-5 passed its valid_until the total read
+# "excluded seats hold 100.0% ... priced at $0" directly above a $10k figure
+# computed from those very seats.
+#
+# Both runs below use the SAME fixture and differ ONLY in the seeded price
+# table, so any change in excluded_tokens_pct is attributable to the
+# priced->stale transition and nothing else. The table is seeded rather than
+# taken from the real one precisely so this case cannot rot the way the bug
+# did -- it must not matter which real models happen to be expired today.
+U506_FRESH='{"claude-sonnet-5":{"input":2.00,"output":10.00,"cache_write":2.50,"cache_read":0.20,"valid_until":null}}'
+U506_STALE='{"claude-sonnet-5":{"input":2.00,"output":10.00,"cache_write":2.50,"cache_read":0.20,"valid_until":"2000-01-01"}}'
+U506_RUN() { FWF_PRICE_TABLE_JSON="$1" FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" \
+  FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$UD"; }
+U506_FRESHDATA="$(U506_RUN "$U506_FRESH")"
+U506_STALEDATA="$(U506_RUN "$U506_STALE")"
+
+# Precondition: the seeding actually moved impl1 priced -> stale. Asserted
+# FIRST so a broken fixture reports as a broken fixture, never as a verdict
+# about excluded_tokens_pct (the #500 lesson).
+assert_eq "#506 fixture: impl1 is priced under the fresh table" "priced" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '.roles[] | select(.role=="impl1") | .price_state')"
+assert_eq "#506 fixture: impl1 is stale under the expired table" "stale" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.roles[] | select(.role=="impl1") | .price_state')"
+assert_eq "#506 fixture: impl2 is unpriced under both" "unpriced" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.roles[] | select(.role=="impl2") | .price_state')"
+
+# THE REGRESSION: a seat going priced -> stale must NOT change how many
+# tokens are "excluded". Before the fix this jumped to 100.
+assert_eq "#506: excluded_tokens_pct is UNCHANGED when a priced seat goes stale (excluded means unpriced, not 'not priced')" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '.total.excluded_tokens_pct')" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.total.excluded_tokens_pct')"
+assert_eq "#506: a stale seat is NOT swept into excluded -- impl2's unpriced tokens are the whole of it" \
+  "true" "$(printf '%s' "$U506_STALEDATA" | jq -r '
+    ([.roles[] | select(.price_state=="unpriced") | (.tokens.input+.tokens.cache_creation+.tokens.cache_read+.tokens.output)] | add // 0) as $excl |
+    ([.roles[] | (.tokens.input+.tokens.cache_creation+.tokens.cache_read+.tokens.output)] | add // 0) as $grand |
+    (if $grand > 0 then (($excl / $grand) * 100) else 0 end) == .total.excluded_tokens_pct')"
+
+# The stale magnitude is not lost -- it moves to its OWN field.
+assert_eq "#506: stale_priced_tokens_pct is zero while nothing is stale" "0" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '.total.stale_priced_tokens_pct')"
+assert_eq "#506: stale_priced_tokens_pct becomes nonzero once a seat expires" "true" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.total.stale_priced_tokens_pct > 0')"
+# partial stays true for EITHER condition -- "is this complete?" and "how
+# much is missing?" are different questions and must not collapse together.
+assert_eq "#506: total.partial stays true with a stale seat present" "true" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '.total.partial')"
+assert_eq "#506: a stale seat is still NAMED in stale_priced_seats" "true" \
+  "$(printf '%s' "$U506_STALEDATA" | jq -r '(.total.stale_priced_seats | length) > 0')"
+# The price table itself must remain injectable -- if this seam is removed,
+# every assertion above silently starts reading the real table again.
+assert_eq "#506: FWF_PRICE_TABLE_JSON actually overrides the built-in table" "true" \
+  "$(printf '%s' "$U506_FRESHDATA" | jq -r '[.roles[] | select(.model=="claude-opus-4-8")] | length == 0')"
 CLIOUT289="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
 assert_contains "CLI: TOTAL line carries a visible PARTIAL marker" "$CLIOUT289" "PARTIAL"
 assert_contains "CLI: the excluded seat is named on the display path too" "$CLIOUT289" "impl2 (claude-totally-unknown)"
@@ -12402,8 +12573,38 @@ ci_f() { printf '%s' "$2" | cut -d'|' -f"$1"; }
 # Like ci_run, but with cargo/sccache's directory stripped from PATH — for
 # asserting the "sccache not installed -> no-op" fail-open branch regardless
 # of whether THIS box happens to have sccache installed.
+#
+# issue #500: this used to hardcode a "standard" allowlist
+# (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin) and assume it
+# was clean. It never stripped anything, despite what the comment above said.
+# On 2026-09-03 a root-owned sccache shim landed in /usr/local/bin -- the
+# second entry of that list -- and the case failed on every run, on every
+# branch, for a day, reading as an fwf_cargo_isolate defect rather than a
+# broken fixture. Build the PATH by STRIPPING instead: drop any candidate
+# directory that actually contains cargo or sccache, so a shim dropped into
+# any of them is handled rather than silently defeating the case.
+_nosccache_path() {
+  local d out=
+  for d in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+    [ -d "$d" ] || continue
+    # if/then, not `[ ... ] && continue`: the latter yields a non-zero status
+    # for the loop body's last command when the test is false, which is a
+    # trap under `set -e` and a shellcheck complaint besides.
+    if [ -e "$d/sccache" ] || [ -e "$d/cargo" ]; then continue; fi
+    out="${out:+$out:}$d"
+  done
+  printf '%s' "$out"
+}
 ci_run_nosccache() {
-  FWF_PROFILE=example PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash -c '
+  local _p; _p="$(_nosccache_path)"
+  # (#500 AC b) If the precondition cannot be met, say SO -- as a broken
+  # fixture, never as a verdict about RUSTC_WRAPPER. A case whose setup
+  # silently fails is what let #500 read as a product defect for a day.
+  if PATH="$_p" command -v sccache >/dev/null 2>&1; then
+    printf 'BROKEN-FIXTURE(sccache still reachable on scrubbed PATH)|%s|%s' "$_p" "BROKEN-FIXTURE"
+    return 0
+  fi
+  FWF_PROFILE=example PATH="$_p" bash -c '
     source "'"$ROOT"'/lib.sh" 2>/dev/null
     wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
     '"$1"'
@@ -12458,6 +12659,16 @@ else
 fi
 
 # H. sccache NOT installed -> no forced tooling, unchanged from today (fail-open).
+# (#500 AC c) Regression guard, asserted BEFORE the behaviour cases: the
+# scrubbed PATH must genuinely have no sccache on it. This goes RED if a new
+# sccache appears in a directory the scrub does not cover, which is the exact
+# failure mode #500 was -- and it names the fixture as the culprit rather than
+# blaming fwf_cargo_isolate.
+_NSP="$(_nosccache_path)"
+assert_eq "#500: the scrubbed PATH has no reachable sccache (fixture precondition)" \
+  "" "$(PATH="$_NSP" command -v sccache 2>/dev/null)"
+assert_not_contains "#500: the scrubbed PATH dropped the dir holding sccache" "$_NSP" "$(dirname "$(command -v sccache 2>/dev/null || echo /nonexistent/x)")"
+
 RN="$(ci_run_nosccache ':')"
 assert_eq "no sccache on PATH -> RUSTC_WRAPPER stays unset" "UNSET" "$(printf '%s' "$RN" | cut -d'|' -f1)"
 assert_eq "  ...and isolate still succeeds"                 "0"     "$(printf '%s' "$RN" | cut -d'|' -f3)"
