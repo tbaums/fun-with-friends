@@ -3478,7 +3478,22 @@ _wait_pane_child() {
     assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
   else
-    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "no child pid for the impl1 pane within ${_PANE_CHILD_WAITED}s (budget 30s, sized to this case's own FWF_IMPL_INTERVAL=1s/margin=1 respawn) after respawn"
+    # #226 AC(b) discrimination, extended to THIS site: name WHICH step of
+    # the chain came up empty. The resolver runs in a subshell so its
+    # intermediates do not survive -- re-resolve once here, on the failure
+    # path only, purely for the diagnostic. Without this the message says
+    # "no child pid" whether the PANE was missing, the pane_pid was empty,
+    # or the child genuinely never forked -- three very different bugs. That
+    # ambiguity is currently blocking the diagnosis of this exact failure.
+    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
+    if [ -z "$F217E2E_PANE" ]; then
+      bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "fwf_find_pane returned empty after respawn -- the impl1 pane itself was never found (waited ${_PANE_CHILD_WAITED}s, budget 30s)"
+    elif [ -z "$F217E2E_SHELL_PID" ]; then
+      bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "tmux pane_pid returned empty for pane $F217E2E_PANE (waited ${_PANE_CHILD_WAITED}s, budget 30s)"
+    else
+      bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "pane $F217E2E_PANE (shell pid $F217E2E_SHELL_PID) exists but forked NO CHILD within ${_PANE_CHILD_WAITED}s (budget 30s, sized to this case's own FWF_IMPL_INTERVAL=1s/margin=1 respawn)"
+    fi
   fi
   tmux kill-session -t "${F217E2E_SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F217E2E_SESS}-build" 2>/dev/null
