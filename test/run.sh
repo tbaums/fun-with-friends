@@ -12599,6 +12599,19 @@ else
   ok "AC(3): the pre-squash head is never reported as a MISSING/stranded commit -- its content already shipped via the squash"
 fi
 
+# --- issue #470 AC(7): the fixture above already IS the enforcement AC(7)
+# asks for, stated explicitly so it reads as satisfying that criterion --
+# (B) flags the genuinely stranded post-merge commit (SQ2_EXTRA, asserted
+# above), and if (B) were switched to compare against merge_commit_sha
+# instead of head_sha, rev-list would treat the ENTIRE branch (including
+# the already-shipped pre-squash commit SQ2_FIXSHA, which shares no
+# ancestry with merge_commit_sha) as "outside", so the "never reported as
+# MISSING" guard immediately above would go RED. A static guard on the call
+# site pins the decision so a future find-and-replace cannot silently pass
+# landed_sha/merge_commit_sha there instead.
+assert_contains "AC(7): (B)'s call site still passes head_sha, never landed_sha/merge_commit_sha -- the decision AC(3)/AC(4) state is enforced, not just documented" \
+  "$(grep -n '_shipped_check_b "\$head_sha"' fwf-shipped.sh)" '_shipped_check_b "$head_sha"'
+
 # --- issue #470 AC(5): merge_commit_sha present but genuinely absent from
 # main (squashed onto a lagging branch, never promoted) -> NOT SHIPPED --
 # same shape as the pre-existing staging-lag fixture, through merge_commit_sha.
