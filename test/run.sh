@@ -3240,7 +3240,28 @@ EOS
 #
 # Deriving it here means tuning FWF_RESPAWN_VERIFY_MARGIN moves both together
 # instead of letting them drift apart again.
-FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$(( 2 * (60 + ${FWF_RESPAWN_VERIFY_MARGIN:-30}) ))}"
+# The interval is READ, not assumed. An earlier draft of this hardcoded 60
+# and was already wrong on this very floor: IMPL_INTERVAL is 2m, so the
+# respawn path's own window is 2*(120+30) = 300s, and a 180s assertion budget
+# would have sat BELOW what fwf itself tolerates -- reintroducing this exact
+# bug at a larger seat interval. Derive it from the same value, or the
+# coupling is decorative.
+_f505_iv="${IMPL_INTERVAL:-2m}"
+case "$_f505_iv" in
+  *[0-9]s) _f505_iv=$(( ${_f505_iv%s} ));;
+  *[0-9]m) _f505_iv=$(( ${_f505_iv%m} * 60 ));;
+  *[0-9]h) _f505_iv=$(( ${_f505_iv%h} * 3600 ));;
+  *[0-9])  _f505_iv=$(( _f505_iv ));;
+  *)       _f505_iv=120;;
+esac
+_f505_derived=$(( 2 * (_f505_iv + ${FWF_RESPAWN_VERIFY_MARGIN:-30}) ))
+# ...and a FLOOR, because the coupling cuts both ways: someone TIGHTENING
+# FWF_RESPAWN_VERIFY_MARGIN would otherwise shrink this budget below what the
+# box demonstrably needs. Three live respawns measured >90s each on 2026-09-04
+# (one exceeding a 120s wrapper timeout), so 180s is the observed floor, not a
+# round number. Take whichever is larger.
+[ "$_f505_derived" -lt 180 ] && _f505_derived=180
+FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$_f505_derived}"
 
 # Poll $1 (a FUNCTION NAME, invoked with no args -- the same idiom
 # fwf_verify_respawn_tick uses, so there is no eval/quoting hazard) until it
