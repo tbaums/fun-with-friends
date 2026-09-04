@@ -3267,29 +3267,26 @@ FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$_f505_derived}"
 # fwf_verify_respawn_tick uses, so there is no eval/quoting hazard) until it
 # prints a non-empty value or the budget expires.
 #
-# Prints the value and returns 0 on success; returns 1 on timeout. Either way
-# _PANE_CHILD_WAITED is set to the whole seconds actually spent, so a failure
-# can say how long it waited instead of bare "returned empty" -- which reads
-# as "the feature is broken" when it means "the test gave up".
+# Prints the value and returns 0 on success; returns 1 on timeout.
+#
+# NOTE (#505): callers invoke this in a command substitution, so it runs in a
+# SUBSHELL and NOTHING it assigns survives the call. An earlier draft set a
+# global _PANE_CHILD_WAITED here and read it back in the failure messages; it
+# read 0 every time. Each call site therefore measures elapsed time itself,
+# in its own scope, via SECONDS.
 #
 # Polls at 0.2s and returns the instant the value appears, so an idle box is
 # no slower than the old 5-try loop; the budget only costs time when the
 # thing genuinely is not there yet.
-_PANE_CHILD_WAITED=0
 _wait_pane_child() {
   local resolver="$1" got="" tenths=0 budget_tenths
   budget_tenths=$(( FWF_TEST_PANE_CHILD_WAIT_SECS * 10 ))
   while [ "$tenths" -lt "$budget_tenths" ]; do
     got="$("$resolver" 2>/dev/null || true)"
-    if [ -n "$got" ]; then
-      _PANE_CHILD_WAITED=$(( tenths / 10 ))
-      printf '%s' "$got"
-      return 0
-    fi
+    if [ -n "$got" ]; then printf '%s' "$got"; return 0; fi
     sleep 0.2
     tenths=$(( tenths + 2 ))
   done
-  _PANE_CHILD_WAITED=$(( tenths / 10 ))
   return 1
 }
 
@@ -3301,7 +3298,9 @@ _wait_pane_child() {
   _f226_resolve() { pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true; }
   IMPL1_PID=""
   if [ -n "$SHELL_PID" ]; then
+    _f226_t0=$SECONDS
     IMPL1_PID="$(_wait_pane_child _f226_resolve || true)"
+    _PANE_CHILD_WAITED=$(( SECONDS - _f226_t0 ))
   fi
   if [ -n "$IMPL1_PID" ]; then
     assert_contains "FWF_PANE_ENV var reaches the pane's actual process env" \
@@ -3375,7 +3374,9 @@ _wait_pane_child() {
     SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
     [ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true
   }
+  _f312_t0=$SECONDS
   IMPL1_PID_312="$(_wait_pane_child _f312_resolve || true)"
+  _PANE_CHILD_WAITED=$(( SECONDS - _f312_t0 ))
   if [ -n "$IMPL1_PID_312" ]; then
     assert_contains "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" \
       "$(ps eww "$IMPL1_PID_312" 2>/dev/null)" "F312_SECRET=$F312_SECRET"
@@ -3448,7 +3449,9 @@ _wait_pane_child() {
     F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
     [ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true
   }
+  _f217_t0=$SECONDS
   F217E2E_CHILD_PID="$(_wait_pane_child _f217_resolve || true)"
+  _PANE_CHILD_WAITED=$(( SECONDS - _f217_t0 ))
   if [ -n "$F217E2E_CHILD_PID" ]; then
     assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
