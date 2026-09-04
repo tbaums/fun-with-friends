@@ -9901,6 +9901,67 @@ assert_not_contains "the old unconditional branch-prefix survey line is gone" "$
   'Keep only PRs whose headRefName starts with "impl1/" AND isDraft is false.'
 
 # --------------------------------------------------------------------------
+# issue #472: templates/dev/qa.tmpl:1 routes a PR by an explicit fwf-Reviewer:
+# marker (issue #194), regardless of branch -- but its own closing idle-report
+# line re-narrowed the queue to "no ready implN/ PRs", contradicting the rule
+# 39 lines above it. A routed non-implN/* PR (release/*, captain/*, ...) was
+# correctly assigned and then dropped at the reporting step.
+#
+# Scoped to templates that actually carry #194 routing (identified here by
+# the presence of `fwf pr-reviewer`, the marker-resolution call) -- a
+# branch-prefix idle rule in a template whose ONLY queue definition IS the
+# branch prefix (e.g. templates/refactor/qa.tmpl) is not a contradiction and
+# must not be flagged.
+#
+# Asserts the CLASS, not the string: any #194-routed qa.tmpl whose closing
+# "Report one line..." line still re-narrows the queue to the seat's own
+# implementer is flagged, regardless of how the surrounding sentence is
+# worded -- a future rewrite that re-narrows the queue in different words
+# also fails this. The denylist below therefore matches both the literal
+# impl__ID__ branch-prefix token AND the word "implementer" (case-
+# insensitive), since #501's review showed a rewrite can re-narrow the
+# queue in prose ("your implementer") without ever naming the branch token.
+section "qa idle-report line matches the seat's resolved queue, not a branch prefix (issue #472)"
+for QA_VARIANT_472 in dev refactor ideation defect-report consulting validate; do
+  QA_TMPL_472_SRC="$(cat "$ROOT/templates/$QA_VARIANT_472/qa.tmpl")"
+  case "$QA_TMPL_472_SRC" in
+    *'fwf pr-reviewer'*)
+      QA_TMPL_472_IDLE_LINE="$(printf '%s\n' "$QA_TMPL_472_SRC" | grep -E 'Report one line per PR')"
+      case "$QA_TMPL_472_IDLE_LINE" in
+        *'impl__ID__'*|*[Ii]mplementer*)
+          bad "$QA_VARIANT_472/qa.tmpl: idle-report line does not re-narrow a #194-routed queue to a branch prefix" \
+            "$QA_TMPL_472_IDLE_LINE"
+          ;;
+        *)
+          ok "$QA_VARIANT_472/qa.tmpl: idle-report line is stated in terms of the resolved queue, not a branch prefix"
+          ;;
+      esac
+      ;;
+    *)
+      skip "$QA_VARIANT_472/qa.tmpl: no #194 routing -- a branch-prefix idle rule here is its own queue definition, not a contradiction"
+      ;;
+  esac
+done
+# Regression (issue #501 adversarial review): a re-narrowing worded without
+# the literal impl__ID__ token -- e.g. prose naming "your implementer" --
+# must still be caught by the denylist above.
+QA_TMPL_472_REWORDED_DRIFT='Report one line per PR (merged / changes-requested / waiting). If your implementer has no ready PR this cycle, say "qa__ID__: idle" and wait for the next cycle.'
+case "$QA_TMPL_472_REWORDED_DRIFT" in
+  *'impl__ID__'*|*[Ii]mplementer*)
+    ok "issue #472 check catches a differently-worded branch-prefix re-narrowing (AC 5: class, not string)"
+    ;;
+  *)
+    bad "issue #472 check catches a differently-worded branch-prefix re-narrowing (AC 5: class, not string)" \
+      "'$QA_TMPL_472_REWORDED_DRIFT' still re-narrows the queue to the seat's own implementer, but is not flagged"
+    ;;
+esac
+# A seat with a genuinely empty resolved queue must still report idle (AC 3).
+assert_contains "dev/qa.tmpl idle report still fires on an empty resolved queue" "$DEVQA_194" \
+  '"qa1: idle"'
+# The NO_MARKER + implN/* migration fallback (AC 4) lives in step 1, untouched.
+assert_contains "NO_MARKER migration fallback survives the idle-line fix" "$DEVQA_194" 'NO_MARKER'
+
+# --------------------------------------------------------------------------
 section "qa review checkout no longer contends for impl's own branch ref (issue #177)"
 
 # AC: every qa.tmpl variant's review checkout uses a UNIQUE per-PR branch
