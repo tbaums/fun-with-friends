@@ -9734,6 +9734,23 @@ assert_contains "dev/qa.tmpl idle report still fires on an empty resolved queue"
 # The NO_MARKER + implN/* migration fallback (AC 4) lives in step 1, untouched.
 assert_contains "NO_MARKER migration fallback survives the idle-line fix" "$DEVQA_194" 'NO_MARKER'
 
+# QA adversarial check (issue #501 review of #472): AC5 requires the check to
+# "assert the class, not the string... a future rewrite that re-narrows the
+# queue in different words also fails this." The check above matches only the
+# literal substring 'impl__ID__/', so a re-narrowing worded without that exact
+# token (e.g. referring to "your implementer" instead of an impl__ID__/ branch)
+# still contradicts #194 routing but is not caught.
+QA_TMPL_472_REWORDED_DRIFT='Report one line per PR (merged / changes-requested / waiting). If your implementer has no ready PR this cycle, say "qa__ID__: idle" and wait for the next cycle.'
+case "$QA_TMPL_472_REWORDED_DRIFT" in
+  *'impl__ID__/'*)
+    ok "issue #472 check catches a differently-worded branch-prefix re-narrowing (AC 5: class, not string)"
+    ;;
+  *)
+    bad "issue #472 check catches a differently-worded branch-prefix re-narrowing (AC 5: class, not string)" \
+      "'$QA_TMPL_472_REWORDED_DRIFT' still re-narrows the queue to the seat's own implementer, but the check only matches the literal substring 'impl__ID__/' and does not flag it"
+    ;;
+esac
+
 # --------------------------------------------------------------------------
 section "qa review checkout no longer contends for impl's own branch ref (issue #177)"
 
