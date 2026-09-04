@@ -3225,17 +3225,62 @@ EOS
   # a process's environ as captured at ITS OWN exec() time, never live-updated
   # by that shell's own later `export`, so the sourced var only shows up on
   # the CHILD it forks (the claude stub) — walk to that child.
+# issue #505: ONE budget for every "wait for a pane's child process to exist"
+# poll in this file. Derived from the respawn path's OWN verify window rather
+# than picked independently: fwf-respawn.sh:147 waits
+# `interval + FWF_RESPAWN_VERIFY_MARGIN`, and fwf_verify_respawn_tick applies
+# that window TWICE around one re-nudge. So fwf itself is willing to wait
+# ~2x(interval+margin) for a seat to come up -- roughly 180s at a 60s loop.
+#
+# These assertions used to allow 5 x 0.2s = ~1s for exactly that operation.
+# That is not a small mis-tune: it is ~180x short, and on a loaded box it made
+# #312 and #217 AC(1) fail on EVERY run while the behaviour under test was
+# fine. #460 already fixed the retry SHAPE (retry the whole discovery chain);
+# only the budget was left at its original single-shot-race value.
+#
+# Deriving it here means tuning FWF_RESPAWN_VERIFY_MARGIN moves both together
+# instead of letting them drift apart again.
+FWF_TEST_PANE_CHILD_WAIT_SECS="${FWF_TEST_PANE_CHILD_WAIT_SECS:-$(( 2 * (60 + ${FWF_RESPAWN_VERIFY_MARGIN:-30}) ))}"
+
+# Poll $1 (a FUNCTION NAME, invoked with no args -- the same idiom
+# fwf_verify_respawn_tick uses, so there is no eval/quoting hazard) until it
+# prints a non-empty value or the budget expires.
+#
+# Prints the value and returns 0 on success; returns 1 on timeout. Either way
+# _PANE_CHILD_WAITED is set to the whole seconds actually spent, so a failure
+# can say how long it waited instead of bare "returned empty" -- which reads
+# as "the feature is broken" when it means "the test gave up".
+#
+# Polls at 0.2s and returns the instant the value appears, so an idle box is
+# no slower than the old 5-try loop; the budget only costs time when the
+# thing genuinely is not there yet.
+_PANE_CHILD_WAITED=0
+_wait_pane_child() {
+  local resolver="$1" got="" tenths=0 budget_tenths
+  budget_tenths=$(( FWF_TEST_PANE_CHILD_WAIT_SECS * 10 ))
+  while [ "$tenths" -lt "$budget_tenths" ]; do
+    got="$("$resolver" 2>/dev/null || true)"
+    if [ -n "$got" ]; then
+      _PANE_CHILD_WAITED=$(( tenths / 10 ))
+      printf '%s' "$got"
+      return 0
+    fi
+    sleep 0.2
+    tenths=$(( tenths + 2 ))
+  done
+  _PANE_CHILD_WAITED=$(( tenths / 10 ))
+  return 1
+}
+
   SHELL_PID="$([ -n "$IMPL1_PANE" ] && tmux display -p -t "$IMPL1_PANE" '#{pane_pid}' 2>/dev/null || true)"
   # AC(b): bounded retry -- ONLY on pgrep, the single step AC(0) showed racing.
-  # Up to ~1s total (5 x 0.2s); FWF_SKIP_BOOT_GATE=1 stays in effect above, so
-  # this retry lives in the test's own polling, never fwf's boot gate.
+  # FWF_SKIP_BOOT_GATE=1 stays in effect above, so this retry lives in the
+  # test's own polling, never fwf's boot gate. Budget: #505's shared constant
+  # (was 5 x 0.2s = ~1s, ~180x short of what respawn itself waits).
+  _f226_resolve() { pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true; }
   IMPL1_PID=""
   if [ -n "$SHELL_PID" ]; then
-    for _f226_try in 1 2 3 4 5; do
-      IMPL1_PID="$(pgrep -P "$SHELL_PID" 2>/dev/null | head -1 || true)"
-      [ -n "$IMPL1_PID" ] && break
-      sleep 0.2
-    done
+    IMPL1_PID="$(_wait_pane_child _f226_resolve || true)"
   fi
   if [ -n "$IMPL1_PID" ]; then
     assert_contains "FWF_PANE_ENV var reaches the pane's actual process env" \
@@ -3249,7 +3294,7 @@ EOS
     elif [ -z "$SHELL_PID" ]; then
       bad "FWF_PANE_ENV var reaches the pane's actual process env" "tmux pane_pid returned empty for pane $IMPL1_PANE"
     else
-      bad "FWF_PANE_ENV var reaches the pane's actual process env" "pgrep -P $SHELL_PID returned empty after 5 retries (~1s) -- the pane's child process never forked in time"
+      bad "FWF_PANE_ENV var reaches the pane's actual process env" "pgrep -P $SHELL_PID found no child within ${_PANE_CHILD_WAITED}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s) -- the pane's child process never forked within the budget"
     fi
   fi
   assert_eq "pane-env file is chmod 600" "600" \
@@ -3303,13 +3348,13 @@ EOS
   IMPL1_PANE_312=""
   SHELL_PID_312=""
   IMPL1_PID_312=""
-  for _f312_try in 1 2 3 4 5; do
+  # Re-resolves the WHOLE chain each try (#460's fix) on #505's budget.
+  _f312_resolve() {
     IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
-    IMPL1_PID_312="$([ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true)"
-    [ -n "$IMPL1_PID_312" ] && break
-    sleep 0.2
-  done
+    [ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true
+  }
+  IMPL1_PID_312="$(_wait_pane_child _f312_resolve || true)"
   if [ -n "$IMPL1_PID_312" ]; then
     assert_contains "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" \
       "$(ps eww "$IMPL1_PID_312" 2>/dev/null)" "F312_SECRET=$F312_SECRET"
@@ -3319,7 +3364,7 @@ EOS
     elif [ -z "$SHELL_PID_312" ]; then
       bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "tmux pane_pid returned empty for pane $IMPL1_PANE_312"
     else
-      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "pgrep -P $SHELL_PID_312 returned empty after 5 retries (~1s)"
+      bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "pgrep -P $SHELL_PID_312 found no child within ${_PANE_CHILD_WAITED}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s)"
     fi
   fi
   unset F312_SECRET
@@ -3368,18 +3413,17 @@ EOS
   # child process can still be a beat behind settling into its final PID by
   # the time THIS process gets scheduled to look for it.
   F217E2E_CHILD_PID=""
-  for _f217_try in 1 2 3 4 5; do
+  _f217_resolve() {
     F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
-    F217E2E_CHILD_PID="$([ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true)"
-    [ -n "$F217E2E_CHILD_PID" ] && break
-    sleep 0.2
-  done
+    [ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true
+  }
+  F217E2E_CHILD_PID="$(_wait_pane_child _f217_resolve || true)"
   if [ -n "$F217E2E_CHILD_PID" ]; then
     assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
   else
-    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "could not find impl1 pane's child pid after respawn"
+    bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "no child pid for the impl1 pane within ${_PANE_CHILD_WAITED}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s) after respawn"
   fi
   tmux kill-session -t "${F217E2E_SESS}-coord" 2>/dev/null
   tmux kill-session -t "${F217E2E_SESS}-build" 2>/dev/null
