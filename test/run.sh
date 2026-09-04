@@ -284,7 +284,11 @@ fwf_test_isolated_exec env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="$PATH" tmux new-s
 F466_STANDIN_AFTER_GOOD="$(tmux -S "$F466_STANDIN_SOCK" list-panes -t "$F466_STANDIN_SESSION" -F '#{pane_id}' 2>/dev/null)"
 assert_eq "AC(466 3): a correctly-isolated harness write never touches the stand-in floor's panes" "$F466_STANDIN_BEFORE" "$F466_STANDIN_AFTER_GOOD"
 if tmux has-session -t fwf-selftest-466-isolated-write 2>/dev/null; then
-  ok "AC(466 3): the isolated write landed on OUR sandbox server instead (proves it went SOMEWHERE, not that the assertion above is vacuous)"
+  # the pass path proves the write went SOMEWHERE, not that the assertion above is
+  # vacuous. That clause is NOT in the label: issue #519 -- a label is a
+  # gate-history key, and a pass label that differs from this case's bad labels
+  # files its passes under a second key the classifier can never see.
+  ok "AC(466 3): the isolated write landed on OUR sandbox server instead"
 else
   bad "AC(466 3): the isolated write landed on OUR sandbox server instead" "session not found on \$TMUX_TMPDIR's server"
 fi
@@ -3587,7 +3591,7 @@ _wait_pane_child() {
   F217E2E_CHILD_PID="$(_wait_pane_child _f217_resolve 30 || true)"
   _PANE_CHILD_WAITED=$(( SECONDS - _f217_t0 ))
   if [ -n "$F217E2E_CHILD_PID" ]; then
-    assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane -- token reaches the pane's actual process env" \
+    assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" \
       "$(ps eww "$F217E2E_CHILD_PID" 2>/dev/null)" "CLAUDE_CODE_OAUTH_TOKEN=$F217E2E_TOKEN"
   else
     # #226 AC(b) discrimination, extended to THIS site: name WHICH step of
@@ -14901,7 +14905,9 @@ CUR202TIP="$(git -C "$F202REPO" rev-parse HEAD)"
 assert_contains "a --tip-cmd gate ALSO writes the SHA-keyed store (same tip, same role, same verdict as the role-keyed marker)" \
   "$(cat "$F202RUN/state/example/gate-verdict/$CUR202TIP" 2>/dev/null)" "role=f202role"
 [ -d "$F202RUN/state/example/gate-tip" ] && [ -d "$F202RUN/state/example/gate-verdict" ] && \
-  ok "the two stores live in genuinely separate directories (gate-tip/ vs gate-verdict/), never one file" || \
+  # issue #519: label unified with the bad() call below -- the directories are
+  # named in the failure detail, not in the key.
+  ok "the two stores live in genuinely separate directories" || \
   bad "the two stores live in genuinely separate directories" "one or both missing"
 
 # --------------------------------------------------------------------------
@@ -16001,6 +16007,79 @@ assert_contains "AC(a)/(e): a merge-base sha never recorded for this case report
 assert_eq "AC(h): a passing case/run prints nothing at all" "" "$(G227_BETWEEN PASS_OUT)"
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+section "gate history is keyed on the assertion label, so one case must use ONE label (issue #519)"
+# gate-history keys on cksum of the case-id string, which IS the assertion
+# label (lib.sh:_fwf_gate_history_key). A case whose pass path uses a
+# different label from its fail paths therefore writes PASS and FAIL to two
+# different keys -- and the failing key can never contain a pass, so #227's
+# classifier reports CONSISTENTLY FAILING for it forever and can never rule
+# it FLAKY. Observed cost: `AC(1)` had five recorded passes on 2026-09-04 and
+# was reported as "0 passes in 6 recorded run(s)" to a reviewer on PR #516
+# and again on PR #520 -- while `#312`, whose labels match, was correctly
+# ruled "FLAKY: passed 9/14".
+#
+# AC2 asks for this programmatically, not as a hand-maintained list, because
+# the whole defect is that a mismatch is invisible unless something
+# enumerates it. awk, not python3: test/run.sh:9323 guards its own python3
+# use behind `command -v` and sets FWF195_HAVE_PY3=0 when absent, so python3
+# is not a dependency this suite may assume.
+#
+# The discriminating rule: a bare `bad "LABEL"` with no matching pass label
+# is a DEFECT only when some pass label EXTENDS it (shares its prefix). A
+# `bad` with no related pass label at all is a legitimate fail-only branch --
+# 28 of those exist here ("setup failed -- server never started listening")
+# and flagging them would make this check noise that someone later deletes.
+F519_SCAN="$TMP/f519-scan.awk"
+cat > "$F519_SCAN" <<'F519_AWK'
+function label(s) { n=index(s,"\""); if(!n) return ""; r=substr(s,n+1); m=index(r,"\""); if(!m) return ""; return substr(r,1,m-1) }
+/^[[:space:]]*ok[[:space:]]+"/                                { l=label($0); if (l!="") P[l]=1 }
+/^[[:space:]]*assert_(eq|contains|not_contains)[[:space:]]+"/ { l=label($0); if (l!="") P[l]=1 }
+/^[[:space:]]*bad[[:space:]]+"/                               { l=label($0); if (l!="") { B[l]=1; BL[l]=BL[l] " " FNR } }
+END {
+  scanned=0; splits=0
+  for (b in B) { scanned++
+    if (!(b in P)) for (p in P) if (p!=b && (index(p,b)==1 || index(b,p)==1)) { printf "SPLIT%s %s\n", BL[b], b; splits++; break }
+  }
+  printf "SCANNED %d\nSPLITS %d\n", scanned, splits
+}
+F519_AWK
+
+F519_OUT="$(awk -f "$F519_SCAN" "$ROOT/test/run.sh")"
+F519_SCANNED="$(printf '%s\n' "$F519_OUT" | awk '/^SCANNED /{print $2}')"
+F519_SPLITS="$(printf '%s\n' "$F519_OUT" | awk '/^SPLITS /{print $2}')"
+
+# AC2 -- the class, over the whole file.
+assert_eq "#519 AC2: no case's pass-path label differs from its fail-path labels" "0" "$F519_SPLITS"
+# AC3 -- anti-vacuity. A scan that matches nothing also reports SPLITS 0, which
+# is indistinguishable from clean. Verified: on an assertion-free file this
+# scan prints SCANNED 0 / SPLITS 0.
+assert_eq "#519 AC3: ...and the scan is not vacuous -- it enumerated bad-label cases" \
+  "true" "$([ "${F519_SCANNED:-0}" -ge 20 ] && echo true || echo false)"
+
+# AC6 -- goes RED on regression. Reintroduce a divergent pass-path label in a
+# COPY and assert the scan catches it. This is the guard that makes AC2 a
+# regression test rather than a one-time cleanup.
+F519_TMPSRC="$TMP/f519-regress.sh"
+{ printf '  bad "F519 probe: a case with a split label" "detail"\n'
+  printf '  ok "F519 probe: a case with a split label -- plus an extra clause"\n'
+  cat "$ROOT/test/run.sh"; } > "$F519_TMPSRC"
+F519_REG="$(awk -f "$F519_SCAN" "$F519_TMPSRC" | awk '/^SPLITS /{print $2}')"
+assert_eq "#519 AC6: reintroducing a divergent pass-path label makes the scan FAIL" "1" "$F519_REG"
+
+# AC5 -- no re-bucketing. The key derivation is untouched; two genuinely
+# different case names must still hash to different keys.
+F519_K1="$(pctx_env "_fwf_gate_history_key 'case alpha'")"
+F519_K2="$(pctx_env "_fwf_gate_history_key 'case beta'")"
+assert_eq "#519 AC5: two different case names still hash to different keys" \
+  "false" "$([ "$F519_K1" = "$F519_K2" ] && echo true || echo false)"
+assert_eq "#519 AC5: ...and the same case name is stable across calls" \
+  "$F519_K1" "$(pctx_env "_fwf_gate_history_key 'case alpha'")"
+
+# AC1 -- the reported case, asserted directly rather than only via the scan.
+F519_SRC="$(cat "$ROOT/test/run.sh")"
+assert_contains "#519 AC1: AC(1)'s pass path uses the same label as its bad() calls" \
+  "$F519_SRC" 'assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane"'
 section "gate history: end-to-end through fwf-gate.sh (issue #227)"
 G227E_ROOT="$TMP/gate227-e2e"; mkdir -p "$G227E_ROOT/state/example"
 G227E_STUB="$TMP/gate227-stub.sh"
