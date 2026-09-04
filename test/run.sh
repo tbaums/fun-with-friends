@@ -753,6 +753,102 @@ assert_eq "guard blocks a surviving fwf-internal token (rc)" "1" "$GUARD_LEAK_RC
 assert_eq "guard blocks a surviving fwf-internal token (no stdout)" "" "$GUARD_LEAK_OUT"
 assert_contains "guard names the offending line on stderr" "$GUARD_LEAK_ERR" "GV-SIGNOFF"
 
+# --- issue #512: the guard's token list and the sanitizer's are ONE list ----
+# #135 and #234 each re-aligned two hand-mirrored lists; each left entries
+# behind, and the second miss shipped INSIDE the fix for the first. The
+# leftovers were `impl__ID__` and `qa__ID__` -- guard entries with no
+# sanitizer rule at all -- which blocked issue #472's body for quoting a
+# template placeholder out of source, refusing a QA-approved CLEAN PR.
+# These cases assert the invariant behaviourally, by feeding each declared
+# token's specimen through the sanitizer, rather than by parsing the
+# sanitizer's source: a parser goes silently blind when someone reformats a
+# sed rule, which is the failure mode that let this drift twice.
+
+# AC(1) -- the exact line that refused PR #501 passes now.
+F512_LINE='refactor/qa.tmpl:30 whose head branch starts with `impl__ID__/`'
+F512_OUT="$(pctx_env "fwf_pr_body_guard" <<<"$F512_LINE" 2>/dev/null)"
+F512_RC=$?
+assert_eq "#512 AC(1): a quoted template placeholder no longer blocks the body (rc)" "0" "$F512_RC"
+assert_eq "#512 AC(1): ...and the body is passed through unchanged" "$F512_LINE" "$F512_OUT"
+
+# AC(new, GV) -- the guard names the matched TOKEN, not just the line. Without
+# this the operator sees ~100 characters of prose and must guess which of ~19
+# alternatives fired, which is exactly how #512 was misdiagnosed when filed.
+F512_TOKOUT="$(pctx_env "fwf_pr_body_guard" <<<"still mentions GV-SIGNOFF raw" 2>/tmp/fwf-512-tok.$$)"
+F512_TOKERR="$(cat /tmp/fwf-512-tok.$$ 2>/dev/null)"; rm -f "/tmp/fwf-512-tok.$$"
+assert_contains "#512 AC(new): the guard names the matched TOKEN, not only the line" \
+  "$F512_TOKERR" "matched token: GV-SIGNOFF"
+
+# AC(2) -- the invariant, asserted where it can actually fail. Every declared
+# guard token's specimen must be transformed by fwf_sanitize_pr_text; a token
+# the sanitizer never touches cannot indicate the sanitizer gap this guard
+# exists to catch, so its only possible effect is a false positive.
+F512_REPORT="$(FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  csb=0; csr=0; cib=0; bad=""
+  while IFS="%" read -r m rx spec; do
+    [ -n "$m" ] || continue
+    case "$m" in csb) csb=$(( csb + 1 ));; csr) csr=$(( csr + 1 ));; cib) cib=$(( cib + 1 ));; esac
+    out="$(printf "%s\n" "$spec" | fwf_sanitize_pr_text)"
+    if [ "$out" = "$spec" ]; then bad="${bad}${rx} "; fi
+  done < <(_fwf_pr_ctx_guard_table)
+  printf "csb=%s csr=%s cib=%s unsanitized=[%s]\n" "$csb" "$csr" "$cib" "$bad"
+')"
+assert_contains "#512 AC(2): every guard token has a sanitizer rule that transforms it" \
+  "$F512_REPORT" "unsanitized=[]"
+# Anti-vacuity for the check above: an enumeration that yields zero branches
+# would report "unsanitized=[]" while asserting nothing at all.
+for _f512_mode in csb csr cib; do
+  case "$F512_REPORT" in
+    *"$_f512_mode=0"*) _f512_v="VACUOUS" ;;
+    *) _f512_v="ok" ;;
+  esac
+  assert_eq "#512 AC(2) anti-vacuity: mode '$_f512_mode' enumerates at least one token" "ok" "$_f512_v"
+done
+
+# ...and the runtime companion: a guard whose table lost a whole mode must
+# REFUSE, never pass an unchecked body. (This is the shape that keeps biting
+# fwf -- the unrecognised case falling into the permissive branch.)
+F512_VAC="$(FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  _fwf_pr_ctx_guard_table() { printf "csb%%WIP%%WIP\n"; }
+  printf "harmless prose\n" | fwf_pr_body_guard >/dev/null 2>&1
+  echo "rc=$?"
+')"
+assert_eq "#512: a guard whose table lost a mode refuses rather than passing" "rc=1" "$F512_VAC"
+
+# Regression fence: the narrowing must not reopen what #234 closed, and must
+# not stop catching what the guard is for.
+F512_WIP="$(pctx_env "fwf_pr_body_guard" <<<"the product-wip label tracks it" 2>/dev/null)"
+assert_eq "#512: #234's 'product-wip' false positive stays fixed" \
+  "the product-wip label tracks it" "$F512_WIP"
+F512_REAL="$(pctx_env "fwf_pr_body_guard" <<<"see origin/staging for the fix" 2>/dev/null)"
+F512_REAL_RC=$?
+assert_eq "#512: a genuine unsanitized marker still blocks (rc)" "1" "$F512_REAL_RC"
+assert_eq "#512: a genuine unsanitized marker still blocks (no stdout)" "" "$F512_REAL"
+
+# REGRESSION FENCE, not a fix (issue #512, GV at 16:25:10Z). The ticket body
+# claims `fwf merge` printed its refusal and still exited 0. It does not:
+# fwf-merge.sh:26 sets `set -euo pipefail`, :121-124 propagates the guard's
+# rc 1 out of the command substitution, and fwf:739 `exec`s the script so
+# nothing wraps the status. Both GV and I verified that independently and the
+# reported 0 is best explained by reading $? through a pipe. This case exists
+# so the correct behaviour is asserted rather than re-derived a third time --
+# it locks in what already works, and it does not claim to repair anything.
+F512_PROP="$(FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  set -euo pipefail
+  ctx="$(printf "still mentions GV-SIGNOFF raw\n" | fwf_pr_body_guard)" || {
+    echo "refused" >&2
+    exit 1
+  }
+  echo "MERGED-ANYWAY"
+' 2>/dev/null; echo "rc=$?")"
+assert_contains "#512 regression: a guard-blocked body makes the merge path exit non-zero" \
+  "$F512_PROP" "rc=1"
+assert_not_contains "#512 regression: ...and it never reaches the merge step" \
+  "$F512_PROP" "MERGED-ANYWAY"
+
 # fwf_context_block: mechanical extraction from a fixture ticket's structured
 # body sections + a linked docs/proposals/<n>-*.md, via the LOCAL issue store
 # (--issues local) so this test needs no network / no real gh issue.
