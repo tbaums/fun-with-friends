@@ -13329,6 +13329,40 @@ assert_contains "a failing sixty + clean test/run.sh still FAILs the step" "$SC4
 assert_contains "the reservation is 4 GiB, derived from the measured 3212 MB peak" \
   "$SC480_SRC" 'FWF_MEM_RESERVE_SHELLCHECK_GB:-4'
 
+# AC 7 -- "reserved 0GiB while a live holder is using ~19 GB" had three
+# candidate causes and no way to tell them apart after the fact. Candidate 3
+# is this: _fwf_mem_admit_reserved_sum coerces an unparseable reserved_gb to
+# 0 per file. The coercion is DELIBERATE (issue #286 AC (f2) -- a corrupt
+# reservation must not deadlock the floor) and stays; what changes is that it
+# is no longer SILENT, so the next occurrence is attributable rather than
+# re-derived. Runs against an ISOLATED pool (its own FWF_RUN_DIR), never the
+# shared production one.
+F480_POOL="$TMP/f480-mem-admit"; mkdir -p "$F480_POOL"
+F480_OUT="$(FWF_RUN_DIR="$F480_POOL" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$MEM_ADMIT"
+  printf "reserved_gb=NOTANUMBER\n" > "$MEM_ADMIT/res-f480-bad"
+  printf "reserved_gb=7\n"          > "$MEM_ADMIT/res-f480-good"
+  printf "sum=%s\n" "$(_fwf_mem_admit_reserved_sum)"
+' 2>"$TMP/f480.err")"
+F480_ERR="$(cat "$TMP/f480.err" 2>/dev/null)"
+assert_contains "AC7: an unreadable reserved_gb still fails OPEN, counting 0 (issue #286 (f2))" \
+  "$F480_OUT" "sum=7"
+assert_contains "AC7: ...but it is no longer silent -- the offending file is named" \
+  "$F480_ERR" "res-f480-bad"
+assert_contains "AC7: ...and the unreadable value itself is reported" \
+  "$F480_ERR" "NOTANUMBER"
+assert_contains "AC7: ...and it names itself as a candidate for 'reserved 0GiB'" \
+  "$F480_ERR" "reserved 0GiB"
+# Anti-vacuity: a well-formed store must stay quiet, or the diagnostic above
+# would pass by shouting on every read.
+F480_QUIET="$(FWF_RUN_DIR="$F480_POOL" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  rm -f "$MEM_ADMIT"/res-f480-bad
+  _fwf_mem_admit_reserved_sum >/dev/null
+' 2>&1)"
+assert_eq "AC7: a well-formed reservation store emits no diagnostic" "" "$F480_QUIET"
+
 SC427_FINDINGS="$(_sc427_dispatch 1)"
 assert_contains "a genuine non-signal rc (real findings) still reads FAIL, never masked into a skip" "$SC427_FINDINGS" "FAIL"
 assert_contains "...names it as shellcheck reported issues" "$SC427_FINDINGS" "shellcheck reported issues"

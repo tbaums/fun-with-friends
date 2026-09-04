@@ -2503,7 +2503,19 @@ _fwf_mem_admit_reserved_sum() {
   for f in "$MEM_ADMIT"/res-*; do
     [ -e "$f" ] || continue
     v="$(_fwf_e2e_owner_field reserved_gb "$f")"
-    case "$v" in ''|*[!0-9]*) v=0;; esac
+    # issue #480 AC 7: the coercion below is DELIBERATE (issue #286 AC (f2) --
+    # a lost or corrupt reservation must not deadlock the floor) and it is the
+    # third candidate cause of a "reserved 0GiB" message printed while a live
+    # holder is using ~19 GB. It was also SILENT, which is why that message
+    # could not be attributed to any of its three candidates after the fact.
+    # Keep failing open; say so, so the next occurrence is attributable
+    # instead of being re-derived from scratch.
+    case "$v" in
+      ''|*[!0-9]*)
+        echo "fwf#480: mem-admit reservation '$(basename "$f")' has an unreadable reserved_gb ('$v') -- counting it as 0 GiB (failing OPEN, per issue #286 AC (f2)). A 'reserved 0GiB' message alongside a live holder may be THIS, not a lost reservation." >&2
+        v=0
+        ;;
+    esac
     sum=$(( sum + v ))
   done
   echo "$sum"
