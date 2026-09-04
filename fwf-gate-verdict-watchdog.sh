@@ -225,18 +225,21 @@ cmd_sweep() {
     esac
   done
 
-  local rec tip verdict recorded
-  if ! rec="$(tip_record "$role")"; then
-    echo "gate-verdict-watchdog: no gate-tip record for role '$role' -- nothing to watch"
-    return 0
-  fi
-  read -r tip verdict recorded <<<"$rec"
-
   local st st_sha st_flagged_at st_count
   st_sha=""; st_flagged_at=0; st_count=0
   if st="$(state_read "$role")"; then
     read -r st_sha st_flagged_at st_count <<<"$st"
   fi
+
+  local rec tip verdict recorded
+  if ! rec="$(tip_record "$role")"; then
+    if [ -n "$st_sha" ]; then
+      resolve_flag "$role" "gate-tip record for role '$role' is no longer present -- nothing left to watch, clearing the stale flag on $st_sha"
+    fi
+    echo "gate-verdict-watchdog: no gate-tip record for role '$role' -- nothing to watch"
+    return 0
+  fi
+  read -r tip verdict recorded <<<"$rec"
 
   if [ "$verdict" != green ]; then
     if [ -n "$st_sha" ]; then

@@ -15836,6 +15836,27 @@ G469GIT_AFTER="$(FWF_REPO="$G469GIT_CLONE" FWF_PROFILE=example FWF_RUN_DIR="$G46
 assert_eq "after promotion: the real ancestor check now says included" "YES" "$G469GIT_AFTER"
 
 # --------------------------------------------------------------------------
+section "fwf gate-verdict-watchdog (#469 QA follow-up): the gate-tip record vanishing after a flag was raised clears the flag rather than orphaning it"
+# qa2's own repro (PR #476 review): once a flag is active, the tip record
+# disappearing (state wipe, corruption, role retirement) must not hit the
+# EARLIEST guard (no-record -> "nothing to watch") and skip past resolve_flag
+# entirely -- that would leave the needs-captain flag permanently stuck,
+# since every future sweep would keep reporting "nothing to watch" without
+# ever clearing it, contradicting this same tracking issue's own
+# self-closing promise.
+GVW_SEED_TIP g469i green 8888888888888888888888888888888888888888
+G469I_RECORDED="$(GVW_RECORDED_AT g469i)"
+G469I_NOW="$((G469I_RECORDED + 1300))"
+GVWRUN g469i "$G469I_NOW" 1 1 >/dev/null   # flag it first
+rm -f "$GVWRUN/state/example/gate-tip/g469i"   # the record vanishes
+OUT469I="$(GVWRUN g469i "$G469I_NOW" 1 1)"
+CALLS469I="$(cat "$GVWRUN_LOG" 2>/dev/null || true)"
+assert_contains "the stale flag is cleared, not silently orphaned, once the record it watched is gone" "$CALLS469I" "CLEAR	9001"
+assert_contains "the tracking issue is closed too" "$CALLS469I" "CLOSE	9001"
+assert_contains "names why: the record is gone, not merely unread" "$CALLS469I" "no longer present"
+assert_contains "reports the missing-record case in its own output too" "$OUT469I" "no gate-tip record for role 'g469i' -- nothing to watch"
+
+# --------------------------------------------------------------------------
 section "fwf gate-verdict-watchdog (#469 AC 2/AC 8): the obliged call site -- wired into the captain's own per-tick sweep"
 
 assert_contains "CLI help documents the subcommand" "$("$ROOT/fwf" help)" "gate-verdict-watchdog sweep"
