@@ -629,7 +629,8 @@ if [ "$want_e2e" = 1 ]; then
   # on the consumer side) -- same "gated command's process only" contract
   # as the two vars above, unset alongside them.
   if [ "${#e2e_specs[@]}" -gt 0 ]; then
-    export FWF_E2E_SPEC="$(printf '%s\n' "${e2e_specs[@]}")"
+    _fwf494_spec_joined="$(printf '%s\n' "${e2e_specs[@]}")"
+    export FWF_E2E_SPEC="$_fwf494_spec_joined"
   fi
 fi
 
