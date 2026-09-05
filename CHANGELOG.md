@@ -16,7 +16,7 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 ### Fixed
 
 - **The publish job assumed a GitHub-hosted runner and died on our own** (code
-  SHAPLACEHOLDER, docs SHAPLACEHOLDER) — `Install shellcheck` ran
+  eb730e0, docs eb730e0) — `Install shellcheck` ran
   `sudo apt-get install`, but the self-hosted runner user has no sudo and
   shellcheck 0.11.0 is already at `/usr/bin/shellcheck`. The step failed in 0s
   and skipped every step after it, so v0.42.4 built both binaries green and
