@@ -11,6 +11,26 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.4] - 2026-09-05
+
+### Fixed
+
+- **Release jobs ran on GitHub-hosted runners that evict long steps** (code
+  436629e, docs 436629e) — `preflight`, `ci-verdict`, `load-targets` and
+  `package + publish` were pinned to `ubuntu-latest`; only the dash-binaries
+  matrix used our own machines. GitHub evicted the `Lint` step on both v0.42.3
+  publish attempts (4m52s and 4m41s, cancelled mid-shellcheck), skipping the
+  tarball, asset download, checksums and publish steps, so v0.42.3 was tagged
+  but never released. The workflow already recorded four earlier evictions
+  across v0.37.0 and v0.38.0. Every release job now runs on `local-devbox`;
+  the matrix continues to resolve `local-devbox` / `local-mac` from
+  `dash-targets.json`. `ci.yml` remains disabled. No GitHub-hosted CI remains.
+
+### Notes
+
+- **v0.42.3 was tagged but never published** for the reason above. Its content
+  (the #479 and #470 fixes) is included here.
+
 ## [0.42.3] - 2026-09-05
 
 ### Fixed
