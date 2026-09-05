@@ -4256,6 +4256,33 @@ _fwf_pane_is_shell() { # $1=pane
     zsh|-zsh|bash|-bash|sh|-sh|fish|-fish|"") return 0;; *) return 1;;
   esac
 }
+# issue #504: ONE instantaneous read of pane_current_command cannot distinguish
+# "claude is running" from "claude is mid-exit after a kill" -- the dying
+# process still owns the pane for a short window, so the pane reads `claude`
+# when it is about to become a shell. Every caller that kills-then-checks was
+# reading that window as "already up", skipping the relaunch, and then typing
+# the role prompt into the bash that appeared a moment later.
+# Require the pane to read non-shell CONSISTENTLY across a short settle window
+# before believing claude is genuinely up.
+_fwf_pane_settled_claude() { # $1=pane -> 0 only if non-shell on every sample
+  local i
+  for i in 1 2 3 4; do
+    _fwf_pane_is_shell "$1" && return 1
+    [ "$i" -lt 4 ] && sleep 0.5
+  done
+  return 0
+}
+# Wait for a pane to actually reach a shell after a kill/respawn-pane -k, so a
+# following fwf_ensure_claude cannot observe the dying process (issue #504).
+# Returns 0 once the pane reads as a shell, 1 if it never did within the budget.
+fwf_pane_wait_for_shell() { # $1=pane  $2=seconds (default 10)
+  local p="$1" budget="${2:-10}" i
+  for i in $(seq 1 "$budget"); do
+    _fwf_pane_is_shell "$p" && return 0
+    sleep 1
+  done
+  return 1
+}
 
 # Ensure claude is actually RUNNING in a pane. A freshly-respawned/just-split
 # shell often isn't ready when we first type, so the keystrokes are lost and the
@@ -4265,7 +4292,7 @@ _fwf_pane_is_shell() { # $1=pane
 fwf_ensure_claude() { # $1=pane  $2=launch command (default: $CLAUDE_CMD)
   local p="$1" cmd="${2:-$CLAUDE_CMD}"
   for _ in 1 2 3 4 5; do                          # retry attempts (counter unused)
-    _fwf_pane_is_shell "$p" || return 0          # claude already running
+    _fwf_pane_settled_claude "$p" && return 0    # claude already running (#504: settled, not mid-exit)
     tmux send-keys -t "$p" C-c 2>/dev/null; sleep 0.4   # clear any half-typed/lost line
     tmux send-keys -t "$p" -l "$cmd"; tmux send-keys -t "$p" Enter
     for _ in $(seq 1 15); do                       # wait up to 15s for claude to take over

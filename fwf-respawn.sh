@@ -9,6 +9,20 @@
 #        | pm | gv | captain                                     (coordination session)
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# issue #530: lib.sh defaults PROFILE to `example` when FWF_PROFILE is unset,
+# and example.sh leaves FWF_PAIRS commented out, so it falls through to the
+# built-in default of 3. A respawn launched from a seat's own shell inherits no
+# FWF_PROFILE, so it would resolve `example`, believe the floor is 3 pairs, and
+# manufacture seats the running factory never had. Prefer the profile `fwf up`
+# persisted for the RUNNING factory before falling back to lib.sh's default.
+if [ -z "${FWF_PROFILE:-}" ]; then
+  _fwf_run_dir="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
+  if [ -r "$_fwf_run_dir/profile" ]; then
+    FWF_PROFILE="$(cat "$_fwf_run_dir/profile" 2>/dev/null)"
+    [ -n "$FWF_PROFILE" ] && export FWF_PROFILE
+  fi
+  unset _fwf_run_dir
+fi
 source "$DIR/lib.sh"
 # Role prompts resolve via fwf_tmpl_path (template, falling back to its base).
 
@@ -98,6 +112,12 @@ CP="$(fwf_find_pane "$sess" "$token" || true)"
 if [ -n "$CP" ]; then
   echo "respawning $role in pane $CP"
   tmux respawn-pane -k -t "$CP" -c "$(fwf_role_cwd "$role")"
+  # issue #504: respawn-pane -k returns before the old claude has exited, and
+  # the pane keeps reporting `claude` during that window. Wait for the pane to
+  # actually reach a shell first, or fwf_ensure_claude below reads the dying
+  # process as "already running", never relaunches, and fwf_arm_pane types the
+  # role prompt straight into bash.
+  fwf_pane_wait_for_shell "$CP" 10 || echo "warning: $role pane $CP did not settle to a shell after kill" >&2
 else
   # Recovery (issue #36): the pane is GONE entirely (claude-update crash, OOM
   # kill, accidental close) — create + label a fresh one and arm it, making
@@ -157,6 +177,7 @@ window=$((interval_secs + FWF_RESPAWN_VERIFY_MARGIN))
 _fwf_respawn_hard_rearm() {
   echo "fwf-respawn: soft re-nudge did not tick — escalating to a hard kill+relaunch of $role's pane $CP" >&2
   tmux respawn-pane -k -t "$CP" -c "$(fwf_role_cwd "$role")" 2>/dev/null || true
+  fwf_pane_wait_for_shell "$CP" 10 || echo "warning: $role pane $CP did not settle to a shell after hard kill" >&2   # issue #504
   fwf_ensure_claude "$CP" "$(fwf_claude_cmd "$role")" || echo "warning: claude did not come up in $role pane $CP on escalation" >&2
   sleep 2; tmux send-keys -t "$CP" Enter; sleep 2
   arm_epoch="$(date +%s)"

@@ -135,6 +135,7 @@ fwf_budget_writer_stop
 fwf_budget_baseline_clear   # issue #108: full teardown ends this run — the next full 'fwf up' snapshots a fresh baseline
 fwf_subscription_state_clear   # issue #149: same reasoning — don't inherit a stale ratchet/parked-state into the next run
 rm -f "$FWF_RUN/template"   # clear the persisted running-template marker (#51) so it can't go stale once the factory is down
+rm -f "$FWF_RUN/profile"   # clear the persisted running-profile marker (#530) alongside it
 rm -f "$FWF_TMUX_SOCKET_FILE"   # clear the persisted launch-socket marker (#62) alongside it
 
 if [ "$purge" = 1 ]; then
