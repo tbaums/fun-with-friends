@@ -17215,7 +17215,7 @@ assert_contains "reports the promote's own output" "$OUT473A" "promoted ok"
 
 section "fwf gate-recover (#473 AC 6): a green already reflected in the target is a no-op, never a redundant promote"
 GR473_SEED_TIP g473b green 2222222222222222222222222222222222222222
-OUT473B="$(GR473RUN g473b integration integration_includes'() { return 0; }')"; RC473B=$?
+OUT473B="$(GR473RUN g473b integration "integration_includes() { printf 'INTEGRATION_INCLUDES\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; return 0; }")"; RC473B=$?
 CALLS473B="$(cat "$GR473_LOG" 2>/dev/null || true)"
 assert_eq "AC(6): exits 75 -- genuinely nothing to do" "75" "$RC473B"
 assert_not_contains "AC(6): no promote call when already consumed" "$CALLS473B" "PROMOTE"
