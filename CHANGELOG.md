@@ -11,6 +11,23 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-09-05
+
+### Fixed
+
+- **The floor converted its own seats into dead shells** (#504, code 0227ddc,
+  docs none — internal) — `tmux respawn-pane -k` returns before the old claude
+  has exited and the pane keeps reporting `claude` for that window, so
+  `fwf_ensure_claude` read one sample as "already running", skipped the
+  relaunch, and the role prompt was typed into the bash that appeared a moment
+  later. Readiness is now judged across a settle window, and each hard kill
+  waits for the pane to actually reach a shell first.
+- **A respawn with no `FWF_PROFILE` rebuilt the wrong floor** (#530, code
+  0227ddc, docs none — internal) — it resolved the `example` profile, whose
+  `FWF_PAIRS` is commented out, fell through to the default of 3, and
+  manufactured implementer/QA seats the running factory never had. `fwf up` now
+  persists the resolved profile and `fwf-respawn.sh` prefers it.
+
 ## [0.42.0] - 2026-09-04
 
 ### Added
