@@ -783,8 +783,17 @@ assert_contains "#512 AC(new): the guard names the matched TOKEN, not only the l
 # caller consume the very body it just rejected. Asserting this also consumes
 # F512_TOKOUT, which was captured and never read (SC2034, the finding that
 # failed the v0.42.5 lint; same shape as #458).
-assert_not_contains "#512 AC(new): a refused body is not echoed to stdout" \
-  "$F512_TOKOUT" "still mentions GV-SIGNOFF raw"
+# issue #545: asserted POSITIVELY, not as a negative over a value that is
+# correctly empty. fwf_pr_body_guard emits NOTHING on stdout when it refuses
+# (lib/pr_context.sh:366-367), so $F512_TOKOUT is empty on the happy path --
+# and assert_not_contains treats an empty haystack as VACUOUS and fails it
+# (#247 AC a5, deliberately). The old negative form could therefore never
+# pass: its success condition and the anti-vacuity guard's failure condition
+# were the same state. Asserting emptiness directly still consumes
+# F512_TOKOUT (so SC2034 stays fixed) and still goes RED for the right
+# reason -- if the guard ever echoed a refused body, this would be non-empty.
+assert_eq "#512 AC(new): a refused body is not echoed to stdout" \
+  "" "$F512_TOKOUT"
 
 # AC(2) -- the invariant, asserted where it can actually fail. Every declared
 # guard token's specimen must be transformed by fwf_sanitize_pr_text; a token
@@ -9695,11 +9704,34 @@ case "$1" in
     # Simulate the resource wait: the real wrapped process group only comes
     # into existence some seconds later.
     sleep 3
-    perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "sleep", "60"' &
-    live_pid=$!
-    sleep 0.3
+    # issue #550: the victim must NOT be a descendant of this shell. #544's
+    # `_fwf_pgid_is_own_descendant` refuses to reap any group containing a
+    # descendant of the reaping process, so launching the holder as a plain
+    # background child made this test assert a reap the guard is required to
+    # refuse -- it failed deterministically on every branch, not by timing.
+    # Double-fork + setsid: the intermediate exits immediately, so the holder
+    # is reparented to init (ppid 1) and sits OUTSIDE our ancestry, which is
+    # what a real foreign holder looks like to the reaper.
+    live_pidfile="$(mktemp)"
+    perl -e 'use POSIX qw(setsid);
+             my $p = fork(); exit 0 if $p;
+             setsid();
+             open(my $f, ">", $ARGV[0]) or exit 1; print $f $$; close $f;
+             exec("sleep","60");' "$live_pidfile"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$live_pidfile" ] && break; sleep 0.1; done
+    live_pid="$(cat "$live_pidfile" 2>/dev/null)"
+    rm -f "$live_pidfile"
+    [ -n "$live_pid" ] || { echo SETUP-FAILED; exit 0; }
     live_pgid="$(ps -o pgid= -p "$live_pid" 2>/dev/null | tr -d ' ')"
     [ -n "$live_pgid" ] || { echo SETUP-FAILED; exit 0; }
+    # The whole point of the rewrite: if this is ever a descendant again, the
+    # guard will refuse and the assertion below would fail for a reason that
+    # has nothing to do with the acquired/pgid restamp it is meant to test.
+    if _fwf_pgid_is_own_descendant "$live_pgid"; then
+      echo SETUP-FAILED-NOT-DETACHED
+      kill -KILL -"$live_pgid" 2>/dev/null
+      exit 0
+    fi
     _fwf_owner_restamp_pgid "$owner" "$live_pgid" 1
     # Fake this script's own death from the next acquirer's point of view:
     # overwrite the recorded pid with a confirmed-dead one, leaving the
@@ -9732,6 +9764,7 @@ EOSCRIPT
 
 G375_LEGIT_OUT="$(FWF_RUN_DIR="$TMP/gate375-legit" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/e2e-375-drive.sh" legit 2>&1)"
 case "$G375_LEGIT_OUT" in
+  *SETUP-FAILED-NOT-DETACHED*) bad "#375/#550: the fixture holder is a DESCENDANT of the reaping shell -- #544's guard will refuse it, so this test would fail for a reason unrelated to the acquired/pgid restamp it exists to check" "$G375_LEGIT_OUT";;
   *SETUP-FAILED*) bad "#375: test setup failed -- could not start the live fixture group" "$G375_LEGIT_OUT";;
   *REAPED*) ok "#375: a legitimate e2e holder whose group started after a simulated resource wait is REAPED, not refused";;
   *) bad "#375: a legitimate e2e holder whose group started after a resource wait must be REAPED, not refused (acquired/pgid-restamp asymmetry)" "$G375_LEGIT_OUT";;
@@ -9743,6 +9776,78 @@ case "$G375_REUSE_OUT" in
 esac
 assert_contains "#375 AC3: the reused pgid is named as a refusal, not silently reaped" "$G375_REUSE_OUT" "REFUSED"
 assert_contains "#375 AC3: the unrelated newer process sharing that pgid is UNTOUCHED (genuine reuse still refused after the acquired-restamp fix)" "$G375_REUSE_OUT" "UNTOUCHED"
+
+# issue #550 AC 4 -- the descendant guard's FIRST real coverage. `a65fa18`
+# (#544) shipped `lib.sh` only, 32 insertions, no test: `grep -c` for the
+# guard's own name in this file returned 0. Its only exercise was accidental --
+# #375's fixture happened to construct a descendant and the guard happened to
+# refuse it, i.e. coverage visible only as a FAILURE. Detaching that fixture
+# (above) removes the accident, so without this section the guard would have
+# no coverage at all, in the same edit that removed its last evidence.
+#
+# Two levels matter, not one: a guard that only ever compared `ppid` would
+# pass a direct-child test and still wrongly SIGKILL a grandchild's group.
+section "gate reaper (#550 AC4): the #544 descendant guard refuses our own tree at ANY depth, and allows a foreign one"
+cat > "$TMP/g550-desc.sh" <<'EOSCRIPT'
+set -uo pipefail
+source "$ROOT_PATH/lib.sh"
+inter=""
+case "$1" in
+  child)   # one level: a direct child in its own process group
+    perl -e 'use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec "sleep","30"' &
+    vpid=$!
+    ;;
+  grandchild)  # two levels: the intermediate shell STAYS ALIVE, so the victim
+               # remains inside our tree rather than being reparented to init
+    pf="$(mktemp)"
+    bash -c 'perl -e "use POSIX qw(setpgid); setpgid(0,0) or exit 1; exec \"sleep\",\"30\"" &
+             echo $! > "$1"
+             sleep 30' _ "$pf" >/dev/null 2>&1 &
+    inter=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$pf" ] && break; sleep 0.1; done
+    vpid="$(cat "$pf" 2>/dev/null)"; rm -f "$pf"
+    ;;
+  foreign) # reparented to init: NOT in our ancestry at all
+    pf="$(mktemp)"
+    perl -e 'use POSIX qw(setsid);
+             my $p = fork(); exit 0 if $p; setsid();
+             open(my $f, ">", $ARGV[0]) or exit 1; print $f $$; close $f;
+             exec("sleep","30");' "$pf"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$pf" ] && break; sleep 0.1; done
+    vpid="$(cat "$pf" 2>/dev/null)"; rm -f "$pf"
+    ;;
+esac
+sleep 0.3
+if [ -z "${vpid:-}" ]; then echo SETUP-FAILED; exit 0; fi
+vpgid="$(ps -o pgid= -p "$vpid" 2>/dev/null | tr -d ' ')"
+if [ -z "$vpgid" ]; then echo SETUP-FAILED; exit 0; fi
+# For the two in-tree cases, prove the shape actually built before trusting the
+# verdict: a grandchild that got reparented to init would report ALLOWS and
+# look like a guard bug when it is really a fixture bug.
+vppid="$(ps -o ppid= -p "$vpid" 2>/dev/null | tr -d ' ')"
+case "$1" in
+  child|grandchild) [ "$vppid" = "1" ] && { echo SETUP-FAILED-REPARENTED; kill -KILL -"$vpgid" 2>/dev/null; exit 0; };;
+  foreign)          [ "$vppid" = "1" ] || { echo SETUP-FAILED-NOT-DETACHED;  kill -KILL -"$vpgid" 2>/dev/null; exit 0; };;
+esac
+if _fwf_pgid_is_own_descendant "$vpgid"; then verdict=GUARD-REFUSES; else verdict=GUARD-ALLOWS; fi
+# Clean up BEFORE printing, so job-control notices can never displace the
+# verdict from the last line of output.
+kill -KILL -"$vpgid" 2>/dev/null
+[ -n "$inter" ] && kill -KILL "$inter" 2>/dev/null
+wait 2>/dev/null
+echo "$verdict"
+EOSCRIPT
+for _g550 in child grandchild foreign; do
+  G550_OUT="$(FWF_RUN_DIR="$TMP/g550-$_g550" FWF_PROFILE=example ROOT_PATH="$ROOT" bash "$TMP/g550-desc.sh" "$_g550" 2>&1)"
+  case "$G550_OUT" in
+    *SETUP-FAILED*) bad "#550 AC4: setup failed for the '$_g550' case" "$G550_OUT"; continue;;
+  esac
+  case "$_g550" in
+    child)      assert_contains "#550 AC4: a DIRECT CHILD's group is our own tree -- the guard must refuse to reap it" "$G550_OUT" "GUARD-REFUSES";;
+    grandchild) assert_contains "#550 AC4: a GRANDCHILD's group is still our own tree -- the guard must walk past one level, not just compare ppid" "$G550_OUT" "GUARD-REFUSES";;
+    foreign)    assert_contains "#550 AC4: a group reparented to init is NOT ours -- the guard must allow it, or #156 orphan reaping never happens" "$G550_OUT" "GUARD-ALLOWS";;
+  esac
+done
 
 section "fwf gate (#195 AC h): a dead PGID leader's id reused by an unrelated NEWER process is never signalled"
 G195H_ROOT="$TMP/gate195-h"; mkdir -p "$G195H_ROOT/state/example/gate-lock/role195h"
