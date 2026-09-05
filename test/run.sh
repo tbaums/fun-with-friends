@@ -778,6 +778,13 @@ F512_TOKOUT="$(pctx_env "fwf_pr_body_guard" <<<"still mentions GV-SIGNOFF raw" 2
 F512_TOKERR="$(cat /tmp/fwf-512-tok.$$ 2>/dev/null)"; rm -f "/tmp/fwf-512-tok.$$"
 assert_contains "#512 AC(new): the guard names the matched TOKEN, not only the line" \
   "$F512_TOKERR" "matched token: GV-SIGNOFF"
+# The diagnostic belongs on stderr and the refused body must NOT be echoed to
+# stdout -- a guard that both refuses and passes the text through would let a
+# caller consume the very body it just rejected. Asserting this also consumes
+# F512_TOKOUT, which was captured and never read (SC2034, the finding that
+# failed the v0.42.5 lint; same shape as #458).
+assert_not_contains "#512 AC(new): a refused body is not echoed to stdout" \
+  "$F512_TOKOUT" "still mentions GV-SIGNOFF raw"
 
 # AC(2) -- the invariant, asserted where it can actually fail. Every declared
 # guard token's specimen must be transformed by fwf_sanitize_pr_text; a token
