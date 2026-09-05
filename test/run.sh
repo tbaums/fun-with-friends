@@ -9050,6 +9050,216 @@ FWF_RUN_DIR="$E205G" FWF_PROFILE=example bash -c "
 assert_contains "AC(g): a dead holder's port is reclaimed and reissued (not left stuck)" "$(cat "$E205G/out")" "1 3940"
 
 # --------------------------------------------------------------------------
+section "e2e lane FIFO (issue #494): a waiter must be able to eventually win"
+E494RUN="$TMP/e494"; mkdir -p "$E494RUN"
+
+# AC1 -- fairness asserted on STATE, not a race outcome (deliberately NOT
+# "start A, wait, start B, assert A wins" -- #119's own precedent shows that
+# shape flakes ~1 in 10 runs). A and B each take a ticket, sequentially, in
+# ONE process; assert the queue's own observable order rather than a sample
+# from a race.
+E494_AC1="$E494RUN/ac1"; mkdir -p "$E494_AC1"
+AC1_OUT="$(FWF_RUN_DIR="$E494_AC1" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  fwf_e2e_lock_acquire holder >/dev/null   # lane busy, so a real acquire would queue
+  ta="$(_fwf_e2e_queue_take roleA)"
+  tb="$(_fwf_e2e_queue_take roleB)"
+  echo "TA=$ta"
+  echo "TB=$tb"
+  echo "HEAD=$(_fwf_e2e_queue_head)"
+')"
+AC1_TA="$(printf '%s' "$AC1_OUT" | grep '^TA=' | cut -d= -f2-)"
+AC1_HEAD="$(printf '%s' "$AC1_OUT" | grep '^HEAD=' | cut -d= -f2-)"
+assert_eq "AC1: A's ticket (taken first) is the queue head, not B's" "$AC1_TA" "$AC1_HEAD"
+
+# AC2 -- bounded wait: N=2 waiters queued behind a holder BOTH acquire once
+# it releases, in FIFO order, on REAL acquisitions -- never EX_SKIPPED from
+# repeatedly losing a race against fresh contenders (#494's own "waited=0"
+# defect). FWF_E2E_LOCK_TIMEOUT is generous (well above the holder's own
+# short hold) so a correct implementation always succeeds here; a reverted
+# fix (waited=0 restored, no queue at all) would make this flaky/starve.
+E494_AC2="$E494RUN/ac2"; mkdir -p "$E494_AC2"
+FWF_RUN_DIR="$E494_AC2" FWF_PROFILE=example FWF_E2E_LOCK_TIMEOUT=20 FWF_E2E_LOCK_POLL=1 bash -c '
+  source "'"$ROOT"'/lib.sh"
+  leaseH="$(fwf_e2e_lock_acquire holder)"; read -r nH _ _ <<<"$leaseH"
+  ( sleep 1; fwf_e2e_lock_release "$nH" ) &
+  ( r="$(fwf_e2e_lock_acquire waiterA)"; echo "A $(date +%s%N) $r" >> "'"$E494_AC2"'/order" ) &
+  sleep 0.2
+  ( r="$(fwf_e2e_lock_acquire waiterB)"; echo "B $(date +%s%N) $r" >> "'"$E494_AC2"'/order" ) &
+  wait
+'
+assert_eq "AC2: exactly 2 real acquisitions recorded (both waiters won, none EX_SKIPPED)" "2" "$(wc -l < "$E494_AC2/order" | tr -d ' ')"
+AC2_FIRST="$(sort -k2,2n "$E494_AC2/order" | head -1 | cut -d' ' -f1)"
+assert_eq "AC2: the EARLIER-queued waiter (A) acquired before the later one (B)" "A" "$AC2_FIRST"
+
+# AC3 -- a dead head does not block the queue: a same-host dead-PID ticket
+# at the head is dropped, AND a cross-host/unparseable (indeterminate)
+# ticket past the stale backstop is also dropped -- either way the live
+# waiter behind it becomes head and can win. Without this the fairness fix
+# is a regression (a seat's own SIGTERM against its queued gate -- the
+# ticket's own documented common case -- would wedge every waiter behind it
+# forever, worse than today's lock).
+E494_AC3="$E494RUN/ac3"; mkdir -p "$E494_AC3"
+AC3_DEAD_OUT="$(FWF_RUN_DIR="$E494_AC3/dead" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$E2E_QUEUE"
+  dead="$E2E_QUEUE/1000000000000000000-deadrole"
+  mkdir -p "$dead"
+  printf "role=deadrole\npid=999999999\npgid=999999999\npgleader=0\nhost=%s\nacquired=%s\n" "$(hostname)" "$(date +%s)" > "$dead/owner"
+  live="$(_fwf_e2e_queue_take liverole)"
+  _fwf_e2e_queue_reap_dead_head
+  [ "$(_fwf_e2e_queue_head)" = "$live" ] && echo PASS || echo FAIL
+  [ -d "$dead" ] && echo STILL_EXISTS || echo REAPED
+')"
+assert_contains "AC3: a same-host dead-PID head is dropped, live ticket becomes head" "$AC3_DEAD_OUT" "PASS"
+assert_contains "AC3: the dead ticket is actually removed" "$AC3_DEAD_OUT" "REAPED"
+
+AC3_STALE_OUT="$(FWF_RUN_DIR="$E494_AC3/stale" FWF_PROFILE=example FWF_E2E_LOCK_STALE_SECS=1 bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$E2E_QUEUE"
+  stale="$E2E_QUEUE/1000000000000000000-staleroleXhost"
+  mkdir -p "$stale"
+  printf "role=staleroleXhost\npid=1\npgid=1\npgleader=0\nhost=some-other-host-entirely\nacquired=%s\n" "$(( $(date +%s) - 9999 ))" > "$stale/owner"
+  live="$(_fwf_e2e_queue_take liverole)"
+  _fwf_e2e_queue_reap_dead_head
+  [ "$(_fwf_e2e_queue_head)" = "$live" ] && echo PASS || echo FAIL
+')"
+assert_contains "AC3: a cross-host (indeterminate) head past the stale backstop is also dropped" "$AC3_STALE_OUT" "PASS"
+
+# A FRESH indeterminate head (well under the backstop) must NOT be dropped
+# -- otherwise this "fixes" starvation by creating a new false-positive
+# reap, exactly the failure class #196's own age backstop exists to avoid.
+AC3_FRESH_OUT="$(FWF_RUN_DIR="$E494_AC3/fresh" FWF_PROFILE=example FWF_E2E_LOCK_STALE_SECS=1800 bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$E2E_QUEUE"
+  fresh="$E2E_QUEUE/1000000000000000000-freshroleXhost"
+  mkdir -p "$fresh"
+  printf "role=freshroleXhost\npid=1\npgid=1\npgleader=0\nhost=some-other-host-entirely\nacquired=%s\n" "$(date +%s)" > "$fresh/owner"
+  _fwf_e2e_queue_reap_dead_head
+  [ -d "$fresh" ] && echo STILL_HEAD || echo WRONGLY_REAPED
+')"
+assert_contains "AC3: a FRESH indeterminate head (under the backstop) is NOT dropped" "$AC3_FRESH_OUT" "STILL_HEAD"
+
+# AC4 -- reaping a queue ticket kills nothing: the dead ticket's stamped
+# process group is untouched, and the queue path never calls
+# _fwf_kill_orphan_group (that authority belongs to the LANE reaper alone --
+# a dead waiter holds no port/server, only its place in line).
+E494_AC4="$E494RUN/ac4"; mkdir -p "$E494_AC4"
+sleep 30 & AC4_BGPID=$!
+AC4_OUT="$(FWF_RUN_DIR="$E494_AC4" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$E2E_QUEUE"
+  dead="$E2E_QUEUE/1000000000000000000-deadrole"
+  mkdir -p "$dead"
+  printf "role=deadrole\npid=999999999\npgid=999999999\npgleader=0\nhost=%s\nacquired=%s\n" "$(hostname)" "$(date +%s)" > "$dead/owner"
+  _fwf_e2e_queue_reap_dead_head
+')"
+assert_eq "AC4: reaping a dead ticket calls _fwf_kill_orphan_group ZERO times" "" "$(grep -o '_fwf_kill_orphan_group' <<<"$AC4_OUT")"
+kill -0 "$AC4_BGPID" 2>/dev/null \
+  && ok "AC4: an unrelated live process is completely untouched by queue reaping" \
+  || bad "AC4: queue reaping must never kill anything" "the sentinel background process died"
+kill "$AC4_BGPID" 2>/dev/null; wait "$AC4_BGPID" 2>/dev/null
+
+# AC7 -- nested acquisition: a genuine descendant of the current holder is
+# admitted WITHOUT ever taking a queue ticket (today's pre-FIFO EX_SKIPPED-
+# on-loss behavior, preserved) -- proven with a REAL child process, not a
+# same-shell simulation (which is indistinguishable from a literal
+# self-reacquire and must NOT trip this).
+E494_AC7="$E494RUN/ac7"; mkdir -p "$E494_AC7"
+AC7_OUT="$(FWF_RUN_DIR="$E494_AC7" FWF_PROFILE=example ROOT_PATH="$ROOT" bash -c '
+  source "$ROOT_PATH/lib.sh"
+  lease="$(fwf_e2e_lock_acquire parentholder)"; read -r n _ _ <<<"$lease"
+  bash -c "source \"$ROOT_PATH/lib.sh\"; fwf_e2e_lock_acquire child 2>&1; echo RC=\$?"
+  echo "QUEUE_ENTRIES=$(find "$E2E_QUEUE" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
+')"
+assert_contains "AC7: a real descendant of the holder is named a descendant and admitted without queueing" "$AC7_OUT" "descendant"
+assert_contains "AC7: the descendant's attempt still fails fast (no lane free) rather than hanging" "$AC7_OUT" "RC=1"
+assert_contains "AC7: the descendant never took a queue ticket" "$AC7_OUT" "QUEUE_ENTRIES=0"
+
+# AC9 -- no regression: a normal (non-descendant, non-nested) acquire still
+# grants the lane exclusively when it is free, unchanged in shape.
+E494_AC9="$E494RUN/ac9"; mkdir -p "$E494_AC9"
+AC9_OUT="$(FWF_RUN_DIR="$E494_AC9" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  fwf_e2e_lock_acquire conductor
+')"
+assert_contains "AC9: an uncontended acquire is unchanged -- still lane 1, port 3940" "$AC9_OUT" "1 3940"
+
+# AC10 -- the starvation-to-skip path still works end to end under FIFO: a
+# waiter that never becomes able to acquire within budget times out and
+# reports skip-shaped output (verified jointly with #493's reporting
+# contract; this asserts the SCHEDULER side does not silently block forever
+# or silently succeed).
+E494_AC10="$E494RUN/ac10"; mkdir -p "$E494_AC10"
+AC10_OUT="$(FWF_RUN_DIR="$E494_AC10" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  lease="$(fwf_e2e_lock_acquire holder)"; read -r n _ _ <<<"$lease"
+  rc=0; FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 fwf_e2e_lock_acquire waiter 2>&1 || rc=$?
+  echo "RC=$rc"
+')"
+assert_contains "AC10: a waiter that never gets the lane within budget times out (rc 1), never hangs or silently succeeds" "$AC10_OUT" "RC=1"
+
+# --------------------------------------------------------------------------
+section "e2e --e2e-spec short lease (issue #494 AC5/AC6)"
+E494G_REPO="$TMP/e494-gate-repo"; mkdir -p "$E494G_REPO"
+git -C "$E494G_REPO" init -q
+git -C "$E494G_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+
+# AC5 -- a short lease holds the lane measurably less than a full-suite
+# run. The synthetic consumer sleeps a different amount depending on
+# whether FWF_E2E_SPEC was exported (the only thing --e2e-spec actually
+# does), which is the real, honest thing under test: fwf-gate.sh passing
+# the flag through, not fwf-gate.sh timing anything itself.
+E494G1="$TMP/e494-gate-run1"; mkdir -p "$E494G1"
+E494G1_START=$(date +%s)
+(cd "$E494G_REPO" && FWF_RUN_DIR="$E494G1" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" e494full --e2e -- bash -c 'sleep 2; echo "0 passed, 0 failed, 0 skipped"' >/dev/null 2>&1)
+E494G1_FULL_SECS=$(( $(date +%s) - E494G1_START ))
+
+E494G2="$TMP/e494-gate-run2"; mkdir -p "$E494G2"
+E494G2_START=$(date +%s)
+(cd "$E494G_REPO" && FWF_RUN_DIR="$E494G2" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" e494short --e2e --e2e-spec one_spec.ts -- bash -c \
+    'if [ -n "$FWF_E2E_SPEC" ]; then sleep 0; else sleep 2; fi; echo "0 passed, 0 failed, 0 skipped"' >/dev/null 2>&1)
+E494G2_SHORT_SECS=$(( $(date +%s) - E494G2_START ))
+[ "$E494G2_SHORT_SECS" -lt "$E494G1_FULL_SECS" ] \
+  && ok "AC5: --e2e-spec's hold (${E494G2_SHORT_SECS}s) is measurably less than the full run's (${E494G1_FULL_SECS}s)" \
+  || bad "AC5: --e2e-spec must hold the lane less than a full run" "short=${E494G2_SHORT_SECS}s full=${E494G1_FULL_SECS}s"
+
+# AC6 -- --e2e-spec is not a correctness escape hatch: a failing spec still
+# exits non-zero with the SAME reporting contract as a full run (case
+# history / SUITE-level FAILED, not silently swallowed).
+E494G3="$TMP/e494-gate-run3"; mkdir -p "$E494G3"
+rc=0
+E494G3_OUT="$(cd "$E494G_REPO" && FWF_RUN_DIR="$E494G3" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" e494fail --e2e --e2e-spec bad_spec.ts -- bash -c \
+    'echo "0 passed, 1 failed, 0 skipped"; exit 1' 2>&1)" || rc=$?
+assert_eq "AC6: a failing --e2e-spec run exits non-zero, same as a failing full run" "1" "$rc"
+assert_contains "AC6: the SAME reporting contract fires (SUITE-level FAILED)" "$E494G3_OUT" "FAILED"
+
+# --e2e-spec without --e2e is a usage error, not a silently-ignored flag.
+rc=0
+E494G4_OUT="$(FWF_PROFILE=example "$ROOT/fwf-gate.sh" e494usage --e2e-spec foo.ts -- true 2>&1)" || rc=$?
+assert_eq "--e2e-spec without --e2e is a usage error" "1" "$rc"
+assert_contains "...and says so" "$E494G4_OUT" "requires --e2e"
+
+# --------------------------------------------------------------------------
+section "fwf e2e-lock-status (issue #494 AC8): the ordered waiter queue, read-only"
+E494_AC8="$TMP/e494-ac8"; mkdir -p "$E494_AC8"
+AC8_OUT="$(FWF_RUN_DIR="$E494_AC8" FWF_PROFILE=example FWF_E2E_MAX_LANES=2 bash -c '
+  source "'"$ROOT"'/lib.sh"
+  fwf_e2e_lock_acquire holder1 >/dev/null
+  _fwf_e2e_queue_take waiterA >/dev/null
+  _fwf_e2e_queue_take waiterB >/dev/null
+  fwf_e2e_lock_status
+')"
+assert_contains "AC8: the holder is named" "$AC8_OUT" "held by holder1"
+assert_contains "AC8: waiter 1 (A) is named, in order" "$AC8_OUT" "queue 1: WAITING -- held by waiterA"
+assert_contains "AC8: waiter 2 (B) is named, in order" "$AC8_OUT" "queue 2: WAITING -- held by waiterB"
+QUEUE_AFTER_STATUS="$(find "$E494_AC8/e2e.queue" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "AC8: the status read mutated nothing -- both tickets still exist" "2" "$QUEUE_AFTER_STATUS"
+
+# --------------------------------------------------------------------------
 section "e2e lease export contract (issue #205 AC g3): the gated command's process only"
 # Real fwf-gate.sh run (--e2e) whose wrapped command dumps FWF_E2E_PORT/
 # FWF_E2E_DATA_DIR -- proves both are present INSIDE the gated command, and

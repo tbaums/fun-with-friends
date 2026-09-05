@@ -162,6 +162,11 @@ FWF_RUN="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
 # $FWF_WORKSPACE_BASE/<name>/repo and puts that profile's worktrees alongside.
 FWF_WORKSPACE_BASE="${FWF_WORKSPACE_BASE:-$FWF_RUN/workspaces}"
 E2E_LOCK="$FWF_RUN/e2e.lock"
+# issue #494: the FIFO ticket queue for e2e-lane waiters -- a SIBLING dir of
+# E2E_LOCK (never nested under it), so an `rm -rf "$E2E_LOCK"` from anywhere
+# else can never take the queue down with it, matching the same reasoning
+# already applied to per-lane dirs above.
+E2E_QUEUE="$FWF_RUN/e2e.queue"
 # Resource-keyed e2e leases (issue #205): the contended resource is the
 # concrete port + data dir, not "e2e" abstractly. Up to FWF_E2E_MAX_LANES
 # leases are held at once, each on port FWF_E2E_PORT_BASE+(lane-1) and a

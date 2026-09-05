@@ -1994,11 +1994,248 @@ fwf_e2e_lock_owner_path() { printf '%s/owner' "$(_fwf_e2e_lane_dir "$1")"; } # $
 # falls back to the FWF_E2E_LOCK_STALE_SECS age backstop, and at the shipped
 # default FWF_E2E_MAX_LANES=1 there is exactly one lane -- $E2E_LOCK itself
 # -- so this reproduces pre-#205 behavior byte-for-byte (AC d).
+# $1=lane dir (mkdir already succeeded on it) $2=lane number $3=label ->
+# writes the owner file and prints "<lane> <port> <data_dir>". Factored out
+# of the two identical stamp-and-announce sites the pre-#494 code had (the
+# immediate try and the "just broken, retry now" fallback) -- issue #494
+# adds a THIRD call site (a FIFO head's own retry) and a fourth copy of this
+# block was the wrong way to get there.
+_fwf_e2e_lane_claim_and_stamp() {
+  local lane="$1" n="$2" label="$3" port gen genfile data_dir pgid pgleader
+  port=$(( FWF_E2E_PORT_BASE + n - 1 ))
+  genfile="${lane}.gen"
+  gen="$(cat "$genfile" 2>/dev/null)"; case "$gen" in ''|*[!0-9]*) gen=0;; esac
+  gen=$(( gen + 1 ))
+  printf '%s\n' "$gen" > "$genfile"
+  data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
+  mkdir -p "$data_dir" 2>/dev/null
+  pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+  pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
+  printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
+    "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
+  printf '%s %s %s\n' "$n" "$port" "$data_dir"
+}
+
+# One pass over every lane: claim the first free one (stamping + printing
+# "<lane> <port> <data_dir>", rc 0), or reap any dead/stale-indeterminate
+# holder found along the way (unchanged liveness/backstop rules) and retry
+# that SAME lane once immediately, exactly as the pre-#494 inline loop did.
+# On a pass with nothing free, sets the caller's own `missing`/`busy_*`
+# locals (read via bash's dynamic scoping -- this is always called from
+# inside fwf_e2e_lock_acquire, which declares them `local`; this function
+# deliberately does NOT re-declare them, so assignments here land in the
+# caller's copy) and returns 1.
+_fwf_e2e_try_all_lanes() {
+  local label="$1" n lane owner rc ts now holder pid host
+  for n in $(seq 1 "$FWF_E2E_MAX_LANES"); do
+    lane="$(_fwf_e2e_lane_dir "$n")"
+    mkdir -p "$(dirname "$lane")" 2>/dev/null   # so a missing $FWF_RUN can't masquerade as "lock held"
+    if mkdir "$lane" 2>/dev/null; then
+      _fwf_e2e_lane_claim_and_stamp "$lane" "$n" "$label"
+      return 0
+    fi
+    owner="$lane/owner"
+    holder="$(_fwf_e2e_owner_field role "$owner")"
+    pid="$(_fwf_e2e_owner_field pid "$owner")"
+    host="$(_fwf_e2e_owner_field host "$owner")"
+    ts="$(_fwf_e2e_owner_field acquired "$owner")"
+    if [ -z "$holder" ] && [ -z "$pid" ]; then missing=$(( missing + 1 )); else missing=0; fi
+    _fwf_e2e_owner_liveness "$owner"; rc=$?
+    if [ "$rc" = 1 ]; then
+      echo "fwf: e2e lane $n held by dead PID ${pid:-unknown} (${holder:-unknown}) — breaking it" >&2
+      # issue #195: the dead holder's server (if any) shares its process
+      # group -- reap that group BEFORE freeing the lane, or the next
+      # acquirer gets a lock that says "free" while the port is still held
+      # (this ticket's own reported incident). Same shared helper #156
+      # already uses for the cargo-build slot and mem-admit token.
+      _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
+      rm -rf "$lane"; missing=0
+    elif [ "$rc" = 2 ]; then
+      now="$(date +%s)"
+      if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
+        echo "fwf: e2e lane $n indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
+        _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
+        rm -rf "$lane"; missing=0
+      fi
+    fi
+    if [ ! -d "$lane" ]; then
+      # just broken above -- retry THIS lane immediately, same as the
+      # pre-#205 single-lock loop's `continue` back to its own top.
+      if mkdir "$lane" 2>/dev/null; then
+        _fwf_e2e_lane_claim_and_stamp "$lane" "$n" "$label"
+        return 0
+      fi
+      # lost the immediate re-acquire race to another contender -- fall
+      # through and report on it as busy, like any other occupied lane.
+      holder="$(_fwf_e2e_owner_field role "$owner")"
+      pid="$(_fwf_e2e_owner_field pid "$owner")"
+      host="$(_fwf_e2e_owner_field host "$owner")"
+      ts="$(_fwf_e2e_owner_field acquired "$owner")"
+      _fwf_e2e_owner_liveness "$owner"; rc=$?
+    fi
+    busy_rc="$rc"; busy_holder="$holder"; busy_pid="$pid"; busy_host="$host"; busy_ts="$ts"; busy_missing="$missing"
+  done
+  return 1
+}
+
+# issue #494 AC7: nested acquisition. A descendant of a suite ALREADY
+# holding a lane is a documented, observed common case (the wrapped suite's
+# own fixtures spawn `fwf-gate.sh`/`fwf-respawn.sh` sub-acquisitions) --
+# under a naive FIFO it would take a ticket and queue behind other waiters,
+# and if the holder ever waited on that descendant (directly or through a
+# chain), the holder would be waiting on a child that is waiting on the
+# lane the holder itself holds: a deadlock today's design cannot produce.
+# Resolution chosen (the ticket allows either): a descendant is DETECTED and
+# admitted WITHOUT queueing -- i.e. it gets exactly today's pre-FIFO
+# behavior (one pass over the lanes, EX_SKIPPED on loss, never blocks behind
+# other waiters). Deliberately checked only AFTER the first uncontended pass
+# already found every lane busy (never on the fast, uncontended path) --
+# issue #195's own review finding is that a `ps` fork+exec ahead of the
+# race-decisive mkdir measurably widens a real timing-sensitive test
+# (#119's truly-simultaneous-race check); an uncontended acquire can never
+# be the descendant-deadlock case anyway, since nothing is held to be a
+# descendant OF.
+_fwf_e2e_is_holder_descendant() {
+  local n lane owner opid p pid ppid
+  local -A _fwf494_ppid_of=()
+  # ONE process-table snapshot, not one `ps` fork per ancestor level --
+  # measured cost of the per-level version: a heavily-wrapped shell (this
+  # repo's own test harness, and evidently some real invocation shapes too)
+  # can put dozens of shim layers between a role and pid 1, and at tens of
+  # ms per `ps` fork+exec that compounds into whole SECONDS added to every
+  # ordinary contended acquire -- exactly the class of overhead #195's own
+  # review already flagged for a single `ps` call ahead of the
+  # race-decisive mkdir (#119). Reading the table once and walking it in
+  # memory costs one fork total, however deep the tree.
+  while read -r pid ppid; do
+    case "$pid" in ''|*[!0-9]*) continue;; esac
+    _fwf494_ppid_of[$pid]="$ppid"
+  done < <(ps -eo pid=,ppid= 2>/dev/null)
+  for n in $(seq 1 "$FWF_E2E_MAX_LANES"); do
+    lane="$(_fwf_e2e_lane_dir "$n")"
+    owner="$lane/owner"
+    [ -f "$owner" ] || continue
+    opid="$(_fwf_e2e_owner_field pid "$owner")"
+    [ -n "$opid" ] || continue
+    # Deliberately compares against the recorded PID only, NEVER pgid:
+    # in a sandbox/CI shell (job control off, the normal state for a
+    # non-interactive script) two entirely unrelated processes routinely
+    # inherit the SAME ambient process group from a common ancestor far up
+    # the tree -- an ancestor-walk that also matched on pgid found that
+    # shared ancestor and misclassified an ordinary independent contender
+    # as a "descendant", silently breaking #205's own serialization
+    # coverage (AC(b)/(c), which simulate two roles from one shell or
+    # sibling background subshells -- exactly the shape that shares an
+    # ambient pgid without being related at all). A PID match has no such
+    # collision risk (real PIDs essentially never coincide), and it is
+    # sufficient on its own: the RECORDED pid is fwf-gate.sh's own
+    # acquiring process, which is a genuine ancestor of the wrapped command
+    # AND of everything the wrapped command spawns -- including after
+    # issue #195's restamp changes the lane's process-GROUP id to the
+    # wrapped command's own, since that restamp never changes anyone's
+    # PPID chain, only which group they report under `ps`.
+    #
+    # Starts from MY OWN PARENT, deliberately never comparing $$ itself:
+    # a same-process reacquire (also #205's own same-shell-two-roles test
+    # shape -- one call already holds a lane, a second call from the exact
+    # same $$ asks again) is a literal identity match on $$ == opid, not a
+    # descendant relationship, and must not short-circuit here.
+    p="${_fwf494_ppid_of[$$]:-}"
+    while [ -n "$p" ] && [ "$p" != 1 ] && [ "$p" != 0 ]; do
+      [ "$p" = "$opid" ] && return 0
+      p="${_fwf494_ppid_of[$p]:-}"
+    done
+  done
+  return 1
+}
+
+# issue #494 (scope item 2): the FIFO waiter queue. A ticket is a directory
+# under $E2E_QUEUE (mkdir-atomic, same idiom as a lane) named by a
+# fixed-width 19-digit nanosecond timestamp so plain lexicographic sort IS
+# creation order -- no shared counter, no flock (this codebase's locking
+# idiom throughout is mkdir, kept consistent here). It carries an `owner`
+# file in the SAME shape as a lane's (role/pid/pgid/pgleader/host/acquired),
+# reusing _fwf_e2e_owner_liveness unchanged for dead-head detection (AC3).
+#
+# $1=label -> echoes the ticket dir path and returns 0, or returns 1 if a
+# genuine (not just a same-nanosecond collision) failure occurs.
+_fwf_e2e_queue_take() {
+  local label="$1" tries=0 seq ticket pgid pgleader
+  mkdir -p "$E2E_QUEUE" 2>/dev/null
+  while :; do
+    seq="$(date +%s%N)"
+    case "$seq" in ''|*[!0-9]*) seq="$(date +%s)000000000";; esac
+    ticket="$E2E_QUEUE/$seq-$label"
+    if mkdir "$ticket" 2>/dev/null; then
+      pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
+      pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+      case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
+      printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nacquired=%s\n' \
+        "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$(date +%s)" > "$ticket/owner"
+      printf '%s\n' "$ticket"
+      return 0
+    fi
+    tries=$(( tries + 1 ))
+    [ "$tries" -lt 1000 ] || { echo "fwf: e2e queue ticket collisions exceeded retry budget for $label" >&2; return 1; }
+  done
+}
+
+# -> path of the lowest-sequence (oldest) ticket dir, or empty if the queue
+# is empty. Plain lexicographic sort of the fixed-width nanosecond prefix.
+_fwf_e2e_queue_head() {
+  [ -d "$E2E_QUEUE" ] || return 0
+  # Bash's own glob expansion, not `find | sort | head` -- this runs on
+  # EVERY poll of EVERY waiter, so a 3-fork pipeline here is pure overhead
+  # on the exact path #494 exists to make cheap. Pathname expansion is a
+  # bash builtin (glob(), sorted by default) -- zero forks -- and the
+  # fixed-width nanosecond ticket names make lexicographic == creation
+  # order, same as the explicit `sort` this replaces.
+  local entries=("$E2E_QUEUE"/*/)
+  [ -e "${entries[0]}" ] || return 0
+  printf '%s\n' "${entries[0]%/}"
+}
+
+# issue #494 AC3/AC4: drop any HEAD ticket whose owner is confirmed dead
+# (same liveness rule as a lane holder), or indeterminate and past the same
+# FWF_E2E_LOCK_STALE_SECS backstop -- repeating until the head is live or
+# the queue is empty. AC4: this NEVER calls _fwf_kill_orphan_group -- a dead
+# WAITER holds no port/server, only its place in line, so reaping it is
+# `rm -rf` only, same assumption already applied on #497 and #499's status
+# read. Called by every live waiter each poll, not just by the dead head
+# itself (which, being dead, cannot clean up after itself) -- #494's own
+# motivating case is a seat that SIGTERMs its OWN queued gate.
+_fwf_e2e_queue_reap_dead_head() {
+  local head rc ts now
+  while :; do
+    head="$(_fwf_e2e_queue_head)"
+    [ -n "$head" ] || return 0
+    _fwf_e2e_owner_liveness "$head/owner"; rc=$?
+    if [ "$rc" = 1 ]; then
+      rm -rf "$head"; continue
+    fi
+    if [ "$rc" = 2 ]; then
+      ts="$(_fwf_e2e_owner_field acquired "$head/owner")"
+      now="$(date +%s)"
+      if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
+        rm -rf "$head"; continue
+      fi
+    fi
+    return 0
+  done
+}
+
+# $1=my ticket path -> rc 0 iff I am the current (live) head, after reaping
+# any dead ticket(s) ahead of me.
+_fwf_e2e_queue_is_head() {
+  _fwf_e2e_queue_reap_dead_head
+  [ "$(_fwf_e2e_queue_head)" = "$1" ]
+}
+
 fwf_e2e_lock_acquire() {
-  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" waited=0 n lane owner rc ts now holder pid host
-  local qstart missing=0 last_report port gen genfile data_dir
-  local busy_rc="" busy_holder="" busy_pid="" busy_host="" busy_ts="" busy_missing=0
-  local pgid="" pgleader=""
+  local label="${1:?fwf_e2e_lock_acquire needs a holder label}" waited=0 qstart last_report now
+  local missing=0 busy_rc="" busy_holder="" busy_pid="" busy_host="" busy_ts="" busy_missing=0
+  local ticket=""
   # issue #195: same kill-safe process-group stamp #156 already gives the
   # cargo-build slot and mem-admit token (_fwf_kill_orphan_group, below) --
   # this lock's own missing half of that pattern. A dead e2e-lock holder's
@@ -2011,81 +2248,34 @@ fwf_e2e_lock_acquire() {
   # (issue #119's truly-simultaneous-race check, on the sibling gate lock).
   qstart="$(date +%s)"
   last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 ))   # force the FIRST report immediate (point 2)
+
+  # First, uncontended pass -- UNCHANGED shape and cost from before #494
+  # (still the very first thing this function does, still zero `ps`
+  # fork+execs beyond what a successful claim itself needs).
+  if _fwf_e2e_try_all_lanes "$label"; then
+    return 0
+  fi
+
+  # issue #494 AC7: settle nested acquisition BEFORE queueing, never after --
+  # a descendant of a current holder must never take a ticket at all.
+  if _fwf_e2e_is_holder_descendant; then
+    echo "fwf: $label is a descendant of a current e2e lane holder (issue #494 AC7) -- admitted without queueing, but no lane is free this instant; not entering the FIFO (that would risk the holder deadlocking on its own descendant)." >&2
+    return 1
+  fi
+
+  # issue #494 (scope item 2): every lane was busy and I'm not a holder's
+  # own descendant -- take a FIFO ticket and wait my turn.
+  ticket="$(_fwf_e2e_queue_take "$label")" || return 1
   while true; do
-    for n in $(seq 1 "$FWF_E2E_MAX_LANES"); do
-      lane="$(_fwf_e2e_lane_dir "$n")"
-      mkdir -p "$(dirname "$lane")" 2>/dev/null   # so a missing $FWF_RUN can't masquerade as "lock held"
-      if mkdir "$lane" 2>/dev/null; then
-        port=$(( FWF_E2E_PORT_BASE + n - 1 ))
-        genfile="${lane}.gen"
-        gen="$(cat "$genfile" 2>/dev/null)"; case "$gen" in ''|*[!0-9]*) gen=0;; esac
-        gen=$(( gen + 1 ))
-        printf '%s\n' "$gen" > "$genfile"
-        data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
-        mkdir -p "$data_dir" 2>/dev/null
-        pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
-        pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-        case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
-        printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
-          "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
-        printf '%s %s %s\n' "$n" "$port" "$data_dir"
+    if _fwf_e2e_queue_is_head "$ticket"; then
+      if _fwf_e2e_try_all_lanes "$label"; then
+        rm -rf "$ticket"
         return 0
       fi
-      owner="$lane/owner"
-      holder="$(_fwf_e2e_owner_field role "$owner")"
-      pid="$(_fwf_e2e_owner_field pid "$owner")"
-      host="$(_fwf_e2e_owner_field host "$owner")"
-      ts="$(_fwf_e2e_owner_field acquired "$owner")"
-      if [ -z "$holder" ] && [ -z "$pid" ]; then missing=$(( missing + 1 )); else missing=0; fi
-      _fwf_e2e_owner_liveness "$owner"; rc=$?
-      if [ "$rc" = 1 ]; then
-        echo "fwf: e2e lane $n held by dead PID ${pid:-unknown} (${holder:-unknown}) — breaking it" >&2
-        # issue #195: the dead holder's server (if any) shares its process
-        # group -- reap that group BEFORE freeing the lane, or the next
-        # acquirer gets a lock that says "free" while the port is still held
-        # (this ticket's own reported incident). Same shared helper #156
-        # already uses for the cargo-build slot and mem-admit token.
-        _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
-        rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
-      elif [ "$rc" = 2 ]; then
-        now="$(date +%s)"
-        if [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; then
-          echo "fwf: e2e lane $n indeterminate-liveness and past the ${FWF_E2E_LOCK_STALE_SECS}s backstop — breaking it" >&2
-          _fwf_kill_orphan_group "$host" "$(_fwf_e2e_owner_field pgleader "$owner")" "$(_fwf_e2e_owner_field pgid "$owner")" "$ts"
-          rm -rf "$lane"; qstart="$(date +%s)"; last_report=$(( qstart - FWF_E2E_LOCK_REPORT_SECS - 1 )); missing=0
-        fi
-      fi
-      if [ ! -d "$lane" ]; then
-        # just broken above -- retry THIS lane immediately, same as the
-        # pre-#205 single-lock loop's `continue` back to its own top.
-        if mkdir "$lane" 2>/dev/null; then
-          port=$(( FWF_E2E_PORT_BASE + n - 1 ))
-          genfile="${lane}.gen"
-          gen="$(cat "$genfile" 2>/dev/null)"; case "$gen" in ''|*[!0-9]*) gen=0;; esac
-          gen=$(( gen + 1 ))
-          printf '%s\n' "$gen" > "$genfile"
-          data_dir="$FWF_E2E_DATA_BASE/lane-$n/gen-$gen"
-          mkdir -p "$data_dir" 2>/dev/null
-          pgleader="${_FWF_GATE_IS_PGLEADER:-0}"
-          pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-          case "$pgid" in ''|*[!0-9]*) pgid="$$";; esac
-          printf 'role=%s\npid=%s\npgid=%s\npgleader=%s\nhost=%s\nworktree=%s\nacquired=%s\nport=%s\ndata_dir=%s\n' \
-            "$label" "$$" "$pgid" "$pgleader" "$(hostname)" "$PWD" "$(date +%s)" "$port" "$data_dir" > "$lane/owner"
-          printf '%s %s %s\n' "$n" "$port" "$data_dir"
-          return 0
-        fi
-        # lost the immediate re-acquire race to another contender -- fall
-        # through and report on it as busy, like any other occupied lane.
-        holder="$(_fwf_e2e_owner_field role "$owner")"
-        pid="$(_fwf_e2e_owner_field pid "$owner")"
-        host="$(_fwf_e2e_owner_field host "$owner")"
-        ts="$(_fwf_e2e_owner_field acquired "$owner")"
-        _fwf_e2e_owner_liveness "$owner"; rc=$?
-      fi
-      busy_rc="$rc"; busy_holder="$holder"; busy_pid="$pid"; busy_host="$host"; busy_ts="$ts"; busy_missing="$missing"
-    done
+    fi
     now="$(date +%s)"
     if [ "$waited" -ge "$FWF_E2E_LOCK_TIMEOUT" ]; then
+      rm -rf "$ticket"   # giving up cleanly -- free my place immediately, don't make the next waiter wait for a liveness check to notice
       printf '%s\n' "$(_fwf_e2e_lock_timeout_line "$label" "$FWF_E2E_LOCK_TIMEOUT" "$busy_rc" "$busy_holder" "$busy_pid" "$busy_host" "$busy_ts" "$now" "$FWF_E2E_LOCK_STALE_SECS")" >&2
       return 1
     fi
@@ -2105,21 +2295,27 @@ fwf_e2e_lock_release() {
   rm -rf "$(_fwf_e2e_lane_dir "${1:-1}")"
 }
 
-# issue #499 AC4/AC5/AC9: lane occupancy as queryable state, STRICTLY READ-
-# ONLY (A5). Prints one line per lane 1..FWF_E2E_MAX_LANES (held holder's
-# role/pid/host/port/data_dir/hold-age, or FREE) plus a trailing line naming
+# issue #499 AC4/AC5/AC9, extended by #494 AC8: lane occupancy AND the FIFO
+# waiter queue as queryable state, STRICTLY READ-ONLY (A5 / #494 AC8). Prints
+# one line per lane 1..FWF_E2E_MAX_LANES (held holder's role/pid/host/port/
+# data_dir/hold-age, or FREE), then one line per queued waiter IN ORDER
+# (role/pid/held-since, i.e. queue-entry age), then a trailing line naming
 # the effective FWF_E2E_MAX_LANES (AC9 -- config.sh:173's own default-via-
 # parameter-expansion means an assignment placed where the default already
 # won't show here, so this is the only way to confirm an override actually
 # took). Shares the acquire path's exact liveness judgement (dead-pid
-# immediate, indeterminate-past-FWF_E2E_LOCK_STALE_SECS) so a lane this
-# reports STALE/LEAKED is exactly the lane the NEXT acquire would also
-# reclaim (AC5) -- but performs no reaping, no rm -rf, and no kill: acquire's
-# own break path calls _fwf_kill_orphan_group before freeing a lane
-# (lib.sh:2048/2054), and a status read must never acquire that kill
-# authority merely by being asked to report.
+# immediate, indeterminate-past-FWF_E2E_LOCK_STALE_SECS) for BOTH lanes and
+# queue entries, so a lane or queue position this reports STALE/LEAKED is
+# exactly what the acquire path (lane) or _fwf_e2e_queue_reap_dead_head
+# (queue) would also reclaim/drop -- but this performs no reaping, no
+# rm -rf, and no kill anywhere: acquire's own break path calls
+# _fwf_kill_orphan_group before freeing a lane (lib.sh above), the queue's
+# own reaper does an unconditional `rm -rf` on a dead head, and a read-only
+# status command must never acquire either authority merely by being asked
+# to report (#494 AC8: "takes no lock, makes no API calls, mutates nothing").
 fwf_e2e_lock_status() {
   local n lane owner rc holder pid host ts port data_dir now
+  local tdir tholder tpid thost tts trc qn=0
   now="$(date +%s)"
   for n in $(seq 1 "$FWF_E2E_MAX_LANES"); do
     lane="$(_fwf_e2e_lane_dir "$n")"
@@ -2143,6 +2339,25 @@ fwf_e2e_lock_status() {
         "$(_fwf_e2e_lock_holder_phrase "$rc" "$holder" "$pid" "$host" "$ts" 0 "$now")" "$port" "$data_dir"
     fi
   done
+  if [ -d "$E2E_QUEUE" ]; then
+    while IFS= read -r tdir; do
+      [ -n "$tdir" ] || continue
+      qn=$(( qn + 1 ))
+      tholder="$(_fwf_e2e_owner_field role "$tdir/owner")"
+      tpid="$(_fwf_e2e_owner_field pid "$tdir/owner")"
+      thost="$(_fwf_e2e_owner_field host "$tdir/owner")"
+      tts="$(_fwf_e2e_owner_field acquired "$tdir/owner")"
+      _fwf_e2e_owner_liveness "$tdir/owner"; trc=$?
+      if [ "$trc" = 1 ] || { [ "$trc" = 2 ] && [ -n "$tts" ] && [ $(( now - tts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; }; then
+        printf 'queue %s: STALE/LEAKED -- %s\n' "$qn" \
+          "$(_fwf_e2e_lock_holder_phrase "$trc" "$tholder" "$tpid" "$thost" "$tts" 0 "$now")"
+      else
+        printf 'queue %s: WAITING -- %s\n' "$qn" \
+          "$(_fwf_e2e_lock_holder_phrase "$trc" "$tholder" "$tpid" "$thost" "$tts" 0 "$now")"
+      fi
+    done < <(find "$E2E_QUEUE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+  fi
+  [ "$qn" -gt 0 ] || printf 'queue: empty\n'
   printf 'effective FWF_E2E_MAX_LANES=%s\n' "$FWF_E2E_MAX_LANES"
 }
 
