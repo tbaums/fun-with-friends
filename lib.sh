@@ -2180,7 +2180,7 @@ _fwf_ps_elapsed_secs() { # $1=pid
 # issue #478: #332 refuses a pgid belonging to an ANCESTOR, because signalling
 # it kills the tree we are running inside. The mirror case is just as fatal and
 # was unguarded: the group can be one of our own DESCENDANTS -- e.g. the
-# shellcheck tree this very run spawned, whose creation is what triggered the
+# the shellcheck tree this very run spawned, whose creation is what triggers
 # memory reservation that called the reaper in the first place. Killing it takes
 # down the live gate that asked for the memory; the run dies mid-step, never
 # emits its "N passed, M failed" summary, and is recorded `indeterminate`
