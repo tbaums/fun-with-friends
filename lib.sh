@@ -2105,6 +2105,47 @@ fwf_e2e_lock_release() {
   rm -rf "$(_fwf_e2e_lane_dir "${1:-1}")"
 }
 
+# issue #499 AC4/AC5/AC9: lane occupancy as queryable state, STRICTLY READ-
+# ONLY (A5). Prints one line per lane 1..FWF_E2E_MAX_LANES (held holder's
+# role/pid/host/port/data_dir/hold-age, or FREE) plus a trailing line naming
+# the effective FWF_E2E_MAX_LANES (AC9 -- config.sh:173's own default-via-
+# parameter-expansion means an assignment placed where the default already
+# won't show here, so this is the only way to confirm an override actually
+# took). Shares the acquire path's exact liveness judgement (dead-pid
+# immediate, indeterminate-past-FWF_E2E_LOCK_STALE_SECS) so a lane this
+# reports STALE/LEAKED is exactly the lane the NEXT acquire would also
+# reclaim (AC5) -- but performs no reaping, no rm -rf, and no kill: acquire's
+# own break path calls _fwf_kill_orphan_group before freeing a lane
+# (lib.sh:2048/2054), and a status read must never acquire that kill
+# authority merely by being asked to report.
+fwf_e2e_lock_status() {
+  local n lane owner rc holder pid host ts port data_dir now
+  now="$(date +%s)"
+  for n in $(seq 1 "$FWF_E2E_MAX_LANES"); do
+    lane="$(_fwf_e2e_lane_dir "$n")"
+    if [ ! -d "$lane" ]; then
+      printf 'lane %s: FREE (port %s)\n' "$n" "$(( FWF_E2E_PORT_BASE + n - 1 ))"
+      continue
+    fi
+    owner="$lane/owner"
+    holder="$(_fwf_e2e_owner_field role "$owner")"
+    pid="$(_fwf_e2e_owner_field pid "$owner")"
+    host="$(_fwf_e2e_owner_field host "$owner")"
+    ts="$(_fwf_e2e_owner_field acquired "$owner")"
+    port="$(_fwf_e2e_owner_field port "$owner")"
+    data_dir="$(_fwf_e2e_owner_field data_dir "$owner")"
+    _fwf_e2e_owner_liveness "$owner"; rc=$?
+    if [ "$rc" = 1 ] || { [ "$rc" = 2 ] && [ -n "$ts" ] && [ $(( now - ts )) -ge "$FWF_E2E_LOCK_STALE_SECS" ]; }; then
+      printf 'lane %s: STALE/LEAKED -- %s (port %s, data %s)\n' "$n" \
+        "$(_fwf_e2e_lock_holder_phrase "$rc" "$holder" "$pid" "$host" "$ts" 0 "$now")" "$port" "$data_dir"
+    else
+      printf 'lane %s: HELD -- %s (port %s, data %s)\n' "$n" \
+        "$(_fwf_e2e_lock_holder_phrase "$rc" "$holder" "$pid" "$host" "$ts" 0 "$now")" "$port" "$data_dir"
+    fi
+  done
+  printf 'effective FWF_E2E_MAX_LANES=%s\n' "$FWF_E2E_MAX_LANES"
+}
+
 # AC(h): fwf owns the profile, so warn (never refuse -- fwf cannot know a
 # profile's migration state) when E2E_CMD looks like it hardcodes the port
 # or data dir instead of reading the exported FWF_E2E_PORT/FWF_E2E_DATA_DIR

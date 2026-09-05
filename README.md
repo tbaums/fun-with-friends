@@ -433,6 +433,21 @@ not a per-role copy:
   identical ones. The timeout message itself says explicitly whether the
   holder is healthy ("this is a queue, not a wedge — do not kill it") or
   will be broken at the indeterminate-liveness backstop.
+- **Occupancy is queryable** (`fwf e2e-lock-status`, issue #499) — every lane's
+  HELD holder (role/pid/host/port/data dir/hold age) or FREE, plus the
+  *effective* `FWF_E2E_MAX_LANES` it's operating under (`config.sh:173`'s
+  parameter-expansion default means an override placed in the wrong spot
+  silently leaves the floor at 1, so this is the only way to confirm a
+  deliberate raise actually took). A lane whose holder is dead, or
+  indeterminate past `FWF_E2E_LOCK_STALE_SECS`, reads STALE/LEAKED — the same
+  judgement `fwf gate --e2e`'s own acquire uses to decide what it would
+  reclaim — but the status read performs no reaping, no `rm -rf`, and no
+  kill; only acquire holds that authority (`fwf_e2e_lock_status` in `lib.sh`).
+  Raising the cap above the shipped default of 1 is an **operator override**
+  set in the floor's own profile file, never an exported env var (an export
+  is inherited by every role's pane the moment anything starts the tmux
+  server, not only the gates that should have it) — `config.sh`'s default
+  itself does not move.
 
 - **The wrapped command never outlives the lock it's protected by** (issue
   #195) — a wrapped command that BACKGROUNDS a server (the e2e lane's own
@@ -830,6 +845,12 @@ fwf gate <role> [--e2e] -- <cmd...>                 the shared guarded gate/e2e 
                                                     __GATE__/__E2E__ render calls (issue #123); exits
                                                     75 rather than stacking a second run when <role>'s
                                                     own prior gate is still in flight
+fwf e2e-lock-status                                 lane occupancy for the e2e lease pool (issue
+                                                    #499): each lane's HELD holder/port/data_dir/hold-
+                                                    age or FREE, a STALE/LEAKED lane read with the same
+                                                    liveness judgement `fwf gate --e2e` acquire uses, and
+                                                    the effective FWF_E2E_MAX_LANES. Read-only: reports
+                                                    a leaked lease, never reaps or kills one.
 fwf gate-rust-scope --against BRANCH [--safe GLOB]...  SHADOW classifier for whether a wrapped suite
   [--log FILE] [--full-suite-secs N]                 could be skipped for this diff (issue #138); never
   [--suite-name NAME]                                skips anything itself — logs would-skip/would-run
