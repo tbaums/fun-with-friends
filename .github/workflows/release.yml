@@ -110,7 +110,14 @@ jobs:
             echo "::warning::ci.yml is '$CI_STATE' -- CI runs on the factory box now."
             echo "::warning::This gate is ADVISORY for this release. The blocking gate is the"
             echo "::warning::operator's two-runner local green for ${{ github.sha }} before tagging."
-            ./fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log || true
+            # The gate polls for required contexts until FWF_RELEASE_CI_TIMEOUT_SECS
+            # (default 1200). With ci.yml disabled those contexts can never arrive,
+            # so the full budget is spent waiting for something that will not happen.
+            # That was merely slow on GitHub-hosted runners; now that every job runs
+            # on our single local-devbox runner it blocks the whole release for
+            # twenty minutes. Keep the diagnostic, drop the pointless wait.
+            FWF_RELEASE_CI_TIMEOUT_SECS=30 \
+              ./fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log || true
             exit 0
           fi
           if ! ./fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log; then
