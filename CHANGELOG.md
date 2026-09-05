@@ -11,6 +11,34 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.8] - 2026-09-05
+
+### Fixed
+
+- **The gate reaper SIGKILLed the live tree that triggered it** (#478, code
+  a65fa18, docs a65fa18) — `_fwf_kill_orphan_group` refuses a pgid belonging to
+  an *ancestor* (#332), because signalling it kills the tree we run inside. The
+  mirror case was unguarded: the group can be one of our own *descendants* — the
+  shellcheck tree a run spawns, whose creation is what triggers the memory
+  reservation that calls the reaper in the first place. Killing it took down the
+  live gate that asked for the memory; the run died mid-step, never emitted its
+  `N passed, M failed` summary, and was recorded `indeterminate`. Measured on
+  devbox1 over a 3h window: 6 indeterminate, 4 red, **0 green**, with the last
+  five gates all killed. A group we are an ancestor of is by construction not an
+  orphan of a dead holder, so the new guard never declines a legitimate reap —
+  verified: own-child group refuses; init's group, an unused pgid, a
+  non-numeric and an empty argument all still reap.
+
+### Notes
+
+- Acceptance for #478 is a **green verdict appearing on the floor**, not a clean
+  unit test. If `indeterminate` persists across a full cycle after this ships,
+  revert `a65fa18` and reopen #478.
+- `release.yml`'s `Lint` step remains a single fused `shellcheck` invocation
+  including `test/run.sh` (no address-space cap, no skip dispatch). #520 split
+  the *gate* path only; the release path is still the shape that consumed
+  v0.42.3–v0.42.5. Tracked on #480.
+
 ## [0.42.7] - 2026-09-05
 
 ### Fixed
