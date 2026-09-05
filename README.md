@@ -1170,9 +1170,16 @@ All of these persist in a profile as `FWF_TEMPLATE`, `FWF_PAIRS`, `FWF_MODEL`,
   every PR that declares `Closes #N` on the issue (resolved the same
   body-grep way `fwf merge` does — never a GitHub cross-reference search,
   which over-matches every PR that merely mentions the number): **(A)** is
-  the PR's merged head an ancestor of `main` ("the PR shipped"), and **(B)**
-  did its branch grow commits *outside* that merged head, and if so is
-  every one of them *also* on `main` ("the fix shipped"). Exit 0 SHIPPED /
+  the PR's *landed* commit an ancestor of `main` ("the PR shipped") — issue
+  #470: for a squash or rebase merge the recorded head is never an ancestor
+  of anything (a squash's head predates the squash commit; a rebase's head
+  is rewritten onto the base), so (A) resolves GitHub's `merge_commit_sha`
+  unconditionally, falling back to the head sha only when that field is
+  absent — and **(B)** did the branch grow commits *outside its own merged
+  head*, and if so is every one of them *also* on `main` ("the fix
+  shipped") — (B) always compares against the head sha, never the landed
+  commit, since the squashed/rebased commit doesn't exist on the branch at
+  all. Exit 0 SHIPPED /
   1 NOT SHIPPED / 2 NO COMPARISON (no linked PR found) / 3 NOT APPLICABLE
   (closed for a reason other than `completed`). `--sha <sha>` overrides PR
   resolution for a multi-PR ticket the query can't resolve, checking (A)
