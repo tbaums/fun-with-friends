@@ -7660,14 +7660,16 @@ assert_contains "edge: names the claimant despite trailing whitespace" "$CL502G_
 
 CL502H=$(CLNEW "Mentions a claim in prose")
 CLI comment "$CL502H" --body "the CLAIM impl1 comment above looks stale to me" >/dev/null
+CLRC=0
 # shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
-CLRC=0; CL502H_OUT="$(CL "$CL502H" 2>&1)" || CLRC=$?
+CL502H_OUT="$(CL "$CL502H" 2>&1)" || CLRC=$?
 assert_eq "edge: a comment merely mentioning CLAIM in prose does not match (rc 3, nothing here)" "3" "$CLRC"
 
 CL502I=$(CLNEW "Blockquoted claim")
 CLI comment "$CL502I" --body "$(printf '> CLAIM impl1\nquoting the above for context')" >/dev/null
+CLRC=0
 # shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
-CLRC=0; CL502I_OUT="$(CL "$CL502I" 2>&1)" || CLRC=$?
+CL502I_OUT="$(CL "$CL502I" 2>&1)" || CLRC=$?
 assert_eq "edge: a blockquoted CLAIM does not match (rc 3, nothing here)" "3" "$CLRC"
 
 # --------------------------------------------------------------------------
