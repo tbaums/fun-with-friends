@@ -7404,10 +7404,12 @@ CLRUN="$TMP/claimliveness"
 CLI() { FWF_RUN_DIR="$CLRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
 CL() { FWF_RUN_DIR="$CLRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-claim-liveness.sh" "$@"; }
 
-section "fwf claim-liveness (#377): no CLAIM comment on the issue"
+section "fwf claim-liveness (#377/#502): no CLAIM comment on the issue"
 CLI create --title "Nobody has claimed this" >/dev/null
 CLRC=0; CL 1 >/dev/null 2>&1 || CLRC=$?
-assert_eq "no claim -> exit 2 (nothing to check)" "2" "$CLRC"
+# issue #502: split out of the old, overloaded rc 2 -- "nothing here" now
+# gets its OWN code (3), distinct from "something here I can't parse" (2).
+assert_eq "no claim -> exit 3 (nothing to check, proceed)" "3" "$CLRC"
 assert_contains "names that no claim was found" "$(CL 1 2>&1)" "no CLAIM comment found"
 
 section "fwf claim-liveness (#377): a FRESH claim with no liveness signal yet is LIVE (ambiguous -> fail-safe)"
@@ -7555,15 +7557,20 @@ assert_eq "the later claim does not steal a held ticket (rc 1)" "1" "$CLRC"
 assert_contains "the FIRST claimant is still the holder" "$CL515G_OUT" "impl515g"
 assert_not_contains "the second claimant is not reported as the holder" "$CL515G_OUT" "impl515h"
 
-section "fwf claim-liveness (#515): a release does NOT widen rc 2 -- never-claimed and released-before-any-claim stay fail-closed"
+section "fwf claim-liveness (#515/#502): a release does NOT widen rc 2 -- never-claimed and released-before-any-claim resolve to 'nothing here'"
 CL515N=$(CLNEW "Never claimed at all")
 CLI comment "$CL515N" --body "just some prose, no marker" >/dev/null
 CLRC=0; CL "$CL515N" >/dev/null 2>&1 || CLRC=$?
-assert_eq "an issue nobody ever claimed still exits 2 (indeterminate, unchanged)" "2" "$CLRC"
+# issue #502: this is "nothing found" (rc 3), not "found but unparseable"
+# (rc 2) -- plain prose is not claim-shaped at all.
+assert_eq "an issue nobody ever claimed exits 3 (nothing here, proceed)" "3" "$CLRC"
 CL515P=$(CLNEW "Released before any claim")
 CLI comment "$CL515P" --body "RELEASE impl515p" >/dev/null
 CLRC=0; CL "$CL515P" >/dev/null 2>&1 || CLRC=$?
-assert_eq "a RELEASE with no prior claim frees nothing and still exits 2" "2" "$CLRC"
+# A RELEASE with no prior claim is well-formed (claim-shaped, parses
+# cleanly) but has no effect -- the sequence resolves to "nothing held",
+# semantically identical to rc 3's "nothing found", not to MALFORMED (rc 2).
+assert_eq "a RELEASE with no prior claim frees nothing and exits 3 (not malformed)" "3" "$CLRC"
 
 section "fwf claim-liveness (#515): a RELEASE with prose around it is invisible, exactly as a prose CLAIM is"
 CL515I=$(CLNEW "Prose release")
@@ -7581,6 +7588,85 @@ assert_contains "a CLAIM is only taken when nothing is held" "$CL515SRC" 'if .ho
 assert_contains "a RELEASE only applies to the role that holds it" "$CL515SRC" 'if .holder == $p[1] then {holder:null'
 assert_contains "'fwf help' documents the RELEASE marker so a seat knows the exit exists" \
   "$("$ROOT/fwf" help)" "RELEASE <role>"
+
+# --------------------------------------------------------------------------
+# fwf claim-liveness (issue #502): a multi-line CLAIM matches on its FIRST
+# LINE, and rc 2 (the old "no CLAIM found or unreadable" catch-all) splits
+# into MALFORMED (rc 2, loud) and "nothing here" (new rc 3) -- #500's own
+# incident: "CLAIM captain" followed by nine lines of reasoning read as "no
+# CLAIM comment found" under the whole-body anchor this replaces.
+
+section "fwf claim-liveness (#502 AC1): #500's exact shape -- a multi-line CLAIM is recognised"
+CL502A=$(CLNEW "Multi-line claim, #500's shape")
+CLI comment "$CL502A" --body "$(printf 'CLAIM captain\n\nnine lines of reasoning here, exactly like #500')" >/dev/null
+CL502A_OUT="$(CL "$CL502A" 2>&1)"; CLRC=$?
+assert_eq "AC1: a multi-line claim is parsed and evaluated (rc 1, fresh -> LIVE), never falls through to 'not found'" "1" "$CLRC"
+assert_contains "AC1: names the actual claimant" "$CL502A_OUT" "captain"
+assert_not_contains "AC1: never reports 'no CLAIM comment found' for this shape" "$CL502A_OUT" "no CLAIM comment found"
+
+section "fwf claim-liveness (#502 AC2/AC2b): a multi-line claim reaches the liveness check, exit is 0 or 1, never 2"
+CL502B=$(CLNEW "Old multi-line claim, no signal ever")
+CL502B_FILE=$(find "$CLRUN/issues/example/open" -name "${CL502B}-*.md")
+CL502B_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
+CL502B_OLD_TS="$(date -u -d "@$CL502B_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$CL502B_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+printf '\n## comment %s\n\nCLAIM impl502b\n\nsome reasoning, multiple lines, like #500\n' "$CL502B_OLD_TS" >> "$CL502B_FILE"
+CL502B_OUT="$(CL "$CL502B" 2>&1)"; CLRC=$?
+assert_eq "AC2/AC2b: a stale multi-line claim resolves via the REAL liveness check (rc 0, RECLAIMABLE) -- never 2" "0" "$CLRC"
+assert_contains "AC2b: names it RECLAIMABLE (the liveness verdict, not a parse failure)" "$CL502B_OUT" "RECLAIMABLE"
+
+section "fwf claim-liveness (#502 AC3): absent and malformed are DIFFERENT exit codes, with different messages"
+CL502C=$(CLNEW "Truly nothing here")
+CLRC=0; CL502C_OUT="$(CL "$CL502C" 2>&1)" || CLRC=$?
+assert_eq "AC3: no claim-shaped comment at all -> the NEW code (3)" "3" "$CLRC"
+CL502D=$(CLNEW "Bare CLAIM, no role")
+CLI comment "$CL502D" --body "CLAIM" >/dev/null
+CLRC=0; CL502D_OUT="$(CL "$CL502D" 2>&1)" || CLRC=$?
+assert_eq "AC3: a claim-shaped but unparseable comment -> rc 2 (MALFORMED)" "2" "$CLRC"
+assert_contains "AC3: names it MALFORMED, loud, on stderr" "$CL502D_OUT" "MALFORMED"
+assert_not_contains "AC3: the two messages are genuinely different" "$CL502D_OUT" "no CLAIM comment found"
+assert_not_contains "AC3: ...and the absent case never says MALFORMED" "$CL502C_OUT" "MALFORMED"
+
+section "fwf claim-liveness (#502 AC4): fail-closed is preserved for the malformed case"
+assert_not_contains "AC4: a malformed claim never reads RECLAIMABLE" "$CL502D_OUT" "RECLAIMABLE"
+
+section "fwf claim-liveness (#502 AC5): first-claim-wins -- a multi-line FIRST claim beats a bare LATER one"
+CL502E=$(CLNEW "Multiline first, bare second")
+CLI comment "$CL502E" --body "$(printf 'CLAIM impl502e\n\nreasoning')" >/dev/null
+CLI comment "$CL502E" --body "CLAIM impl502f" >/dev/null
+CL502E_OUT="$(CL "$CL502E" 2>&1)"; CLRC=$?
+assert_contains "AC5: the FIRST (multi-line) claimant wins" "$CL502E_OUT" "impl502e"
+assert_not_contains "AC5: the second, bare claimant does not steal it" "$CL502E_OUT" "impl502f"
+
+section "fwf claim-liveness (#502 AC6): implementer.tmpl documents the exit codes this script actually uses"
+CL502_TMPL_DEV="$(cat "$ROOT/templates/dev/implementer.tmpl")"
+CL502_TMPL_REFACTOR="$(cat "$ROOT/templates/refactor/implementer.tmpl")"
+assert_contains "AC6: dev/implementer.tmpl documents exit 3 (nothing claimed)" "$CL502_TMPL_DEV" "exit 3"
+assert_contains "AC6: dev/implementer.tmpl documents MALFORMED for exit 2" "$CL502_TMPL_DEV" "MALFORMED"
+assert_contains "AC6: refactor/implementer.tmpl documents exit 3 too" "$CL502_TMPL_REFACTOR" "3"
+assert_contains "AC6: refactor/implementer.tmpl documents malformed for exit 2" "$CL502_TMPL_REFACTOR" "malformed"
+
+section "fwf claim-liveness (#502 AC7): goes RED on regression"
+CL502SRC="$(cat "$ROOT/fwf-claim-liveness.sh")"
+assert_contains "AC7: the match is applied to a first-line extraction, not the whole body" "$CL502SRC" 'split("\n")[0]'
+assert_contains "AC7: rc 3 (the new 'nothing here' code) exists" "$CL502SRC" "exit 3"
+assert_contains "AC7: rc 2 is documented as MALFORMED, not the old catch-all" "$CL502SRC" "MALFORMED"
+
+section "fwf claim-liveness (#502 edge cases)"
+CL502G=$(CLNEW "Trailing whitespace")
+CLI comment "$CL502G" --body "$(printf 'CLAIM impl502g   \nmore text')" >/dev/null
+CL502G_OUT="$(CL "$CL502G" 2>&1)"; CLRC=$?
+assert_eq "edge: trailing whitespace on the claim line still parses (rc 1, LIVE)" "1" "$CLRC"
+assert_contains "edge: names the claimant despite trailing whitespace" "$CL502G_OUT" "impl502g"
+
+CL502H=$(CLNEW "Mentions a claim in prose")
+CLI comment "$CL502H" --body "the CLAIM impl1 comment above looks stale to me" >/dev/null
+CLRC=0; CL502H_OUT="$(CL "$CL502H" 2>&1)" || CLRC=$?
+assert_eq "edge: a comment merely mentioning CLAIM in prose does not match (rc 3, nothing here)" "3" "$CLRC"
+
+CL502I=$(CLNEW "Blockquoted claim")
+CLI comment "$CL502I" --body "$(printf '> CLAIM impl1\nquoting the above for context')" >/dev/null
+CLRC=0; CL502I_OUT="$(CL "$CL502I" 2>&1)" || CLRC=$?
+assert_eq "edge: a blockquoted CLAIM does not match (rc 3, nothing here)" "3" "$CLRC"
 
 # --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
