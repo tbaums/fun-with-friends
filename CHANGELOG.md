@@ -11,6 +11,23 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.3] - 2026-09-05
+
+### Fixed
+
+- **An externally-killed gate run was reported as FAILED** (#479, code 0725223,
+  docs 0725223) — a signal was recorded as a content verdict, so a run that was
+  killed rather than one that failed produced a red with no summary line. Such a
+  run now resolves to `indeterminate` instead of a false red. Verified by qa1's
+  adversarial review: 20 AC1-7 and edge-case assertions driving the real
+  `fwf-gate.sh` with genuine SIGKILLs, an exit-137 case, an empty-output case,
+  and the completion-marker-disabled case, plus a mutation check confirming the
+  tests fail when the guard is reverted.
+- **`fwf shipped` reported NOT SHIPPED for every squash or rebase merge** (#470,
+  code c835962, docs c835962) — the merge commit was resolved by the PR head
+  sha, which a squash or rebase merge does not preserve; it now resolves via
+  `merge_commit_sha`.
+
 ## [0.42.2] - 2026-09-05
 
 ### Fixed
