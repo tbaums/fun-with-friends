@@ -2177,6 +2177,34 @@ _fwf_ps_elapsed_secs() { # $1=pid
 # comment at the comparison site in _fwf_kill_orphan_group (issue #195).
 : "${_FWF_PGID_START_SLOP:=2}"
 
+# issue #478: #332 refuses a pgid belonging to an ANCESTOR, because signalling
+# it kills the tree we are running inside. The mirror case is just as fatal and
+# was unguarded: the group can be one of our own DESCENDANTS -- e.g. the
+# shellcheck tree this very run spawned, whose creation is what triggered the
+# memory reservation that called the reaper in the first place. Killing it takes
+# down the live gate that asked for the memory; the run dies mid-step, never
+# emits its "N passed, M failed" summary, and is recorded `indeterminate`
+# (observed: 6 indeterminate / 4 red / 0 green across a 3h window on devbox1).
+# A group we are an ancestor of is BY CONSTRUCTION not an orphan of a dead
+# holder, so refusing here never declines a legitimate reap.
+_fwf_pgid_is_own_descendant() { # $1=pgid -> 0 if any member descends from $$
+  local pgid="$1" member anc guard
+  case "$pgid" in ''|*[!0-9]*) return 1;; esac
+  for member in $(ps -eo pid=,pgid= 2>/dev/null | while read -r _mp _mg; do
+      [ "$_mg" = "$pgid" ] && echo "$_mp"
+    done); do
+    anc="$member"
+    guard=0
+    while [ -n "$anc" ] && [ "$anc" -gt 1 ] 2>/dev/null; do
+      [ "$anc" = "$$" ] && return 0
+      guard=$(( guard + 1 ))
+      [ "$guard" -gt 64 ] && break
+      anc="$(ps -o ppid= -p "$anc" 2>/dev/null | tr -d ' ')"
+    done
+  done
+  return 1
+}
+
 _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-epoch (optional)
   local host="$1" pgleader="$2" pgid="$3" acquired="${4:-}" ownpgid elapsed now start_epoch anc
   [ "$pgleader" = 1 ] || return 0
@@ -2253,6 +2281,10 @@ _fwf_kill_orphan_group() { # $1=host $2=pgleader $3=pgid $4=lock's own acquired-
         ;;
       esac
     fi
+  fi
+  if _fwf_pgid_is_own_descendant "$pgid"; then
+    echo "fwf#478: refusing to reap pgid $pgid -- it contains a DESCENDANT of this process (pid $$); it is our own live tree, not an orphan" >&2
+    return 0
   fi
   echo "fwf#156: reaping orphaned build tree (pgid $pgid) whose holder died — SIGKILL group" >&2
   kill -KILL -"$pgid" 2>/dev/null
