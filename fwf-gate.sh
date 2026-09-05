@@ -351,6 +351,30 @@ release_done=0
 # through silently: no message taxonomy, no guessing (signature matching
 # is tool- and locale-dependent; that's an accepted residual, not
 # something to engineer around).
+# issue #499 AC3: behavioural port-binding assertion for e2e runs sharing
+# the lease pool at N>=2. Deliberately NOT a string check on E2E_CMD --
+# _fwf_e2e_cmd_hardcoded_warn (lib.sh) is wrong in both directions (any
+# 4-5 digit number anywhere trips it; `npm run e2e` that reads the env
+# internally sails through) and stays advisory, rc 0 always, per GV review
+# on #499. This polls the ALLOCATED port for an actual LISTEN socket while
+# the wrapped command runs -- a consumer that never binds it (hardcoded its
+# own port, or predates the env contract) is caught directly, deterministically,
+# with no regex. At N=1 there is only ever one lane and this repo's own
+# pre-#205 behavior already covered it; the check below is gated on N>=2 so
+# it is a strict no-op at the shipped default (AC6).
+_fwf_e2e_port_bound() { # $1=port -> rc 0 iff something is LISTENing on it
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .
+    return
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN -n -P 2>/dev/null | grep -q .
+    return
+  fi
+  return 1
+}
+
 _fwf_gate_diagnose_port_collision() {
   local capture="$1" line port occ_raw occ_pid occ_cmd occ_args
   [ -f "$capture" ] || return 0
@@ -580,6 +604,23 @@ if [ "$want_e2e" = 1 ]; then
   export FWF_E2E_PORT="$e2e_port" FWF_E2E_DATA_DIR="$e2e_data_dir"
 fi
 
+# issue #499 AC3: arm the port-binding watcher ONLY at N>=2 -- see
+# _fwf_e2e_port_bound above. Polls in the background for the DURATION of the
+# wrapped command (killed once it exits, below) rather than a single check
+# afterward, since a server that binds then shuts down cleanly before this
+# script gets to look would otherwise read as non-compliant.
+_fwf499_port_marker=""
+_fwf499_watcher_pid=""
+if [ "$want_e2e" = 1 ] && [ "${FWF_E2E_MAX_LANES:-1}" -ge 2 ] 2>/dev/null; then
+  _fwf499_port_marker="$(mktemp 2>/dev/null || echo "$FWF_STATE_DIR/e2e-port-seen.$$")"
+  rm -f "$_fwf499_port_marker"
+  ( while true; do
+      _fwf_e2e_port_bound "$e2e_port" && { : > "$_fwf499_port_marker"; break; }
+      sleep 0.2
+    done ) &
+  _fwf499_watcher_pid=$!
+fi
+
 # issue #195 (AC d/g): tee the wrapped command's STDERR to a scratch file
 # (via process substitution -- bash manages the reader, no manual FIFO/pid
 # bookkeeping) so a FAILED run can be scanned for a bind-collision
@@ -629,6 +670,19 @@ fi
 
 if [ "$rc" -ne 0 ]; then
   _fwf_gate_diagnose_port_collision "$wrapped_err_capture"
+fi
+
+# issue #499 AC3: stop the watcher and, ONLY on an otherwise-passing run,
+# turn "never bound the allocated port" into a stated failure -- a run that
+# already failed on its own content has nothing this check needs to add.
+if [ -n "$_fwf499_watcher_pid" ]; then
+  kill "$_fwf499_watcher_pid" 2>/dev/null
+  wait "$_fwf499_watcher_pid" 2>/dev/null
+  if [ "$rc" -eq 0 ] && [ ! -f "$_fwf499_port_marker" ]; then
+    echo "fwf gate [#499]: FWF_E2E_MAX_LANES=$FWF_E2E_MAX_LANES (N>=2) but the wrapped command never bound its allocated port $e2e_port -- the consumer must read \$FWF_E2E_PORT (issue #499 AC3) or it will silently collide with another concurrent e2e lane. Recording this run as FAILED." >&2
+    rc=1
+  fi
+  rm -f "$_fwf499_port_marker" 2>/dev/null
 fi
 
 # issue #479: a run ended by an external signal (OOM, operator Ctrl-C, the

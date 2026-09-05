@@ -8900,6 +8900,92 @@ assert_eq "the warn function never refuses -- always returns 0" "0" \
   "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'anything' >/dev/null; echo \$?")"
 
 # --------------------------------------------------------------------------
+section "fwf e2e-lock-status (issue #499 AC4/AC5/AC9): read-only lane occupancy"
+E499RUN="$TMP/e499"; mkdir -p "$E499RUN"
+
+# AC9: the effective FWF_E2E_MAX_LANES is reported, at the shipped default...
+assert_contains "AC9: effective lanes reads 1 at the shipped default" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$E499RUN/ac9-default" bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_status")" \
+  "effective FWF_E2E_MAX_LANES=1"
+# ...and under an override -- so a silently-reverted override (config.sh:173's
+# own parameter-expansion default winning) is visible here, not inferred.
+assert_contains "AC9: effective lanes reads 2 under an FWF_E2E_MAX_LANES=2 override" \
+  "$(FWF_RUN_DIR="$E499RUN/ac9-override" FWF_E2E_MAX_LANES=2 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_status")" \
+  "effective FWF_E2E_MAX_LANES=2"
+
+# AC4: occupancy for BOTH a free lane and a held one -- an all-free reading
+# passes trivially (the instruction's own warning), so this asserts a real
+# holder is named: role, pid, host, and the port/data_dir it was leased.
+E499_AC4="$E499RUN/ac4"; mkdir -p "$E499_AC4"
+AC4_OUT="$(FWF_RUN_DIR="$E499_AC4" FWF_E2E_MAX_LANES=2 FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  lease="$(fwf_e2e_lock_acquire heldrole)"; read -r n _ _ <<<"$lease"
+  fwf_e2e_lock_status
+')"
+assert_contains "AC4: the free lane (2) reads FREE with its port" "$AC4_OUT" "lane 2: FREE (port 3941)"
+assert_contains "AC4: the held lane (1) names the holder role"    "$AC4_OUT" "held by heldrole"
+assert_contains "AC4: the held lane reports its leased port"      "$AC4_OUT" "port 3940"
+assert_contains "AC4: the held lane is labeled HELD, not STALE"   "$AC4_OUT" "lane 1: HELD --"
+
+# AC5: a leaked lease (dead PID) reads STALE/LEAKED here using the SAME
+# liveness judgement acquire uses to decide what it would reclaim -- verified
+# by then running a real acquire against the identical planted lease and
+# confirming it breaks that same lane (agreement, not two independent
+# opinions). The status read itself must be read-only (A5): no rm -rf, no
+# kill -- asserted by the owner file still existing untouched right after it.
+E499_AC5="$E499RUN/ac5"; mkdir -p "$E499_AC5/e2e.lock"
+printf 'role=deadrole\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\nport=3940\ndata_dir=/nowhere\n' \
+  "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$E499_AC5/e2e.lock/owner"
+AC5_STATUS="$(FWF_RUN_DIR="$E499_AC5" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_status")"
+assert_contains "AC5: a dead-PID holder reads STALE/LEAKED, not HELD" "$AC5_STATUS" "lane 1: STALE/LEAKED --"
+[ -f "$E499_AC5/e2e.lock/owner" ] \
+  && ok "AC5: the status read is strictly read-only -- the planted lease survives it untouched" \
+  || bad "AC5: a status read must never reap or kill" "owner record was removed by fwf_e2e_lock_status"
+AC5_ACQUIRE="$(FWF_RUN_DIR="$E499_AC5" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_acquire impl9")"
+assert_contains "AC5: the SAME planted lease is the one a real acquire reclaims (agreement)" "$AC5_ACQUIRE" "1 3940"
+
+# --------------------------------------------------------------------------
+section "fwf gate --e2e port-binding assertion (issue #499 AC3): behavioural, not a string check"
+# GV review rewrote AC3 away from making _fwf_e2e_cmd_hardcoded_warn
+# (lib.sh) binding -- that heuristic is wrong in both directions (any 4-5
+# digit number anywhere trips it; `npm run e2e`, which reads the env
+# internally, sails through) and it stays advisory/rc-0 always, unchanged.
+# This asserts the REAL failure instead: at N>=2, did the wrapped command
+# actually bind the port it was allocated. Real fwf-gate.sh runs, per the
+# #205 AC(g3) pattern above.
+E499G_REPO="$TMP/e499-gate-repo"; mkdir -p "$E499G_REPO"
+git -C "$E499G_REPO" init -q
+git -C "$E499G_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+
+# Direction 1 -- a COMPLIANT consumer that binds $FWF_E2E_PORT, even though
+# its own command line also contains a 4-5 digit number (--timeout 30000)
+# that would trip the OLD string heuristic: must PASS.
+E499G1="$TMP/e499-gate-run1"; mkdir -p "$E499G1"
+rc=0
+E499G1_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G1" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_MAX_LANES=2 \
+  "$ROOT/fwf-gate.sh" e499g1 --e2e -- bash -c 'echo --timeout 30000; python3 -m http.server "$FWF_E2E_PORT" --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
+assert_eq "AC3: a compliant consumer (binds \$FWF_E2E_PORT) PASSES even with a spurious 4-5 digit number in its command line" "0" "$rc"
+
+# Direction 2 -- a NON-COMPLIANT consumer that ignores $FWF_E2E_PORT and
+# hardcodes a different port: must FAIL, with a stated reason, even though
+# its own "suite" reports success.
+E499G2="$TMP/e499-gate-run2"; mkdir -p "$E499G2"
+rc=0
+E499G2_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G2" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_MAX_LANES=2 \
+  "$ROOT/fwf-gate.sh" e499g2 --e2e -- bash -c 'python3 -m http.server 18040 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
+assert_eq "AC3: a non-compliant consumer (hardcodes its own port, ignores \$FWF_E2E_PORT) FAILS" "1" "$rc"
+assert_contains "AC3: the failure states WHY -- it never bound its allocated port" "$E499G2_OUT" "never bound its allocated port"
+
+# AC6, for this check specifically -- at the shipped default N=1, the
+# IDENTICAL non-compliant command is unaffected: the assertion is gated on
+# N>=2 and is a strict no-op below it.
+E499G3="$TMP/e499-gate-run3"; mkdir -p "$E499G3"
+rc=0
+E499G3_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G3" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
+  "$ROOT/fwf-gate.sh" e499g3 --e2e -- bash -c 'python3 -m http.server 18041 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
+assert_eq "AC6: at N=1 (shipped default) the SAME non-compliant command is unaffected by AC3's check (strict no-op)" "0" "$rc"
+
+# --------------------------------------------------------------------------
 section "cargo build concurrency SEMAPHORE (issue #138 piece C): N slots, not a mutex"
 CBRUN="$TMP/cargobuild138"
 cat > "$TMP/cargo-build-drive.sh" <<'EOSCRIPT'

@@ -1267,6 +1267,12 @@ case "$cmd" in
     FWF_PROFILE="$(resolve_profile)"
     source "$FWF_DIR/lib.sh"
     fwf_stub_sweep "$@";;
+  e2e-lock-status)
+    # issue #499 AC4/AC5/AC9: lane occupancy + effective FWF_E2E_MAX_LANES,
+    # read-only (A5 -- no reaping, no kill; see lib.sh's fwf_e2e_lock_status).
+    FWF_PROFILE="$(resolve_profile)"
+    source "$FWF_DIR/lib.sh"
+    fwf_e2e_lock_status;;
   stop)      engine fwf-stop.sh "$@";;
   resume)    engine fwf-resume.sh "$@";;
   down)      engine fwf-down.sh "$@";;
