@@ -4,7 +4,9 @@
 # into the shell by mistake. Use this to hot-swap one agent (e.g. after editing a
 # prompt template) without relaunching the whole grid.
 #
-# Usage: [FWF_PROFILE=example] fwf-respawn.sh <role>
+# Usage: [FWF_PROFILE=<profile>] fwf-respawn.sh <role>
+#   (<profile> is a placeholder -- do NOT pass the literal word `example`; a
+#    respawn adopts the running factory's profile automatically.)
 #   role = impl1 | impl2 | impl3 | qa1 | qa2 | qa3 | conductor   (implementation session)
 #        | pm | gv | captain                                     (coordination session)
 set -euo pipefail
@@ -15,14 +17,27 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # FWF_PROFILE, so it would resolve `example`, believe the floor is 3 pairs, and
 # manufacture seats the running factory never had. Prefer the profile `fwf up`
 # persisted for the RUNNING factory before falling back to lib.sh's default.
-if [ -z "${FWF_PROFILE:-}" ]; then
-  _fwf_run_dir="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
-  if [ -r "$_fwf_run_dir/profile" ]; then
-    FWF_PROFILE="$(cat "$_fwf_run_dir/profile" 2>/dev/null)"
-    [ -n "$FWF_PROFILE" ] && export FWF_PROFILE
+_fwf_run_dir="${FWF_RUN_DIR:-$HOME/.fun-with-friends}"
+if [ -r "$_fwf_run_dir/profile" ]; then
+  _fwf_running_profile="$(cat "$_fwf_run_dir/profile" 2>/dev/null)"
+  if [ -n "$_fwf_running_profile" ] && [ "${FWF_PROFILE:-}" != "$_fwf_running_profile" ]; then
+    # A respawn acts on the RUNNING factory, so the running factory's profile is
+    # the only correct answer. Filling in a blank was not enough: callers were
+    # observed passing FWF_PROFILE=example explicitly -- the literal placeholder
+    # from this file's own usage line -- which sailed past a blank-only check,
+    # resolved a 3-pair floor shape, and manufactured seats this factory never
+    # had. Override, loudly, rather than silently building someone else's floor.
+    if [ -n "${FWF_PROFILE:-}" ]; then
+      printf 'fwf-respawn: FWF_PROFILE=%s disagrees with the running factory (%s) -- using the running factory. Set FWF_PROFILE_FORCE=1 to override.\n' \
+        "$FWF_PROFILE" "$_fwf_running_profile" >&2
+    fi
+    if [ -z "${FWF_PROFILE_FORCE:-}" ]; then
+      FWF_PROFILE="$_fwf_running_profile"; export FWF_PROFILE
+    fi
   fi
-  unset _fwf_run_dir
+  unset _fwf_running_profile
 fi
+unset _fwf_run_dir
 source "$DIR/lib.sh"
 # Role prompts resolve via fwf_tmpl_path (template, falling back to its base).
 

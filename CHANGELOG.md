@@ -11,6 +11,20 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.2] - 2026-09-05
+
+### Fixed
+
+- **A respawn could still rebuild the wrong floor shape** (#530, code 27c114e,
+  docs none — internal) — v0.42.1 only consulted the running factory's profile
+  when `FWF_PROFILE` was *empty*, but callers were observed passing
+  `FWF_PROFILE=example` explicitly (the literal placeholder from this script's
+  own usage line), which sailed past a blank-only check and manufactured
+  `impl3`/`qa3` seats on a 2-pair factory. A respawn now adopts the running
+  factory's profile even when a conflicting value is supplied, warns when it
+  overrides, and offers `FWF_PROFILE_FORCE=1` as a deliberate escape. The usage
+  line no longer shows a copy-pasteable literal profile name.
+
 ## [0.42.1] - 2026-09-05
 
 ### Fixed
