@@ -11,6 +11,37 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.7] - 2026-09-05
+
+### Fixed
+
+- **One file could consume the entire lint budget** (#480, code c5920a8, docs
+  c5920a8) — `shellcheck` was invoked once across every script, so
+  `test/run.sh` alone drove the step to ~11 minutes and to a memory cliff where
+  it was SIGKILLed (exit 137) even when run by hand with no cap, no gate and no
+  reaper. Three release attempts were spent inside this step. The lint is now
+  split so a single file cannot take the other sixty.
+- **A scale-test flake from asserting the absence of a shell** (#485, code
+  93c58c9, docs 93c58c9) — the wait predicate was a deny-list ("anything but
+  `bash`") and so accepted any transient launcher state as success. It now waits
+  for the *expected* launcher via an allow-list, reusing `_wait_pane_child`,
+  with a derived (not hardcoded) budget and a timeout message naming what was
+  awaited, for how long, and what was last observed.
+- **A live seat could release another seat's claim** (#515, code 5bd0f35, docs
+  5bd0f35) — the claim selector resolved only the first matching comment rather
+  than the full claim/release sequence, so a stale CLAIM could outrank the
+  RELEASE that followed it.
+
+### Notes
+
+- The lint split above is the fix for the cliff that v0.42.6's own notes flagged
+  as "the fused single-invocation lint remains the weak point".
+- #520 and #531 were merged by the operator past an unresolved QA hold, under
+  explicit authorization, because in both cases the gate that would have cleared
+  the hold was itself blocked by the defect under review (#478's reaper). The
+  reasoning is recorded on each PR. #478, #312 and the e2e lock flakes remain
+  open.
+
 ## [0.42.6] - 2026-09-05
 
 ### Fixed
