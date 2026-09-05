@@ -607,6 +607,23 @@ success, failure, or a kill — so no role has to manage them by hand; see
   command's raw rc) is unaffected either way — only the RECORDED verdict a
   later promote reads is downgraded.
 
+  **An externally-killed run (OOM, an operator's Ctrl-C, the box itself
+  going down) records `indeterminate`, never a content verdict (issue
+  #479).** A signalled child's exit status (128+N) is byte-for-byte
+  identical to an intentional `exit 137` — there is no way for a POSIX
+  shell to tell them apart from the code alone — so `fwf gate` instead
+  checks for **completion**: `FWF_GATE_COMPLETION_MARKER` (default: this
+  repo's own `N passed, N failed, N skipped` idiom, overridable including
+  to empty to disable) is grepped against the wrapped command's captured
+  output. A signal-range exit code with no matching completion record
+  means the run never reached a conclusion; a signal-range exit code
+  **with** one (a suite that calls `exit 137` on itself, having already
+  finished) is still a real `red`. An `indeterminate` run's own output
+  says so plainly, is never written into the `#227` case history (so it
+  cannot skew a case's flake rate or "last green"), and — like `red` and
+  `green-lint-skipped` — is refused by `fwf gate-promote` exactly like a
+  red one; `fwf-gate.sh`'s exit code stays non-zero either way.
+
   **The honest ceiling, stated so this is not read as prevention:**
   `fwf gate-promote` binds the *ordinary* path — every seat still holds
   full git credentials and can run `git push origin <target>` directly, or
