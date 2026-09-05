@@ -783,8 +783,17 @@ assert_contains "#512 AC(new): the guard names the matched TOKEN, not only the l
 # caller consume the very body it just rejected. Asserting this also consumes
 # F512_TOKOUT, which was captured and never read (SC2034, the finding that
 # failed the v0.42.5 lint; same shape as #458).
-assert_not_contains "#512 AC(new): a refused body is not echoed to stdout" \
-  "$F512_TOKOUT" "still mentions GV-SIGNOFF raw"
+# issue #545: asserted POSITIVELY, not as a negative over a value that is
+# correctly empty. fwf_pr_body_guard emits NOTHING on stdout when it refuses
+# (lib/pr_context.sh:366-367), so $F512_TOKOUT is empty on the happy path --
+# and assert_not_contains treats an empty haystack as VACUOUS and fails it
+# (#247 AC a5, deliberately). The old negative form could therefore never
+# pass: its success condition and the anti-vacuity guard's failure condition
+# were the same state. Asserting emptiness directly still consumes
+# F512_TOKOUT (so SC2034 stays fixed) and still goes RED for the right
+# reason -- if the guard ever echoed a refused body, this would be non-empty.
+assert_eq "#512 AC(new): a refused body is not echoed to stdout" \
+  "" "$F512_TOKOUT"
 
 # AC(2) -- the invariant, asserted where it can actually fail. Every declared
 # guard token's specimen must be transformed by fwf_sanitize_pr_text; a token
