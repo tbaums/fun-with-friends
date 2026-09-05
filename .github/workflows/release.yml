@@ -26,7 +26,7 @@ jobs:
   # release before a single artifact exists.
   preflight:
     name: pre-publish divergence check
-    runs-on: ubuntu-latest
+    runs-on: local-devbox   # operator directive: no GitHub-hosted CI; all CI runs on our own boxes
     steps:
       - uses: actions/checkout@v5
         with:
@@ -81,7 +81,7 @@ jobs:
   # before a single artifact exists.
   ci-verdict:
     name: required CI checks are green for this SHA
-    runs-on: ubuntu-latest
+    runs-on: local-devbox   # operator directive: no GitHub-hosted CI; all CI runs on our own boxes
     steps:
       - uses: actions/checkout@v5
       - name: Consult ci.yml's verdict for this SHA (issue #303)
@@ -144,7 +144,7 @@ jobs:
   load-targets:
     name: load dash-targets.json
     needs: [preflight, ci-verdict]
-    runs-on: ubuntu-latest
+    runs-on: local-devbox   # operator directive: no GitHub-hosted CI; all CI runs on our own boxes
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
     steps:
@@ -212,7 +212,7 @@ jobs:
   release:
     name: package + publish
     needs: [preflight, ci-verdict, dash-binaries]
-    runs-on: ubuntu-latest
+    runs-on: local-devbox   # operator directive: no GitHub-hosted CI; all CI runs on our own boxes
     steps:
       - uses: actions/checkout@v5
         with:
