@@ -15,7 +15,7 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ### Fixed
 
-- **A respawn could still rebuild the wrong floor shape** (#530, code 27c114e,
+- **A respawn could still rebuild the wrong floor shape** (#530, code 874d528,
   docs none — internal) — v0.42.1 only consulted the running factory's profile
   when `FWF_PROFILE` was *empty*, but callers were observed passing
   `FWF_PROFILE=example` explicitly (the literal placeholder from this script's
