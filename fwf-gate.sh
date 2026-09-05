@@ -37,6 +37,14 @@
 #              those instead of hardcoding a port/data dir to actually get
 #              concurrent lanes once FWF_E2E_MAX_LANES is raised above its
 #              default of 1 (a strict no-op until then).
+#   --e2e-spec FILE  (issue #494 AC5/AC6, repeatable) a SHORT lease: holds the
+#              same lane an --e2e run would, but names specific spec file(s)
+#              via FWF_E2E_SPEC (newline-joined, same gated-process-only
+#              export contract as FWF_E2E_PORT/FWF_E2E_DATA_DIR above) so a
+#              profile's E2E_CMD can run just those instead of the full
+#              suite. This flag is a pure pass-through -- fwf-gate.sh does
+#              not shorten the lease itself; it is the consumer choosing to
+#              run less that makes the hold shorter. Requires --e2e.
 #   --cargo-build  ALSO take a cargo-build concurrency slot (see above).
 #   --tip-cmd  Make this gate TIP-triggered, not just timer-triggered (issue
 #              #202): CMD is evaluated (via `eval`, in the caller's cwd) to
@@ -222,7 +230,7 @@ source "$DIR/lib.sh"
 EX_SKIPPED=75
 EX_STALE=76
 
-usage() { echo "usage: fwf gate <role> [--e2e] [--cargo-build] [--tip-cmd 'CMD'] [--tip-ancestry] -- <command> [args...]" >&2; }
+usage() { echo "usage: fwf gate <role> [--e2e] [--e2e-spec FILE]... [--cargo-build] [--tip-cmd 'CMD'] [--tip-ancestry] -- <command> [args...]" >&2; }
 
 role="${1:-}"
 [ -n "$role" ] || { usage; exit 1; }
@@ -249,15 +257,29 @@ want_e2e=0
 want_cargo_build=0
 tip_cmd=""
 want_tip_ancestry=0
+e2e_specs=()
 while :; do
   case "${1:-}" in
     --e2e) want_e2e=1; shift ;;
+    # issue #494 (scope item 1): a short lease. Repeatable so a caller can
+    # name several specs in one run; each holds the SAME lane the full
+    # suite would, just for however long the consumer's own E2E_CMD takes
+    # to run only these specs instead of everything. This flag is a pure
+    # pass-through (FWF_E2E_SPEC below) -- fwf-gate.sh itself does not know
+    # what a "spec" is for any given profile's E2E_CMD, so it never
+    # shortens the lease itself; the consumer's own choice to run less is
+    # what makes AC5's hold-duration claim true.
+    --e2e-spec) [ $# -ge 2 ] || { usage; exit 1; }; e2e_specs+=("$2"); shift 2 ;;
     --cargo-build) want_cargo_build=1; shift ;;
     --tip-cmd) [ $# -ge 2 ] || { usage; exit 1; }; tip_cmd="$2"; shift 2 ;;
     --tip-ancestry) want_tip_ancestry=1; shift ;;
     *) break ;;
   esac
 done
+if [ "${#e2e_specs[@]}" -gt 0 ] && [ "$want_e2e" != 1 ]; then
+  echo "fwf gate: --e2e-spec requires --e2e" >&2
+  usage; exit 1
+fi
 
 [ "${1:-}" = "--" ] || { usage; exit 1; }
 shift
@@ -602,6 +624,14 @@ _fwf_gate_env_restore
 # anywhere (the #175/#182/#217 lesson this repo has been bitten by 3 times).
 if [ "$want_e2e" = 1 ]; then
   export FWF_E2E_PORT="$e2e_port" FWF_E2E_DATA_DIR="$e2e_data_dir"
+  # issue #494 AC5/AC6: newline-joined so a spec path containing a space
+  # still round-trips (`IFS=$'\n' read -r -d '' -a specs <<<"$FWF_E2E_SPEC"`
+  # on the consumer side) -- same "gated command's process only" contract
+  # as the two vars above, unset alongside them.
+  if [ "${#e2e_specs[@]}" -gt 0 ]; then
+    _fwf494_spec_joined="$(printf '%s\n' "${e2e_specs[@]}")"
+    export FWF_E2E_SPEC="$_fwf494_spec_joined"
+  fi
 fi
 
 # issue #499 AC3: arm the port-binding watcher ONLY at N>=2 -- see
@@ -805,7 +835,7 @@ fi
 rm -f "$wrapped_err_capture" "$wrapped_out_capture"
 
 if [ "$want_e2e" = 1 ]; then
-  unset FWF_E2E_PORT FWF_E2E_DATA_DIR
+  unset FWF_E2E_PORT FWF_E2E_DATA_DIR FWF_E2E_SPEC
 fi
 
 # issue #237 AC (k): #211's convention applied to the WRITE side -- a gate

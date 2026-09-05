@@ -448,6 +448,43 @@ not a per-role copy:
   is inherited by every role's pane the moment anything starts the tmux
   server, not only the gates that should have it) — `config.sh`'s default
   itself does not move.
+- **A waiter can eventually win** (issue #494) — the lane's own acquire loop
+  used to have no queue: a waiter's wait state (`waited=0`) reset on every
+  call, so a role that just lost a 15-minute wait had exactly the same odds
+  on its very next attempt as one that just walked up, and a suite
+  continuously re-contending the lane via its own children's sub-acquisitions
+  meant a waiter could never accumulate an advantage. Now every waiter takes
+  a FIFO ticket (`$FWF_RUN/e2e.queue/<seq>-<role>`, mkdir-atomic, ordered by a
+  fixed-width nanosecond timestamp) and only the queue's own HEAD attempts a
+  lane; every other waiter simply waits its turn. A dead head (the seat that
+  queued it exited, e.g. its own loop SIGTERM'd it) is dropped — same
+  liveness/stale-backstop judgement the lane holder itself uses — so one
+  seat's death can never wedge everyone behind it; dropping a ticket never
+  kills anything (a dead waiter holds no port, only its place in line — kill
+  authority stays with the lane reaper alone). A descendant of the CURRENT
+  holder (the documented common case: a suite's own fixtures spawning
+  `fwf-gate.sh`/`fwf-respawn.sh` sub-acquisitions) is detected and admitted
+  WITHOUT queueing — exactly today's pre-fairness EX_SKIPPED-on-loss
+  behavior — so a holder can never end up waiting on its own descendant's
+  queue position (`fwf_e2e_lock_acquire` / `_fwf_e2e_queue_*` /
+  `_fwf_e2e_is_holder_descendant` in `lib.sh`).
+- **A short lease for one spec** (`fwf gate <role> --e2e --e2e-spec <file>...`,
+  issue #494) — holds the SAME lane a full-suite run would, but exports
+  `FWF_E2E_SPEC` (newline-joined, same gated-process-only contract as
+  `FWF_E2E_PORT`/`FWF_E2E_DATA_DIR`) so a profile's `E2E_CMD` can run just the
+  named spec(s) instead of everything. This is a pure pass-through — the flag
+  does not shorten anything itself; it is the consumer's own choice to run
+  less that inverts the wait-for-a-full-suite-lease arithmetic. Requires
+  `--e2e`; a failing `--e2e-spec` run reports through the identical
+  contract as a failing full run (no correctness escape hatch).
+- **The queue is readable too** (`fwf e2e-lock-status`, extended by issue
+  #494) — alongside each lane's occupancy, the SAME command now also lists
+  the ordered FIFO waiter queue (role/pid/held-since per position), sharing
+  the queue's own liveness judgement (a STALE/LEAKED entry is exactly what
+  the next live waiter's own reap would also drop) while remaining strictly
+  read-only — no lock, no reaping, no mutation, coordinated with issue #499's
+  original lane-occupancy read rather than building a second view of the
+  same state.
 
 - **The wrapped command never outlives the lock it's protected by** (issue
   #195) — a wrapped command that BACKGROUNDS a server (the e2e lane's own
@@ -841,16 +878,25 @@ fwf usage [--clear-hold]                            per-role token usage + an es
                                                     seats and what % of all factory tokens they hold
                                                     (issue #289); a price-table drift check flags any
                                                     reported-or-declared model with no price row.
-fwf gate <role> [--e2e] -- <cmd...>                 the shared guarded gate/e2e launcher every
+fwf gate <role> [--e2e] [--e2e-spec FILE]... -- <cmd...>  the shared guarded gate/e2e launcher every
                                                     __GATE__/__E2E__ render calls (issue #123); exits
                                                     75 rather than stacking a second run when <role>'s
-                                                    own prior gate is still in flight
-fwf e2e-lock-status                                 lane occupancy for the e2e lease pool (issue
-                                                    #499): each lane's HELD holder/port/data_dir/hold-
-                                                    age or FREE, a STALE/LEAKED lane read with the same
-                                                    liveness judgement `fwf gate --e2e` acquire uses, and
-                                                    the effective FWF_E2E_MAX_LANES. Read-only: reports
-                                                    a leaked lease, never reaps or kills one.
+                                                    own prior gate is still in flight. --e2e-spec (issue
+                                                    #494, repeatable, requires --e2e) is a SHORT lease:
+                                                    exports FWF_E2E_SPEC (newline-joined) into the
+                                                    wrapped command's environment so a profile's
+                                                    E2E_CMD can run just the named spec(s) instead of
+                                                    the full suite, holding the lane for minutes instead
+                                                    of a whole run.
+fwf e2e-lock-status                                 lane occupancy AND the FIFO waiter queue for the
+                                                    e2e lease pool (issue #499, extended by #494): each
+                                                    lane's HELD holder/port/data_dir/hold-age or FREE, a
+                                                    STALE/LEAKED lane/queue-entry read with the same
+                                                    liveness judgement `fwf gate --e2e` acquire uses, the
+                                                    ordered waiter queue (role/pid/held-since per
+                                                    position), and the effective FWF_E2E_MAX_LANES.
+                                                    Read-only throughout: reports a leaked lease or a
+                                                    dead queue entry, never reaps or kills either.
 fwf gate-rust-scope --against BRANCH [--safe GLOB]...  SHADOW classifier for whether a wrapped suite
   [--log FILE] [--full-suite-secs N]                 could be skipped for this diff (issue #138); never
   [--suite-name NAME]                                skips anything itself — logs would-skip/would-run
