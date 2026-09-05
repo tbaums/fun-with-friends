@@ -57,13 +57,15 @@ case "$num" in ''|*[!0-9]*) usage; exit 2;; esac
 # the age arithmetic and LIVE/RECLAIMABLE reporting below are untouched.
 _FWF515_RESOLVE='(.comments // [])
 | map(select(.body | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$")))
-| reduce .[] as $c ({holder:null, created:null};
+| reduce .[] as $c ({holder:null, created:null, released:null};
     ($c.body | split(" ")) as $p
     | if $p[0] == "CLAIM"
-      then (if .holder == null then {holder:$p[1], created:$c.createdAt} else . end)
-      else (if .holder == $p[1] then {holder:null, created:null} else . end)
+      then (if .holder == null then {holder:$p[1], created:$c.createdAt, released:null} else . end)
+      else (if .holder == $p[1] then {holder:null, created:null, released:$p[1]} else . end)
       end)
-| if .holder == null then empty else "\(.created)\tCLAIM \(.holder)" end'
+| if .holder != null then "\(.created)\tCLAIM \(.holder)"
+  elif .released != null then "\treleased \(.released)"
+  else empty end'
 
 # Same dual-backend shape as fwf-claim.sh's _issue_read.
 _first_claim_line() { # -> "<createdAt>\tCLAIM <role>" of the EFFECTIVE claim, or empty
@@ -83,6 +85,26 @@ if [ -z "$line" ]; then
   echo "fwf claim-liveness #$num: no CLAIM comment found on this issue"
   exit 2
 fi
+
+# issue #515, second defect (found by the PM on the first cut of this fix):
+# a RELEASED claim must not land in the rc 2 bucket. rc 2 means "I could not
+# DETERMINE the claim state" -- no comment, or an unreadable thread -- which
+# is why templates/dev/implementer.tmpl step 3d tells every seat to treat it
+# as live and fail closed. A completed release is the opposite: the state is
+# known, and it is FREE. Folding a determinate answer into the indeterminate
+# bucket would mean a correctly released ticket still reads "do not attempt"
+# to the one seat the release exists for -- the feature would look right in
+# its own test table and do nothing on the floor.
+#
+# So this is rc 0 (RECLAIMABLE), the SAME code an abandoned claim gets, since
+# both mean exactly "no live claim blocks you, proceed". The never-claimed
+# and unreadable cases above keep rc 2 unchanged: this widens nothing except
+# the one state that was previously unrepresentable.
+case "$line" in
+  $'\treleased '*)
+    echo "fwf claim-liveness #$num: RECLAIMABLE -- ${line#*released } released their claim; no live claim blocks you"
+    exit 0 ;;
+esac
 
 claim_created="${line%%$'\t'*}"
 claim_body="${line#*$'\t'}"

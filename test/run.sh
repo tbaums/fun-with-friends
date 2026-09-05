@@ -7428,8 +7428,20 @@ CL515B=$(CLNEW "Claimed, then released")
 CLI comment "$CL515B" --body "CLAIM impl515b" >/dev/null
 CLI comment "$CL515B" --body "RELEASE impl515b" >/dev/null
 CL515B_OUT="$(CL "$CL515B" 2>&1)"; CLRC=$?
-assert_eq "a released claim is no longer held (rc 2, nothing to check)" "2" "$CLRC"
-assert_contains "and reports the issue as unclaimed" "$CL515B_OUT" "no CLAIM comment found"
+# rc 0, NOT rc 2. rc 2 means "I could not determine the claim state", and
+# templates/dev/implementer.tmpl step 3d tells every seat to treat that as
+# live and fail closed -- so a released ticket landing in rc 2 would still
+# read "do not attempt" to the exact seat the release exists for. A release
+# is a DETERMINATE free state and gets the same code as an abandoned claim.
+assert_eq "a released claim reaches rc 0 -- the code that means 'proceed', not the fail-closed rc 2" "0" "$CLRC"
+assert_contains "and says so in the reclaimable vocabulary the other rc-0 path uses" "$CL515B_OUT" "RECLAIMABLE"
+assert_contains "naming who released it" "$CL515B_OUT" "impl515b released their claim"
+# The contract this rc is read against lives in a DIFFERENT file, which is
+# why the first cut of this fix looked correct in its own table and was not.
+assert_contains "#515: the implementer template still reads rc 0 as 'proceed'" \
+  "$(cat "$ROOT/templates/dev/implementer.tmpl")" "exit 0 = RECLAIMABLE, no live claim blocks you, proceed"
+assert_contains "#515: ...and still reads rc 2 as fail-closed, so a release must not land there" \
+  "$(cat "$ROOT/templates/dev/implementer.tmpl")" "treat as live, do not attempt (fail closed)"
 
 section "fwf claim-liveness (#515): claim -> release -> re-claim resolves to the NEW claimant, not .[0]"
 CL515C=$(CLNEW "Released, then re-claimed")
@@ -7457,6 +7469,16 @@ CL515G_OUT="$(CL "$CL515G" 2>&1)"; CLRC=$?
 assert_eq "the later claim does not steal a held ticket (rc 1)" "1" "$CLRC"
 assert_contains "the FIRST claimant is still the holder" "$CL515G_OUT" "impl515g"
 assert_not_contains "the second claimant is not reported as the holder" "$CL515G_OUT" "impl515h"
+
+section "fwf claim-liveness (#515): a release does NOT widen rc 2 -- never-claimed and released-before-any-claim stay fail-closed"
+CL515N=$(CLNEW "Never claimed at all")
+CLI comment "$CL515N" --body "just some prose, no marker" >/dev/null
+CLRC=0; CL "$CL515N" >/dev/null 2>&1 || CLRC=$?
+assert_eq "an issue nobody ever claimed still exits 2 (indeterminate, unchanged)" "2" "$CLRC"
+CL515P=$(CLNEW "Released before any claim")
+CLI comment "$CL515P" --body "RELEASE impl515p" >/dev/null
+CLRC=0; CL "$CL515P" >/dev/null 2>&1 || CLRC=$?
+assert_eq "a RELEASE with no prior claim frees nothing and still exits 2" "2" "$CLRC"
 
 section "fwf claim-liveness (#515): a RELEASE with prose around it is invisible, exactly as a prose CLAIM is"
 CL515I=$(CLNEW "Prose release")

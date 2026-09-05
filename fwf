@@ -463,8 +463,10 @@ UTILITIES
                          closed toward "do not reclaim"). Read-only.
                          A claim is RELEASABLE (issue #515): a
                          whole-body `RELEASE <role>` comment from the role
-                         that holds it frees the ticket, and a later `CLAIM`
-                         then takes effect. Without that verb the only exits
+                         that holds it frees the ticket (exit 0, the same
+                         "proceed" code an abandoned claim gets -- NOT the
+                         fail-closed 2, which means the state could not be
+                         DETERMINED), and a later `CLAIM` then takes effect. Without that verb the only exits
                          from LIVE were a confirmed-dead pane and the no-
                          signal fallback -- both keyed to the claimant being
                          UNHEALTHY -- so a live seat that had finished could
