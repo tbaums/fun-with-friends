@@ -387,6 +387,23 @@ UTILITIES
                          Populating this list is a governance decision
                          (a human or the captain, after an investigation)
                          this command does not make on its own.
+  gate-recover <role> <target-branch>
+                         Issue #473: the conductor's self-recovery call site
+                         for a non-final verdict on an unmoved tip -- run
+                         after `fwf gate <role> --tip-cmd ...` exits 75
+                         (EX_SKIPPED). An unconsumed GREEN is promoted
+                         directly (no re-run, no human) unless
+                         FWF_CONDUCTOR_AUTO_PROMOTE=0. A RED is
+                         force-resumed (FWF_GATE_FORCE=1's own documented
+                         escape hatch) a bounded number of times
+                         (FWF_CONDUCTOR_FORCE_RESUME_MAX, default 2) only
+                         when FWF_CONDUCTOR_AUTO_FORCE_RESUME=1 (default
+                         off, opt-in) -- and never promotes on a single
+                         forced green, only after fwf-local-ci.sh's own
+                         two-consecutive-greens confirmation (issue #436).
+                         Exits 0 (acted), 75 (nothing actionable this
+                         cycle), or 1 (escalated to a tracking issue +
+                         needs-captain, never silently retried forever).
   gate-rust-scope --against BRANCH [--safe GLOB]... [--log FILE]
                     [--full-suite-secs N]
                          SHADOW classifier for whether a profile's Rust suite
@@ -1203,6 +1220,7 @@ case "$cmd" in
   gate-tip)  engine fwf-gate-tip.sh "$@";;
   gate-promote) engine fwf-gate-promote.sh "$@";;
   gate-revoke) engine fwf-gate-revoke.sh "$@";;
+  gate-recover) engine fwf-gate-recover.sh "$@";;
   gate-rust-scope) engine fwf-gate-rust-scope.sh "$@";;
   authz)     engine fwf-authz.sh "$@";;
   claim)     engine fwf-claim.sh "$@";;

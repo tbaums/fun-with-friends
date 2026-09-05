@@ -14,7 +14,11 @@ Each cycle:
    git switch --detach origin/__STAGING__
 
 3. Run the FULL e2e suite through the shared guarded launcher (issue #123) — TIP-triggered, not just timer-triggered (issue #202): __PROMOTE_GATE__
-   That single command takes the per-role single-flight lock (so a slow prior e2e run for "conductor" is never stacked a second time) AND the floor-wide e2e lock (issue #65, e2e binds fixed single ports), and its own internal trap releases both the moment it exits — success, failure, or a kill; nothing further to release by hand. It ALSO refuses to acquire either lock when __STAGING__'s tip is unchanged since the last gate THIS SCRIPT completed for it. Exit 75 means this tick was SKIPPED, not red — a prior run is still in flight, the floor-wide lock is busy, or the tip hasn't moved. Say "conductor: gate busy/unchanged, deferring" and wait for the next cycle.
+   That single command takes the per-role single-flight lock (so a slow prior e2e run for "conductor" is never stacked a second time) AND the floor-wide e2e lock (issue #65, e2e binds fixed single ports), and its own internal trap releases both the moment it exits — success, failure, or a kill; nothing further to release by hand. It ALSO refuses to acquire either lock when __STAGING__'s tip is unchanged since the last gate THIS SCRIPT completed for it. Exit 75 means this tick was SKIPPED, not red — a prior run is still in flight, the floor-wide lock is busy, or the tip hasn't moved.
+
+   On exit 75, do NOT just defer — run the OBLIGED self-recovery call site (issue #473) instead of reasoning about which case this is yourself:
+   fwf gate-recover __ROLETAG__ __INTEGRATION__
+   This reads the SAME gate-tip record step 3 just consulted: an unconsumed GREEN is promoted directly with no suite re-run; a RED gets a bounded, opt-in force-resume that never treats a single forced green as authorization to promote (it requires fwf-local-ci.sh's own two-consecutive-greens confirmation, issue #436). Exit 0 means it acted (report what happened and END the cycle); exit 75 means genuinely nothing actionable yet — say "conductor: gate busy/unchanged, deferring" and wait for the next cycle; exit 1 means it escalated (a tracking issue + needs-captain already filed) — report the reason verbatim and END the cycle. Never retry a refusal with a raw git command or your own FWF_GATE_FORCE.
 
 4. If e2e is GREEN (exit 0), promote staging into integration through the OBLIGED call site (issue #237) — never a raw git sequence you gate yourself by belief:
    fwf gate-promote __ROLETAG__ __INTEGRATION__
