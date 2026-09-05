@@ -11,6 +11,37 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-04
+
+### Added
+
+- **The conductor watchdogs an unconsumed GREEN gate verdict** (#469, code
+  f6e0d12, docs f6e0d12) — a green that no consumer picks up is now detected
+  and re-driven instead of sitting until the tip moves.
+- **Duplicate claims inside the loop-latency window are adjudicated** (#462,
+  code dd44813, docs dd44813) — two seats claiming the same issue within one
+  loop tick now resolve to a single owner rather than both proceeding.
+
+### Fixed
+
+- **Three drifted fixtures made every gate run red** (#500 #505 #506, code
+  17f0151, docs none — internal, fixtures only) — the suite's own fixtures had
+  drifted from the code under test, so a clean tree still reported failures.
+- **`templates/dev/qa.tmpl`'s routed-queue idle rule contradicted its own #194
+  routing** (#472, code 010ef13, docs none — internal, template only) — a qa
+  seat could be told to idle and to pick up routed work by the same template.
+- **`pr_context` kept two mirrored token lists that could drift** (#512, code
+  7ea3856, docs none — internal) — collapsed to one table.
+
+### Internal
+
+- **`fwf-harness` isolates tmux writes to the sandbox socket structurally**
+  (#466, code bb3347c, docs none — internal) — the harness can no longer write
+  to the default socket the live floor runs on.
+- The #478 fix (`30b5fec`) and the #467 fix (`2088f84`) were both reverted in
+  this range (`e9728b9`, `646af5e`) and net to no change; both issues remain
+  open despite the `Closes` trailers carried on the reverted commits.
+
 ## [0.41.0] - 2026-08-31
 
 ### Added
