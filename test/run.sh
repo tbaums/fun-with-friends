@@ -4207,8 +4207,50 @@ EOF
   assert_eq "AC(a): the new impl2 pane exists" "0" "$F210IMPL2_RC"
   F210QA2_RC=0; [ -n "$QA2_PANE" ] || F210QA2_RC=1
   assert_eq "AC(a): the new qa2 pane exists" "0" "$F210QA2_RC"
-  assert_not_contains "AC(a): the new impl2 pane is running claude (not sitting at a shell)" \
-    "$(tmux display -p -t "$IMPL2_PANE" '#{pane_current_command}')" "bash"
+  # issue #485: a POSITIVE predicate on a bounded wait, not a single-shot
+  # negative one. The old form sampled pane_current_command once and asserted
+  # it was not "bash". The pane is created correctly; the assertion simply ran
+  # before the launched process had replaced the shell, so under load it landed
+  # inside that gap and went red on a working scale (13/20 runs).
+  #
+  # "not bash" is unfalsifiable at the wrong moment AND satisfied by the wrong
+  # thing -- a pane sitting at sh, or one whose process died leaving an empty
+  # command, both pass it. Resolving the command and requiring it to be a real
+  # non-shell says what we actually mean.
+  #
+  # Reuses #460's retry idiom (_wait_pane_child re-resolves the WHOLE chain on
+  # each pass) on #505's derived budget, rather than a second hand-rolled loop.
+  # The budget is NOT hardcoded: FWF_TEST_PANE_CHILD_WAIT_SECS derives from
+  # IMPL_INTERVAL, because a fixed number was already wrong on this floor once.
+  # ALLOW-list, not a deny-list. My first draft of this fix waited for
+  # "anything that is not bash|sh|dash|zsh", and its own efficacy test caught
+  # it passing on a pane that had NOT launched the stub: pane_current_command
+  # transiently reads "tmux" during session setup, which is not a shell and so
+  # satisfied the deny-list. A positive predicate over a deny-list is still a
+  # negative predicate wearing a hat -- it accepts every value nobody thought
+  # to exclude, which is the same defect class as the "not bash" form it
+  # replaces. Name what we expect instead.
+  #
+  # F85CLAUDE (the launcher stub this section runs via FWF_CLAUDE_CMD) is
+  # `exec sleep 300`, so a pane that really launched it reports "sleep". If
+  # that stub changes, this must change with it -- deliberately coupled, and
+  # the failure message below names the expectation so the coupling is
+  # discoverable rather than mysterious.
+  F485_EXPECT_CMD="sleep"
+  _f485_impl2_cmd() {
+    _c="$(tmux display -p -t "$IMPL2_PANE" '#{pane_current_command}' 2>/dev/null || true)"
+    [ "$_c" = "$F485_EXPECT_CMD" ] && printf '%s' "$_c"
+    return 0
+  }
+  _f485_t0=$SECONDS
+  F485_IMPL2_CMD="$(_wait_pane_child _f485_impl2_cmd || true)"
+  _f485_waited=$(( SECONDS - _f485_t0 ))
+  if [ -n "$F485_IMPL2_CMD" ]; then
+    ok "AC(a): the new impl2 pane is running claude (not sitting at a shell)"
+  else
+    bad "AC(a): the new impl2 pane is running claude (not sitting at a shell)" \
+      "pane $IMPL2_PANE never reached the expected launcher command '$F485_EXPECT_CMD' within ${_f485_waited}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s); last command read: '$(tmux display -p -t "$IMPL2_PANE" '#{pane_current_command}' 2>/dev/null || echo '<unreadable>')'"
+  fi
 
   IMPL1_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
   COND_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
