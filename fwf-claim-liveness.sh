@@ -22,9 +22,18 @@
 # Exit codes:
 #   0 = RECLAIMABLE -- safe to post a fresh CLAIM and proceed.
 #   1 = LIVE -- do not reclaim.
-#   2 = no CLAIM comment found on this issue, or a read/usage failure
-#       (fail-closed in the "do not reclaim" direction: silence is never
-#       treated as permission).
+#   2 = MALFORMED, or a read/usage failure -- the FIRST claim-shaped comment
+#       (its first line starts with "CLAIM"/"RELEASE") does not parse as
+#       "CLAIM <role>"/"RELEASE <role>", or the thread could not be read at
+#       all. Fail-closed (do not reclaim) in BOTH directions, same as #500's
+#       own incident: a malformed signal is exactly the case that must not
+#       be silently treated as absent (issue #502; mirrors fwf-authz.sh's
+#       INVALID, which does the same for a malformed sentinel).
+#   3 = no claim-shaped comment found at all -- nothing holds this issue,
+#       proceed. Split out of the old, overloaded rc 2 (issue #502): "there
+#       is nothing here" and "there is something here I can't parse" need
+#       opposite handling, and folding them together made the second one
+#       strictly worse than having no claim at all.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -53,26 +62,64 @@ case "$num" in ''|*[!0-9]*) usage; exit 2;; esac
 #     (ergonomic, not a security control -- see fwf-claim.sh:66 and #207)
 #   * claim -> release -> re-claim resolves to the re-claim
 #
-# The output contract is unchanged ("<createdAt>\tCLAIM <role>", or empty), so
-# the age arithmetic and LIVE/RECLAIMABLE reporting below are untouched.
-_FWF515_RESOLVE='(.comments // [])
-| map(select(.body | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$")))
-| reduce .[] as $c ({holder:null, created:null, released:null};
-    ($c.body | split(" ")) as $p
-    | if $p[0] == "CLAIM"
-      then (if .holder == null then {holder:$p[1], created:$c.createdAt, released:null} else . end)
-      else (if .holder == $p[1] then {holder:null, created:null, released:$p[1]} else . end)
-      end)
-| if .holder != null then "\(.created)\tCLAIM \(.holder)"
-  elif .released != null then "\treleased \(.released)"
-  else empty end'
-
-# Same dual-backend shape as fwf-claim.sh's _issue_read.
-_first_claim_line() { # -> "<createdAt>\tCLAIM <role>" of the EFFECTIVE claim, or empty
-  if [ "${FWF_ISSUES:-}" = "local" ]; then
-    "$DIR/fwf-issues.sh" view "$num" --json comments --jq "$_FWF515_RESOLVE"
+# issue #502: matches on the comment's FIRST LINE only, not the whole body --
+# a comment whose first line is "CLAIM <role>" followed by an explanation
+# (#500's exact incident shape) is exactly as much a claim as a bare one-line
+# comment, and every human/agent reading the thread already reads it that
+# way. Distinguishes THREE states, not two: no claim-shaped comment at all
+# (nothing to resolve -- rc 3 below); the FIRST claim-shaped comment does not
+# parse as "<CLAIM|RELEASE> <role>" (MALFORMED -- rc 2, loud, mirrors
+# fwf-authz.sh's INVALID); or a resolvable claim/release sequence (unchanged
+# from #515, just fed from first-lines instead of whole bodies). A malformed
+# comment that is NOT the first claim-shaped one in the thread is silently
+# ignored, same as any other non-matching text -- only the very first
+# claim-shaped sighting can trigger MALFORMED, so a bare or garbled RELEASE
+# posted after a real, well-formed CLAIM still loses to it (AC5: first-claim-
+# wins must not become first-*parseable*-claim-wins for the wrong reason).
+#
+# Output contract, extended (previously "<createdAt>\tCLAIM <role>" or
+# empty): a MALFORMED first line now produces "malformed\t<the line>" --
+# a shape no valid claim/release output or the empty ("nothing found")
+# output can ever collide with, since neither starts with the literal word
+# "malformed" followed by a tab.
+_FWF502_RESOLVE='def firstline: split("\n")[0] | sub("[\t\r ]+$"; "");
+( (.comments // [])
+  | map({created: .createdAt, line: (.body | firstline)})
+  | map(. + {
+      shaped: (.line | test("^(CLAIM|RELEASE)([ \t]|$)")),
+      wellformed: (.line | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$"))
+    })
+  | map(select(.shaped))
+) as $shaped
+| if ($shaped | length) == 0 then
+    empty
   else
-    gh issue view "$num" --json comments --jq "$_FWF515_RESOLVE"
+    ($shaped | nth(0; .[])) as $head
+    | if ($head.wellformed | not) then
+        "malformed\t\($head.line)"
+      else
+        ($shaped
+         | map(select(.wellformed))
+         | reduce .[] as $c ({holder:null, created:null, released:null};
+             ($c.line | split(" ")) as $p
+             | if $p[0] == "CLAIM"
+               then (if .holder == null then {holder:$p[1], created:$c.created, released:null} else . end)
+               else (if .holder == $p[1] then {holder:null, created:null, released:$p[1]} else . end)
+               end)
+         | if .holder != null then "\(.created)\tCLAIM \(.holder)"
+           elif .released != null then "\treleased \(.released)"
+           else empty end)
+      end
+  end'
+
+# Same dual-backend shape as fwf-claim.sh's _issue_read. Issue #502: the SAME
+# jq filter serves both backends here (unlike the two hand-duplicated regexes
+# this replaced pre-#515), so fixing the match here fixes both at once.
+_first_claim_line() { # -> "<createdAt>\tCLAIM <role>" of the effective claim, "malformed\t<line>", or empty
+  if [ "${FWF_ISSUES:-}" = "local" ]; then
+    "$DIR/fwf-issues.sh" view "$num" --json comments --jq "$_FWF502_RESOLVE"
+  else
+    gh issue view "$num" --json comments --jq "$_FWF502_RESOLVE"
   fi
 }
 
@@ -82,9 +129,22 @@ if [ "$read_rc" -ne 0 ]; then
   exit 2
 fi
 if [ -z "$line" ]; then
-  echo "fwf claim-liveness #$num: no CLAIM comment found on this issue"
-  exit 2
+  echo "fwf claim-liveness #$num: no CLAIM comment found on this issue -- nothing holds it, proceed"
+  exit 3
 fi
+
+# issue #502: a claim-shaped comment (first line starts with CLAIM/RELEASE)
+# that does not parse as "<verb> <role>" -- e.g. bare "CLAIM" with no role,
+# or a role tag with disallowed characters. Distinct from "nothing found"
+# (rc 3, above): there plainly IS something here, it just does not parse,
+# and folding that into "no claim" would silently treat a botched or
+# forged-looking claim attempt as an open ticket. Fail closed and say so
+# loudly, exactly as fwf-authz.sh's INVALID does for a malformed sentinel.
+case "$line" in
+  malformed$'\t'*)
+    echo "fwf claim-liveness #$num: MALFORMED -- the first claim-shaped comment does not parse as 'CLAIM <role>' or 'RELEASE <role>': ${line#malformed$'\t'}" >&2
+    exit 2 ;;
+esac
 
 # issue #515, second defect (found by the PM on the first cut of this fix):
 # a RELEASED claim must not land in the rc 2 bucket. rc 2 means "I could not
@@ -97,9 +157,10 @@ fi
 # its own test table and do nothing on the floor.
 #
 # So this is rc 0 (RECLAIMABLE), the SAME code an abandoned claim gets, since
-# both mean exactly "no live claim blocks you, proceed". The never-claimed
-# and unreadable cases above keep rc 2 unchanged: this widens nothing except
-# the one state that was previously unrepresentable.
+# both mean exactly "no live claim blocks you, proceed". The unreadable and
+# malformed cases above stay fail-closed at rc 2, and never-claimed is its
+# own rc 3 (issue #502): this widens nothing except the one state that was
+# previously unrepresentable.
 case "$line" in
   $'\treleased '*)
     echo "fwf claim-liveness #$num: RECLAIMABLE -- ${line#*released } released their claim; no live claim blocks you"
