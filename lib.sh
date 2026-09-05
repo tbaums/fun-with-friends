@@ -1702,38 +1702,86 @@ fwf_role_pane_alive() {
 # (pane confirmed alive in ANY state, or liveness is unconfirmed/ambiguous --
 # fail safe); rc 1 = confirmed SAFE to idle past (pane CONFIRMED ABSENT, or
 # no liveness signal has EVER existed for this role AND the claim is already
-# past the fallback window).
+# past the fallback window). issue #503, AC6: prints a one-line REASON to
+# stdout on every path (a caller not interested in it can simply discard it,
+# same as before) -- "blocks because live" and "blocks because undiagnosable"
+# were previously the same bare boolean, indistinguishable to an operator.
 #
-# GV advisory on PR #256, corrected here: WEDGED (#165: "tick static AND
-# tokens flat past FWF_WEDGE_MIN_SECS") is a LIVE pane that stopped
-# progressing, not a dead one -- #165's own remedy for it is fwf-respawn.sh
-# ("the only verdict that may trigger a respawn"), never a floor teardown.
-# Treating WEDGED as safe-to-idle put this guard and the supervisor on
-# OPPOSITE actions for the same verdict: revive vs. tear down. So WEDGED
-# only permits idling when the pane is ALSO confirmed absent (fwf_role_pane_alive
-# false) -- a wedged-but-PRESENT pane blocks, deferring to respawn, exactly
-# like HEALTHY/WORKING. If FWF_SUPERVISE_AUTORESPAWN=1 later respawns a
-# wedged claimant, it either resumes ticking (still blocks here, correctly --
-# real work may resume) or stays wedged (still blocks) until a human
-# intervenes; this guard never reaps on WEDGED itself, so there is no race
-# between the two consumers of the one shared verdict.
+# GV advisory on PR #256: WEDGED (#165: "tick static AND tokens flat past
+# FWF_WEDGE_MIN_SECS") is a LIVE pane that stopped progressing, not a dead
+# one -- #165's own remedy for it is fwf-respawn.sh ("the only verdict that
+# may trigger a respawn"), never a floor teardown. So WEDGED still blocks,
+# deferring to respawn, exactly like HEALTHY/WORKING.
+#
+# issue #503: pane presence is now checked FIRST, unconditionally, ahead of
+# the tick/token classifier entirely -- direct evidence replacing an
+# inference (#147's own fwf_role_pane_alive is the predicate this reuses,
+# consistency rather than a new claim). Three compounding defects this
+# replaces: (1) fwf_role_pane_alive was consulted only inside the WEDGED
+# branch, so a role with NO PANE IN ANY SESSION never reached the one check
+# that would notice -- it blocked indefinitely unless the tick comparison
+# independently produced WEDGED, which for a role with no pane at all it
+# often cannot (fwf-pane-liveness.sh reads UNKNOWN before it ever gets the
+# chance to accumulate a WEDGED-length window). (2) the claim-age fallback
+# lived behind `[ ! -f "$snap" ]`, so it was live-code exactly once per role,
+# ever -- the FIRST liveness poll for any role (by anyone, for any reason)
+# permanently disabled the only mechanism that could release a claim from a
+# role with no liveness signal. (3) every poll that landed while a role's
+# tick genuinely was advancing re-stamped fwf-pane-liveness.sh's own
+# baseline, which restarted the FWF_WEDGE_MIN_SECS window on every sample --
+# a monitoring loop polling faster than that window could hold a dead role's
+# claim open indefinitely, each poll looking like it merely observed.
+#
+# Fix shape: check the pane FIRST (AC1) -- no pane, no further questions,
+# RECLAIMABLE in this one call, regardless of claim age (a live claimant has
+# a pane by definition; a role mid-creation, per #503's edge cases, has no
+# LIVE SEAT yet either, so releasing its claim is correct, not a false
+# positive). Only once the pane is confirmed alive does the tick/token
+# classifier run at all -- HEALTHY/WORKING/WEDGED all block (a live-or-stuck
+# pane, deferring to respawn on WEDGED, never a teardown here). Any OTHER
+# verdict (UNKNOWN, or an unrecognised string) is the genuinely indeterminate
+# case, and the claim-age fallback now applies to it UNCONDITIONALLY (AC5)
+# -- not gated on whether a tick-watch snapshot already exists -- because
+# "a baseline file exists" is a fact about which diagnostics have run, not
+# about whether the claimant is real.
+#
+# Known limitation (#503, stated deliberately, not silently): pane presence
+# is NECESSARY but not SUFFICIENT. fwf_role_pane_alive is a label match on
+# pane EXISTENCE (lib.sh above); it says nothing about whether an agent is
+# running inside. A pane that survives with no agent inside still blocks a
+# claim indefinitely -- this ticket fixes pane-absent, not agent-absent.
+# Folding an agent-liveness check in here was deliberately declined: a
+# freshly created pane momentarily has no agent either, which is the SAME
+# observable state as #503's own pane-creation edge case, and "agent absent
+# -> release" would reintroduce the double-claim race that edge case exists
+# to prevent. It wants its own follow-up ticket with its own creation-aware
+# guard, not a line added to this one.
 fwf_claim_liveness_blocks() {
-  local role="${1:?fwf_claim_liveness_blocks needs a role}" age="${2:-0}" fallback="${FWF_CLAIM_LIVENESS_FALLBACK_SECS:-900}" snap verdict
+  local role="${1:?fwf_claim_liveness_blocks needs a role}" age="${2:-0}" fallback="${FWF_CLAIM_LIVENESS_FALLBACK_SECS:-900}" verdict
   case "$age" in ''|*[!0-9]*) age=0;; esac
-  snap="$FWF_STATE_DIR/tick-watch/$role"
-  if [ ! -f "$snap" ]; then
-    # No signal has EVER been recorded for this role -- the ticket's own
-    # "no pane to classify" case (point 2 of the Ask). Stamp a first
-    # baseline for a LATER call (this run does not itself get to use it: a
-    # single sample has nothing to diff against) and fall back to claim-age.
-    "$FWF_LIB_DIR/fwf-pane-liveness.sh" "$role" >/dev/null 2>&1 || true
-    if [ "$age" -lt "$fallback" ]; then return 0; else return 1; fi
+
+  if ! fwf_role_pane_alive "$role"; then
+    printf 'no live pane in any session'
+    return 1
   fi
+
   verdict="$("$FWF_LIB_DIR/fwf-pane-liveness.sh" "$role" 2>/dev/null || true)"
-  if [ "$verdict" = "WEDGED" ]; then
-    if fwf_role_pane_alive "$role"; then return 0; else return 1; fi
-  fi
-  return 0   # HEALTHY / WORKING / UNKNOWN (ambiguous, too-fresh baseline): fail safe
+  case "$verdict" in
+    HEALTHY|WORKING)
+      printf 'pane alive, %s' "$verdict"
+      return 0 ;;
+    WEDGED)
+      printf 'pane alive but WEDGED -- deferring to respawn, not a teardown'
+      return 0 ;;
+    *)
+      if [ "$age" -lt "$fallback" ]; then
+        printf 'liveness undiagnosable (%s) and claim age %ss is under the %ss fallback' "${verdict:-UNKNOWN}" "$age" "$fallback"
+        return 0
+      else
+        printf 'liveness undiagnosable (%s) but claim age %ss exceeds the %ss fallback' "${verdict:-UNKNOWN}" "$age" "$fallback"
+        return 1
+      fi ;;
+  esac
 }
 
 fwf_build_plane_blocked() {
@@ -1784,7 +1832,7 @@ fwf_build_plane_blocked() {
   resolved_prs="$(gh pr list -R "$(fwf_repo_slug)" --state all --json headRefName,state --jq \
     '.[] | select(.state != "OPEN") | .headRefName' 2>/dev/null)"
   now="$(date -u +%s)"
-  local claim_epoch pr_branch_prefix pr_hit
+  local claim_epoch pr_branch_prefix pr_hit claim_reason
   while IFS=$'\t' read -r claim_num claim_created claim_body; do
     [ -n "$claim_created" ] || continue
     role_tag="${claim_body#CLAIM }"
@@ -1802,8 +1850,8 @@ fwf_build_plane_blocked() {
     case "$claim_epoch" in ''|*[!0-9]*) claim_epoch="$now";; esac
     claim_age=$(( now - claim_epoch ))
     [ "$claim_age" -ge 0 ] || claim_age=0
-    if fwf_claim_liveness_blocks "$role_tag" "$claim_age"; then
-      printf 'claim window: %s has a live claim with no PR found for it, open or merged (pane alive or unconfirmed)' "$role_tag"
+    if claim_reason="$(fwf_claim_liveness_blocks "$role_tag" "$claim_age")"; then
+      printf 'claim window: %s has a live claim with no PR found for it, open or merged (%s)' "$role_tag" "$claim_reason"
       return 0
     fi
     resolved="$resolved $role_tag"

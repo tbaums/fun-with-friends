@@ -123,7 +123,7 @@ _fwf_scale_pr_reason() { # $1=impl id
   return 0
 }
 _fwf_scale_claim_reason() { # $1=impl id
-  local id="$1" claims claim_created claim_body role_tag now claim_epoch claim_age
+  local id="$1" claims claim_created claim_body role_tag now claim_epoch claim_age claim_reason
   claims="$(gh issue list -R "$(fwf_repo_slug)" --state open --json comments --jq \
     '.[] | (.comments // []) | map(select(.body | test("^CLAIM impl[0-9]+$"))) | (.[0] // empty) | "\(.createdAt)\t\(.body)"' \
     2>/dev/null)" || { printf 'could not scan open issues for a live claim (gh failed) -- assuming blocked (infrastructure)'; return 0; }
@@ -135,8 +135,11 @@ _fwf_scale_claim_reason() { # $1=impl id
     claim_epoch="$(fwf_iso_to_epoch "$claim_created" 2>/dev/null || true)"
     case "$claim_epoch" in ''|*[!0-9]*) claim_epoch="$now";; esac
     claim_age=$(( now - claim_epoch )); [ "$claim_age" -ge 0 ] || claim_age=0
-    if fwf_claim_liveness_blocks "$role_tag" "$claim_age"; then
-      printf 'holds a live claim (policy)'; return 0
+    # issue #503, AC2: a false RECLAIMABLE here has a larger consequence than
+    # at the other two call sites -- it feeds tearing a seat down while work
+    # is attributed to it, not merely permitting a second claim.
+    if claim_reason="$(fwf_claim_liveness_blocks "$role_tag" "$claim_age")"; then
+      printf 'holds a live claim (%s)' "$claim_reason"; return 0
     fi
   done <<< "$claims"
   return 0

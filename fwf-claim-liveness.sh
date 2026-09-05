@@ -177,9 +177,12 @@ case "$claim_epoch" in ''|*[!0-9]*) claim_epoch="$now";; esac
 claim_age=$(( now - claim_epoch ))
 [ "$claim_age" -ge 0 ] || claim_age=0
 
-if fwf_claim_liveness_blocks "$role_tag" "$claim_age"; then
-  echo "fwf claim-liveness #$num: LIVE -- $role_tag's claim (age ${claim_age}s) blocks a reclaim (pane alive, or liveness unconfirmed/too fresh)"
+# issue #503, AC6: fwf_claim_liveness_blocks now prints a one-line reason on
+# every path -- "blocks because live" and "blocks because undiagnosable" are
+# no longer the same bare LIVE, distinguishable here on the actual output.
+if liveness_reason="$(fwf_claim_liveness_blocks "$role_tag" "$claim_age")"; then
+  echo "fwf claim-liveness #$num: LIVE -- $role_tag's claim (age ${claim_age}s) blocks a reclaim ($liveness_reason)"
   exit 1
 fi
-echo "fwf claim-liveness #$num: RECLAIMABLE -- $role_tag's claim (age ${claim_age}s) is abandoned (pane confirmed dead, or past the ${FWF_CLAIM_LIVENESS_FALLBACK_SECS:-900}s no-signal fallback)"
+echo "fwf claim-liveness #$num: RECLAIMABLE -- $role_tag's claim (age ${claim_age}s) is abandoned ($liveness_reason)"
 exit 0
