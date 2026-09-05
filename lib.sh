@@ -2503,7 +2503,27 @@ _fwf_mem_admit_reserved_sum() {
   for f in "$MEM_ADMIT"/res-*; do
     [ -e "$f" ] || continue
     v="$(_fwf_e2e_owner_field reserved_gb "$f")"
-    case "$v" in ''|*[!0-9]*) v=0;; esac
+    # issue #480 AC 7: the coercion below is DELIBERATE (issue #286 AC (f2) --
+    # a lost or corrupt reservation must not deadlock the floor) and it is the
+    # SILENT, which is why a "reserved 0GiB" message could not be attributed
+    # after the fact.
+    #
+    # NOT the cause of that message, though -- I reproduced this branch and
+    # then found a stronger one. `pid` above is stamped as `$$` from inside a
+    # nested `bash -c`, which exits the instant admission returns, so EVERY
+    # reservation is orphaned at birth and _fwf_mem_admit_reap drops it before
+    # this sum ever runs. `reserved` is therefore 0 on every decision,
+    # regardless of this coercion. See issue #480 and issue #478 -- the same
+    # dead-at-birth pid is what makes the reaper SIGKILL a live gate's process
+    # group. This diagnostic is still worth having; it is just not the answer.
+    # Keep failing open; say so, so the next occurrence is attributable
+    # instead of being re-derived from scratch.
+    case "$v" in
+      ''|*[!0-9]*)
+        echo "fwf#480: mem-admit reservation '$(basename "$f")' has an unreadable reserved_gb ('$v') -- counting it as 0 GiB (failing OPEN, per issue #286 AC (f2)). A 'reserved 0GiB' message alongside a live holder may be THIS, not a lost reservation." >&2
+        v=0
+        ;;
+    esac
     sum=$(( sum + v ))
   done
   echo "$sum"

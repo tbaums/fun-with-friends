@@ -13342,6 +13342,39 @@ _sc427_dispatch() { # $1=shellcheck exit code -> calls ok/skip/bad
   fi
 }
 
+# issue #480: the split's COMBINED verdict. Two shellcheck calls now run, and
+# the step's result must reflect both. The failure this guards against is the
+# tempting one: the cheap sixty files pass, the expensive file dies, and the
+# step reports a clean lint.
+#
+# The rc-251 branch is the subtle part. `ulimit -v` refusing an allocation
+# exits 251 -- BELOW 128, so #427's `rc > 128` signal test does not catch it
+# and the pre-#480 code would have classified an out-of-memory failure as
+# `shellcheck reported issues`: a memory event reported as a lint finding,
+# which is exactly the misattribution #427 exists to prevent, arriving
+# through a door #427 does not cover.
+#
+# The skip STRING is load-bearing and must not be reworded casually.
+# fwf-gate.sh:701 sets FWF_GATE_LINT_SKIP_MARKER="skip shellcheck (" and :703
+# matches it with `grep -qF`. A message that omits that literal prefix lets
+# the gate record a plain `green` for a run in which test/run.sh was never
+# linted -- an unearned green minted by the fix for the lint problem. The
+# message below satisfies both consumers at once: the #447 marker prefix, and
+# #446's `lapsed <N>s <check-name>` form so the residue is named, not silent.
+_sc480_dispatch() { # $1=shipped-files rc  $2=test/run.sh rc  $3=elapsed secs
+  local shipped="$1" self="$2" secs="${3:-0}"
+  _sc427_dispatch "$shipped"
+  if [ "$self" -eq 0 ]; then
+    ok "shellcheck clean (test/run.sh)"
+  elif [ "$self" -eq 251 ]; then
+    skip "shellcheck (lapsed ${secs}s shellcheck(test/run.sh) -- exceeded its address-space cap, rc 251; issue #480/#481, not a code finding)"
+  elif [ "$self" -gt 128 ]; then
+    skip "shellcheck (lapsed ${secs}s shellcheck(test/run.sh) -- killed by signal $(( self - 128 )), issue #418/#427; not a code finding)"
+  else
+    bad "shellcheck reported issues (test/run.sh)"
+  fi
+}
+
 # --------------------------------------------------------------------------
 section "shellcheck OOM-kill misattribution (issue #427): a killed linter is a SKIP, never a lint finding"
 # RED at the pre-#427 code: ANY non-zero rc (including 137/SIGKILL) took the
@@ -13361,6 +13394,87 @@ assert_not_contains "...never reads as a FAIL" "$SC427_KILL9" "FAIL"
 SC427_KILL15="$(_sc427_dispatch 143)"
 assert_contains "rc=143 (SIGTERM) -> skip too, not just SIGKILL" "$SC427_KILL15" "signal 15"
 assert_not_contains "...never reads as a FAIL either" "$SC427_KILL15" "FAIL"
+
+# --------------------------------------------------------------------------
+section "shellcheck is split so one expensive file cannot take the other sixty down (issue #480)"
+# RED on the pre-#480 tree: there was a single invocation ending in
+# "$ROOT/test/run.sh", _sc480_dispatch did not exist, and rc 251 took
+# _sc427_dispatch's `else` branch and reported "shellcheck reported issues".
+SC480_SRC="$(cat "$ROOT/test/run.sh")"
+
+# AC 2 -- the shipped-code call must NOT carry the expensive file with it.
+# #456 measured the cause is one file (17.5 GB alone) rather than aggregate
+# volume (~60 files, 3.0-3.5 GB), so fusing them meant a failure on the one
+# discarded the coverage of the sixty.
+assert_contains "the shipped-files call ends at eval/run.sh, not test/run.sh" \
+  "$SC480_SRC" '"$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh"
+    _SC480_SHIPPED_RC=$?'
+assert_contains "test/run.sh is linted by its own call, under an address-space cap" \
+  "$SC480_SRC" 'ulimit -v "${FWF_SHELLCHECK_AS_CAP_KB:-8000000}"'
+
+# AC 4 -- rc 251 is `ulimit -v` refusing an allocation (measured in #456 and
+# re-confirmed on this box). It is BELOW 128, so #427's signal test does not
+# catch it; unhandled it reads as a lint FINDING. That is the same
+# misattribution #427 exists to prevent, through a door #427 does not cover.
+SC480_CAP="$(_sc480_dispatch 0 251 12)"
+assert_contains "rc=251 (address-space cap) -> skip, never a lint finding" "$SC480_CAP" "skip"
+assert_not_contains "...and is never reported as shellcheck findings" "$SC480_CAP" "reported issues"
+
+# AC 5 -- the residue is NAMED, in both the formats that consume it. The
+# gate's marker is matched with grep -qF against this exact literal
+# (fwf-gate.sh:701/703); a reworded message would let a run in which
+# test/run.sh was never linted record a plain `green`. #447's
+# green-lint-skipped must not become a false green.
+assert_contains "the lapse carries #447's literal gate marker" "$SC480_CAP" "skip shellcheck ("
+assert_contains "the lapse names the check in #446's format" "$SC480_CAP" "lapsed 12s shellcheck(test/run.sh)"
+
+# The edge case the ticket calls out by name: a clean cheap half must never
+# be reported as a clean lint when the expensive half did not survive.
+SC480_MIXED="$(_sc480_dispatch 0 1 8)"
+assert_contains "a clean sixty + failing test/run.sh still FAILs the step" "$SC480_MIXED" "FAIL"
+SC480_MIXED2="$(_sc480_dispatch 1 0 8)"
+assert_contains "a failing sixty + clean test/run.sh still FAILs the step" "$SC480_MIXED2" "FAIL"
+
+# AC 6 -- the reservation is derived from measurement, not from #418's stale
+# constant. Measured on this tree: the shipped-files call peaks at 3212 MB
+# (3.14 GiB) -- OVER the old 3 GiB reserve, so "it fits" was nearly true and
+# not actually true.
+assert_contains "the reservation is 4 GiB, derived from the measured 3212 MB peak" \
+  "$SC480_SRC" 'FWF_MEM_RESERVE_SHELLCHECK_GB:-4'
+
+# AC 7 -- "reserved 0GiB while a live holder is using ~19 GB" had three
+# candidate causes and no way to tell them apart after the fact. Candidate 3
+# is this: _fwf_mem_admit_reserved_sum coerces an unparseable reserved_gb to
+# 0 per file. The coercion is DELIBERATE (issue #286 AC (f2) -- a corrupt
+# reservation must not deadlock the floor) and stays; what changes is that it
+# is no longer SILENT, so the next occurrence is attributable rather than
+# re-derived. Runs against an ISOLATED pool (its own FWF_RUN_DIR), never the
+# shared production one.
+F480_POOL="$TMP/f480-mem-admit"; mkdir -p "$F480_POOL"
+F480_OUT="$(FWF_RUN_DIR="$F480_POOL" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  mkdir -p "$MEM_ADMIT"
+  printf "reserved_gb=NOTANUMBER\n" > "$MEM_ADMIT/res-f480-bad"
+  printf "reserved_gb=7\n"          > "$MEM_ADMIT/res-f480-good"
+  printf "sum=%s\n" "$(_fwf_mem_admit_reserved_sum)"
+' 2>"$TMP/f480.err")"
+F480_ERR="$(cat "$TMP/f480.err" 2>/dev/null)"
+assert_contains "AC7: an unreadable reserved_gb still fails OPEN, counting 0 (issue #286 (f2))" \
+  "$F480_OUT" "sum=7"
+assert_contains "AC7: ...but it is no longer silent -- the offending file is named" \
+  "$F480_ERR" "res-f480-bad"
+assert_contains "AC7: ...and the unreadable value itself is reported" \
+  "$F480_ERR" "NOTANUMBER"
+assert_contains "AC7: ...and it names itself as a candidate for 'reserved 0GiB'" \
+  "$F480_ERR" "reserved 0GiB"
+# Anti-vacuity: a well-formed store must stay quiet, or the diagnostic above
+# would pass by shouting on every read.
+F480_QUIET="$(FWF_RUN_DIR="$F480_POOL" FWF_PROFILE=example bash -c '
+  source "'"$ROOT"'/lib.sh"
+  rm -f "$MEM_ADMIT"/res-f480-bad
+  _fwf_mem_admit_reserved_sum >/dev/null
+' 2>&1)"
+assert_eq "AC7: a well-formed reservation store emits no diagnostic" "" "$F480_QUIET"
 
 SC427_FINDINGS="$(_sc427_dispatch 1)"
 assert_contains "a genuine non-signal rc (real findings) still reads FAIL, never masked into a skip" "$SC427_FINDINGS" "FAIL"
@@ -13388,7 +13502,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # than block a whole gate cycle behind cargo-build-scale patience.
   SC_TOKEN="$(FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT="${FWF_MEM_ADMIT_TIMEOUT_SHELLCHECK:-120}" \
     FWF_MEM_ADMIT_FLOOR_GB="${FWF_MEM_ADMIT_FLOOR_GB_SHELLCHECK:-1}" FWF_MEM_ADMIT_POLL=3 \
-    bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-$$' '${FWF_MEM_RESERVE_SHELLCHECK_GB:-3}'")"
+    bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-$$' '${FWF_MEM_RESERVE_SHELLCHECK_GB:-4}'")"
   SC_RC=$?
   if [ "$SC_RC" != 0 ]; then
     skip "shellcheck (RAM admission timed out under concurrent box load -- issue #418; not a code finding)"
@@ -13399,17 +13513,42 @@ if command -v shellcheck >/dev/null 2>&1; then
     # sourced scripts). Lint only the repo's shipped scripts — not
     # user-local/generated profiles, which live in profiles/ but aren't
     # part of the repo.
+    # issue #480: ONE call became TWO. #456 measured that the cost is a single
+    # file, not aggregate volume -- the ~60 shipped files lint in ~3.0-3.5 GB
+    # while test/run.sh ALONE peaks near 17.5 GB and is killed even on an idle
+    # box. Fused into one invocation, the expensive file took the cheap sixty
+    # down with it: 14 gate runs died at this step in a single day, so the
+    # repo's shipped code was not being linted either. Splitting restores that
+    # coverage inside the reservation above and makes the expensive file a
+    # separate, nameable outcome instead of an all-or-nothing gate.
+    # Re-measured on this tree (issue #480 AC 1): peak 3212 MB, rc 0, 224s.
     shellcheck -s bash -S warning \
       "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
-      "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh" "$ROOT/test/run.sh"
+      "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh"
+    _SC480_SHIPPED_RC=$?
+
+    # The expensive half, under an address-space cap. #456 measured, and I
+    # re-confirmed on this box, that `ulimit -v` does NOT make this file lint
+    # -- it converts a SIGKILL that picks an arbitrary victim into a legible
+    # `shellcheck: out of memory`, rc 251. That is a LEGIBILITY tool and it is
+    # explicitly NOT a residency bound (issue #480 AC 4): it does not stop the
+    # overrun, it only makes the overrun say what it was.
+    _SC480_T0=$SECONDS
+    ( ulimit -v "${FWF_SHELLCHECK_AS_CAP_KB:-8000000}" 2>/dev/null
+      exec shellcheck -s bash -S warning "$ROOT/test/run.sh" )
+    _SC480_SELF_RC=$?
+    _SC480_SECS=$(( SECONDS - _SC480_T0 ))
+
     # issue #427: #423's admission gate only bounds ENTRY (RAM free at the
     # instant of admission), not RESIDENCY -- a concurrent suite can still
     # grow into shellcheck's reserved memory while it runs and get it
     # OOM-killed mid-lint. _sc427_dispatch (defined above, RED-first tested
     # against 0/1/137/143 in the section just above this one) classifies the
     # exit code so a killed linter reads as an honest SKIP, never a
-    # fabricated lint finding.
-    _sc427_dispatch "$?"
+    # fabricated lint finding. _sc480_dispatch wraps it so the step's verdict
+    # reflects BOTH calls -- a clean sixty must never be reported as a clean
+    # lint when test/run.sh did not survive its own call.
+    _sc480_dispatch "$_SC480_SHIPPED_RC" "$_SC480_SELF_RC" "$_SC480_SECS"
     FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_mem_admit_release '$SC_TOKEN'"
   fi
 else
