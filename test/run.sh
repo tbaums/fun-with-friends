@@ -4207,6 +4207,29 @@ EOF
   assert_eq "AC(a): the new impl2 pane exists" "0" "$F210IMPL2_RC"
   F210QA2_RC=0; [ -n "$QA2_PANE" ] || F210QA2_RC=1
   assert_eq "AC(a): the new qa2 pane exists" "0" "$F210QA2_RC"
+  # issue #485 AC 6 -- the sibling sweep, recorded rather than left to be
+  # re-derived. qa2's pane has the same SHAPE as impl2's, so the obvious
+  # worry is that it needs the same bounded-wait fix. It does not, and the
+  # reason is a real distinction rather than an oversight:
+  #
+  #   EXISTENCE is synchronous with fwf-scale.sh returning -- tmux has
+  #   already created the pane by the time the command exits 0 (asserted
+  #   above), so a single-shot fwf_find_pane cannot race it.
+  #   The PROCESS INSIDE the pane is not: the launcher replaces the shell
+  #   asynchronously afterwards, which is the entire #485 gap.
+  #
+  # QA2_PANE is only ever asserted for existence -- there is no
+  # "is running claude" / pane_current_command check on it anywhere (the
+  # one such assertion in this file is impl2's, fixed below). So there is
+  # nothing here to convert to a wait. If a command-level assertion is ever
+  # added for qa2, it must use the _wait_pane_child form below, not a
+  # single-shot read.
+  #
+  # The block's remaining assertions were checked for the same hazard and
+  # are exempt for the same reason: pane_pid before/after (IMPL1, CONDUCTOR)
+  # reads pre-existing panes' stable shell pids, the coord pane-id list and
+  # wt_dir are filesystem/tmux state settled by the time scale returns.
+  # Nothing else in this block samples a value that is still converging.
   # issue #485: a POSITIVE predicate on a bounded wait, not a single-shot
   # negative one. The old form sampled pane_current_command once and asserted
   # it was not "bash". The pane is created correctly; the assertion simply ran
