@@ -11,6 +11,48 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.9] - 2026-09-05
+
+### Changed
+
+- **`FWF_E2E_MAX_LANES` raised from 1 to 2** (#499, code 9bebd2c1, docs
+  9bebd2c1) — the lane count had shipped pinned at 1 since #205, waiting on a
+  precondition (transom#1182/#1183) that has now merged; the floor may run two
+  e2e lanes concurrently. Operator override, no harness logic change.
+
+### Fixed
+
+- **e2e lane FIFO: a waiter can eventually win** (#494, code 6728a854, docs
+  6728a854) — the acquire path's `waited` counter was function-local
+  (`lib.sh:1998`), so a gate that hit the 900s lane timeout restarted from zero
+  on its next cycle and could be starved indefinitely under contention. Waiters
+  now age across attempts and win in order.
+- **`fwf claim-liveness` ignored multi-line CLAIM comments** (#502, code
+  6a01057a, docs 6a01057a) — a claim whose comment body spanned several lines
+  was invisible to claim-liveness, so the issue became unclaimable by everyone
+  and could never be declared stale. Implementer templates updated to match.
+- **gate-history: one case, one label** (#519, code 2b075f4f, docs none —
+  internal) — a case whose pass path used a different assertion label from its
+  fail paths split PASS and FAIL across two history keys, so #227's classifier
+  reported `CONSISTENTLY FAILING` for it forever and could never rule it
+  `FLAKY`. A scan now keeps labels unique.
+- **#375's reaper fixture detached from the gate's own tree; #544's guard gets
+  its first test** (#550, code 0c982b70, docs none — internal) — the fixture's
+  victim was a plain background child (ppid = the test shell), which #544's
+  own-descendant guard correctly refuses to reap, so the case asserted REAPED
+  and failed on every run since v0.42.8. The victim is now double-forked +
+  `setsid` (ppid 1), the shape of a genuine foreign holder. Also carries #547's
+  assertion fix for #512 AC(new).
+
+### Notes
+
+- Cut by operator promotion (`staging` → `integration` → `main` via the API)
+  on Jamie's explicit authorization, with the conductor gate on 6a01057a **not
+  green**. The last completed conductor run on staging (tip 2b075f4f) had one
+  failing case, `respawn names the bound` (#540), classified ambient on a clean
+  tip. **Two-runner green was not obtained for this SHA.** Tracked on #540 and
+  #549.
+
 ## [0.42.8] - 2026-09-05
 
 ### Fixed
