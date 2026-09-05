@@ -4400,7 +4400,7 @@ GHSTUB2
 #!/usr/bin/env bash
 case "\$1 \$2" in
   "pr list") printf '' ;;
-  "issue list") echo '[{"comments":[{"body":"CLAIM impl2","createdAt":"$F210CLAIM_TS"}]}]' ;;
+  "issue list") printf '%s\t%s\n' "$F210CLAIM_TS" "CLAIM impl2" ;;
   *) exit 1 ;;
 esac
 GHSTUB3
