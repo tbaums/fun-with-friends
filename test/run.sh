@@ -16080,6 +16080,51 @@ assert_eq "#519 AC5: ...and the same case name is stable across calls" \
 F519_SRC="$(cat "$ROOT/test/run.sh")"
 assert_contains "#519 AC1: AC(1)'s pass path uses the same label as its bad() calls" \
   "$F519_SRC" 'assert_contains "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane"'
+
+# AC4 -- the classifier's input is WHOLE. AC2/AC3/AC6 above scan the SOURCE
+# for label consistency; none of them exercises gate-history itself. This one
+# does: N runs of ONE case must leave N entries in ONE file, asserted as a
+# COUNT (the ticket's words: "Assert the count, not just the presence of both
+# verdicts") -- because the pre-fix defect was not a missing verdict, it was a
+# case whose pass path wrote to a DIFFERENT key, so the fail-side key could
+# never contain a pass and #227 called it CONSISTENTLY FAILING forever.
+# The last three assertions demonstrate that mechanism directly, so this case
+# cannot pass while the thing it is about still works.
+F519_HROOT="$TMP/f519-hist"; mkdir -p "$F519_HROOT/state/example"
+F519_HSCRIPT="$TMP/f519-hist.sh"
+cat > "$F519_HSCRIPT" <<'F519_HEOF'
+set -uo pipefail
+# shellcheck source=/dev/null
+source "$FWF519_LIB"
+L='AC(1): one label on every path'
+for v in FAIL FAIL PASS FAIL PASS; do fwf_gate_history_record "$L" "$v" b sha1; done
+D="$(fwf_gate_history_dir)"; K="$(_fwf_gate_history_key "$L")"
+echo "TAG_ENTRIES:$(wc -l < "$D/$K" | tr -d ' ')"
+echo "TAG_VERDICTS:$(grep -o 'verdict=[A-Z]*' "$D/$K" | sed 's/.*=//' | sort -u | tr '\n' ' ')"
+echo "TAG_FILES:$(find "$D" -maxdepth 1 -type f ! -name '*.label' | wc -l | tr -d ' ')"
+S="$(fwf_gate_history_summary "$L" b)"
+echo "TAG_TOTAL:$(printf '%s\n' "$S" | grep '^total=')"
+echo "TAG_FAILED:$(printf '%s\n' "$S" | grep '^failed=')"
+LBAD='AC(1): one label on every path -- but the pass path says it differently'
+fwf_gate_history_record "$LBAD" PASS b sha1
+echo "TAG_FILES_SPLIT:$(find "$D" -maxdepth 1 -type f ! -name '*.label' | wc -l | tr -d ' ')"
+echo "TAG_ENTRIES_AFTER:$(wc -l < "$D/$K" | tr -d ' ')"
+echo "TAG_KEY_DIFFERS:$([ "$(_fwf_gate_history_key "$LBAD")" != "$K" ] && echo yes || echo no)"
+F519_HEOF
+F519_HOUT="$(FWF_RUN_DIR="$F519_HROOT" FWF_PROFILE=example FWF519_LIB="$ROOT/lib.sh" bash "$F519_HSCRIPT" 2>&1)"
+assert_contains "#519 AC4: 5 runs of one case leave exactly 5 entries -- the COUNT, not just both verdicts" \
+  "$F519_HOUT" "TAG_ENTRIES:5"
+assert_contains "#519 AC4: ...and those 5 entries carry BOTH verdicts" "$F519_HOUT" "TAG_VERDICTS:FAIL PASS"
+assert_contains "#519 AC4: a mixed-outcome case occupies exactly ONE history file" "$F519_HOUT" "TAG_FILES:1"
+assert_contains "#519 AC4: the summary's denominator is every run (5), not just the failures" \
+  "$F519_HOUT" "TAG_TOTAL:total=5"
+assert_contains "#519 AC4: ...and its numerator is the 3 recorded failures" "$F519_HOUT" "TAG_FAILED:failed=3"
+assert_contains "#519 AC4 (the mechanism): a differing pass-path label opens a SECOND file" \
+  "$F519_HOUT" "TAG_FILES_SPLIT:2"
+assert_contains "#519 AC4 (the mechanism): so the fail-side key never gains that pass -- still 5" \
+  "$F519_HOUT" "TAG_ENTRIES_AFTER:5"
+assert_contains "#519 AC4 (the mechanism): the split label really does hash to a different key" \
+  "$F519_HOUT" "TAG_KEY_DIFFERS:yes"
 section "gate history: end-to-end through fwf-gate.sh (issue #227)"
 G227E_ROOT="$TMP/gate227-e2e"; mkdir -p "$G227E_ROOT/state/example"
 G227E_STUB="$TMP/gate227-stub.sh"
