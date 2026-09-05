@@ -7660,11 +7660,13 @@ assert_contains "edge: names the claimant despite trailing whitespace" "$CL502G_
 
 CL502H=$(CLNEW "Mentions a claim in prose")
 CLI comment "$CL502H" --body "the CLAIM impl1 comment above looks stale to me" >/dev/null
+# shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
 CLRC=0; CL502H_OUT="$(CL "$CL502H" 2>&1)" || CLRC=$?
 assert_eq "edge: a comment merely mentioning CLAIM in prose does not match (rc 3, nothing here)" "3" "$CLRC"
 
 CL502I=$(CLNEW "Blockquoted claim")
 CLI comment "$CL502I" --body "$(printf '> CLAIM impl1\nquoting the above for context')" >/dev/null
+# shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
 CLRC=0; CL502I_OUT="$(CL "$CL502I" 2>&1)" || CLRC=$?
 assert_eq "edge: a blockquoted CLAIM does not match (rc 3, nothing here)" "3" "$CLRC"
 
@@ -9439,6 +9441,7 @@ git -C "$E499G_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m
 # that would trip the OLD string heuristic: must PASS.
 E499G1="$TMP/e499-gate-run1"; mkdir -p "$E499G1"
 rc=0
+# shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
 E499G1_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G1" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_MAX_LANES=2 \
   "$ROOT/fwf-gate.sh" e499g1 --e2e -- bash -c 'echo --timeout 30000; python3 -m http.server "$FWF_E2E_PORT" --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
 assert_eq "AC3: a compliant consumer (binds \$FWF_E2E_PORT) PASSES even with a spurious 4-5 digit number in its command line" "0" "$rc"
@@ -9458,6 +9461,7 @@ assert_contains "AC3: the failure states WHY -- it never bound its allocated por
 # N>=2 and is a strict no-op below it.
 E499G3="$TMP/e499-gate-run3"; mkdir -p "$E499G3"
 rc=0
+# shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
 E499G3_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G3" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
   "$ROOT/fwf-gate.sh" e499g3 --e2e -- bash -c 'python3 -m http.server 18041 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
 assert_eq "AC6: at N=1 (shipped default) the SAME non-compliant command is unaffected by AC3's check (strict no-op)" "0" "$rc"
