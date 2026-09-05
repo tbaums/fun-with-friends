@@ -461,6 +461,15 @@ UTILITIES
                          liveness unconfirmed — do not reclaim); 2 = no
                          CLAIM comment found, or a read failure (fails
                          closed toward "do not reclaim"). Read-only.
+                         A claim is RELEASABLE (issue #515): a
+                         whole-body `RELEASE <role>` comment from the role
+                         that holds it frees the ticket, and a later `CLAIM`
+                         then takes effect. Without that verb the only exits
+                         from LIVE were a confirmed-dead pane and the no-
+                         signal fallback -- both keyed to the claimant being
+                         UNHEALTHY -- so a live seat that had finished could
+                         never hand a ticket back. Same whole-body anchoring
+                         as CLAIM: prose around the marker is not a release.
   auth resolve           Re-resolve the claude auth credential (issue #217,
                          #373) and print its source (env|token_file|
                          credentials_file|keychain), without launching
