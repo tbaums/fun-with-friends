@@ -35,7 +35,7 @@ usage() { echo "usage: fwf claim-liveness <issue-number>" >&2; }
 num="${1:-}"
 case "$num" in ''|*[!0-9]*) usage; exit 2;; esac
 
-# issue #515: resolve the claim/release SEQUENCE, not `.[0]`.
+# issue #515: resolve the claim/release SEQUENCE, not just the first matching comment.
 #
 # This used to select the FIRST comment matching ^CLAIM <role>$ and treat it as
 # authoritative forever. Combined with the two exits from LIVE below -- pane
