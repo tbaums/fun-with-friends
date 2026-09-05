@@ -11,6 +11,29 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+## [0.42.5] - 2026-09-05
+
+### Fixed
+
+- **The publish job assumed a GitHub-hosted runner and died on our own** (code
+  SHAPLACEHOLDER, docs SHAPLACEHOLDER) — `Install shellcheck` ran
+  `sudo apt-get install`, but the self-hosted runner user has no sudo and
+  shellcheck 0.11.0 is already at `/usr/bin/shellcheck`. The step failed in 0s
+  and skipped every step after it, so v0.42.4 built both binaries green and
+  still published nothing. It now uses the installed tool and only reaches for
+  apt when shellcheck is genuinely absent.
+- **The advisory CI gate burned its full 1200s budget** (code 04e9e4e, docs
+  04e9e4e) — with `ci.yml` disabled the required contexts can never report, so
+  the poll was guaranteed to time out. Harmless on hosted runners; on our single
+  `local-devbox` runner it blocked every other job for twenty minutes. Capped at
+  30s; the blocking path is unchanged.
+
+### Notes
+
+- **v0.42.3 and v0.42.4 were tagged but never published.** v0.42.3 died to
+  GitHub evicting its Lint step; v0.42.4 to the sudo assumption above. Their
+  content — the #479 and #470 fixes — ships here.
+
 ## [0.42.4] - 2026-09-05
 
 ### Fixed

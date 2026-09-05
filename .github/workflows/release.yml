@@ -226,7 +226,16 @@ jobs:
           fetch-depth: 0   # full history: the reconcile step's ancestry checks need it
 
       - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+        # Our self-hosted runners already ship shellcheck and the runner user has
+        # no sudo, so the apt path fails instantly (0s) and skips every step after
+        # it -- which is how v0.42.4's publish died. Use what is installed; only
+        # reach for apt when the tool is genuinely missing.
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            echo "shellcheck already present: $(shellcheck --version | awk '/version:/{print $2}')"
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
 
       - name: Verify tag matches VERSION
         run: |
