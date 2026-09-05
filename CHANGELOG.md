@@ -15,8 +15,8 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ### Fixed
 
-- **A real lint finding that three releases never reached** (code SHAPLACEHOLDER,
-  docs SHAPLACEHOLDER) — `test/run.sh:777` captured `F512_TOKOUT` and never read
+- **A real lint finding that three releases never reached** (code c9f261f,
+  docs c9f261f) — `test/run.sh:777` captured `F512_TOKOUT` and never read
   it (SC2034). The publish job's `Lint` step had been evicted by GitHub or killed
   by a missing-sudo step before it could report this, so v0.42.3 and v0.42.4 both
   failed for environmental reasons that masked an actual defect. Running CI on
