@@ -35,14 +35,44 @@ usage() { echo "usage: fwf claim-liveness <issue-number>" >&2; }
 num="${1:-}"
 case "$num" in ''|*[!0-9]*) usage; exit 2;; esac
 
+# issue #515: resolve the claim/release SEQUENCE, not just the first matching comment.
+#
+# This used to select the FIRST comment matching ^CLAIM <role>$ and treat it as
+# authoritative forever. Combined with the two exits from LIVE below -- pane
+# death, or the 900s no-signal fallback -- both of which are keyed to the
+# claimer being UNHEALTHY, a live and well-behaved seat could never give a
+# ticket back. Observed: a claim posted at 12:21:42Z and withdrawn in prose 32
+# seconds later still read LIVE twelve hours on, and #504 (AUTHORIZED, and the
+# cause of every red on the board that day) was unclaimable the whole time.
+#
+# The rule, stated rather than implied by the code:
+#   * a CLAIM takes effect only when nothing is currently held
+#     (first-claim-wins among LIVE claims is preserved -- this adds an exit,
+#      it does not weaken the control)
+#   * a RELEASE takes effect only from the role that currently holds it
+#     (ergonomic, not a security control -- see fwf-claim.sh:66 and #207)
+#   * claim -> release -> re-claim resolves to the re-claim
+#
+# The output contract is unchanged ("<createdAt>\tCLAIM <role>", or empty), so
+# the age arithmetic and LIVE/RECLAIMABLE reporting below are untouched.
+_FWF515_RESOLVE='(.comments // [])
+| map(select(.body | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$")))
+| reduce .[] as $c ({holder:null, created:null, released:null};
+    ($c.body | split(" ")) as $p
+    | if $p[0] == "CLAIM"
+      then (if .holder == null then {holder:$p[1], created:$c.createdAt, released:null} else . end)
+      else (if .holder == $p[1] then {holder:null, created:null, released:$p[1]} else . end)
+      end)
+| if .holder != null then "\(.created)\tCLAIM \(.holder)"
+  elif .released != null then "\treleased \(.released)"
+  else empty end'
+
 # Same dual-backend shape as fwf-claim.sh's _issue_read.
-_first_claim_line() { # -> "<createdAt>\t<CLAIM role>" of the FIRST claim, or empty
+_first_claim_line() { # -> "<createdAt>\tCLAIM <role>" of the EFFECTIVE claim, or empty
   if [ "${FWF_ISSUES:-}" = "local" ]; then
-    "$DIR/fwf-issues.sh" view "$num" --json comments --jq \
-      '(.comments // []) | map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$"))) | (.[0] // empty) | if . == null then empty else "\(.createdAt)\t\(.body)" end'
+    "$DIR/fwf-issues.sh" view "$num" --json comments --jq "$_FWF515_RESOLVE"
   else
-    gh issue view "$num" --json comments --jq \
-      '(.comments // []) | map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$"))) | (.[0] // empty) | if . == null then empty else "\(.createdAt)\t\(.body)" end'
+    gh issue view "$num" --json comments --jq "$_FWF515_RESOLVE"
   fi
 }
 
@@ -55,6 +85,26 @@ if [ -z "$line" ]; then
   echo "fwf claim-liveness #$num: no CLAIM comment found on this issue"
   exit 2
 fi
+
+# issue #515, second defect (found by the PM on the first cut of this fix):
+# a RELEASED claim must not land in the rc 2 bucket. rc 2 means "I could not
+# DETERMINE the claim state" -- no comment, or an unreadable thread -- which
+# is why templates/dev/implementer.tmpl step 3d tells every seat to treat it
+# as live and fail closed. A completed release is the opposite: the state is
+# known, and it is FREE. Folding a determinate answer into the indeterminate
+# bucket would mean a correctly released ticket still reads "do not attempt"
+# to the one seat the release exists for -- the feature would look right in
+# its own test table and do nothing on the floor.
+#
+# So this is rc 0 (RECLAIMABLE), the SAME code an abandoned claim gets, since
+# both mean exactly "no live claim blocks you, proceed". The never-claimed
+# and unreadable cases above keep rc 2 unchanged: this widens nothing except
+# the one state that was previously unrepresentable.
+case "$line" in
+  $'\treleased '*)
+    echo "fwf claim-liveness #$num: RECLAIMABLE -- ${line#*released } released their claim; no live claim blocks you"
+    exit 0 ;;
+esac
 
 claim_created="${line%%$'\t'*}"
 claim_body="${line#*$'\t'}"

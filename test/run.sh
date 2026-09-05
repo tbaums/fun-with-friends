@@ -7474,6 +7474,102 @@ assert_contains "templates/refactor/implementer.tmpl calls fwf claim-liveness to
   "$(cat "$ROOT/templates/refactor/implementer.tmpl")" "fwf claim-liveness"
 
 # --------------------------------------------------------------------------
+# fwf claim-liveness (issue #515): the claim had no EXIT a live seat could
+# take. The selector pinned `.[0]` of the CLAIM comments, and BOTH paths out
+# of LIVE above -- a confirmed-dead pane, and the no-signal fallback window --
+# are keyed to the claimant being UNHEALTHY. A claimer that was alive, well,
+# and finished could therefore never give the ticket back: a claim posted at
+# 12:21:42Z and withdrawn in prose 32 seconds later still read LIVE twelve
+# hours on, which is how #504 (AUTHORIZED, and the cause of every red on the
+# board that day) stayed unclaimable while nobody was working it.
+#
+# The cases below fence BOTH directions. The first one is the anti-vacuity
+# fence: if a held-and-unreleased claim ever stops reading LIVE, this fix has
+# disabled the control it was only supposed to add an exit to.
+CLNEW() { CLI create --title "$1" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p'; }
+
+section "fwf claim-liveness (#515 anti-vacuity): a claim with NO release still reads LIVE -- this adds an exit, it must not disable the control"
+CL515A=$(CLNEW "Held, never released")
+CLI comment "$CL515A" --body "CLAIM impl515a" >/dev/null
+CL515A_OUT="$(CL "$CL515A" 2>&1)"; CLRC=$?
+assert_eq "an unreleased claim from a live seat still blocks a reclaim (rc 1)" "1" "$CLRC"
+assert_contains "and still names the holder" "$CL515A_OUT" "LIVE -- impl515a"
+
+section "fwf claim-liveness (#515): the defect -- a claimer RELEASEing its own claim frees the ticket"
+CL515B=$(CLNEW "Claimed, then released")
+CLI comment "$CL515B" --body "CLAIM impl515b" >/dev/null
+CLI comment "$CL515B" --body "RELEASE impl515b" >/dev/null
+CL515B_OUT="$(CL "$CL515B" 2>&1)"; CLRC=$?
+# rc 0, NOT rc 2. rc 2 means "I could not determine the claim state", and
+# templates/dev/implementer.tmpl step 3d tells every seat to treat that as
+# live and fail closed -- so a released ticket landing in rc 2 would still
+# read "do not attempt" to the exact seat the release exists for. A release
+# is a DETERMINATE free state and gets the same code as an abandoned claim.
+assert_eq "a released claim reaches rc 0 -- the code that means 'proceed', not the fail-closed rc 2" "0" "$CLRC"
+assert_contains "and says so in the reclaimable vocabulary the other rc-0 path uses" "$CL515B_OUT" "RECLAIMABLE"
+assert_contains "naming who released it" "$CL515B_OUT" "impl515b released their claim"
+# The contract this rc is read against lives in a DIFFERENT file, which is
+# why the first cut of this fix looked correct in its own table and was not.
+assert_contains "#515: the implementer template still reads rc 0 as 'proceed'" \
+  "$(cat "$ROOT/templates/dev/implementer.tmpl")" "exit 0 = RECLAIMABLE, no live claim blocks you, proceed"
+assert_contains "#515: ...and still reads rc 2 as fail-closed, so a release must not land there" \
+  "$(cat "$ROOT/templates/dev/implementer.tmpl")" "treat as live, do not attempt (fail closed)"
+
+section "fwf claim-liveness (#515): claim -> release -> re-claim resolves to the NEW claimant, not .[0]"
+CL515C=$(CLNEW "Released, then re-claimed")
+CLI comment "$CL515C" --body "CLAIM impl515c" >/dev/null
+CLI comment "$CL515C" --body "RELEASE impl515c" >/dev/null
+CLI comment "$CL515C" --body "CLAIM impl515d" >/dev/null
+CL515C_OUT="$(CL "$CL515C" 2>&1)"; CLRC=$?
+assert_eq "the re-claim is live and blocks (rc 1)" "1" "$CLRC"
+assert_contains "names the SECOND claimant" "$CL515C_OUT" "impl515d"
+assert_not_contains "does not report the released first claimant as the holder" "$CL515C_OUT" "impl515c"
+
+section "fwf claim-liveness (#515): a RELEASE from a role that does NOT hold the claim is ignored"
+CL515E=$(CLNEW "Released by the wrong role")
+CLI comment "$CL515E" --body "CLAIM impl515e" >/dev/null
+CLI comment "$CL515E" --body "RELEASE impl515f" >/dev/null
+CL515E_OUT="$(CL "$CL515E" 2>&1)"; CLRC=$?
+assert_eq "another role cannot release my claim (rc 1, still LIVE)" "1" "$CLRC"
+assert_contains "the original holder still holds it" "$CL515E_OUT" "impl515e"
+
+section "fwf claim-liveness (#515): first-claim-wins among LIVE claims is preserved -- a second CLAIM while held is ignored"
+CL515G=$(CLNEW "Two claims, none released")
+CLI comment "$CL515G" --body "CLAIM impl515g" >/dev/null
+CLI comment "$CL515G" --body "CLAIM impl515h" >/dev/null
+CL515G_OUT="$(CL "$CL515G" 2>&1)"; CLRC=$?
+assert_eq "the later claim does not steal a held ticket (rc 1)" "1" "$CLRC"
+assert_contains "the FIRST claimant is still the holder" "$CL515G_OUT" "impl515g"
+assert_not_contains "the second claimant is not reported as the holder" "$CL515G_OUT" "impl515h"
+
+section "fwf claim-liveness (#515): a release does NOT widen rc 2 -- never-claimed and released-before-any-claim stay fail-closed"
+CL515N=$(CLNEW "Never claimed at all")
+CLI comment "$CL515N" --body "just some prose, no marker" >/dev/null
+CLRC=0; CL "$CL515N" >/dev/null 2>&1 || CLRC=$?
+assert_eq "an issue nobody ever claimed still exits 2 (indeterminate, unchanged)" "2" "$CLRC"
+CL515P=$(CLNEW "Released before any claim")
+CLI comment "$CL515P" --body "RELEASE impl515p" >/dev/null
+CLRC=0; CL "$CL515P" >/dev/null 2>&1 || CLRC=$?
+assert_eq "a RELEASE with no prior claim frees nothing and still exits 2" "2" "$CLRC"
+
+section "fwf claim-liveness (#515): a RELEASE with prose around it is invisible, exactly as a prose CLAIM is"
+CL515I=$(CLNEW "Prose release")
+CLI comment "$CL515I" --body "CLAIM impl515i" >/dev/null
+CLI comment "$CL515I" --body "RELEASE impl515i -- handing it back, see thread" >/dev/null
+CL515I_OUT="$(CL "$CL515I" 2>&1)"; CLRC=$?
+assert_eq "prose does not release (rc 1) -- the marker is whole-body, both verbs" "1" "$CLRC"
+assert_contains "still names the holder" "$CL515I_OUT" "impl515i"
+
+section "fwf claim-liveness (#515): the selector resolves the sequence rather than pinning the first comment"
+CL515SRC="$(cat "$ROOT/fwf-claim-liveness.sh")"
+assert_not_contains "no '.[0]' claim selection remains in fwf-claim-liveness.sh" "$CL515SRC" '.[0]'
+assert_contains "the marker test accepts both verbs" "$CL515SRC" 'test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$")'
+assert_contains "a CLAIM is only taken when nothing is held" "$CL515SRC" 'if .holder == null then {holder:$p[1]'
+assert_contains "a RELEASE only applies to the role that holds it" "$CL515SRC" 'if .holder == $p[1] then {holder:null'
+assert_contains "'fwf help' documents the RELEASE marker so a seat knows the exit exists" \
+  "$("$ROOT/fwf" help)" "RELEASE <role>"
+
+# --------------------------------------------------------------------------
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
 # captain-sequenced decisions behaviour and activity bucketing/branch parsing.
