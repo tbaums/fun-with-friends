@@ -668,6 +668,43 @@ success, failure, or a kill — so no role has to manage them by hand; see
   rides the captain's ordinary tick (issue #99) rather than a second,
   independently-schedulable loop that could die silently on its own.
 
+- **The conductor self-recovers a non-final verdict on an unmoved tip
+  instead of escalating (issue #473).** `fwf gate <role> --tip-cmd ...`
+  exits `75` whenever the watched tip is unchanged and a COMPLETED verdict
+  (green or red) is already on record for it — two real incidents hid
+  behind that one exit code, each needing the opposite action: an
+  unconsumed GREEN (the gate ran and recorded PASS, but the conductor died
+  before promoting it) needs no re-run at all, while a RED with no new
+  commit needs `fwf-gate.sh`'s own documented `FWF_GATE_FORCE=1` re-entry.
+  `fwf gate-recover <role> <target-branch>` is the obliged call site for
+  both: the `dev` and `refactor` conductor templates now run it on every
+  exit-75, instead of just deferring.
+
+  - **An unconsumed green** is promoted directly through `fwf gate-promote`
+    — no suite re-run, since the recorded verdict already authorizes it —
+    unless `integration` already includes the tip (nothing to do) or
+    `FWF_CONDUCTOR_AUTO_PROMOTE=0` (default `1`) leaves it for a human.
+  - **A red** is force-resumed only when `FWF_CONDUCTOR_AUTO_FORCE_RESUME=1`
+    (default `0` — off by default, opt-in per profile: this is the half
+    that can *manufacture* a green out of a red). Bounded per-tip by
+    `FWF_CONDUCTOR_FORCE_RESUME_MAX` (default `2`, keyed to the tip SHA so
+    a new commit always gets a fresh budget) — a persistently-red tip is
+    escalated once the bound is exhausted, never retried forever.
+  - **Never "retry until green"**: a forced re-run's own single green does
+    NOT authorize a promote. Issue #436 already decided a tip that
+    genuinely failed once needs *two consecutive* greens before it is
+    trustworthy again; that policy lives in `fwf-local-ci.sh verdict`'s own
+    exit code (a `recovered:1` state is deliberately not skip-eligible).
+    `fwf gate-recover` seeds `fwf-local-ci.sh mark-failed <sha>` (idempotent
+    — never resets progress already made) before a force-resume attempt,
+    so the first confirming green correctly lands as unconfirmed, and only
+    a SECOND one authorizes the promote.
+  - **Escalation** (a kill switch left off, the retry bound exhausted, or
+    `fwf gate-promote` itself refusing — issue #237's own refusals are
+    never bypassed or retried with force) files/updates one durable
+    tracking issue and raises `needs-captain`, mirroring #469's own
+    tracking-issue shape — never a silent forever-defer.
+
 - **`fwf tick`'s heartbeat trusts the worktree, not ambient env** (issue #182)
   — `fwf tick <role>` has no `--profile` flag, so any ambient `FWF_PROFILE` it
   sees can only be leftover env from an unrelated shell, never a deliberate
@@ -853,6 +890,16 @@ fwf gate-verdict-watchdog sweep [--role ROLE]       flag a GREEN gate-tip verdic
                                                     FWF_GATE_VERDICT_WATCHDOG_WINDOW_SECS (default
                                                     1200s) via flag-captain, auto-clearing once
                                                     promoted/superseded/frozen (issue #469)
+fwf gate-recover <role> <target-branch>             self-recover a non-final verdict on an unmoved
+                                                    tip (a same-tip `fwf gate --tip-cmd` exit 75) --
+                                                    promote an unconsumed GREEN with no re-run
+                                                    (FWF_CONDUCTOR_AUTO_PROMOTE, default on), or
+                                                    bounded-force-resume a RED
+                                                    (FWF_CONDUCTOR_AUTO_FORCE_RESUME, default off;
+                                                    FWF_CONDUCTOR_FORCE_RESUME_MAX, default 2) --
+                                                    never promotes on one forced green alone (issue
+                                                    #436's two-consecutive-greens), escalates via
+                                                    flag-captain once exhausted (issue #473)
 fwf eval --role R --models M1,M2 [...]              role-level model evals, LLM-judged
                                                     (docs/eval-harness.md)
 fwf shell [--rebuild]                               containerized toolchain sandbox (docs/containers.md)

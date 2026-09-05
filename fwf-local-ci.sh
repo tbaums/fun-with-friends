@@ -238,6 +238,28 @@ if [ "$cmd" = indeterminate-recent ]; then
   exit 1
 fi
 
+# issue #473: seed "this SHA has already failed" from an EXTERNAL red --
+# specifically, the conductor's own fwf-gate.sh --tip-cmd verdict, a
+# SEPARATE record from this store (see fwf-gate-recover.sh). Without this,
+# force-resuming a red tip through `run` records its first success as a
+# bare "green" (this store has never seen a failure for that exact sha),
+# letting one forced re-run bypass #436's two-consecutive-greens
+# confirmation -- exactly the "ship on one forced green" bug #473 AC (5)
+# forbids. Idempotent, same reasoning as the failed_marker writer below:
+# never resets an ALREADY-tracked sha's count, so a caller re-seeding a
+# retry in progress cannot erase real recovery progress already made.
+if [ "$cmd" = mark-failed ]; then
+  [ -n "$sha" ] || { echo "usage: $0 mark-failed <sha>" >&2; exit 2; }
+  f="$VDIR/$sha.failed"
+  if [ ! -f "$f" ]; then
+    echo 0 > "$f"
+    echo "local-ci: $sha marked as having failed (seeded externally, issue #473)" >&2
+  else
+    echo "local-ci: $sha already marked as having failed -- not reset" >&2
+  fi
+  exit 0
+fi
+
 # run mode: verify the CURRENT checkout and record under its HEAD sha
 sha="$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" || { echo "not a git tree" >&2; exit 2; }
 trap _fwf_local_ci_prune EXIT   # issue #425: sweep aged-out per-run records on every exit path

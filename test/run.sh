@@ -16941,6 +16941,203 @@ assert_contains "AC(2)/AC(8): the dev captain template runs the sweep every tick
 assert_eq "AC(8): the watchdog rides the SAME line as the other two mandatory sweeps -- not a second, independently-schedulable step" \
   "1" "$(grep -c 'fwf pr-route-check sweep.*fwf gate-verdict-watchdog sweep.*fwf flag-captain sweep' "$ROOT/templates/dev/captain.tmpl")"
 
+# --------------------------------------------------------------------------
+section "fwf-local-ci.sh mark-failed (#473): idempotent external seed for a red the outer gate already knows about"
+
+LCI473_RUN="$TMP/lci473-state"; mkdir -p "$LCI473_RUN"
+LCI473_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+LCI473_RC=0; LCI473_OUT="$(FWF_RUN="$LCI473_RUN" bash "$ROOT/fwf-local-ci.sh" mark-failed "$LCI473_SHA" 2>&1)" || LCI473_RC=$?
+assert_eq "mark-failed on a fresh sha exits 0" "0" "$LCI473_RC"
+assert_contains "reports the sha was marked" "$LCI473_OUT" "marked as having failed"
+assert_eq "the failed marker is created at count 0" "0" "$(cat "$LCI473_RUN/local-ci/$LCI473_SHA.failed")"
+
+# simulate real progress: one confirming green already banked (recovered:1)
+echo 1 > "$LCI473_RUN/local-ci/$LCI473_SHA.failed"
+LCI473_RC2=0; LCI473_OUT2="$(FWF_RUN="$LCI473_RUN" bash "$ROOT/fwf-local-ci.sh" mark-failed "$LCI473_SHA" 2>&1)" || LCI473_RC2=$?
+assert_eq "AC(5): re-seeding an ALREADY-tracked sha never resets progress already made" "1" "$(cat "$LCI473_RUN/local-ci/$LCI473_SHA.failed")"
+assert_contains "says it was already marked, not reset" "$LCI473_OUT2" "already marked"
+
+LCI473_USAGE_RC=0; bash "$ROOT/fwf-local-ci.sh" mark-failed >/dev/null 2>&1 || LCI473_USAGE_RC=$?
+assert_eq "mark-failed with no sha is a usage error" "2" "$LCI473_USAGE_RC"
+
+# --------------------------------------------------------------------------
+section "fwf gate-recover (#473): self-recovering a non-final verdict on an unmoved tip"
+
+GR473="$ROOT/fwf-gate-recover.sh"
+GR473RUN="$TMP/gr473-state"; mkdir -p "$GR473RUN/state/example"
+GR473_LOG="$TMP/gr473-calls.log"
+
+GR473_SEED_TIP() { # $1=role $2=verdict $3=tip
+  FWF_RUN_DIR="$GR473RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record '$1' '$3' '$2'"
+}
+GR473_TIP_VERDICT() { # $1=role -> the role's CURRENT recorded verdict, straight off disk
+  awk -F= '/^verdict=/{print $2}' "$GR473RUN/state/example/gate-tip/$1" 2>/dev/null
+}
+GR473_RETRY_COUNT() { # $1=role -> the role's CURRENT retry count, straight off disk (0 if none)
+  awk -F= '/^count=/{print $2}' "$GR473RUN/state/example/gate-recover-retries/$1" 2>/dev/null || echo 0
+}
+
+# $1=role $2=target -- rest = extra override lines appended verbatim, each
+# one redefining a seam the default block below already defined (mirrors
+# the #469 GVWRUN pattern exactly: source the real script, override the
+# small seams, call main directly -- so the DECISION LOGIC is exercised
+# with no real git remote, gh account, or full suite run). GR473_AUTO_PROMOTE
+# / GR473_AUTO_FORCE_RESUME / GR473_FORCE_RESUME_MAX (plain shell vars, unset
+# by default) let a test dial the three kill-switch env vars per call.
+GR473RUN() {
+  local role="$1" target="$2"; shift 2
+  rm -f "$GR473_LOG"
+  FWF_RUN_DIR="$GR473RUN" FWF_PROFILE=example \
+    FWF_CONDUCTOR_AUTO_PROMOTE="${GR473_AUTO_PROMOTE:-1}" \
+    FWF_CONDUCTOR_AUTO_FORCE_RESUME="${GR473_AUTO_FORCE_RESUME:-0}" \
+    FWF_CONDUCTOR_FORCE_RESUME_MAX="${GR473_FORCE_RESUME_MAX:-2}" \
+    bash -c "
+      source '$GR473'
+      integration_includes() { printf 'INTEGRATION_INCLUDES\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; return 1; }
+      gate_promote_call() { printf 'PROMOTE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; echo 'promoted ok'; return 0; }
+      local_ci_mark_failed() { printf 'MARK_FAILED\t%s\n' \"\$1\" >> '$GR473_LOG'; }
+      local_ci_run() { printf 'LOCAL_CI_RUN\n' >> '$GR473_LOG'; echo 'ran the suite'; return 0; }
+      local_ci_verdict() { printf 'LOCAL_CI_VERDICT\t%s\n' \"\$1\" >> '$GR473_LOG'; return 0; }
+      tracking_target() { printf 'TRACKING_TARGET\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; echo 9001; }
+      flag_captain_raise() { printf 'RAISE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; }
+      $*
+      main '$role' '$target'
+    " 2>&1
+}
+
+section "fwf gate-recover (#473): no gate-tip record at all -- nothing to recover, never a false action"
+OUT473_NONE="$(GR473RUN norecrole473 integration)"; RC473_NONE=$?
+assert_eq "no record: exits 75 (nothing actionable)" "75" "$RC473_NONE"
+assert_contains "names the role" "$OUT473_NONE" "no gate-tip record for role 'norecrole473'"
+assert_eq "no record: zero side effects (no promote, no escalation)" "" "$(cat "$GR473_LOG" 2>/dev/null || true)"
+
+section "fwf gate-recover (#473 AC 2): an unconsumed green is promoted directly, with NO suite re-run"
+GR473_SEED_TIP g473a green 1111111111111111111111111111111111111111
+OUT473A="$(GR473RUN g473a integration)"; RC473A=$?
+CALLS473A="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(2): exits 0 -- an action was taken" "0" "$RC473A"
+assert_contains "AC(2): the promote call fires for the recorded tip" "$CALLS473A" "PROMOTE	g473a	integration"
+assert_not_contains "AC(2): NO suite re-run -- the recorded verdict alone authorizes it" "$CALLS473A" "LOCAL_CI_RUN"
+assert_contains "AC(2): says so in its own output" "$OUT473A" "AC(2)"
+assert_contains "reports the promote's own output" "$OUT473A" "promoted ok"
+
+section "fwf gate-recover (#473 AC 6): a green already reflected in the target is a no-op, never a redundant promote"
+GR473_SEED_TIP g473b green 2222222222222222222222222222222222222222
+OUT473B="$(GR473RUN g473b integration integration_includes'() { return 0; }')"; RC473B=$?
+CALLS473B="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(6): exits 75 -- genuinely nothing to do" "75" "$RC473B"
+assert_not_contains "AC(6): no promote call when already consumed" "$CALLS473B" "PROMOTE"
+assert_contains "AC(6): says already reflected" "$OUT473B" "already reflected in integration"
+
+section "fwf gate-recover (#473 AC 9): FWF_CONDUCTOR_AUTO_PROMOTE=0 leaves an unconsumed green for a human"
+GR473_SEED_TIP g473c green 3333333333333333333333333333333333333333
+GR473_AUTO_PROMOTE=0
+OUT473C="$(GR473RUN g473c integration)"; RC473C=$?
+unset GR473_AUTO_PROMOTE
+CALLS473C="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(9): exits 75 -- the kill switch defers to a human, not an error" "75" "$RC473C"
+assert_eq "AC(9): no promote and no escalation while the switch is simply off" "" "$CALLS473C"
+assert_contains "AC(9): names the switch" "$OUT473C" "FWF_CONDUCTOR_AUTO_PROMOTE=0"
+
+section "fwf gate-recover (#473 AC 3): fwf gate-promote's own refusal is escalated, never bypassed or retried"
+GR473_SEED_TIP g473d green 4444444444444444444444444444444444444444
+OUT473D="$(GR473RUN g473d integration "gate_promote_call() { printf 'PROMOTE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; echo 'REFUSED -- not green for that sha'; return 1; }")"; RC473D=$?
+CALLS473D="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(3): exits 1 -- a refusal escalates, it does not retry" "1" "$RC473D"
+assert_contains "AC(3): the promote was actually attempted" "$CALLS473D" "PROMOTE	g473d	integration"
+assert_contains "AC(3): a tracking issue is filed/updated" "$CALLS473D" "TRACKING_TARGET"
+assert_contains "AC(3): needs-captain is raised" "$CALLS473D" "RAISE	9001"
+assert_contains "AC(3): the refusal's own reason is relayed verbatim" "$CALLS473D" "REFUSED -- not green for that sha"
+
+section "fwf gate-recover (#473): an unrecognized verdict token is escalated, never guessed at"
+GR473_SEED_TIP g473e stale 5555555555555555555555555555555555555555
+OUT473E="$(GR473RUN g473e integration)"; RC473E=$?
+CALLS473E="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "an unrecognized verdict escalates" "1" "$RC473E"
+assert_contains "names the actual recorded verdict" "$OUT473E" "'stale' is neither green nor red"
+assert_contains "escalates via the same tracking-issue path" "$CALLS473E" "RAISE	9001"
+
+section "fwf gate-recover (#473 AC 9): FWF_CONDUCTOR_AUTO_FORCE_RESUME=0 (the default) escalates a red immediately, never a silent forever-defer"
+GR473_SEED_TIP g473f red 6666666666666666666666666666666666666666
+OUT473F="$(GR473RUN g473f integration)"; RC473F=$?
+CALLS473F="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(9): exits 1 -- escalated, not deferred forever" "1" "$RC473F"
+assert_not_contains "AC(9): no force-resume attempt while the switch is off" "$CALLS473F" "LOCAL_CI_RUN"
+assert_contains "AC(9): escalates via the tracking-issue path" "$CALLS473F" "RAISE	9001"
+assert_contains "AC(9): names the switch" "$OUT473F" "FWF_CONDUCTOR_AUTO_FORCE_RESUME=0"
+
+section "fwf gate-recover (#473 AC 1/AC 5): a force-resumed red's FIRST confirming green does not yet authorize a promote"
+GR473_SEED_TIP g473g red 7777777777777777777777777777777777777777
+GR473_AUTO_FORCE_RESUME=1
+OUT473G="$(GR473RUN g473g integration "local_ci_verdict() { printf 'LOCAL_CI_VERDICT\t%s\n' \"\$1\" >> '$GR473_LOG'; return 1; }")"; RC473G=$?
+unset GR473_AUTO_FORCE_RESUME
+CALLS473G="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(1): exits 75 -- recovering, not yet actionable" "75" "$RC473G"
+assert_contains "AC(5): the SHA is seeded into fwf-local-ci.sh's own store BEFORE the run" "$CALLS473G" "MARK_FAILED	7777777777777777777777777777777777777777"
+assert_contains "AC(1): the force-resume actually ran the suite" "$CALLS473G" "LOCAL_CI_RUN"
+assert_contains "AC(5): confirmation is consulted, not assumed" "$CALLS473G" "LOCAL_CI_VERDICT	7777777777777777777777777777777777777777"
+assert_not_contains "AC(5): NOT promoted on a single forced green -- this is exactly the bug #473 AC(5) forbids" "$CALLS473G" "PROMOTE"
+assert_eq "AC(5): the role's recorded verdict is still red -- not silently upgraded" "red" "$(GR473_TIP_VERDICT g473g)"
+assert_eq "AC(4): the retry counter advanced to 1" "1" "$(GR473_RETRY_COUNT g473g)"
+assert_contains "AC(5): says why, naming the not-yet-ship-on-one-forced-green reasoning" "$OUT473G" "not yet ship-on-one-forced-green"
+
+section "fwf gate-recover (#473 AC 1/AC 5): the SAME tip's SECOND confirming green authorizes the promote"
+GR473_AUTO_FORCE_RESUME=1
+OUT473G2="$(GR473RUN g473g integration)"; RC473G2=$?   # default local_ci_verdict now confirms (rc 0)
+unset GR473_AUTO_FORCE_RESUME
+CALLS473G2="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(1)/AC(5): exits 0 -- confirmed, promoted" "0" "$RC473G2"
+assert_contains "AC(4): the retry counter continued from 1 (not reset for the same tip)" "$OUT473G2" "attempt 2/2"
+assert_eq "AC(4): the retry counter now reads 2" "2" "$(GR473_RETRY_COUNT g473g)"
+assert_contains "AC(5): the promote fires once confirmed" "$CALLS473G2" "PROMOTE	g473g	integration"
+assert_eq "AC(5): the role's own tip record is upgraded to green, authorizing the promote through the SAME obliged path" "green" "$(GR473_TIP_VERDICT g473g)"
+
+section "fwf gate-recover (#473 AC 4): a force-resume bound exhausted on a persistently-red tip escalates, never retries forever"
+GR473_SEED_TIP g473h red 8888888888888888888888888888888888888888
+GR473_AUTO_FORCE_RESUME=1; GR473_FORCE_RESUME_MAX=2
+OUT473H1="$(GR473RUN g473h integration "local_ci_run() { printf 'LOCAL_CI_RUN\n' >> '$GR473_LOG'; echo 'still red'; return 1; }")"; RC473H1=$?
+assert_eq "attempt 1/2: still red, exits 75 (the next cycle retries)" "75" "$RC473H1"
+assert_contains "names the attempt count" "$OUT473H1" "attempt 1/2"
+
+OUT473H2="$(GR473RUN g473h integration "local_ci_run() { printf 'LOCAL_CI_RUN\n' >> '$GR473_LOG'; echo 'still red'; return 1; }")"; RC473H2=$?
+unset GR473_AUTO_FORCE_RESUME GR473_FORCE_RESUME_MAX
+CALLS473H2="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "AC(4): attempt 2/2 exhausts the bound -- escalates instead of a 3rd attempt" "1" "$RC473H2"
+assert_contains "AC(1): names the bound exhausted, and says so" "$OUT473H2" "bound exhausted (2/2 attempts)"
+assert_contains "escalates via the tracking-issue path" "$CALLS473H2" "RAISE	9001"
+assert_eq "AC(4): the counter never exceeds the configured max" "2" "$(GR473_RETRY_COUNT g473h)"
+
+section "fwf gate-recover (#473 AC 4): a DIFFERENT (new commit's) tip always gets a fresh retry budget"
+GR473_SEED_TIP g473h red 9999999999999999999999999999999999999999   # a NEW commit's sha, same role
+GR473_AUTO_FORCE_RESUME=1
+OUT473I="$(GR473RUN g473h integration "local_ci_verdict() { printf 'LOCAL_CI_VERDICT\t%s\n' \"\$1\" >> '$GR473_LOG'; return 1; }")"; RC473I=$?
+unset GR473_AUTO_FORCE_RESUME
+assert_eq "AC(4): a fresh tip is not blocked by the OLD tip's exhausted budget" "75" "$RC473I"
+assert_contains "AC(4): starts the new tip's own budget at attempt 1" "$OUT473I" "attempt 1/2"
+assert_eq "AC(4): the counter is keyed to the NEW sha now" "1" "$(GR473_RETRY_COUNT g473h)"
+
+section "fwf gate-recover (#473 AC 3/AC 5): fwf gate-promote's refusal after a CONFIRMED force-resume is still escalated, never bypassed"
+GR473_SEED_TIP g473j red aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+GR473_AUTO_FORCE_RESUME=1
+OUT473J="$(GR473RUN g473j integration "gate_promote_call() { printf 'PROMOTE\t%s\t%s\n' \"\$1\" \"\$2\" >> '$GR473_LOG'; echo 'REFUSED -- revoked fingerprint'; return 1; }")"; RC473J=$?
+unset GR473_AUTO_FORCE_RESUME
+CALLS473J="$(cat "$GR473_LOG" 2>/dev/null || true)"
+assert_eq "exits 1 -- a post-confirmation refusal still escalates" "1" "$RC473J"
+assert_contains "the promote was actually attempted after confirmation" "$CALLS473J" "PROMOTE	g473j	integration"
+assert_contains "the refusal's own reason is relayed verbatim" "$CALLS473J" "REFUSED -- revoked fingerprint"
+assert_contains "escalates via the tracking-issue path" "$CALLS473J" "RAISE	9001"
+
+# --------------------------------------------------------------------------
+section "fwf gate-recover (#473): the obliged call site -- wired into both promote-gate conductor templates"
+
+assert_contains "CLI help documents the subcommand" "$("$ROOT/fwf" help)" "gate-recover <role> <target-branch>"
+assert_eq "fwf dispatches gate-recover to its own script" "1" "$(grep -c 'gate-recover) engine fwf-gate-recover.sh' "$ROOT/fwf")"
+assert_contains "dev conductor template runs gate-recover on the promote gate's exit-75 path" \
+  "$(cat "$ROOT/templates/dev/conductor.tmpl")" "fwf gate-recover __ROLETAG__ __INTEGRATION__"
+assert_contains "refactor conductor template runs gate-recover on the promote gate's exit-75 path" \
+  "$(cat "$ROOT/templates/refactor/conductor.tmpl")" "fwf gate-recover __ROLETAG__ __INTEGRATION__"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 _rc=0; [ "$FAIL" -eq 0 ] || _rc=1
 exit "$_rc"
