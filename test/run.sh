@@ -4387,6 +4387,31 @@ GHSTUB2
   assert_eq "AC(d2): NO pane is removed on refusal (not even trying a lower index)" "$PANES_BEFORE_BUSY" \
     "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
 
+  # --- issue #503 AC2/AC7: scale-down also refuses on a LIVE CLAIM, not just
+  # an open PR -- this call site (_fwf_scale_claim_reason) is the one GV
+  # flagged as the highest-consequence: a false RECLAIMABLE here doesn't just
+  # permit a second claim, it tears a seat down while work is attributed to
+  # it. impl2's real pane is still up from the fixture above, so this
+  # exercises fwf_claim_liveness_blocks through fwf-scale.sh's own call
+  # site, not just the CLI oracle.
+  F210CLAIMGHBIN="$TMP/f210claimghbin"; mkdir -p "$F210CLAIMGHBIN"
+  F210CLAIM_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  cat > "$F210CLAIMGHBIN/gh" <<GHSTUB3
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr list") printf '' ;;
+  "issue list") printf '%s\t%s\n' "$F210CLAIM_TS" "CLAIM impl2" ;;
+  *) exit 1 ;;
+esac
+GHSTUB3
+  chmod +x "$F210CLAIMGHBIN/gh"
+  PANES_BEFORE_CLAIM="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
+  F210CLAIM_OUT="$(PATH="$F210CLAIMGHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 2>&1)"; F210CLAIM_RC=$?
+  assert_eq "AC2/AC7 (via fwf-scale.sh): refuses when the highest-indexed pair has a LIVE claim (no open PR needed)" "1" "$F210CLAIM_RC"
+  assert_contains "names it a live claim" "$F210CLAIM_OUT" "holds a live claim"
+  assert_eq "no pane is removed on a claim-based refusal either" "$PANES_BEFORE_CLAIM" \
+    "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
+
   # --- AC(h): capacity guardrail refuses scale-up, --force overrides ---------
   F210CAP_OUT="$(FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210CAP_RC=$?
   assert_eq "AC(h): an absurd per-pair RAM requirement refuses scale-up" "1" "$F210CAP_RC"
@@ -4796,27 +4821,36 @@ EOS
   # staging==integration are NOT enough -- a ticket can be claimed with no
   # PR pushed yet, and the ORIGINAL #105 guard was blind to that window
   # entirely. Reuses the SAME fwf-down.sh mechanism, not a new one.
+  #
+  # issue #503 AC1: a role with NO PANE IN ANY SESSION is RECLAIMABLE in a
+  # single call, with NO waiting period -- age never enters into it. This
+  # replaces the OLD (pre-#503) expectation that a FRESH claim with no pane
+  # signal blocked ("ambiguous -> fail-safe"): that was exactly the defect
+  # this ticket fixes -- a live claimant has a pane by definition, so no
+  # pane at all means no live seat, and releasing its claim is correct, not
+  # a false positive (#503's own pane-creation edge case reasoning). Two
+  # ages, same outcome, proves it is not just the old fallback timeout
+  # firing under a new name.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   F147_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   F147OUT="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9001"$'\t'"$F147_NOW"$'\t'"CLAIM impl9" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
-    && bad "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)" \
-    || ok "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)"
-  assert_contains "refusal names the claim window"  "$F147OUT" "claim window"
-  assert_contains "refusal names the claiming role" "$F147OUT" "impl9"
-  tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (claim-window refusal survives --force)" || bad "build session untouched (claim-window refusal survives --force)"
+    && ok "AC1: build-only proceeds -- a FRESH claim with no pane in any session is immediately reclaimable" \
+    || bad "AC1: build-only proceeds -- a FRESH claim with no pane in any session is immediately reclaimable" "$F147OUT"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "AC1: build session torn down (fresh, paneless claim did not block)" || ok "AC1: build session torn down (fresh, paneless claim did not block)"
 
-  # An OLD claim (past the 15-min fallback) that STILL has no pane signal
-  # recorded at all is abandoned -- "no live pane AND no PR -> idles", the
-  # ticket's own narrowing of the old "stale claim -> idles" rule. A
-  # DIFFERENT role tag than the fresh-claim case above: fwf_claim_liveness_blocks
-  # stamps a baseline as a side effect even while blocking, so reusing the
-  # same role here would spuriously find a (just-stamped) signal.
+  # A claim aged well past the OLD 15-minute proxy, still with no pane
+  # anywhere -- same outcome as the fresh case above, for the same reason
+  # (pane absence, not age, decides it). A DIFFERENT role tag than the fresh
+  # case: fwf_role_pane_alive is a pure query now (no snapshot side effect
+  # on a paneless role at all, per AC4), but keeping distinct tags still
+  # avoids any accidental cross-talk between the two assertions.
+  tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   F147_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
   F147_OLD="$(date -u -d "@$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
   env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9002"$'\t'"$F147_OLD"$'\t'"CLAIM impl8" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
-    && ok "build-only proceeds: old claim, no pane signal ever recorded (abandoned)" \
-    || bad "build-only proceeds: old claim, no pane signal ever recorded (abandoned)"
-  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: abandoned claim did not block" || ok "build session torn down: abandoned claim did not block"
+    && ok "AC1: build-only proceeds -- an OLD claim with no pane signal ever recorded is also reclaimable" \
+    || bad "AC1: build-only proceeds -- an OLD claim with no pane signal ever recorded is also reclaimable"
+  tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: paneless claim did not block" || ok "build session torn down: paneless claim did not block"
 
   # WEDGED with NO matching pane in the build session (the session exists,
   # but nothing is labeled IMPL7) is CONFIRMED ABSENT -- proceeds, no matter
@@ -4860,7 +4894,14 @@ EOS
   # is STILL actively heartbeating must NOT idle -- proves the primary
   # signal (liveness) overrides claim-age once a real signal exists, the
   # regression a naive claim-age-only rule would have baked in.
+  #
+  # issue #503 AC1: the pane check now runs BEFORE the tick classifier ever
+  # does, so a real pane labeled IMPL6 is required here for the first time
+  # -- under the old code a healthy tick alone was enough to block, without
+  # ever consulting pane existence at all. Omitting this pane would now make
+  # this fixture assert the OPPOSITE of what its own comment claims.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
+  tmux set -p -t "${F88SESS}-build" @l "IMPL6 · dev impl · impl6/*"
   mkdir -p "$F88TRUN/state/example/tick" "$F88TRUN/state/example/tick-watch"
   printf '5 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl6"
   echo 6 > "$F88TRUN/state/example/tick/impl6"   # ticked since the baseline -> HEALTHY
@@ -7412,27 +7453,60 @@ CLRC=0; CL 1 >/dev/null 2>&1 || CLRC=$?
 assert_eq "no claim -> exit 3 (nothing to check, proceed)" "3" "$CLRC"
 assert_contains "names that no claim was found" "$(CL 1 2>&1)" "no CLAIM comment found"
 
-section "fwf claim-liveness (#377): a FRESH claim with no liveness signal yet is LIVE (ambiguous -> fail-safe)"
+section "fwf claim-liveness (#377/#503 AC1): a FRESH claim with NO PANE in any session is immediately RECLAIMABLE"
+# issue #503: pane absence is checked FIRST, unconditionally -- a live
+# claimant has a pane by definition, so no pane at all means release, even
+# for a claim that is only seconds old (AC1's own ask: assert with the
+# claim's age below every window, so this cannot pass via a timeout).
+# Isolated FWF_SESSION: this box genuinely runs a live floor under the
+# default session name, and "impl9" must not accidentally resolve against
+# a REAL pane there.
+CL2SESS="fwf-selftest-claimlive-noiso-$$"
 CLI create --title "Fresh claim" >/dev/null
 CLI comment 2 --body "CLAIM impl9" >/dev/null
-CLRC=0; CL 2 >/dev/null 2>&1 || CLRC=$?
-assert_eq "fresh + no signal -> LIVE (rc 1), never assumed reclaimable" "1" "$CLRC"
+CL2_OUT="$(FWF_SESSION="$CL2SESS" CL 2 2>&1)"; CLRC=$?
+assert_eq "AC1: fresh + no pane anywhere -> RECLAIMABLE (rc 0), age never enters into it" "0" "$CLRC"
+assert_contains "AC1: names it RECLAIMABLE" "$CL2_OUT" "RECLAIMABLE"
 
-section "fwf claim-liveness (#377): AC(3) fallback -- an OLD claim with NO liveness signal ever recorded is RECLAIMABLE"
+section "fwf claim-liveness (#377/#503 AC1): an OLD claim with NO liveness signal ever recorded is ALSO RECLAIMABLE"
 CLI create --title "Old claim, no signal ever" >/dev/null
 CL3_FILE=$(find "$CLRUN/issues/example/open" -name '3-*.md')
 CL3_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
 CL3_OLD_TS="$(date -u -d "@$CL3_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$CL3_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
 printf '\n## comment %s\n\nCLAIM impl8\n' "$CL3_OLD_TS" >> "$CL3_FILE"
-# Single invocation, not two: fwf_claim_liveness_blocks (lib.sh) stamps a
-# first liveness baseline as a side effect of the "no snapshot yet" branch
-# even while it returns based on age -- a SECOND call would find that
-# just-stamped (too-fresh) baseline and spuriously read UNKNOWN instead.
-CL3_OUT="$(CL 3 2>&1)"; CLRC=$?
-assert_eq "old claim, no signal ever, past the fallback -> RECLAIMABLE (rc 0)" "0" "$CLRC"
+# issue #503: pane absence (checked first) settles this in ONE call with no
+# snapshot side effect at all, unlike the pre-#503 code this replaces (which
+# stamped a tick-watch baseline as a side effect of its own "no snapshot
+# yet" branch). Isolated FWF_SESSION for the same reason as AC1's fresh case
+# above.
+CL3SESS="fwf-selftest-claimlive-noiso2-$$"
+CL3_OUT="$(FWF_SESSION="$CL3SESS" CL 3 2>&1)"; CLRC=$?
+assert_eq "old claim, no signal ever recorded -> RECLAIMABLE (rc 0)" "0" "$CLRC"
 assert_contains "names it abandoned/RECLAIMABLE" "$CL3_OUT" "RECLAIMABLE"
 
+section "fwf claim-liveness (#503 AC4): polling a paneless role repeatedly does not delay its release"
+CLI create --title "Polled several times, still paneless" >/dev/null
+CLI comment 4 --body "CLAIM impl10" >/dev/null
+CL6SESS="fwf-selftest-claimlive-ac4-$$"
+CL6RC1=0; FWF_SESSION="$CL6SESS" CL 4 >/dev/null 2>&1 || CL6RC1=$?
+CL6RC2=0; FWF_SESSION="$CL6SESS" CL 4 >/dev/null 2>&1 || CL6RC2=$?
+CL6RC3=0; FWF_SESSION="$CL6SESS" CL 4 >/dev/null 2>&1 || CL6RC3=$?
+assert_eq "AC4: 1st poll of a paneless role -> RECLAIMABLE" "0" "$CL6RC1"
+assert_eq "AC4: 2nd poll (immediately after) -> still RECLAIMABLE" "0" "$CL6RC2"
+assert_eq "AC4: 3rd poll (immediately after) -> still RECLAIMABLE, unaffected by sample count" "0" "$CL6RC3"
+
 if command -v tmux >/dev/null 2>&1; then
+  section "fwf claim-liveness (#503 AC6): the refusal reason distinguishes 'live' from 'undiagnosable'"
+  CL7SESS="fwf-selftest-claimlive-ac6-$$"
+  mkdir -p "$CLRUN/state/example/tick-watch"
+  CLI create --title "Undiagnosable but fresh" >/dev/null
+  CLI comment 5 --body "CLAIM impl11" >/dev/null
+  tmux new-session -d -s "${CL7SESS}-build" -c "$TMP"
+  tmux set -p -t "${CL7SESS}-build" @l "IMPL11 · dev impl · impl11/*"
+  CL7_OUT="$(FWF_SESSION="$CL7SESS" CL 5 2>&1)"
+  assert_contains "AC6: an undiagnosable-but-fresh block names it 'undiagnosable', not just LIVE" "$CL7_OUT" "undiagnosable"
+  tmux kill-session -t "${CL7SESS}-build" 2>/dev/null
+
   section "fwf claim-liveness (#377 AC 2/4): the discriminating case -- an OLD claim whose claimant is mid-gate (WEDGED, pane PRESENT) is NOT reclaimable"
   # This is the exact scenario the old age-only rule got wrong: tick AND
   # tokens both static (a blocking `bash test/run.sh` produces neither) past
@@ -7444,7 +7518,7 @@ if command -v tmux >/dev/null 2>&1; then
   tmux new-session -d -s "${CL4SESS}-build" -c "$TMP"
   tmux set -p -t "${CL4SESS}-build" @l "IMPL6 · dev impl · impl6/*"
   CLI create --title "Wedged but alive" >/dev/null
-  CLI comment 4 --body "CLAIM impl6" >/dev/null
+  CLI comment 6 --body "CLAIM impl6" >/dev/null
   # OLD-RULE COMPARISON (AC 4's own ask: prove this fixture would have been
   # wrongly reclaimed under the bare age+no-PR proxy this ticket replaces).
   # This claim is deliberately FRESH (age 0): the old rule (age<15min) would
@@ -7454,7 +7528,7 @@ if command -v tmux >/dev/null 2>&1; then
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$CLRUN/state/example/tick-watch/impl6"
   printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
     "$(( $(date -u +%s) - 3600 ))" > "$CLRUN/state/example/usage-cache/impl6.json"
-  CLRC=0; FWF_SESSION="$CL4SESS" FWF_WEDGE_MIN_SECS=600 CL 4 >/dev/null 2>&1 || CLRC=$?
+  CLRC=0; FWF_SESSION="$CL4SESS" FWF_WEDGE_MIN_SECS=600 CL 6 >/dev/null 2>&1 || CLRC=$?
   assert_eq "AC(2): a live pane running a gate BLOCKS reclaim regardless of age (rc 1)" "1" "$CLRC"
   tmux kill-session -t "${CL4SESS}-build" 2>/dev/null
 
@@ -7463,15 +7537,48 @@ if command -v tmux >/dev/null 2>&1; then
   mkdir -p "$CLRUN/state/example/tick-watch" "$CLRUN/state/example/usage-cache"
   tmux new-session -d -s "${CL5SESS}-build" -c "$TMP"   # session exists, no IMPL7 pane in it
   CLI create --title "Wedged and absent" >/dev/null
-  CLI comment 5 --body "CLAIM impl7" >/dev/null
+  CLI comment 7 --body "CLAIM impl7" >/dev/null
   printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$CLRUN/state/example/tick-watch/impl7"
   printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
     "$(( $(date -u +%s) - 3600 ))" > "$CLRUN/state/example/usage-cache/impl7.json"
-  CLRC=0; FWF_SESSION="$CL5SESS" FWF_WEDGE_MIN_SECS=600 CL 5 >/dev/null 2>&1 || CLRC=$?
+  CLRC=0; FWF_SESSION="$CL5SESS" FWF_WEDGE_MIN_SECS=600 CL 7 >/dev/null 2>&1 || CLRC=$?
   assert_eq "confirmed-dead pane -> RECLAIMABLE (rc 0), even though WEDGED" "0" "$CLRC"
   tmux kill-session -t "${CL5SESS}-build" 2>/dev/null
+
+  section "fwf claim-liveness (#503 AC2): a live, ticking pane (HEALTHY) BLOCKS reclaim too, not just WEDGED"
+  CL8SESS="fwf-selftest-claimlive-ac2-$$"
+  mkdir -p "$CLRUN/state/example/tick-watch" "$CLRUN/state/example/tick"
+  tmux new-session -d -s "${CL8SESS}-build" -c "$TMP"
+  tmux set -p -t "${CL8SESS}-build" @l "IMPL12 · dev impl · impl12/*"
+  CLI create --title "Healthy and alive" >/dev/null
+  CLI comment 8 --body "CLAIM impl12" >/dev/null
+  printf '5 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$CLRUN/state/example/tick-watch/impl12"
+  echo 6 > "$CLRUN/state/example/tick/impl12"   # ticked since the baseline -> HEALTHY
+  CLRC=0; FWF_SESSION="$CL8SESS" FWF_WEDGE_MIN_SECS=600 CL 8 >/dev/null 2>&1 || CLRC=$?
+  assert_eq "AC2: HEALTHY (tick advanced) + pane present -> LIVE (rc 1)" "1" "$CLRC"
+  tmux kill-session -t "${CL8SESS}-build" 2>/dev/null
+
+  section "fwf claim-liveness (#503 AC5): the age fallback survives an EXISTING tick-watch snapshot when the verdict is indeterminate"
+  CL9SESS="fwf-selftest-claimlive-ac5-$$"
+  mkdir -p "$CLRUN/state/example/tick-watch"
+  tmux new-session -d -s "${CL9SESS}-build" -c "$TMP"
+  tmux set -p -t "${CL9SESS}-build" @l "IMPL13 · dev impl · impl13/*"
+  CLI create --title "Old claim, fresh baseline, indeterminate" >/dev/null
+  CL9_FILE=$(find "$CLRUN/issues/example/open" -name '9-*.md')
+  CL9_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
+  CL9_OLD_TS="$(date -u -d "@$CL9_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$CL9_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+  printf '\n## comment %s\n\nCLAIM impl13\n' "$CL9_OLD_TS" >> "$CL9_FILE"
+  # A snapshot file already exists (fresh, just stamped -- age 0), so
+  # fwf-pane-liveness.sh reads UNKNOWN (too fresh to classify), NOT the
+  # pre-#503 "no snapshot yet" path. Pre-#503 code gated the age fallback
+  # behind `[ ! -f "$snap" ]`, so a claim this old with a baseline already
+  # present read LIVE forever, never consulting age at all.
+  printf '0 0 %s\n' "$(date -u +%s)" > "$CLRUN/state/example/tick-watch/impl13"
+  CLRC=0; FWF_SESSION="$CL9SESS" FWF_WEDGE_MIN_SECS=600 CL 9 >/dev/null 2>&1 || CLRC=$?
+  assert_eq "AC5: indeterminate verdict + snapshot ALREADY present + old claim -> RECLAIMABLE (rc 0)" "0" "$CLRC"
+  tmux kill-session -t "${CL9SESS}-build" 2>/dev/null
 else
-  skip "fwf claim-liveness (#377): WEDGED-pane discriminator (needs tmux)" 2
+  skip "fwf claim-liveness (#377/#503): WEDGED-pane discriminator + AC2/AC5/AC6 (needs tmux)" 5
 fi
 
 section "fwf claim-liveness (#377): CLI wiring"
