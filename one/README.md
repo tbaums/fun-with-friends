@@ -16,12 +16,12 @@ it replaces. Nothing here is wired into `fwf` yet.
 | T-00 v0.42.10 security fix (#562) | PR open on the v0.42.x tree |
 | T-01 crate skeleton, four enums, event log, `why` | this directory |
 | T-02 three GitHub Apps (impl, qa, ops) | needs Jamie |
-| T-03 GitHub client | token mint + probe done; ETag client next |
+| T-03 GitHub client | mint LIVE for fwf-impl; ETag client next |
 | T-04 fake GitHub | `src/fake_github.rs`, 9 contract tests |
 | T-05 fake seat pane (tmux-backed) | done — `src/seat.rs` FakeSeat |
 | T-06 seat waker + verdict reader | done — `wake`/`wait_verdict`; woken panes, no /loop, no claude -p |
 | T-07 canary | canary PASS (see below); 10-cycle cost comparison parked (needs real seats) |
-| T-08 thin slice (kill criterion) | blocked: needs the real fwf-impl ids in apps.toml |
+| T-08 thin slice (kill criterion) | unblocked (impl-only); needs T-09 scheduler + T-11 mirror first |
 
 ## Build and test
 
@@ -54,35 +54,18 @@ cd one && cargo test && cargo run -- doctor
   while `GET /users/fwf-impl%5Bbot%5D` resolves the bot. Decision: claim =
   supervisor-owned label + a `claim/<n>` ref created with expect-empty
   `--force-with-lease`; the fencing token is that ref's SHA.
-- **App token mint (T-03): code done, live check blocked.** `fwfd doctor`
-  mints a narrowed installation token per App from `~/.fwf/apps.toml`
-  (JWT RS256 → `/app/installations/{id}/access_tokens`). The live call
-  returns 401 "A JSON web token could not be decoded" because `apps.toml`
-  still holds the placeholder ids from the how-to (`app_id = 123456`,
-  `installation_id = 78901234`); an openssl-signed JWT fails identically, so
-  the code is not at fault. Needs the real App ID and installation id for
-  fwf-impl (see NEXT-STEPS.md).
-
-## Fake GitHub (T-04)
-
-`src/fake_github.rs` (test-only, `tiny_http` on `127.0.0.1:0`) is the
-in-process stand-in the client's contract tests run against. Construct
-`FakeGitHub::start()`, seed it (`token`, `add_installation`, `seed_issue`,
-`seed_ref`), point the client at `base_url()`, assert on `writes()` (every
-accepted write as `(actor, method, path, body)`) and `request_count(path)`
-(every request, 304s included, so single-flight tests can assert "one").
-Ids are sequential, timestamps come from an injectable clock (default:
-2026-01-01T00:00:00Z ticking one second per read).
-
-Routes: `GET issues[?state=]`, `GET issues/{n}`, `POST/DELETE
-issues/{n}/labels[/{name}]`, `GET issues/{n}/events`, `GET/POST
-issues/{n}/comments`, `POST pulls`, `GET/PATCH pulls/{n}`, `GET/POST
-pulls/{n}/reviews`, `GET git/ref/{ref}`, `POST/PATCH/DELETE git/refs[/{ref}]`,
-`POST check-runs`, `PATCH check-runs/{id}`, `GET commits/{sha}/check-runs`,
-`POST /app/installations/{id}/access_tokens`.
-
-Semantics it models, because the old harness got them wrong:
-
+- **App token mint (T-03): LIVE.** With the real ids (App ID 4889626,
+  installation 160423751, discovered via `GET /app/installations` with an App
+  JWT) `fwfd doctor` mints a narrowed installation token for fwf-impl.
+  Proven with a `contents:read,metadata:read` token: `GET contents/VERSION`
+  → 200; `POST issues/562/labels` → **403**; `PATCH git/refs/heads/main` →
+  **403** ("Resource not accessible by integration"). The seat-token model
+  is enforced by GitHub, not by hooks alone. The assignee check via the App's
+  own token is also **404**. Finding: fwf-impl was registered with write on
+  nearly every repository permission (administration, secrets, workflows,
+  actions, …); mint-time narrowing contains it, but the App's grant should be
+  trimmed to the four permissions in `docs/github-apps.md` so a leaked PEM
+  cannot do more than the supervisor would.
 - **ETag/304** on every GET; `If-None-Match` (strong, weak, or list) → 304.
 - **Auth**: every `/repos` route needs `Authorization: Bearer <token>`
   (401 otherwise). A token minted with narrowed `permissions` is 403 on a
