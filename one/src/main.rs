@@ -6,6 +6,7 @@
 // arrives so dead code becomes a build error again.
 #![allow(dead_code)]
 
+mod github;
 mod log;
 mod types;
 
@@ -14,7 +15,8 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   fwfd why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
-  fwfd doctor                  print what this build can and cannot do yet
+  fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
+  fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd version";
 
 fn default_log() -> PathBuf {
@@ -32,12 +34,83 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("doctor") => {
-            println!("fwfd {} (M0 skeleton)", env!("CARGO_PKG_VERSION"));
+            println!("fwfd {} (M0)", env!("CARGO_PKG_VERSION"));
             println!("  types      : Issue / Pr / Seat / Gate state machines with typed refusals");
-            println!("  event log  : append+fsync JSONL, read, `why <pr>`");
-            println!("  not yet    : GitHub client, App tokens, seat waker, gate runner, promoter");
-            println!("  run record : {}", default_log().display());
-            ExitCode::SUCCESS
+            println!(
+                "  event log  : append+fsync JSONL, read, `why <pr>` at {}",
+                default_log().display()
+            );
+            println!("  not yet    : ETag client, seat waker, gate runner, promoter");
+            let path = github::apps_path();
+            let apps = match github::load_apps(&path) {
+                Ok(a) => a,
+                Err(e) => {
+                    println!("  apps       : {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let mut bad = 0;
+            for (name, entry) in &apps.0 {
+                let narrow = std::collections::BTreeMap::from([("metadata", "read")]);
+                match github::mint(entry, Some(&narrow)) {
+                    Ok(t) => println!(
+                        "  app {name:<5}: token minted (app {}, installation {}), expires {}, scopes {:?}",
+                        entry.app_id,
+                        entry.installation_id,
+                        t.expires_at,
+                        t.permissions.keys().collect::<Vec<_>>()
+                    ),
+                    Err(e) => {
+                        bad += 1;
+                        println!("  app {name:<5}: NOT USABLE — {e}");
+                    }
+                }
+            }
+            if bad == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
+        }
+        Some("probe") => {
+            let (Some(role), Some(api_path)) = (args.get(1), args.get(2)) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd probe: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(entry) = apps.0.get(role) else {
+                eprintln!("fwfd probe: no app named {role}");
+                return ExitCode::from(2);
+            };
+            let tok = match github::mint(entry, None) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd probe: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            match github::get_status(&tok.token, api_path) {
+                Ok((code, body)) => {
+                    println!(
+                        "{code} {}",
+                        body.chars()
+                            .take(200)
+                            .collect::<String>()
+                            .replace('\n', " ")
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd probe: {e}");
+                    ExitCode::from(2)
+                }
+            }
         }
         Some("why") => {
             let Some(pr) = args
