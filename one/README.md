@@ -29,6 +29,13 @@ it replaces. Nothing here is wired into `fwf` yet.
 cd one && cargo test && cargo run -- doctor
 ```
 
-Week-0 findings so far (2026-09-09): macOS 26.5.1; Apple `container` is not
-installed on the Mac (Docker is); Claude Code 2.1.266 exposes
-`--setting-sources`, `--disallowedTools`, `--permission-mode`, `--json-schema`.
+## Week-0 findings (2026-09-09)
+
+- macOS 26.5.1, 16 GB. Claude Code 2.1.266 exposes `--setting-sources`,
+  `--disallowedTools`, `--permission-mode`, `--json-schema`, `--bare`.
+- Apple `container` 1.4.1 installed (`brew install container`; kernel via
+  `container system kernel set --recommended`, kata 3.32.0). First run of
+  `alpine` with `--memory 512m`: boot ≈ 9 s cold, guest `MemTotal` 614184 kB —
+  the cap is honoured. The transom `cargo test` benchmark is still to do.
+- Canary (deny hook under `dontAsk`, per-floor HOME): prepared, not yet run.
+- GitHub Apps: see `docs/github-apps.md`; blocked on Jamie.
