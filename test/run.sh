@@ -6659,6 +6659,14 @@ case "$*" in
     if [ "${AZ215_PRCHECK_FAIL:-0}" = 1 ]; then
       echo "gh: simulated api failure" >&2; exit 1
     fi
+    # issue #562: the same REST resource is read a second time for the
+    # author association; dispatch on the jq expression so both reads stay
+    # independently fixturable.
+    case "$*" in
+      *".author_association"*)
+        if [ "${AZ215_ASSOC_FAIL:-0}" = 1 ]; then echo "gh: simulated api failure" >&2; exit 1; fi
+        echo "${AZ215_ASSOC:-OWNER}"; exit 0 ;;
+    esac
     if [ "${AZ215_IS_PR:-0}" = 1 ]; then
       echo 'true'
     else
@@ -6787,6 +6795,27 @@ unset AZ215_PRCHECK_FAIL
 unset AZ215_EVENTS_FILE AZ215_CALL_LOG
 
 # --------------------------------------------------------------------------
+# --- issue #562: NOT-GATED applies only to OWNER-authored issues ------------
+# A third-party issue that never carried the label used to resolve NOT-GATED
+# (exit 12), which fwf-claim.sh and fwf-merge.sh both treat as "proceed" --
+# a human-independent path from an outsider's issue to a merge. Now such an
+# issue falls through to the sentinel logic and resolves HELD (10) unless a
+# real operator un-gate exists; an unreadable association fails closed.
+section "fwf authz (#562): NOT-GATED is owner-only; a third-party never-gated issue resolves HELD"
+az215_set_labels 511 '[]'; az215_set_comments 511
+CALLLOG511="$TMP/az215-calllog-511"; : > "$CALLLOG511"
+AZ215_EVENTS_FILE="$EVFILE_EMPTY" AZ215_CALL_LOG="$CALLLOG511"
+export AZ215_EVENTS_FILE AZ215_CALL_LOG
+assert_eq "AC1: owner-authored never-gated issue still resolves NOT-GATED (#215 unchanged)" "$EX_NOT_GATED_CONST" "$(AZ215_ASSOC=OWNER az215Grc 511)"
+assert_eq "AC2: third-party (NONE) never-gated issue resolves HELD, not NOT-GATED" "10" "$(AZ215_ASSOC=NONE az215Grc 511)"
+assert_eq "AC2b: CONTRIBUTOR-authored never-gated issue resolves HELD" "10" "$(AZ215_ASSOC=CONTRIBUTOR az215Grc 511)"
+assert_contains "AC3: the verdict names the non-owner cause and issue #562" "$(AZ215_ASSOC=NONE AZ215G 511 2>&1)" "#562"
+assert_eq "AC4: unreadable author association fails closed to HELD" "10" "$(AZ215_ASSOC_FAIL=1 az215Grc 511)"
+assert_eq "AC5: a third-party issue WITH a real operator un-gate is still AUTHORIZED (the human signal wins)" "0" \
+  "$(az215_set_comments 511 '[{"author":{"login":"tbaums"},"body":"**OPERATOR-UNGATE #511** via fwf ungate","createdAt":"2026-09-09T00:00:00Z"}]'; AZ215_ASSOC=NONE az215Grc 511)"
+assert_eq "AC6: the association read happens only on the not-currently-gated path" "0" \
+  "$(az215_set_labels 512 '["product-wip"]'; az215_set_comments 512; : > "$TMP/az215-calllog-512"; AZ215_CALL_LOG="$TMP/az215-calllog-512" AZ215_ASSOC=NONE az215Grc 512 >/dev/null; grep -c 'author_association' "$TMP/az215-calllog-512")"
+
 section "fwf claim: a fail-FAST authorization checkpoint at intent-formation time (issue #243)"
 CLAIMRUN="$TMP/claimrun"
 CLAIMI() { FWF_RUN_DIR="$CLAIMRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }

@@ -1,0 +1,15 @@
+name: Ticket
+description: A bug, enhancement or idea for fwf. It lands gated (product-wip) until the owner un-gates it.
+labels: ["product-wip"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: What is wrong or wanted, and how to reproduce or accept it.
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        Issues from anyone other than the repository owner are held until a human un-gates them (`fwf authz`, issue #562). Nothing here is executed by the factory until then.

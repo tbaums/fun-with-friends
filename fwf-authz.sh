@@ -162,6 +162,23 @@ if [ "$currently_gated" = 0 ]; then
     elif [ "$pr_check" = true ]; then
       history_unreadable_note=" (this number is a PULL REQUEST, not an issue -- #215's NOT-GATED determination never applies to PR numbers; defaulting to was-gated)"
     fi
+    # issue #562: #215's NOT-GATED determination applies ONLY to issues the
+    # repository OWNER authored. A third-party issue on a public repo that
+    # never carried $WIP_LABEL must NOT resolve "no signal required" -- that
+    # was a human-independent path from an outsider's issue text to a claim
+    # and a merge (fwf-claim.sh proceeds on 12, fwf-merge.sh proceeds on 12).
+    # Read the REST issue resource's author_association (OWNER for the repo
+    # owner; MEMBER/COLLABORATOR/CONTRIBUTOR/NONE otherwise). Fail closed:
+    # an unreadable association resolves was-gated, never NOT-GATED (#211).
+    if [ -z "$history_unreadable_note" ]; then
+      assoc="$(gh api "repos/$(fwf_repo_slug)/issues/$num" --jq '.author_association' 2>/dev/null)"
+      assoc_rc=$?
+      if [ "$assoc_rc" != 0 ] || [ -z "$assoc" ]; then
+        history_unreadable_note=" (could not confirm the issue author is the repository owner; #215's NOT-GATED never applies to third-party issues (issue #562); defaulting to was-gated)"
+      elif [ "$assoc" != "OWNER" ]; then
+        history_unreadable_note=" (authored by a non-owner (author_association=$assoc) -- #215's NOT-GATED never applies to third-party issues (issue #562); defaulting to was-gated: a human un-gate is required)"
+      fi
+    fi
   fi
   if [ "$FWF_ISSUES" != "local" ] && [ -z "$history_unreadable_note" ]; then
     # REST Issue Events API — labeled/unlabeled events, each with a

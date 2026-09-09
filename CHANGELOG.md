@@ -11,6 +11,26 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A third-party issue could be claimed and merged with no human signal**
+  (#562, code TBD, docs TBD) — #215's NOT-GATED verdict ("this issue never
+  carried `product-wip`, so no signal is required") applied to any issue,
+  including one filed by an outsider on this public repository; `fwf claim`
+  and `fwf merge` both proceed on that verdict. NOT-GATED now applies only to
+  issues whose `author_association` is `OWNER`; anything else falls through to
+  the sentinel logic and resolves HELD unless a real `OPERATOR-UNGATE` exists,
+  and an unreadable association fails closed. A `.github/ISSUE_TEMPLATE` with
+  blank issues disabled applies `product-wip` on the web path. Found by the
+  2026-09-05 architecture review; no outsider had ever filed an issue.
+
+### Notes
+
+- Operator steps that are repository settings, not code (recorded on #562):
+  interaction limits (`collaborators_only`) and required status checks on
+  `staging`/`main` per `.github/branch-policy.json` (all three branches were
+  unprotected on 2026-09-09).
+
 ## [0.42.9] - 2026-09-05
 
 ### Changed

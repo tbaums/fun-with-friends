@@ -1,0 +1,3 @@
+# issue #562: every web-filed issue lands gated. Blank issues are off so the
+# template (and its product-wip label) cannot be bypassed from the UI.
+blank_issues_enabled: false
