@@ -1,0 +1,19 @@
+[package]
+name = "fwfd"
+version = "0.1.0"
+edition = "2021"
+description = "fwf 1.0 supervisor: typed state, one event log, every authority-bearing write in one process"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "fwfd"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
