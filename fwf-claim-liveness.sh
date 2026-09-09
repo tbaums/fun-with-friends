@@ -82,35 +82,11 @@ case "$num" in ''|*[!0-9]*) usage; exit 2;; esac
 # a shape no valid claim/release output or the empty ("nothing found")
 # output can ever collide with, since neither starts with the literal word
 # "malformed" followed by a tab.
-_FWF502_RESOLVE='def firstline: split("\n")[0] | sub("[\t\r ]+$"; "");
-( (.comments // [])
-  | map({created: .createdAt, line: (.body | firstline)})
-  | map(. + {
-      shaped: (.line | test("^(CLAIM|RELEASE)([ \t]|$)")),
-      wellformed: (.line | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$"))
-    })
-  | map(select(.shaped))
-) as $shaped
-| if ($shaped | length) == 0 then
-    empty
-  else
-    ($shaped | nth(0; .[])) as $head
-    | if ($head.wellformed | not) then
-        "malformed\t\($head.line)"
-      else
-        ($shaped
-         | map(select(.wellformed))
-         | reduce .[] as $c ({holder:null, created:null, released:null};
-             ($c.line | split(" ")) as $p
-             | if $p[0] == "CLAIM"
-               then (if .holder == null then {holder:$p[1], created:$c.created, released:null} else . end)
-               else (if .holder == $p[1] then {holder:null, created:null, released:$p[1]} else . end)
-               end)
-         | if .holder != null then "\(.created)\tCLAIM \(.holder)"
-           elif .released != null then "\treleased \(.released)"
-           else empty end)
-      end
-  end'
+# issue #559: the replay itself now lives in lib.sh as FWF_CLAIM_RESOLVE_JQ,
+# because fwf-claim.sh needs the SAME answer and was computing a different
+# one (it never read RELEASE at all). Kept as a local alias so the rest of
+# this script is untouched; the filter text is unchanged from #502/#515.
+_FWF502_RESOLVE="$FWF_CLAIM_RESOLVE_JQ"
 
 # Same dual-backend shape as fwf-claim.sh's _issue_read. Issue #502: the SAME
 # jq filter serves both backends here (unlike the two hand-duplicated regexes
