@@ -17,6 +17,9 @@ toml = "0.8"
 jsonwebtoken = "9"
 ureq = { version = "2", features = ["json"] }
 
+[dev-dependencies]
+tiny_http = "0.12"
+
 [profile.release]
 lto = true
 codegen-units = 1

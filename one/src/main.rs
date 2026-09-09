@@ -6,8 +6,11 @@
 // arrives so dead code becomes a build error again.
 #![allow(dead_code)]
 
+#[cfg(test)]
+mod fake_github;
 mod github;
 mod log;
+mod seat;
 mod types;
 
 use std::path::PathBuf;
