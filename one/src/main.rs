@@ -24,6 +24,7 @@ mod sched;
 mod seat;
 mod slice;
 mod status;
+mod triage;
 mod types;
 
 use std::path::{Path, PathBuf};
@@ -37,6 +38,8 @@ const USAGE: &str = "usage:
   fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
   fwfd status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
   fwfd run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
+  fwfd triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
+  fwfd ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
@@ -219,6 +222,119 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("fwfd run: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("triage") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(issue), Some(seat)) = (
+                get("--repo"),
+                get("--issue").and_then(|s| s.parse::<u64>().ok()),
+                get("--seat"),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some((owner, name)) = repo.split_once('/') else {
+                eprintln!("--repo must be owner/name");
+                return ExitCode::from(2);
+            };
+            let floor = std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
+                .unwrap_or_else(|| PathBuf::from("floor"));
+            let (run_log, _) = slice::defaults(&floor);
+            let cfg = triage::TriageConfig {
+                owner: owner.into(),
+                repo: name.into(),
+                issue,
+                gate_label: "product-wip".into(),
+                seat_target: seat,
+                seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
+                floor_dir: floor,
+                job_template: PathBuf::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/prompts/gv-job.md"
+                )),
+                run_log,
+                timeout: Duration::from_secs(
+                    get("--timeout").and_then(|s| s.parse().ok()).unwrap_or(600),
+                ),
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd triage: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(ops) = apps.0.get("ops") else {
+                eprintln!("fwfd triage: no [ops] app");
+                return ExitCode::from(2);
+            };
+            match triage::run(&cfg, ops) {
+                Ok((ready, reason)) => {
+                    println!(
+                        "#{issue}: {} — {reason}",
+                        if ready {
+                            "READY (awaiting human un-gate)"
+                        } else {
+                            "NOT READY (gated)"
+                        }
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd triage: {}", e.0);
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("ungate") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(issue)) = (
+                get("--repo"),
+                get("--issue").and_then(|s| s.parse::<u64>().ok()),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let by = get("--by")
+                .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "operator".into()));
+            let Some((owner, name)) = repo.split_once('/') else {
+                eprintln!("--repo must be owner/name");
+                return ExitCode::from(2);
+            };
+            let floor = std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
+                .unwrap_or_else(|| PathBuf::from("floor"));
+            let (run_log, _) = slice::defaults(&floor);
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd ungate: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(ops) = apps.0.get("ops") else {
+                eprintln!("fwfd ungate: no [ops] app");
+                return ExitCode::from(2);
+            };
+            match triage::ungate(owner, name, issue, "product-wip", &by, &run_log, ops) {
+                Ok(()) => {
+                    println!("#{issue} un-gated by {by}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd ungate: {}", e.0);
                     ExitCode::from(1)
                 }
             }
