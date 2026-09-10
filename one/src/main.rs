@@ -6,12 +6,18 @@
 // arrives so dead code becomes a build error again.
 #![allow(dead_code)]
 
+mod checks;
 #[cfg(test)]
 mod fake_github;
+mod gate;
 mod github;
 mod log;
+mod merge;
 mod mirror;
 mod poll;
+mod promote;
+mod qa;
+mod run;
 mod sched;
 mod seat;
 mod slice;
@@ -27,6 +33,8 @@ const USAGE: &str = "usage:
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
   fwfd review --repo o/r --pr N --by qa|impl|ops [--changes] [--body TEXT]   PR review anchored to the current head, under that App
+  fwfd qa --repo o/r --pr N --seat tmux-target [--seat-no 1] [--timeout SECS]   wake a QA pane, post its verdict as a review under fwf-qa
+  fwfd merge --repo o/r --pr N   typed squash-merge under fwf-ops (approval at head by a non-author, fence, checks)
   fwfd slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
   fwfd version";
 
@@ -279,6 +287,182 @@ fn main() -> ExitCode {
                 Err(e) => {
                     eprintln!("fwfd review: {e}");
                     ExitCode::from(2)
+                }
+            }
+        }
+        Some("qa") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(pr), Some(seat)) = (
+                get("--repo"),
+                get("--pr").and_then(|s| s.parse::<u64>().ok()),
+                get("--seat"),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some((owner, name)) = repo.split_once('/') else {
+                eprintln!("--repo must be owner/name");
+                return ExitCode::from(2);
+            };
+            let floor = get("--floor").map(PathBuf::from).unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
+                    .unwrap_or_else(|| PathBuf::from("floor"))
+            });
+            let (run_log, mirror_dir) = slice::defaults(&floor);
+            let cfg = qa::QaConfig {
+                owner: owner.to_string(),
+                repo: name.to_string(),
+                pr,
+                seat_target: seat,
+                seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
+                seat_no: get("--seat-no").and_then(|s| s.parse().ok()).unwrap_or(1),
+                floor_dir: floor.clone(),
+                mirror_dir,
+                job_template: PathBuf::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/prompts/qa-job.md"
+                )),
+                run_log,
+                timeout: Duration::from_secs(
+                    get("--timeout")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1200),
+                ),
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd qa: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get("qa") else {
+                eprintln!("fwfd qa: no [qa] app");
+                return ExitCode::from(2);
+            };
+            match qa::run(&cfg, app) {
+                Ok((id, state)) => {
+                    println!("review {id} {state} on #{pr}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd qa: {}", e.0);
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("merge") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(pr)) = (
+                get("--repo"),
+                get("--pr").and_then(|s| s.parse::<u64>().ok()),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd merge: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get("ops") else {
+                eprintln!("fwfd merge: no [ops] app");
+                return ExitCode::from(2);
+            };
+            let perms = std::collections::BTreeMap::from([
+                ("contents", "write"),
+                ("pull_requests", "write"),
+                ("issues", "read"),
+                ("checks", "read"),
+                ("metadata", "read"),
+            ]);
+            let tok = match github::mint(app, Some(&perms)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd merge: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let floor = std::env::var_os("HOME")
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".fwf/floors")
+                        .join(repo.rsplit('/').next().unwrap_or("repo"))
+                })
+                .unwrap_or_else(|| PathBuf::from("floor"));
+            let (run_log, _) = slice::defaults(&floor);
+            let mut log = match log::Log::open(&run_log) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("fwfd merge: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let client = merge::Client {
+                base_url: "https://api.github.com".into(),
+                token: tok.token.clone(),
+            };
+            // The fence is the live claim ref for the PR's issue; merge.rs verifies it.
+            let (code, body) =
+                match github::get_status(&tok.token, &format!("/repos/{repo}/pulls/{pr}")) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!("fwfd merge: {e}");
+                        return ExitCode::from(2);
+                    }
+                };
+            if code != 200 {
+                eprintln!("fwfd merge: cannot read PR ({code})");
+                return ExitCode::from(1);
+            }
+            let issue = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["body"].as_str().and_then(poll::closes_issue))
+                .unwrap_or(0);
+            let (code, body) = match github::get_status(
+                &tok.token,
+                &format!("/repos/{repo}/git/ref/claims/{issue}"),
+            ) {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("fwfd merge: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let fence = if code == 200 {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v["object"]["sha"]
+                            .as_str()
+                            .map(|s| types::Fence(s.to_string()))
+                    })
+            } else {
+                None
+            };
+            let Some(fence) = fence else {
+                eprintln!("fwfd merge: no live claim ref for issue #{issue}; refusing");
+                return ExitCode::from(1);
+            };
+            match merge::merge_pr(&client, &repo, pr, &fence, &mut log) {
+                Ok(sha) => {
+                    println!("merged #{pr} as {}", sha.as_str());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd merge: refused: {e}");
+                    ExitCode::from(1)
                 }
             }
         }
