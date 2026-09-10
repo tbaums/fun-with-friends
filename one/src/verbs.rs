@@ -1,7 +1,9 @@
 //! Verb bodies moved out of main.rs (the size ratchet): spec, triage,
 //! release-check, dash. Each takes the raw argv and returns the exit code.
 
-use crate::{dash, github, log, manifest, mirror, profile, prompts, seat, slice, spec, triage};
+use crate::{
+    dash, github, log, manifest, mirror, profile, prompts, run, seat, slice, spec, triage,
+};
 use crate::{default_log, USAGE};
 use std::path::Path;
 use std::path::PathBuf;
@@ -388,5 +390,124 @@ pub fn seats(args: &[String]) -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+pub fn run_loop(args: &[String]) -> ExitCode {
+    let path = get(args, "--manifest")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+    let m = match manifest::Manifest::load(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("fwfd run: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if m.issues.is_empty() {
+        eprintln!("fwfd run: the manifest has no `issues` allow-list; refusing to run against every eligible issue while 1.0 is new");
+        return ExitCode::from(2);
+    }
+    let apps = match github::load_apps(&github::apps_path()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("fwfd run: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let floor = m.floor();
+    let (run_log, mirror_dir) = slice::defaults(&floor);
+    let mut impl_seats = Vec::new();
+    let mut qa_seats = Vec::new();
+    for n in 1..=m.pairs {
+        impl_seats.push((n, m.seat_target("impl", n)));
+        qa_seats.push((n, m.seat_target("qa", n)));
+    }
+    let cfg = run::RunConfig {
+        owner: m.owner().to_string(),
+        repo: m.name().to_string(),
+        base_branch: m.base_branch.clone(),
+        gate_label: m.gate_label.clone(),
+        floor_dir: floor.clone(),
+        mirror_dir,
+        run_log,
+        impl_seats,
+        qa_seats,
+        seat_expect_cmd: "claude".into(),
+        interval: Duration::from_secs(m.poll_interval_secs),
+        job_timeout: Duration::from_secs(m.job_timeout_secs),
+        once: args.iter().any(|a| a == "--once"),
+        prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
+        template: m.template.clone(),
+        allow_issues: m.issues.clone(),
+        triage_new: m.triage_new,
+        gv_seat: m.models.contains_key("gv").then(|| m.seat_target("gv", 1)),
+        park_at_weekly_pct: m.park_at_weekly_pct,
+        gate_suite: m.fast_suite.clone(),
+        gate_cmd: m.suites.get(&m.fast_suite).cloned().unwrap_or_default(),
+        gate_venue: m.gate_venue.clone(),
+        gate_memory_gb: m.gate_memory_gb,
+        gate_timeout: Duration::from_secs(m.gate_timeout_secs),
+    };
+    match run::run(&cfg, &apps) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("fwfd run: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+pub fn up(args: &[String]) -> ExitCode {
+    let path = get(args, "--manifest")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+    let m = match manifest::Manifest::load(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("fwfd up: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    println!("manifest {} ok: repo {} · {} → {} · gate label {:?} · {} pair(s) · session {} · venue {} ({} GB, {} s) · suites {:?}",
+        path.display(), m.repo, m.base_branch, m.release_branch, m.gate_label, m.pairs, m.session, m.gate_venue, m.gate_memory_gb, m.gate_timeout_secs, m.suites.keys().collect::<Vec<_>>());
+    println!("  floor: {}", m.floor().display());
+    let apps = match github::load_apps(&github::apps_path()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("fwfd up: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut bad = 0;
+    for role in ["impl", "qa", "ops"] {
+        match apps.0.get(role) {
+            None => {
+                bad += 1;
+                println!("  app {role:<4}: MISSING from apps.toml");
+            }
+            Some(entry) => match github::mint(
+                entry,
+                Some(&std::collections::BTreeMap::from([("metadata", "read")])),
+            ) {
+                Ok(_) => println!("  app {role:<4}: ok"),
+                Err(e) => {
+                    bad += 1;
+                    println!("  app {role:<4}: NOT USABLE — {e}");
+                }
+            },
+        }
+    }
+    for n in 1..=m.pairs {
+        for role in ["impl", "qa"] {
+            let target = m.seat_target(role, n);
+            let cmd = seat::pane_command(&target).unwrap_or_else(|_| "absent".into());
+            println!("  seat {target}: {cmd}");
+        }
+    }
+    if bad == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }

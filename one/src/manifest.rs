@@ -63,6 +63,12 @@ pub struct Manifest {
     /// consulting, defect-report, user-testing). Missing roles fall back to dev.
     #[serde(default = "default_template")]
     pub template: String,
+    /// GV triage cycle inside `fwfd run`: every tick, wake the GV seat once
+    /// per open, un-gated, never-triaged issue (allow-list does not apply:
+    /// triage is how issues become worth allow-listing). Off by default
+    /// because it labels and comments on real issues.
+    #[serde(default)]
+    pub triage_new: bool,
     /// Allow-list: if non-empty, the supervisor only ever works these issue
     /// numbers (the operator's safety rail while 1.0 is new). Empty = any
     /// eligible issue.
@@ -246,6 +252,7 @@ job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
 template = "dev"
+triage_new = false
 # Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
 issues = [564]
 

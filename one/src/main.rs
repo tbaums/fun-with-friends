@@ -169,73 +169,7 @@ fn main() -> ExitCode {
             print!("{}", status::render(&inp));
             ExitCode::SUCCESS
         }
-        Some("run") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let path = get("--manifest")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
-            let m = match manifest::Manifest::load(&path) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("fwfd run: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            if m.issues.is_empty() {
-                eprintln!("fwfd run: the manifest has no `issues` allow-list; refusing to run against every eligible issue while 1.0 is new");
-                return ExitCode::from(2);
-            }
-            let apps = match github::load_apps(&github::apps_path()) {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("fwfd run: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            let floor = m.floor();
-            let (run_log, mirror_dir) = slice::defaults(&floor);
-            let mut impl_seats = Vec::new();
-            let mut qa_seats = Vec::new();
-            for n in 1..=m.pairs {
-                impl_seats.push((n, m.seat_target("impl", n)));
-                qa_seats.push((n, m.seat_target("qa", n)));
-            }
-            let cfg = run::RunConfig {
-                owner: m.owner().to_string(),
-                repo: m.name().to_string(),
-                base_branch: m.base_branch.clone(),
-                gate_label: m.gate_label.clone(),
-                floor_dir: floor.clone(),
-                mirror_dir,
-                run_log,
-                impl_seats,
-                qa_seats,
-                seat_expect_cmd: "claude".into(),
-                interval: Duration::from_secs(m.poll_interval_secs),
-                job_timeout: Duration::from_secs(m.job_timeout_secs),
-                once: args.iter().any(|a| a == "--once"),
-                prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
-                template: m.template.clone(),
-                allow_issues: m.issues.clone(),
-                park_at_weekly_pct: m.park_at_weekly_pct,
-                gate_suite: m.fast_suite.clone(),
-                gate_cmd: m.suites.get(&m.fast_suite).cloned().unwrap_or_default(),
-                gate_venue: m.gate_venue.clone(),
-                gate_memory_gb: m.gate_memory_gb,
-                gate_timeout: Duration::from_secs(m.gate_timeout_secs),
-            };
-            match run::run(&cfg, &apps) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("fwfd run: {e}");
-                    ExitCode::from(1)
-                }
-            }
-        }
+        Some("run") => verbs::run_loop(&args),
         Some("spec") => verbs::spec(&args),
         Some("triage") => verbs::triage(&args),
         Some("ungate") => {
@@ -286,64 +220,7 @@ fn main() -> ExitCode {
         Some("release-check") => verbs::release_check(&args),
         Some("init-manifest") => verbs::init_manifest(&args),
         Some("seats") => verbs::seats(&args),
-        Some("up") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let path = get("--manifest")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
-            let m = match manifest::Manifest::load(&path) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("fwfd up: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            println!("manifest {} ok: repo {} · {} → {} · gate label {:?} · {} pair(s) · session {} · venue {} ({} GB, {} s) · suites {:?}",
-                path.display(), m.repo, m.base_branch, m.release_branch, m.gate_label, m.pairs, m.session, m.gate_venue, m.gate_memory_gb, m.gate_timeout_secs, m.suites.keys().collect::<Vec<_>>());
-            println!("  floor: {}", m.floor().display());
-            let apps = match github::load_apps(&github::apps_path()) {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("fwfd up: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            let mut bad = 0;
-            for role in ["impl", "qa", "ops"] {
-                match apps.0.get(role) {
-                    None => {
-                        bad += 1;
-                        println!("  app {role:<4}: MISSING from apps.toml");
-                    }
-                    Some(entry) => match github::mint(
-                        entry,
-                        Some(&std::collections::BTreeMap::from([("metadata", "read")])),
-                    ) {
-                        Ok(_) => println!("  app {role:<4}: ok"),
-                        Err(e) => {
-                            bad += 1;
-                            println!("  app {role:<4}: NOT USABLE — {e}");
-                        }
-                    },
-                }
-            }
-            for n in 1..=m.pairs {
-                for role in ["impl", "qa"] {
-                    let target = m.seat_target(role, n);
-                    let cmd = seat::pane_command(&target).unwrap_or_else(|_| "absent".into());
-                    println!("  seat {target}: {cmd}");
-                }
-            }
-            if bad == 0 {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            }
-        }
+        Some("up") => verbs::up(&args),
         Some("doctor") => {
             println!("fwfd {} (M0)", env!("CARGO_PKG_VERSION"));
             println!("  types      : Issue / Pr / Seat / Gate state machines with typed refusals");

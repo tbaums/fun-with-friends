@@ -35,6 +35,9 @@ pub struct RunConfig {
     pub template: String,
     /// If non-empty, only these issues are ever planned.
     pub allow_issues: Vec<u64>,
+    /// GV triage of new issues each tick (manifest `triage_new`); needs a GV seat.
+    pub triage_new: bool,
+    pub gv_seat: Option<String>,
     /// Park the floor while the last logged weekly meter % is at or above this.
     pub park_at_weekly_pct: u8,
     /// Conductor-as-code: after every merge, run this suite on the new base
@@ -44,6 +47,64 @@ pub struct RunConfig {
     pub gate_venue: String,
     pub gate_memory_gb: u32,
     pub gate_timeout: Duration,
+}
+
+/// Issues the record already judged: a Gated event, a "judged ready" note,
+/// or a human un-gate. Triage never runs twice on the same issue.
+pub fn triaged_issues(events: &[crate::log::Event]) -> std::collections::BTreeSet<u64> {
+    use crate::log::Kind;
+    use crate::types::IssueState;
+    let mut out = std::collections::BTreeSet::new();
+    for e in events {
+        match &e.kind {
+            Kind::Issue {
+                issue,
+                to: IssueState::Gated | IssueState::Ready,
+            } => {
+                out.insert(*issue);
+            }
+            Kind::Note { text } if text.starts_with("GV triage: #") => {
+                if let Some(n) = text["GV triage: #".len()..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                {
+                    out.insert(n);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Open, un-gated, never-triaged, and not already carrying work (a claim or
+/// an assignee means a human or a seat is past the question). Oldest first.
+pub fn triage_candidates(
+    snap: &crate::poll::Snapshot,
+    gate_label: &str,
+    seen: &std::collections::BTreeSet<u64>,
+) -> Vec<u64> {
+    let mut v: Vec<u64> = snap
+        .issues
+        .iter()
+        .filter(|i| {
+            i.state == "open"
+                && !i.labels.iter().any(|l| l == gate_label)
+                && i.assignees.is_empty()
+                && i.claim.is_none()
+                && !seen.contains(&i.number)
+        })
+        .map(|i| i.number)
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+fn ready_or_gated_in_record(run_log: &std::path::Path, issue: u64) -> bool {
+    crate::log::read_all(run_log)
+        .map(|evs| triaged_issues(&evs).contains(&issue))
+        .unwrap_or(false)
 }
 
 pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
@@ -147,6 +208,45 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 })
                 .collect();
             snap.issues.retain(|i| !shipped.contains(&i.number));
+        }
+        // GV triage (T-23 inside the loop): before the allow-list narrows the
+        // snapshot, judge every open un-gated issue the record has never seen.
+        if cfg.triage_new {
+            if let Some(gv) = &cfg.gv_seat {
+                let seen = triaged_issues(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
+                for n in triage_candidates(&snap, &cfg.gate_label, &seen) {
+                    let Some(ops) = ops_app else { break };
+                    let tcfg = crate::triage::TriageConfig {
+                        owner: cfg.owner.clone(),
+                        repo: cfg.repo.clone(),
+                        issue: n,
+                        gate_label: cfg.gate_label.clone(),
+                        seat_target: gv.clone(),
+                        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
+                        floor_dir: cfg.floor_dir.clone(),
+                        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "gv"),
+                        run_log: cfg.run_log.clone(),
+                        timeout: cfg.job_timeout,
+                    };
+                    match crate::triage::run(&tcfg, ops) {
+                        Ok((ready, reason)) => eprintln!(
+                            "run: triage #{n}: {} — {reason}",
+                            if ready {
+                                "ready (awaiting un-gate)"
+                            } else {
+                                "gated"
+                            }
+                        ),
+                        Err(e) => {
+                            eprintln!("run: triage #{n} failed: {}", e.0);
+                            break;
+                        }
+                    }
+                    if !ready_or_gated_in_record(&cfg.run_log, n) {
+                        break;
+                    }
+                }
+            }
         }
         if !cfg.allow_issues.is_empty() {
             snap.issues.retain(|i| cfg.allow_issues.contains(&i.number));
@@ -433,4 +533,66 @@ fn last_meter_reading() -> Option<(u8, String)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::log::{Event, Kind};
+    use crate::poll::{IssueView, Snapshot};
+    use crate::types::IssueState;
+
+    fn issue(n: u64, labels: &[&str], claimed: bool) -> IssueView {
+        IssueView {
+            number: n,
+            title: format!("issue {n}"),
+            author_association: "OWNER".into(),
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            assignees: vec![],
+            state: "open".into(),
+            updated_at: String::new(),
+            claim: if claimed {
+                Some(crate::types::Fence("f".repeat(40)))
+            } else {
+                None
+            },
+        }
+    }
+
+    #[test]
+    fn triage_candidates_skip_gated_claimed_and_already_judged() {
+        let snap = Snapshot {
+            issues: vec![
+                issue(5, &[], false),
+                issue(3, &["product-wip"], false),
+                issue(4, &[], true),
+                issue(2, &[], false),
+                issue(9, &[], false),
+            ],
+            prs: vec![],
+            fetched_at: 0,
+            known: true,
+        };
+        let evs = vec![
+            Event {
+                ts: 1,
+                repo: "o/r".into(),
+                kind: Kind::Issue {
+                    issue: 9,
+                    to: IssueState::Gated,
+                },
+            },
+            Event {
+                ts: 2,
+                repo: "o/r".into(),
+                kind: Kind::Note {
+                    text: "GV triage: #2 judged ready — awaiting the human un-gate".into(),
+                },
+            },
+        ];
+        let seen = triaged_issues(&evs);
+        assert_eq!(seen.into_iter().collect::<Vec<_>>(), vec![2, 9]);
+        let seen = triaged_issues(&evs);
+        assert_eq!(triage_candidates(&snap, "product-wip", &seen), vec![5]);
+    }
 }

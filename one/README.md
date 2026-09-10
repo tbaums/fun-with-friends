@@ -83,6 +83,8 @@ v0.42 `fwf` command yet.
   recorded Green for the exact SHA; a release needs a release object.
 - **Nothing is inferred from pane text.** Seats answer with one JSON verdict
   file written atomically; a missing verdict is `Stalled`, never guessed.
+- **Triage is opt-in.** `triage_new = true` makes `run` wake the GV seat once
+  per new un-gated issue (it labels and comments on real issues); off by default.
 - **Only humans un-gate.** A model can gate an issue; only `fwfd ungate`
   makes it eligible, and the run record names who.
 - **The meter brakes the floor.** `run` parks at `park_at_weekly_pct` from
