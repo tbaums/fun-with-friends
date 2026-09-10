@@ -162,3 +162,18 @@ No seat ever held a GitHub write token; every write is in the run record.
 
 Both seats were warm panes woken once; idle cost between jobs was zero
 requests. The old harness paid ~2.2M cached tokens per *idle* tick.
+
+| T-15 run loop on a real issue | **DONE** — `fwfd run --once` ×3 took #566 from eligible → PR #567 (fwf-impl) → QA seat verdict → fwf-qa APPROVED → ready → squash-merged by fwf-ops (74dc9b28), no operator command between steps |
+
+## The loop, driven by `fwfd run` (2026-09-09 23:35 PDT)
+
+`fwfd run --once` (manifest `issues = [566]`), three ticks, no operator
+command between them: tick 1 planned WakeImpl → PR #567 by fwf-impl[bot];
+tick 2 saw a stale PR list and the targeted re-plan refused to double-work;
+tick 3 planned WakeQa → verdict → fwf-qa APPROVED at head → ready-for-review
+(author App) → typed merge by fwf-ops as 74dc9b28; claim ref deleted.
+Idle ticks cost 7–9 ETag reads and zero model requests.
+
+Two things fixed on the way: drafts are QA work (seats open drafts; ready
+follows approval), and the supervisor pushes branches under fwf-ops while
+fwf-impl (contents:read) only authors the PR.
