@@ -224,7 +224,14 @@ pub fn dash(args: &[String]) -> ExitCode {
             }
         };
         let board = dash::fold(&events);
-        let text = dash::render(&board, seat::now());
+        let meter = match run::last_meter() {
+            Some((w, s, when)) => format!(
+                "meter        weekly {w}% · session {} · read {when} (from ~/.fwf-meter-log; the brake parks the floor at the manifest's park_at_weekly_pct)\n",
+                s.map(|v| format!("{v}%")).unwrap_or_else(|| "?".into())
+            ),
+            None => "meter        no reading in ~/.fwf-meter-log (the brake cannot see the meter)\n".to_string(),
+        };
+        let text = format!("{}{meter}", dash::render(&board, seat::now()));
         match watch {
             Some(secs) => {
                 print!("\x1b[2J\x1b[H{text}");

@@ -517,22 +517,35 @@ fn gate_after_merge(
 
 /// Last `weekly=NN` from ~/.fwf-meter-log (written by the operator's meter
 /// tick). Returns (percent, the line's timestamp). None if unreadable.
-fn last_meter_reading() -> Option<(u8, String)> {
+/// The last reading the operator's meter helper logged: (weekly %, session %,
+/// "date time"). Only lines carrying `weekly=` count; nothing is inferred.
+pub fn last_meter() -> Option<(u8, Option<u8>, String)> {
     let home = std::env::var_os("HOME")?;
     let text = std::fs::read_to_string(PathBuf::from(home).join(".fwf-meter-log")).ok()?;
+    let pct = |line: &str, key: &str| -> Option<u8> {
+        let i = line.find(key)?;
+        line[i + key.len()..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .ok()
+    };
     for line in text.lines().rev() {
-        if let Some(i) = line.find("weekly=") {
-            let n: String = line[i + 7..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(v) = n.parse::<u8>() {
-                let when = line.split_whitespace().next().unwrap_or("").to_string();
-                return Some((v, when));
-            }
+        if let Some(w) = pct(line, "weekly=") {
+            let when = line
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Some((w, pct(line, "session="), when));
         }
     }
     None
+}
+
+fn last_meter_reading() -> Option<(u8, String)> {
+    last_meter().map(|(w, _, when)| (w, when))
 }
 
 #[cfg(test)]
