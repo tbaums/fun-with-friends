@@ -23,6 +23,7 @@ mod run;
 mod sched;
 mod seat;
 mod slice;
+mod status;
 mod types;
 
 use std::path::{Path, PathBuf};
@@ -34,6 +35,7 @@ const USAGE: &str = "usage:
   fwfd up [--manifest PATH]   validate the manifest (default ./.fwf/fwf.toml or --manifest), mint every App, print the floor plan; refuses without a manifest
   fwfd init-manifest         print an example fwf.toml
   fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
+  fwfd status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
@@ -90,6 +92,69 @@ fn main() -> ExitCode {
                     ExitCode::from(1)
                 }
             }
+        }
+        Some("status") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let path = get("--manifest")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+            let m = match manifest::Manifest::load(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("fwfd status: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd status: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get("impl") else {
+                eprintln!("fwfd status: no [impl] app");
+                return ExitCode::from(2);
+            };
+            let perms = std::collections::BTreeMap::from([
+                ("issues", "read"),
+                ("pull_requests", "read"),
+                ("contents", "read"),
+                ("metadata", "read"),
+            ]);
+            let tok = match github::mint(app, Some(&perms)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd status: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let poller =
+                poll::Poller::new("https://api.github.com", &tok.token, m.owner(), m.name());
+            let now = seat::now();
+            let snap = poller
+                .poll(now)
+                .unwrap_or_else(|_| poll::Snapshot::unknown());
+            let mut targets = Vec::new();
+            for n in 1..=m.pairs {
+                targets.push(m.seat_target("impl", n));
+                targets.push(m.seat_target("qa", n));
+            }
+            let (run_log, _) = slice::defaults(&m.floor());
+            let inp = status::StatusInput {
+                snapshot: &snap,
+                gate_label: &m.gate_label,
+                owner_only: m.owner_only,
+                seats: status::seat_commands(&targets),
+                run_log: &run_log,
+                now,
+            };
+            print!("{}", status::render(&inp));
+            ExitCode::SUCCESS
         }
         Some("init-manifest") => {
             print!("{}", manifest::EXAMPLE);
