@@ -1,0 +1,50 @@
+name: one CI
+
+# fwf 1.0 lives under one/. Three short parallel jobs; target < 5 min total.
+on:
+  push:
+    branches: [main, staging, 'one/**']
+    paths: ['one/**', '.github/workflows/one-ci.yml']
+  pull_request:
+    paths: ['one/**', '.github/workflows/one-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: one
+
+jobs:
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: one
+      - run: cargo test --quiet
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: one
+      - run: cargo fmt --check
+      - run: cargo clippy --quiet --all-targets -- -D warnings
+
+  size:
+    name: no file > 1000 lines
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash -n scripts/size-check.sh scripts/seat-up.sh
+      - run: scripts/size-check.sh

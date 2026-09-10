@@ -1717,6 +1717,125 @@ fwf_role_pane_alive() {
 # real work may resume) or stays wedged (still blocks) until a human
 # intervenes; this guard never reaps on WEDGED itself, so there is no race
 # between the two consumers of the one shared verdict.
+# --- issue #559: the ONE CLAIM/RELEASE replay -------------------------------
+# Resolves a comment thread to the single role that currently holds a claim.
+# Lived as a private `_FWF502_RESOLVE` inside fwf-claim-liveness.sh until #559;
+# it is here now because fwf-claim.sh needs the SAME answer and had been
+# computing a different one.
+#
+# WHAT WENT WRONG WITHOUT IT (transom#913, unclaimable for five days):
+# fwf-claim.sh matched `^CLAIM <role>$` and never looked at RELEASE at all
+# (`grep -c RELEASE fwf-claim.sh` was 0), so the captain's `RELEASE impl1` /
+# `RELEASE impl3` arbitration was mechanically invisible to the tool that
+# enforces claims. `fwf claim-liveness 913` said RECLAIMABLE while
+# `fwf claim 913 impl3` refused three times citing "impl1's claim is first and
+# live". fwf-claim.sh's own comment promised the four call sites "can never
+# disagree" -- true of the per-claim liveness predicate they shared, false of
+# the replay above it, which only one of them had.
+#
+# SCOPE, stated so the next reader is not misled the way that comment misled:
+# this unifies the two CLAIM-vs-RELEASE readers, `fwf claim` and
+# `fwf claim-liveness`. It does NOT convert the other two call sites.
+# `fwf_build_plane_blocked` (below) and `fwf-scale.sh` still run their own
+# `map(select(.body | test("^CLAIM impl[0-9]+$"))) | (.[0] // empty)` --
+# whole-body rather than first-line (contra #502), `impl[0-9]+` only (so
+# `CLAIM captain`/`CLAIM qa1` are invisible to them), and with no RELEASE
+# handling at all. So after a captain posts `RELEASE impl1`, a
+# `fwf down --build-only` can still refuse with "impl1 has a live claim".
+# That is transom#913's bug, still live, in two more places. Left alone here
+# deliberately: a different question on a different path, and folding them in
+# unreviewed is how this change nearly shipped a double-claim.
+#
+# The rule, unchanged from #502/#515 -- this is a MOVE, not a redesign:
+#   * a CLAIM takes effect only when nothing is currently held
+#     (first-claim-wins; NOTE this replay does not consult liveness at all --
+#     the caller applies it afterwards, and the two callers apply it
+#     DIFFERENTLY on purpose: see FWF_CLAIM_EVENTS_JQ below)
+#   * a RELEASE takes effect only from the role that currently holds it
+#   * claim -> release -> re-claim resolves to the re-claim
+#   * matches the comment's FIRST LINE only, so a CLAIM with an explanation
+#     under it is still a claim
+#   * only the FIRST claim-shaped line may be MALFORMED; a garbled RELEASE
+#     after a well-formed CLAIM still loses to it
+#
+# Output: "<createdAt>\tCLAIM <role>" for a live holder, "\treleased <role>"
+# when the last effective action was a release, "malformed\t<line>" when the
+# first claim-shaped line does not parse, or empty when the thread has no
+# claim-shaped comment at all.
+# shellcheck disable=SC2034  # consumed by fwf-claim.sh / fwf-claim-liveness.sh, which source this file
+FWF_CLAIM_RESOLVE_JQ='def firstline: split("\n")[0] | sub("[\t\r ]+$"; "");
+( (.comments // [])
+  | map({created: .createdAt, line: (.body | firstline)})
+  | map(. + {
+      shaped: (.line | test("^(CLAIM|RELEASE)([ \t]|$)")),
+      wellformed: (.line | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$"))
+    })
+  | map(select(.shaped))
+) as $shaped
+| if ($shaped | length) == 0 then
+    empty
+  else
+    ($shaped | nth(0; .[])) as $head
+    | if ($head.wellformed | not) then
+        "malformed\t\($head.line)"
+      else
+        ($shaped
+         | map(select(.wellformed))
+         | reduce .[] as $c ({holder:null, created:null, released:null};
+             ($c.line | split(" ")) as $p
+             | if $p[0] == "CLAIM"
+               then (if .holder == null then {holder:$p[1], created:$c.created, released:null} else . end)
+               else (if .holder == $p[1] then {holder:null, created:null, released:$p[1]} else . end)
+               end)
+         | if .holder != null then "\(.created)\tCLAIM \(.holder)"
+           elif .released != null then "\treleased \(.released)"
+           else empty end)
+      end
+  end'
+
+# --- issue #559: the ordered event feed the ENFORCING claim path needs ------
+# FWF_CLAIM_RESOLVE_JQ above answers an ADVISORY question -- "who holds this
+# right now?" -- and `fwf claim-liveness` is right to treat a dead holder as
+# RECLAIMABLE. The claim MUTEX cannot use that answer as its only input:
+# "the holder is dead" must mean "fall through to the next LIVE claimant",
+# never "the issue is free". Resolving to a single holder and giving up when
+# that holder is dead hands the issue to a second seat while a live claimant
+# is mid-build -- a silent double-claim, which is a worse failure than the
+# stall #559 fixes (a stall is visible and self-limiting; two agents building
+# the same ticket is neither). Caught in adversarial review of this branch
+# before it shipped, with a reproduction:
+#   CLAIM impl1 (stale, pane gone) then CLAIM impl2 (live) -> impl3 claiming
+#   must LOSE to impl2, not win.
+#
+# So the mutex gets the ORDERED EVENTS and runs the same replay in shell,
+# consulting liveness per candidate exactly as the pre-#559 loop did. Same
+# firstline/shaped/wellformed rules as FWF_CLAIM_RESOLVE_JQ -- deliberately
+# identical text, so the two can never disagree about what a claim LOOKS like,
+# only about what to do once a claimant is dead, which is the one place they
+# legitimately differ.
+#
+# Emits, in thread order:
+#   "malformed\t<line>"        first, and only when the FIRST claim-shaped
+#                              line does not parse. Advisory: the well-formed
+#                              claims BEHIND it are still emitted, because a
+#                              garbled comment must never hide a live claimant.
+#   "<createdAt>\tCLAIM <role>"
+#   "<createdAt>\tRELEASE <role>"
+# shellcheck disable=SC2034  # consumed by fwf-claim.sh, which sources this file
+FWF_CLAIM_EVENTS_JQ='def firstline: split("\n")[0] | sub("[\t\r ]+$"; "");
+( (.comments // [])
+  | map({created: .createdAt, line: (.body | firstline)})
+  | map(. + {
+      shaped: (.line | test("^(CLAIM|RELEASE)([ \t]|$)")),
+      wellformed: (.line | test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$"))
+    })
+  | map(select(.shaped))
+) as $shaped
+| ( if ($shaped | length) > 0 and ((($shaped | nth(0; .[])).wellformed) | not)
+    then "malformed\t\(($shaped | nth(0; .[])).line)"
+    else empty end ),
+  ( $shaped | map(select(.wellformed)) | .[] | "\(.created)\t\(.line)" )'
+
 fwf_claim_liveness_blocks() {
   local role="${1:?fwf_claim_liveness_blocks needs a role}" age="${2:-0}" fallback="${FWF_CLAIM_LIVENESS_FALLBACK_SECS:-900}" snap verdict
   case "$age" in ''|*[!0-9]*) age=0;; esac

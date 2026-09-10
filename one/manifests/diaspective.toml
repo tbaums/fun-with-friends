@@ -1,0 +1,27 @@
+# fwf 1.0 manifest for diaspective — the overnight MVP build (2026-09-10).
+repo = "tbaums/diaspective"
+base_branch = "staging"
+release_branch = "main"
+gate_label = "product-wip"
+owner_only = true
+pairs = 1
+session = "fwf-diaspective"
+fast_suite = "fast"
+promote_suite = "fast"
+gate_venue = "local"
+gate_memory_gb = 8
+gate_timeout_secs = 1800
+job_timeout_secs = 1800
+poll_interval_secs = 60
+park_at_weekly_pct = 85
+template = "dev"
+triage_new = false
+skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
+issues = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+[suites]
+fast = "cargo fmt --all --check && cargo test --workspace --quiet && cargo check -p diaspective-web --target wasm32-unknown-unknown --quiet"
+
+[models]
+impl = "opus"
+qa = "sonnet"

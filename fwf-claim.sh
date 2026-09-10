@@ -126,43 +126,89 @@ refuse() { # $1=verdict-line $2=cause-class(policy|infrastructure|race)
 #    compare-and-set -- reuses the SAME write-through primitive
 #    fwf-dash-act.sh's operator-approve path already calls). Skipped for
 #    the local test/dev issue store, which has no cache to bust.
-# 3. Re-read the thread and find the FIRST LIVE "CLAIM <role>" comment,
-#    reusing fwf_claim_liveness_blocks (lib.sh) -- the SAME liveness
-#    signal fwf-claim-liveness.sh, the conductor's build-plane guard and
-#    fwf-scale.sh already use, so this 4th call site can never disagree
-#    with the other three about who currently holds a claim. An old,
-#    abandoned claim is skipped (not live), so it never blocks a fresh
-#    attempt -- only a genuinely CONCURRENT claim can beat us.
-_claim_comments_tsv() { # $1=issue-number -> "createdAt\trole" per CLAIM comment, in order
+# 3. Re-read the thread as an ordered CLAIM/RELEASE event feed
+#    (FWF_CLAIM_EVENTS_JQ, lib.sh -- same comment-parsing rules as the
+#    replay fwf-claim-liveness.sh runs) and walk it, testing each candidate
+#    claimant with fwf_claim_liveness_blocks. An old, abandoned claim is
+#    SKIPPED and the walk continues to the next claimant; a RELEASED claim
+#    is gone. Only a genuinely CONCURRENT live claim can beat us.
+#
+#    issue #559: this step used to match `^CLAIM <role>$` and never read
+#    RELEASE at all, so a captain's arbitration could not free an issue
+#    (transom#913, unclaimable for five days).
+#
+#    Why an event feed and not fwf-claim-liveness.sh's single-holder
+#    answer, which would have been the tidier reuse: that resolver reports
+#    a dead holder as "nobody holds this", which is correct for an ADVISORY
+#    query and wrong for a MUTEX. Wiring it in here made `fwf claim`
+#    succeed against a thread whose first claim was stale-and-dead but
+#    whose SECOND was live -- two seats on one ticket, no STAND-DOWN
+#    posted. Caught in adversarial review before it shipped. The two paths
+#    share how a claim is PARSED and deliberately differ in what a dead
+#    claimant MEANS; claiming otherwise is what made the original bug
+#    survive review the first time.
+_claim_events() { # $1=issue-number -> ordered CLAIM/RELEASE events, one per line
   if [ "${FWF_ISSUES:-}" = "local" ]; then
-    "$DIR/fwf-issues.sh" view "$1" --json comments --jq \
-      '(.comments // []) | map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$"))) | .[] | "\(.createdAt)\t\(.body | sub("^CLAIM ";""))"'
+    "$DIR/fwf-issues.sh" view "$1" --json comments --jq "$FWF_CLAIM_EVENTS_JQ"
   else
-    gh issue view "$1" --json comments --jq \
-      '(.comments // []) | map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$"))) | .[] | "\(.createdAt)\t\(.body | sub("^CLAIM ";""))"'
+    gh issue view "$1" --json comments --jq "$FWF_CLAIM_EVENTS_JQ"
   fi
 }
 
-# -> the role of the first LIVE claim comment on stdout, rc 0. Empty
-# stdout + rc 0 means no CLAIM comment exists at all. rc 1 = the thread
-# could not be read (infrastructure failure, not "no claims") -- callers
-# must not treat that the same as "no claims found".
+# -> the role that currently holds a LIVE claim on stdout, rc 0. Empty stdout
+# + rc 0 means nothing live holds the issue. rc 1 = the thread could not be
+# read (infrastructure failure, NOT "no claims") -- callers must not treat
+# that the same as "no claims found".
+#
+# issue #559: this used to match `^CLAIM <role>$` and never read RELEASE, so a
+# released issue stayed claimed forever (transom#913, five days).
+#
+# The replay below is deliberately NOT `FWF_CLAIM_RESOLVE_JQ`'s single-holder
+# answer. That one is right for `fwf claim-liveness`, an advisory query where
+# a dead holder means RECLAIMABLE. Used here it would mean "dead holder => the
+# issue is free", and a stale dead claim sitting in FRONT of a live one would
+# hand the ticket to a second seat while the live claimant is mid-build.
+# Adversarial review of this branch reproduced exactly that before it shipped:
+#   CLAIM impl1 (stale, pane gone), CLAIM impl2 (live) -> `fwf claim N impl3`
+#   wrongly SUCCEEDED, impl2 never challenged, no STAND-DOWN posted.
+# So a dead claimant is SKIPPED and the scan continues to the next claimant --
+# the pre-#559 behaviour -- with RELEASE now honoured on top of it.
 _first_live_claim_role() { # $1=issue-number
-  local data now created body claimant epoch age
-  data="$(_claim_comments_tsv "$1")" || return 1
-  [ -z "$data" ] && return 0
+  local events created line verb role holder now epoch age
+  events="$(_claim_events "$1")" || return 1
+  [ -z "$events" ] && return 0
   now="$(date -u +%s)"
-  while IFS=$'\t' read -r created body; do
-    [ -z "$body" ] && continue
-    claimant="$body"
-    epoch="$(fwf_iso_to_epoch "$created" 2>/dev/null || true)"
-    case "$epoch" in ''|*[!0-9]*) epoch="$now";; esac
-    age=$(( now - epoch )); [ "$age" -ge 0 ] || age=0
-    if fwf_claim_liveness_blocks "$claimant" "$age"; then
-      printf '%s' "$claimant"
-      return 0
+  holder=""
+  while IFS=$'\t' read -r created line; do
+    [ -n "$created" ] || continue
+    if [ "$created" = "malformed" ]; then
+      # The FIRST claim-shaped line does not parse. Warn, but keep scanning:
+      # the well-formed claims behind it are still real, and a garbled comment
+      # must never hide a LIVE claimant (that too was a reproduced double-claim
+      # in review). fwf-claim-liveness.sh is fail-closed loud here; this path
+      # is advisory-loud and then correct, which is the stronger guarantee.
+      echo "fwf claim #$1: WARNING — the first claim-shaped comment does not parse as 'CLAIM <role>' or 'RELEASE <role>': $line — ignoring it and scanning the well-formed claims behind it" >&2
+      continue
     fi
-  done <<<"$data"
+    verb="${line%% *}"; role="${line#* }"
+    [ -n "$role" ] || continue
+    case "$verb" in
+      CLAIM)
+        [ -n "$holder" ] && continue           # first live claim wins
+        epoch="$(fwf_iso_to_epoch "$created" 2>/dev/null || true)"
+        case "$epoch" in ''|*[!0-9]*) epoch="$now";; esac
+        age=$(( now - epoch )); [ "$age" -ge 0 ] || age=0
+        # a dead claimant does not hold the issue -- fall through to the next
+        if fwf_claim_liveness_blocks "$role" "$age"; then holder="$role"; fi
+        ;;
+      RELEASE)
+        [ "$holder" = "$role" ] && holder=""
+        ;;
+    esac
+  done <<EOF
+$events
+EOF
+  [ -n "$holder" ] && printf '%s' "$holder"
   return 0
 }
 

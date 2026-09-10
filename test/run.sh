@@ -7404,6 +7404,59 @@ CLRUN="$TMP/claimliveness"
 CLI() { FWF_RUN_DIR="$CLRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
 CL() { FWF_RUN_DIR="$CLRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-claim-liveness.sh" "$@"; }
 
+section "fwf claim (#559): a RELEASE frees the issue for the next seat"
+# transom#913: the captain voided both claims with `RELEASE impl1` /
+# `RELEASE impl3`, `fwf claim-liveness` agreed the issue was RECLAIMABLE, and
+# `fwf claim` refused anyway three times running -- it matched
+# `^CLAIM <role>$` and had no idea RELEASE existed. Five days stranded.
+# BEHAVIOUR, not a source grep: pre-#559 this second claim is REFUSED.
+CLAIMI create --title "Release frees it" --label product-wip >/dev/null   # issue 13
+CLAIMI comment 13 --body "OPERATOR-UNGATE #13 — go" >/dev/null
+C559A_OUT="$(CLAIM 13 impl-rel-a 2>&1)"; C559A_RC=$?
+assert_eq "the first seat claims cleanly (rc 0)" "0" "$C559A_RC"
+assert_contains "the first seat's claim lands" "$C559A_OUT" "claimed."
+CLAIMI comment 13 --body "RELEASE impl-rel-a" >/dev/null
+C559B_OUT="$(CLAIM 13 impl-rel-b 2>&1)"; C559B_RC=$?
+assert_eq "after a RELEASE the next seat CLAIMS it (rc 0) -- the #559 defect" "0" "$C559B_RC"
+assert_contains "and says so" "$C559B_OUT" "claimed."
+C13_COMMENTS="$(CLAIMI view 13 --json comments --jq '[.comments[].body] | join("\n---\n")')"
+case "$C13_COMMENTS" in
+  *"STAND-DOWN #13"*) bad "#559: a released issue must not produce a STAND-DOWN for the next seat" ;;
+  *) ok "#559: no STAND-DOWN posted -- the issue was genuinely free" ;;
+esac
+
+section "fwf claim (#559 regression guard): a DEAD claim in front of a LIVE one must not free the issue"
+# The first cut of #559 resolved the thread to a SINGLE holder and, when that
+# holder was dead, reported the issue free. On a thread where a stale dead
+# claim sits in FRONT of a live one, that hands the ticket to a second seat
+# while the live claimant is mid-build -- a silent double-claim, strictly
+# worse than the stall #559 fixes. Caught in adversarial review; this is the
+# test that keeps it caught. A dead claimant must be SKIPPED, not treated as
+# emptying the thread.
+#
+# ONE `fwf claim` invocation, and the thread is built by injecting both
+# comments directly: fwf_claim_liveness_blocks STAMPS a first liveness
+# baseline as a side effect of its no-snapshot branch (see #377 AC 3 below),
+# so a second invocation would find that just-stamped, too-fresh baseline for
+# impl-dead-x, read UNKNOWN, fail safe to BLOCKING, and the fixture would
+# assert the opposite of what it means to.
+CLAIMI create --title "Dead claim in front of a live one" --label product-wip >/dev/null   # issue 14
+CLAIMI comment 14 --body "OPERATOR-UNGATE #14 — go" >/dev/null
+C559_FILE=$(find "$CLAIMRUN/issues/example/open" -name '14-*.md')
+C559_OLD_EPOCH=$(( $(date -u +%s) - 100000 ))
+C559_OLD_TS="$(date -u -d "@$C559_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$C559_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+C559_NOW_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# aged claim, no liveness signal ever recorded == abandoned (#377 AC 3)
+printf '\n## comment %s\n\nCLAIM impl-dead-x\n' "$C559_OLD_TS" >> "$C559_FILE"
+# ...and a FRESH claim behind it, which is live (no signal yet + inside the
+# fallback window == ambiguous, fail-safe LIVE)
+printf '\n## comment %s\n\nCLAIM impl-live-y\n' "$C559_NOW_TS" >> "$C559_FILE"
+C559D_OUT="$(CLAIM 14 impl-third 2>&1)"; C559D_RC=$?
+assert_eq "a third seat is REFUSED (rc 1) -- the dead claim did not empty the thread" "1" "$C559D_RC"
+assert_contains "the refusal names the LIVE claimant, not the dead one" "$C559D_OUT" "impl-live-y's claim is first and live"
+C14_COMMENTS="$(CLAIMI view 14 --json comments --jq '[.comments[].body] | join("\n---\n")')"
+assert_contains "the losing seat stands down on the thread" "$C14_COMMENTS" "STAND-DOWN #14: impl-third"
+
 section "fwf claim-liveness (#377/#502): no CLAIM comment on the issue"
 CLI create --title "Nobody has claimed this" >/dev/null
 CLRC=0; CL 1 >/dev/null 2>&1 || CLRC=$?
@@ -7581,8 +7634,13 @@ assert_eq "prose does not release (rc 1) -- the marker is whole-body, both verbs
 assert_contains "still names the holder" "$CL515I_OUT" "impl515i"
 
 section "fwf claim-liveness (#515): the selector resolves the sequence rather than pinning the first comment"
-CL515SRC="$(cat "$ROOT/fwf-claim-liveness.sh")"
-assert_not_contains "no '.[0]' claim selection remains in fwf-claim-liveness.sh" "$CL515SRC" '.[0]'
+# issue #559: the replay MOVED to lib.sh's FWF_CLAIM_RESOLVE_JQ so fwf-claim.sh
+# could share it (it had its own CLAIM-only reader and could not see a RELEASE
+# at all). These assertions guard the replay, so they follow it to its new home
+# -- scoped to the constant's own block rather than all of lib.sh, so an
+# unrelated '.[0]' elsewhere in that 4k-line file cannot satisfy or break them.
+CL515SRC="$(sed -n "/^FWF_CLAIM_RESOLVE_JQ='/,/^  end'\$/p" "$ROOT/lib.sh")"
+assert_not_contains "no '.[0]' claim selection remains in the shared replay" "$CL515SRC" '.[0]'
 assert_contains "the marker test accepts both verbs" "$CL515SRC" 'test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$")'
 assert_contains "a CLAIM is only taken when nothing is held" "$CL515SRC" 'if .holder == null then {holder:$p[1]'
 assert_contains "a RELEASE only applies to the role that holds it" "$CL515SRC" 'if .holder == $p[1] then {holder:null'
@@ -7645,11 +7703,32 @@ assert_contains "AC6: dev/implementer.tmpl documents MALFORMED for exit 2" "$CL5
 assert_contains "AC6: refactor/implementer.tmpl documents exit 3 too" "$CL502_TMPL_REFACTOR" "3"
 assert_contains "AC6: refactor/implementer.tmpl documents malformed for exit 2" "$CL502_TMPL_REFACTOR" "malformed"
 
+section "fwf claim (#559): the claim path and the liveness path share ONE CLAIM/RELEASE replay"
+# transom#913 was unclaimable for five days because fwf-claim.sh matched
+# `^CLAIM <role>$` and never read RELEASE, so a captain's `RELEASE impl1`
+# arbitration was invisible to the tool that enforces claims, while
+# `fwf claim-liveness` on the same issue said RECLAIMABLE.
+C559LIB="$(cat "$ROOT/lib.sh")"
+C559CLAIM="$(cat "$ROOT/fwf-claim.sh")"
+C559LIVE="$(cat "$ROOT/fwf-claim-liveness.sh")"
+assert_contains "lib.sh owns the one replay" "$C559LIB" "FWF_CLAIM_RESOLVE_JQ='def firstline:"
+assert_contains "fwf-claim.sh resolves through the shared replay" "$C559CLAIM" 'FWF_CLAIM_RESOLVE_JQ'
+assert_contains "fwf-claim-liveness.sh resolves through the shared replay" "$C559LIVE" 'FWF_CLAIM_RESOLVE_JQ'
+assert_not_contains "fwf-claim.sh no longer has a CLAIM-only reader that cannot see RELEASE" \
+  "$C559CLAIM" 'map(select(.body | test("^CLAIM [A-Za-z0-9_-]+$")))'
+assert_not_contains "the replay is not duplicated back into fwf-claim-liveness.sh" \
+  "$C559LIVE" "def firstline:"
+
 section "fwf claim-liveness (#502 AC7): goes RED on regression"
-CL502SRC="$(cat "$ROOT/fwf-claim-liveness.sh")"
+# issue #559: only the FIRST of these three followed the code. The replay moved
+# to lib.sh, but rc 3 / MALFORMED are exit-code contracts of the CLI and stay
+# asserted against fwf-claim-liveness.sh -- a jq program has no exit codes, so
+# pointing them at the extracted block made them assert nothing and go red.
+CL502SRC="$(sed -n "/^FWF_CLAIM_RESOLVE_JQ='/,/^  end'\$/p" "$ROOT/lib.sh")"
+CL502CLI="$(cat "$ROOT/fwf-claim-liveness.sh")"
 assert_contains "AC7: the match is applied to a first-line extraction, not the whole body" "$CL502SRC" 'split("\n")[0]'
-assert_contains "AC7: rc 3 (the new 'nothing here' code) exists" "$CL502SRC" "exit 3"
-assert_contains "AC7: rc 2 is documented as MALFORMED, not the old catch-all" "$CL502SRC" "MALFORMED"
+assert_contains "AC7: rc 3 (the new 'nothing here' code) exists" "$CL502CLI" "exit 3"
+assert_contains "AC7: rc 2 is documented as MALFORMED, not the old catch-all" "$CL502CLI" "MALFORMED"
 
 section "fwf claim-liveness (#502 edge cases)"
 CL502G=$(CLNEW "Trailing whitespace")
