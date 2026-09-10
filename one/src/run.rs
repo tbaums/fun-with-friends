@@ -57,6 +57,16 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         ("metadata", "read"),
     ]);
     let mut cycles = 0u64;
+    // A previous supervisor interrupted mid-wait leaves a seat Working in the
+    // record with no terminal event; say so before planning anything.
+    match crate::log::reconcile_stale_working(
+        &cfg.run_log,
+        &format!("{}/{}", cfg.owner, cfg.repo),
+        crate::seat::now(),
+    ) {
+        Ok(0) | Err(_) => {}
+        Ok(n) => eprintln!("run: {n} stale Working seat(s) from an interrupted run marked Stalled"),
+    }
     loop {
         // Meter brake (T-28): the operator's meter log is the only source of
         // subscription usage; park while the last logged weekly % is at or

@@ -102,11 +102,86 @@ pub fn read_all(path: &Path) -> std::io::Result<Vec<Event>> {
 
 /// The timeline of one PR: every event that names it, or names the issue it
 /// closes, or is a gate/promote event for its merge sha.
+/// Seats whose LAST recorded state is Working with a deadline already past:
+/// a supervisor that was interrupted mid-wait never wrote the terminal
+/// event. The record must say so before anything else is planned.
+pub fn stale_working(events: &[Event], now: u64) -> Vec<(u8, Role, crate::types::JobRef)> {
+    let mut last: std::collections::BTreeMap<(u8, String), &Kind> = Default::default();
+    for e in events {
+        if let Kind::Seat { seat, role, .. } = &e.kind {
+            last.insert((*seat, format!("{role:?}")), &e.kind);
+        }
+    }
+    let mut out = Vec::new();
+    for k in last.into_values() {
+        if let Kind::Seat {
+            seat,
+            role,
+            to: SeatState::Working { job, deadline },
+            ..
+        } = k
+        {
+            if *deadline < now {
+                out.push((*seat, *role, job.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Append a Stalled event for every stale Working seat; returns how many.
+pub fn reconcile_stale_working(path: &Path, repo: &str, now: u64) -> std::io::Result<usize> {
+    let events = read_all(path)?;
+    let stale = stale_working(&events, now);
+    let mut log = Log::open(path)?;
+    for (seat, role, job) in &stale {
+        log.append(&Event {
+            ts: now,
+            repo: repo.to_string(),
+            kind: Kind::Seat {
+                seat: *seat,
+                role: *role,
+                to: SeatState::Stalled { job: job.clone() },
+                tokens_in: None,
+                tokens_out: None,
+            },
+        })?;
+        log.append(&Event {
+            ts: now,
+            repo: repo.to_string(),
+            kind: Kind::Note {
+                text: format!(
+                    "seat {seat} {role:?} was left Working past its deadline (supervisor interrupted); marked Stalled at startup"
+                ),
+            },
+        })?;
+    }
+    Ok(stale.len())
+}
+
 pub fn why(events: &[Event], pr: u64) -> Vec<&Event> {
     let issue = events.iter().find_map(|e| match &e.kind {
         Kind::Pr { pr: p, issue, .. } if *p == pr => *issue,
         _ => None,
     });
+    // Every head this PR has had: a branch sync (recorded as a Promote of the
+    // seat's branch to that sha) belongs to the PR's story too.
+    let heads: Vec<String> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Pr {
+                pr: p,
+                to:
+                    PrState::Draft { head }
+                    | PrState::Open { head }
+                    | PrState::ChangesRequested { head }
+                    | PrState::Stale { head, .. }
+                    | PrState::Approved { head, .. },
+                ..
+            } if *p == pr => Some(head.to_string()),
+            _ => None,
+        })
+        .collect();
     let merge_sha = events.iter().find_map(|e| match &e.kind {
         Kind::Pr {
             pr: p,
@@ -152,10 +227,9 @@ pub fn why(events: &[Event], pr: u64) -> Vec<&Event> {
                 | (GateState::Queued { sha, .. }, Some(m)) => sha == m,
                 _ => false,
             },
-            Kind::Promote { to, .. } => merge_sha
-                .as_ref()
-                .map(|m| m.as_str() == to)
-                .unwrap_or(false),
+            Kind::Promote { to, .. } => {
+                merge_sha.as_ref().is_some_and(|m| m.as_str() == to) || heads.contains(to)
+            }
             Kind::Refused { what, .. } => what.contains(&format!("#{pr}")),
             Kind::Human { target, .. } => {
                 target == &format!("#{pr}")
@@ -432,5 +506,119 @@ mod tests {
         let err = read_all(&p).unwrap_err();
         assert!(err.to_string().contains("line 2"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_working_is_only_the_last_state_past_its_deadline() {
+        use crate::types::{JobRef, Role};
+        let job = JobRef {
+            role: Role::Impl,
+            issue: Some(7),
+            pr: None,
+        };
+        let seat = |ts: u64, seat: u8, to: SeatState| Event {
+            ts,
+            repo: "o/r".into(),
+            kind: Kind::Seat {
+                seat,
+                role: Role::Impl,
+                to,
+                tokens_in: None,
+                tokens_out: None,
+            },
+        };
+        let evs = vec![
+            seat(
+                10,
+                1,
+                SeatState::Working {
+                    job: job.clone(),
+                    deadline: 100,
+                },
+            ),
+            seat(50, 1, SeatState::Reported { job: job.clone() }),
+            seat(
+                60,
+                2,
+                SeatState::Working {
+                    job: job.clone(),
+                    deadline: 100,
+                },
+            ),
+            seat(
+                70,
+                3,
+                SeatState::Working {
+                    job: job.clone(),
+                    deadline: 1000,
+                },
+            ),
+        ];
+        let s = stale_working(&evs, 500);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].0, 2);
+        let dir = std::env::temp_dir().join(format!("fwfd-recon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("run.jsonl");
+        {
+            let mut l = Log::open(&p).unwrap();
+            for e in &evs {
+                l.append(e).unwrap();
+            }
+        }
+        assert_eq!(reconcile_stale_working(&p, "o/r", 500).unwrap(), 1);
+        assert_eq!(
+            reconcile_stale_working(&p, "o/r", 500).unwrap(),
+            0,
+            "idempotent"
+        );
+        let all = read_all(&p).unwrap();
+        assert!(matches!(
+            &all[4].kind,
+            Kind::Seat {
+                seat: 2,
+                to: SeatState::Stalled { .. },
+                ..
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn why_includes_the_branch_sync_of_the_pr_head() {
+        use crate::types::Sha;
+        let head = Sha::parse(&"b".repeat(40)).unwrap();
+        let evs = vec![
+            Event {
+                ts: 1,
+                repo: "o/r".into(),
+                kind: Kind::Promote {
+                    branch: "impl1/x".into(),
+                    from: "".into(),
+                    to: head.to_string(),
+                },
+            },
+            Event {
+                ts: 2,
+                repo: "o/r".into(),
+                kind: Kind::Pr {
+                    pr: 9,
+                    issue: Some(3),
+                    to: PrState::Draft { head: head.clone() },
+                },
+            },
+            Event {
+                ts: 3,
+                repo: "o/r".into(),
+                kind: Kind::Promote {
+                    branch: "other".into(),
+                    from: "".into(),
+                    to: "c".repeat(40),
+                },
+            },
+        ];
+        let tl = why(&evs, 9);
+        assert_eq!(tl.len(), 2, "{tl:?}");
+        assert!(matches!(tl[0].kind, Kind::Promote { .. }));
     }
 }
