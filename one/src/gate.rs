@@ -128,11 +128,47 @@ impl Gate {
                     .arg(format!("MemoryMax={}G", self.memory_gb))
                     .arg("-p")
                     .arg(format!("RuntimeMaxSec={}", self.timeout.as_secs().max(1)))
-                    .arg("sh")
+                    .arg("bash")
+                    .arg("-o")
+                    .arg("pipefail")
                     .arg("-c")
                     .arg(cmd)
                     .current_dir(&self.workdir);
                 (c, None)
+            }
+        }
+    }
+
+    /// Can this venue run a trivial command at all? A venue that cannot (no
+    /// systemd user bus on a CI runner, no container runtime) must yield
+    /// Killed, never a Red that reads as "the suite failed".
+    pub fn venue_preflight(&self) -> Result<(), String> {
+        match self.venue {
+            Venue::Local => Ok(()),
+            Venue::SystemdRun => {
+                let out = Command::new("systemd-run")
+                    .args(["--scope", "--quiet", "-p", "MemoryMax=1G", "true"])
+                    .output()
+                    .map_err(|e| format!("systemd-run: {e}"))?;
+                if out.status.success() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "systemd-run --scope refused: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ))
+                }
+            }
+            Venue::AppleContainer { .. } => {
+                let out = Command::new("container")
+                    .args(["system", "status"])
+                    .output()
+                    .map_err(|e| format!("container: {e}"))?;
+                if out.status.success() {
+                    Ok(())
+                } else {
+                    Err("container runtime is not running (`container system start`)".into())
+                }
             }
         }
     }
@@ -148,6 +184,9 @@ impl Gate {
             Err(e) => return killed(format!("cannot open log {}: {e}", log_path.display())),
         };
         let log_start = log.metadata().map(|m| m.len()).unwrap_or(0);
+        if let Err(why) = self.venue_preflight() {
+            return killed(format!("venue unavailable: {why}"));
+        }
         let (mut command, container_name) = self.command(sha, suite, cmd);
         let err_log = match log.try_clone() {
             Ok(f) => f,
@@ -491,15 +530,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn systemd_run_exit_zero_is_green() {
-        if !Command::new("systemd-run")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            eprintln!("SKIP systemd_run_exit_zero_is_green: no systemd-run");
-            return;
-        }
         let d = scratch("sd");
         let g = Gate {
             venue: Venue::SystemdRun,
@@ -508,6 +538,14 @@ mod tests {
             workdir: d.clone(),
         };
         let v = g.run(&sha('3'), "fast", "echo ok", &d.join("sd.log"));
-        assert!(matches!(v, GateState::Green { .. }), "{v:?}");
+        match g.venue_preflight() {
+            // A runner without a usable systemd scope must report Killed with
+            // the venue's reason, never a Red (CI proved the old test wrong).
+            Err(why) => {
+                eprintln!("systemd-run unusable here ({why}); asserting Killed");
+                assert!(matches!(v, GateState::Killed { .. }), "{v:?}");
+            }
+            Ok(()) => assert!(matches!(v, GateState::Green { .. }), "{v:?}"),
+        }
     }
 }
