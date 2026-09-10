@@ -15,13 +15,14 @@ it replaces. Nothing here is wired into `fwf` yet.
 |---|---|
 | T-00 v0.42.10 security fix (#562) | PR open on the v0.42.x tree |
 | T-01 crate skeleton, four enums, event log, `why` | this directory |
-| T-02 three GitHub Apps (impl, qa, ops) | needs Jamie |
+| T-02 three GitHub Apps (impl, qa, ops) | done — all three mint (impl trimmed to 4 permissions) |
 | T-03 GitHub client | mint LIVE; ETag poller in poll.rs |
 | T-04 fake GitHub | `src/fake_github.rs`, 9 contract tests |
 | T-05 fake seat pane (tmux-backed) | done — `src/seat.rs` FakeSeat |
 | T-06 seat waker + verdict reader | done — `wake`/`wait_verdict`; woken panes, no /loop, no claude -p |
 | T-07 canary | canary PASS (see below); 10-cycle cost comparison parked (needs real seats) |
 | T-08 thin slice (kill criterion) | **DONE 2026-09-09 19:00 PDT** — PR #565 opened by fwf-impl[bot] from a woken seat (`fwfd slice`) |
+| T-12 QA review object (identity proof) | `fwfd review`: fwf-impl approving its own PR #565 → **422 "Can not approve your own pull request"**; fwf-qa → APPROVED anchored to commit_id fc7092b8. The QA *seat cycle* is next. |
 | T-09 poller + scheduler | done — `src/poll.rs`: `Poller` (base URL + bearer injectable; per-URL ETag cache with `If-None-Match`/304 body reuse; single-flight per URL; `requests()`/`not_modified()` counters; any failure = typed `PollError`, caller holds `Snapshot::unknown()`) reads `issues?state=open`, then `pulls/{n}` + `pulls/{n}/reviews` per PR and `git/ref/claims/{n}` per `claimed` issue. `src/sched.rs`: pure `plan(snapshot, seats, gate_label, owner_only, now) -> Plan` (WakeImpl / WakeQa / ReleaseClaim / Nothing). 14 tests: 5 proptest properties, 1 poll→plan→304→relabel contract test against the fake, single-flight proved with a barrier transport |
 | T-09 notes | `author_association` is derived (author == repo owner → OWNER) when the API omits it, as the fake does; `closes_issue` accepts GitHub's close/fix/resolve keyword set; `IssueView.claim: Option<Fence>` and `Snapshot.known` added beyond the spec so `ReleaseClaim` carries a real fence (never fabricated) and `Unknown` is a value; `ReleaseClaim` fires only for a fenced claim no live seat is working (Working past `deadline` counts as stalled) and no open PR closes; a seat id that is non-Idle in any slot, or listed under two roles, is never double-booked (found by proptest); `mod poll; mod sched;` not yet in `main.rs` |
 | T-11 local bare mirror | done — `src/mirror.rs`: `Mirror::init` (idempotent; `refs/remotes/upstream/*` + protected heads mirrored, HEAD=staging), `seat_remote_url()` (`file://`, the seat's only remote), `branch_head`/`upstream_head`, `sync_branch` (`--force-with-lease` CAS, expect-empty for new branches; `staging`/`main` → `Protected`), `create_claim_ref`/`release_claim_ref` on `refs/claims/<n>` (fence = ref sha). 6 tests against on-disk bare upstreams |

@@ -26,6 +26,7 @@ const USAGE: &str = "usage:
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
+  fwfd review --repo o/r --pr N --by qa|impl|ops [--changes] [--body TEXT]   PR review anchored to the current head, under that App
   fwfd slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
   fwfd version";
 
@@ -179,6 +180,105 @@ fn main() -> ExitCode {
                 Err(e) => {
                     eprintln!("fwfd mirror-init: {e}");
                     ExitCode::from(1)
+                }
+            }
+        }
+        Some("review") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(pr), Some(by)) = (
+                get("--repo"),
+                get("--pr").and_then(|s| s.parse::<u64>().ok()),
+                get("--by"),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd review: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get(&by) else {
+                eprintln!("fwfd review: no app {by}");
+                return ExitCode::from(2);
+            };
+            let perms = std::collections::BTreeMap::from([
+                ("pull_requests", "write"),
+                ("contents", "read"),
+                ("metadata", "read"),
+            ]);
+            let tok = match github::mint(app, Some(&perms)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd review: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let (code, body) =
+                match github::get_status(&tok.token, &format!("/repos/{repo}/pulls/{pr}")) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!("fwfd review: {e}");
+                        return ExitCode::from(2);
+                    }
+                };
+            if code != 200 {
+                eprintln!("fwfd review: cannot read PR ({code})");
+                return ExitCode::from(1);
+            }
+            let head = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["head"]["sha"].as_str().map(String::from))
+                .unwrap_or_default();
+            let head = match types::Sha::parse(&head) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("fwfd review: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let event = if args.iter().any(|a| a == "--changes") {
+                "REQUEST_CHANGES"
+            } else {
+                "APPROVE"
+            };
+            let text = get("--body")
+                .unwrap_or_else(|| format!("fwfd review by {by}: {event} at {}", head.as_str()));
+            let payload =
+                serde_json::json!({ "commit_id": head.as_str(), "event": event, "body": text });
+            match github::send_json(
+                "POST",
+                &tok.token,
+                &format!("/repos/{repo}/pulls/{pr}/reviews"),
+                &payload,
+            ) {
+                Ok((200, b)) | Ok((201, b)) => {
+                    let v: serde_json::Value = serde_json::from_str(&b).unwrap_or_default();
+                    println!(
+                        "review {} by {} state={} commit_id={}",
+                        v["id"],
+                        v["user"]["login"],
+                        v["state"],
+                        head.short()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Ok((code, b)) => {
+                    eprintln!(
+                        "fwfd review: refused ({code}): {}",
+                        b.chars().take(200).collect::<String>()
+                    );
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("fwfd review: {e}");
+                    ExitCode::from(2)
                 }
             }
         }
