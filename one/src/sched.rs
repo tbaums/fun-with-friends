@@ -103,14 +103,16 @@ fn issue_eligible(i: &IssueView, gate_label: &str, owner_only: bool) -> bool {
 }
 
 fn pr_qa_eligible(p: &PrView) -> bool {
-    p.state == "open" && !p.draft && !p.reviews.iter().any(|(_, _, commit)| *commit == p.head_sha)
+    // Drafts ARE QA work: seats open every PR as a draft, QA reviews it, and
+    // the supervisor marks it ready only after an anchored approval.
+    p.state == "open" && !p.reviews.iter().any(|(_, _, commit)| *commit == p.head_sha)
 }
 
 /// The whole scheduler. Rules:
 /// - an issue is eligible when open, ungated, OWNER-authored (unless
 ///   `owner_only` is false), unassigned, unclaimed, not closed by an open PR
 ///   and not the live job of some seat;
-/// - a PR is QA-eligible when open, not draft, with no review anchored to
+/// - a PR is QA-eligible when open (drafts included), with no review anchored to
 ///   its head and not the live job of some seat;
 /// - eligible items are served FIFO by number to idle seats of the matching
 ///   role, one job per seat, one action per item;
@@ -334,12 +336,14 @@ mod tests {
         )
         .actions
         .is_empty());
-        // drafts and head-anchored reviews are not QA work
-        let s = snap(
-            vec![],
-            vec![pr(2, None, true, false), pr(3, None, false, true)],
-        );
+        // head-anchored reviews are not QA work; drafts ARE (seats open drafts)
+        let s = snap(vec![], vec![pr(3, None, false, true)]);
         assert!(plan(&s, &[seat(1, Role::Qa, SeatState::Idle)], GATE, true, 1).is_empty());
+        let s = snap(vec![], vec![pr(2, None, true, false)]);
+        assert_eq!(
+            plan(&s, &[seat(1, Role::Qa, SeatState::Idle)], GATE, true, 1).actions,
+            vec![Action::WakeQa { seat: 1, pr: 2 }]
+        );
     }
 
     #[test]
