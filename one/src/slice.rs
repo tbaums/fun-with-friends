@@ -385,9 +385,11 @@ mod tests {
     #[test]
     fn a_fence_never_leaves_the_supervisor_in_the_job_text() {
         // The job template must not mention the fence or any token placeholder.
-        let t =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts/dev/impl-job.md"))
-                .unwrap();
+        let t = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/prompts/dev/impl-job.md"
+        ))
+        .unwrap();
         assert!(!t.contains("{{FENCE}}") && !t.contains("TOKEN"));
         for ph in ["{{SEAT}}", "{{ISSUE}}", "{{REPO}}", "{{BRANCH}}"] {
             assert!(t.contains(ph), "template lacks {ph}");

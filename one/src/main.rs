@@ -29,12 +29,13 @@ mod spec;
 mod status;
 mod triage;
 mod types;
+mod verbs;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-const USAGE: &str = "usage:
+pub const USAGE: &str = "usage:
   fwfd why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
   fwfd up [--manifest PATH]   validate the manifest (default ./.fwf/fwf.toml or --manifest), mint every App, print the floor plan; refuses without a manifest
   fwfd init-manifest         print an example fwf.toml
@@ -57,7 +58,7 @@ const USAGE: &str = "usage:
   fwfd slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
   fwfd version";
 
-fn default_log() -> PathBuf {
+pub fn default_log() -> PathBuf {
     std::env::var_os("FWF_RUN_LOG")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".fwf/run.jsonl")))
@@ -233,135 +234,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("spec") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let (Some(repo), Some(issue), Some(seat)) = (
-                get("--repo"),
-                get("--issue").and_then(|s| s.parse::<u64>().ok()),
-                get("--seat"),
-            ) else {
-                eprintln!("{USAGE}");
-                return ExitCode::from(2);
-            };
-            let Some((owner, name)) = repo.split_once('/') else {
-                eprintln!("--repo must be owner/name");
-                return ExitCode::from(2);
-            };
-            let floor = std::env::var_os("HOME")
-                .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
-                .unwrap_or_else(|| PathBuf::from("floor"));
-            let (run_log, _) = slice::defaults(&floor);
-            let cfg = spec::SpecConfig {
-                owner: owner.into(),
-                repo: name.into(),
-                issue,
-                gate_label: "product-wip".into(),
-                discovery_label: "discovery".into(),
-                seat_target: seat,
-                seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
-                floor_dir: floor,
-                job_template: spec::default_template(
-                    &get("--template").unwrap_or_else(|| "dev".into()),
-                ),
-                run_log,
-                timeout: Duration::from_secs(
-                    get("--timeout").and_then(|s| s.parse().ok()).unwrap_or(900),
-                ),
-            };
-            let apps = match github::load_apps(&github::apps_path()) {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("fwfd spec: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            let Some(ops) = apps.0.get("ops") else {
-                eprintln!("fwfd spec: no [ops] app");
-                return ExitCode::from(2);
-            };
-            match spec::run(&cfg, ops) {
-                Ok((title, questions)) => {
-                    println!("#{issue}: spec written — {title} ({} open question(s)); still gated, `fwfd ungate {issue}` to approve", questions.len());
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("fwfd spec: {}", e.0);
-                    ExitCode::from(1)
-                }
-            }
-        }
-        Some("triage") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let (Some(repo), Some(issue), Some(seat)) = (
-                get("--repo"),
-                get("--issue").and_then(|s| s.parse::<u64>().ok()),
-                get("--seat"),
-            ) else {
-                eprintln!("{USAGE}");
-                return ExitCode::from(2);
-            };
-            let Some((owner, name)) = repo.split_once('/') else {
-                eprintln!("--repo must be owner/name");
-                return ExitCode::from(2);
-            };
-            let floor = std::env::var_os("HOME")
-                .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
-                .unwrap_or_else(|| PathBuf::from("floor"));
-            let (run_log, _) = slice::defaults(&floor);
-            let cfg = triage::TriageConfig {
-                owner: owner.into(),
-                repo: name.into(),
-                issue,
-                gate_label: "product-wip".into(),
-                seat_target: seat,
-                seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
-                floor_dir: floor,
-                job_template: prompts::job_path(
-                    &get("--template").unwrap_or_else(|| "dev".into()),
-                    "gv",
-                ),
-                run_log,
-                timeout: Duration::from_secs(
-                    get("--timeout").and_then(|s| s.parse().ok()).unwrap_or(600),
-                ),
-            };
-            let apps = match github::load_apps(&github::apps_path()) {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("fwfd triage: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            let Some(ops) = apps.0.get("ops") else {
-                eprintln!("fwfd triage: no [ops] app");
-                return ExitCode::from(2);
-            };
-            match triage::run(&cfg, ops) {
-                Ok((ready, reason)) => {
-                    println!(
-                        "#{issue}: {} — {reason}",
-                        if ready {
-                            "READY (awaiting human un-gate)"
-                        } else {
-                            "NOT READY (gated)"
-                        }
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("fwfd triage: {}", e.0);
-                    ExitCode::from(1)
-                }
-            }
-        }
+        Some("spec") => verbs::spec(&args),
+        Some("triage") => verbs::triage(&args),
         Some("ungate") => {
             let get = |flag: &str| {
                 args.iter()
@@ -407,78 +281,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("release-check") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let (Some(repo), Some(tag)) = (get("--repo"), get("--tag")) else {
-                eprintln!("{USAGE}");
-                return ExitCode::from(2);
-            };
-            let expect: usize = get("--expect").and_then(|s| s.parse().ok()).unwrap_or(4);
-            let apps = match github::load_apps(&github::apps_path()) {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("fwfd release-check: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            let Some(ops) = apps.0.get("ops") else {
-                eprintln!("fwfd release-check: no [ops] app");
-                return ExitCode::from(2);
-            };
-            let perms =
-                std::collections::BTreeMap::from([("contents", "read"), ("metadata", "read")]);
-            let tok = match github::mint(ops, Some(&perms)) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("fwfd release-check: {e}");
-                    return ExitCode::from(2);
-                }
-            };
-            match github::get_status(&tok.token, &format!("/repos/{repo}/releases/tags/{tag}")) {
-                Ok((200, body)) => {
-                    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                    let assets: Vec<String> = v["assets"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x["name"].as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    if assets.len() >= expect {
-                        println!(
-                            "{tag}: release ok, {} assets: {}",
-                            assets.len(),
-                            assets.join(" ")
-                        );
-                        ExitCode::SUCCESS
-                    } else {
-                        eprintln!(
-                            "{tag}: release exists but has {} assets (expected ≥ {expect}): {}",
-                            assets.len(),
-                            assets.join(" ")
-                        );
-                        ExitCode::from(1)
-                    }
-                }
-                Ok((404, _)) => {
-                    eprintln!("{tag}: NO release object (a tag is not a release)");
-                    ExitCode::from(1)
-                }
-                Ok((code, _)) => {
-                    eprintln!("{tag}: unexpected {code}");
-                    ExitCode::from(1)
-                }
-                Err(e) => {
-                    eprintln!("fwfd release-check: {e}");
-                    ExitCode::from(2)
-                }
-            }
-        }
+        Some("release-check") => verbs::release_check(&args),
         Some("init-manifest") => {
             print!("{}", manifest::EXAMPLE);
             ExitCode::SUCCESS
@@ -620,38 +423,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("dash") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let path = get("--log").map(PathBuf::from).unwrap_or_else(default_log);
-            let watch: Option<u64> = get("--watch").and_then(|s| s.parse().ok());
-            loop {
-                let events = match log::read_all(&path) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!("fwfd dash: cannot read {}: {e}", path.display());
-                        return ExitCode::from(2);
-                    }
-                };
-                let board = dash::fold(&events);
-                let text = dash::render(&board, seat::now());
-                match watch {
-                    Some(secs) => {
-                        print!("\x1b[2J\x1b[H{text}");
-                        use std::io::Write;
-                        let _ = std::io::stdout().flush();
-                        std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
-                    }
-                    None => {
-                        print!("{text}");
-                        return ExitCode::SUCCESS;
-                    }
-                }
-            }
-        }
+        Some("dash") => verbs::dash(&args),
         Some("why") => {
             let Some(pr) = args
                 .get(1)
