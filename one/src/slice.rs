@@ -58,6 +58,17 @@ fn record(log: &mut Log, repo: &str, kind: Kind) -> Result<(), SliceError> {
 }
 
 pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
+    run_with(cfg, app, None)
+}
+
+/// `ops` (contents:write) pushes the seat's branch and holds the claim ref;
+/// `app` (the impl App, pull_requests:write + contents:read) authors the PR.
+/// With no ops App the impl App does both (requires contents:write on it).
+pub fn run_with(
+    cfg: &SliceConfig,
+    app: &AppEntry,
+    ops: Option<&AppEntry>,
+) -> Result<String, SliceError> {
     let repo = format!("{}/{}", cfg.owner, cfg.repo);
     let mut log = Log::open(&cfg.run_log)?;
     record(
@@ -70,12 +81,17 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
 
     // 1. Supervisor token: the narrowest set that can push a branch and open a PR.
     let perms = BTreeMap::from([
-        ("contents", "write"),
+        ("contents", "read"),
         ("pull_requests", "write"),
         ("issues", "read"),
         ("metadata", "read"),
     ]);
     let tok = github::mint(app, Some(&perms))?;
+    let push_perms = BTreeMap::from([("contents", "write"), ("metadata", "read")]);
+    let push_tok = match ops {
+        Some(o) => github::mint(o, Some(&push_perms))?,
+        None => github::mint(app, Some(&push_perms))?,
+    };
 
     // 2. Poll → plan. One idle implementer seat.
     let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
@@ -142,7 +158,7 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
     let base = mirror
         .upstream_head(&cfg.base_branch)?
         .ok_or_else(|| SliceError(format!("no upstream {}", cfg.base_branch)))?;
-    let fence = mirror.create_claim_ref(cfg.issue, &base, &tok.token)?;
+    let fence = mirror.create_claim_ref(cfg.issue, &base, &push_tok.token)?;
     record(
         &mut log,
         &repo,
@@ -195,7 +211,7 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
     ) {
         Ok(s) => s,
         Err(e) => {
-            let _ = mirror.release_claim_ref(cfg.issue, &fence, &tok.token);
+            let _ = mirror.release_claim_ref(cfg.issue, &fence, &push_tok.token);
             record(
                 &mut log,
                 &repo,
@@ -255,7 +271,7 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
             summary,
         }) => (branch, head, summary),
         Some(Verdict::Blocked { reason }) => {
-            mirror.release_claim_ref(cfg.issue, &fence, &tok.token)?;
+            mirror.release_claim_ref(cfg.issue, &fence, &push_tok.token)?;
             record(
                 &mut log,
                 &repo,
@@ -301,7 +317,7 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
             head.short()
         )));
     }
-    let pushed = mirror.sync_branch(&branch, None, &tok.token)?;
+    let pushed = mirror.sync_branch(&branch, None, &push_tok.token)?;
     record(
         &mut log,
         &repo,

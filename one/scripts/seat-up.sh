@@ -19,7 +19,9 @@ mkdir -p "$floor/.claude"
 # workspace-trust dialog; seed both as done so the pane comes up at the
 # prompt. Values copied from the operator's own ~/.claude.json.
 ver="$(jq -r '.lastOnboardingVersion // "2.1.0"' ~/.claude.json 2>/dev/null)"
-jq -n --arg wt "$wt" --arg ver "$ver" '{hasCompletedOnboarding:true, lastOnboardingVersion:$ver, theme:"dark", autoUpdates:false, projects:{($wt):{allowedTools:[], hasTrustDialogAccepted:true, hasClaudeMdExternalIncludesApproved:true}}}' > "$floor/.claude.json"
+# Merge (never overwrite): every seat's worktree must stay trusted.
+existing="$floor/.claude.json"; [ -s "$existing" ] || echo '{}' > "$existing"
+jq --arg wt "$wt" --arg ver "$ver" '. + {hasCompletedOnboarding:true, lastOnboardingVersion:$ver, theme:"dark", autoUpdates:false} | .projects = ((.projects // {}) + {($wt):{allowedTools:[], hasTrustDialogAccepted:true, hasClaudeMdExternalIncludesApproved:true}})' "$existing" > "$existing.tmp" && mv "$existing.tmp" "$existing"
 cat > "$floor/.claude/settings.json" <<'JSON'
 {
   "permissions": {
@@ -34,7 +36,11 @@ cat > "$floor/.claude/settings.json" <<'JSON'
   }
 }
 JSON
-tok="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken')"
+# Prefer a long-lived headless token (`claude setup-token`, saved 0600 at
+# ~/.fwf/seat-token); fall back to a copy of the Keychain access token, which
+# rotates and was revoked mid-job once (2026-09-09 22:40).
+if [ -s ~/.fwf/seat-token ]; then tok="$(tr -d '[:space:]' < ~/.fwf/seat-token)"; else
+tok="$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken')"; fi
 [ -n "$tok" ] && [ "$tok" != null ] || { echo "seat-up: no OAuth token in Keychain" >&2; exit 3; }
 # Secrets never go through the keyboard: the pane sources a 0600 env file.
 # (A typed token ends up in tmux scrollback; the first attempt proved it, and

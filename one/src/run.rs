@@ -38,6 +38,7 @@ pub struct RunConfig {
 pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
     let impl_app = apps.0.get("impl").ok_or("no [impl] app")?;
     let qa_app = apps.0.get("qa").ok_or("no [qa] app")?;
+    let ops_app = apps.0.get("ops");
     let read_perms = BTreeMap::from([
         ("issues", "read"),
         ("pull_requests", "read"),
@@ -124,7 +125,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         timeout: cfg.job_timeout,
                         dry_run: false,
                     };
-                    match slice::run(&sc, impl_app) {
+                    match slice::run_with(&sc, impl_app, ops_app) {
                         Ok(url) => println!("fwfd run: impl seat {seat} → {url}"),
                         Err(e) => eprintln!("fwfd run: impl cycle for #{issue} failed: {}", e.0),
                     }
@@ -149,7 +150,20 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     };
                     match qa::run(&qc, qa_app) {
                         Ok((id, state)) => {
-                            println!("fwfd run: qa seat {seat} → review {id} {state} on #{pr}")
+                            println!("fwfd run: qa seat {seat} → review {id} {state} on #{pr}");
+                            if state == "APPROVED" {
+                                // The loop finishes the job: ready-for-review under the
+                                // author App, then the typed merge under ops. Every
+                                // precondition is re-checked inside merge_pr.
+                                match finish_pr(cfg, apps, *pr) {
+                                    Ok(sha) => {
+                                        println!("fwfd run: merged #{pr} as {}", sha.short())
+                                    }
+                                    Err(e) => {
+                                        eprintln!("fwfd run: #{pr} approved but not merged: {e}")
+                                    }
+                                }
+                            }
                         }
                         Err(e) => eprintln!("fwfd run: qa cycle for #{pr} failed: {}", e.0),
                     }
@@ -175,4 +189,63 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         }
         std::thread::sleep(cfg.interval);
     }
+}
+
+/// Ready-for-review (author App) + typed merge (ops). Returns the merge sha.
+fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha, String> {
+    let repo = format!("{}/{}", cfg.owner, cfg.repo);
+    let impl_app = apps.0.get("impl").ok_or("no [impl] app")?;
+    let ops_app = apps.0.get("ops").ok_or("no [ops] app")?;
+    let rw = BTreeMap::from([
+        ("pull_requests", "write"),
+        ("contents", "read"),
+        ("metadata", "read"),
+    ]);
+    let itok = crate::github::mint(impl_app, Some(&rw)).map_err(|e| e.to_string())?;
+    let (code, body) = crate::github::get_status(&itok.token, &format!("/repos/{repo}/pulls/{pr}"))
+        .map_err(|e| e.to_string())?;
+    if code != 200 {
+        return Err(format!("cannot read PR ({code})"));
+    }
+    let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    if v["draft"].as_bool() == Some(true) {
+        let node = v["node_id"].as_str().unwrap_or("");
+        if !crate::github::mark_ready(&itok.token, node).map_err(|e| e.to_string())? {
+            return Err("could not mark ready".into());
+        }
+    }
+    let issue = v["body"]
+        .as_str()
+        .and_then(crate::poll::closes_issue)
+        .ok_or("PR closes no issue")?;
+    let ops_perms = BTreeMap::from([
+        ("contents", "write"),
+        ("pull_requests", "write"),
+        ("issues", "read"),
+        ("checks", "read"),
+        ("metadata", "read"),
+    ]);
+    let otok = crate::github::mint(ops_app, Some(&ops_perms)).map_err(|e| e.to_string())?;
+    let (code, body) = crate::github::get_status(
+        &otok.token,
+        &format!("/repos/{repo}/git/ref/claims/{issue}"),
+    )
+    .map_err(|e| e.to_string())?;
+    if code != 200 {
+        return Err(format!("no live claim ref for #{issue}"));
+    }
+    let fence = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v["object"]["sha"]
+                .as_str()
+                .map(|s| crate::types::Fence(s.to_string()))
+        })
+        .ok_or("bad claim ref")?;
+    let client = crate::merge::Client {
+        base_url: "https://api.github.com".into(),
+        token: otok.token.clone(),
+    };
+    let mut log = crate::log::Log::open(&cfg.run_log).map_err(|e| e.to_string())?;
+    crate::merge::merge_pr(&client, &repo, pr, &fence, &mut log).map_err(|e| e.to_string())
 }

@@ -190,6 +190,35 @@ pub fn send_json(
     }
 }
 
+/// Convert a draft PR to ready-for-review. REST has no field for this; it is
+/// a GraphQL mutation, and only an identity that may edit the PR (the author
+/// App) can do it.
+pub fn mark_ready(token: &str, node_id: &str) -> Result<bool, AuthError> {
+    let q = serde_json::json!({ "query": format!("mutation {{ markPullRequestReadyForReview(input:{{pullRequestId:\"{node_id}\"}}) {{ pullRequest {{ isDraft }} }} }}") });
+    let resp = ureq::post("https://api.github.com/graphql")
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("User-Agent", "fwfd/0.1")
+        .send_string(&q.to_string());
+    match resp {
+        Ok(r) => {
+            let v: serde_json::Value = r.into_json().map_err(|e| AuthError::Http(e.to_string()))?;
+            Ok(
+                v["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"]
+                    == serde_json::Value::Bool(false),
+            )
+        }
+        Err(ureq::Error::Status(code, r)) => Err(AuthError::Denied(
+            code,
+            r.into_string()
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect(),
+        )),
+        Err(e) => Err(AuthError::Http(e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
