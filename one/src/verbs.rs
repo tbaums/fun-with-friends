@@ -1,8 +1,9 @@
 //! Verb bodies moved out of main.rs (the size ratchet): spec, triage,
 //! release-check, dash. Each takes the raw argv and returns the exit code.
 
-use crate::{dash, github, log, manifest, profile, prompts, seat, slice, spec, triage};
+use crate::{dash, github, log, manifest, mirror, profile, prompts, seat, slice, spec, triage};
 use crate::{default_log, USAGE};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -262,4 +263,130 @@ pub fn init_manifest(args: &[String]) -> ExitCode {
     }
     print!("{out}");
     ExitCode::SUCCESS
+}
+
+fn seat_live(cmd: &str) -> bool {
+    cmd == "claude" || cmd.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// `fwfd seats [--up|--down] [--manifest PATH]`: bring every seat the
+/// manifest names up (mirror, worktree clone, warm pane) or take them down.
+/// Up is idempotent: a live pane is left alone. Down refuses while the run
+/// record says a seat is still Working, unless --force.
+pub fn seats(args: &[String]) -> ExitCode {
+    let path = get(args, "--manifest")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+    let m = match manifest::Manifest::load(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("fwfd seats: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let floor = m.floor();
+    let (run_log, mirror_dir) = slice::defaults(&floor);
+    let mut roles: Vec<(String, u8)> = Vec::new();
+    for n in 1..=m.pairs {
+        roles.push(("impl".into(), n));
+        roles.push(("qa".into(), n));
+    }
+    for r in ["gv", "pm"] {
+        if m.models.contains_key(r) {
+            roles.push((r.into(), 1));
+        }
+    }
+    let down = args.iter().any(|a| a == "--down");
+    if down {
+        let stale = log::read_all(&run_log)
+            .map(|evs| log::stale_working(&evs, u64::MAX).len())
+            .unwrap_or(0);
+        if stale > 0 && !args.iter().any(|a| a == "--force") {
+            eprintln!(
+                "fwfd seats --down: {stale} seat(s) are Working per the run record; wait for the verdict or pass --force"
+            );
+            return ExitCode::from(1);
+        }
+        let ok = std::process::Command::new("tmux")
+            .args(["kill-session", "-t", &m.session])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        println!(
+            "seats down: tmux session {} {}",
+            m.session,
+            if ok { "killed" } else { "was not running" }
+        );
+        return ExitCode::SUCCESS;
+    }
+    let mr = match mirror::Mirror::init(&mirror_dir, &format!("https://github.com/{}.git", m.repo))
+        .and_then(|mr| mr.fetch().map(|_| mr))
+    {
+        Ok(mr) => mr,
+        Err(e) => {
+            eprintln!("fwfd seats: mirror: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/seat-up.sh");
+    let home = floor.join("home");
+    let mut failures = 0;
+    for (role, n) in &roles {
+        let target = m.seat_target(role, *n);
+        let pane = format!("{role}{n}");
+        let wt = floor.join(format!("wt-{pane}"));
+        if !wt.join(".git").exists() {
+            let st = std::process::Command::new("git")
+                .args([
+                    "clone",
+                    "--quiet",
+                    "--branch",
+                    &m.base_branch,
+                    &mr.seat_remote_url(),
+                ])
+                .arg(&wt)
+                .status();
+            match st {
+                Ok(s) if s.success() => println!("  {target:<18} cloned {}", wt.display()),
+                _ => {
+                    eprintln!("  {target:<18} clone FAILED");
+                    failures += 1;
+                    continue;
+                }
+            }
+        }
+        let cmd = seat::pane_command(&target).unwrap_or_else(|_| "absent".into());
+        if seat_live(&cmd) {
+            println!("  {target:<18} already up ({cmd})");
+            continue;
+        }
+        let model = m
+            .models
+            .get(role.as_str())
+            .cloned()
+            .unwrap_or_else(|| "opus".into());
+        let st = std::process::Command::new(script)
+            .arg(&home)
+            .arg(&wt)
+            .arg(&m.session)
+            .arg(&pane)
+            .arg(&model)
+            .status();
+        match st {
+            Ok(s) if s.success() => println!("  {target:<18} up ({model})"),
+            Ok(s) => {
+                eprintln!("  {target:<18} seat-up exit {}", s.code().unwrap_or(-1));
+                failures += 1;
+            }
+            Err(e) => {
+                eprintln!("  {target:<18} seat-up: {e}");
+                failures += 1;
+            }
+        }
+    }
+    if failures > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }

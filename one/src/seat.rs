@@ -99,7 +99,21 @@ pub fn tmux_available() -> bool {
 /// The foreground command in the pane. `claude` means a warm seat; `bash`/`zsh`
 /// means the seat's process is gone (SeatState::Gone) even though the pane
 /// exists — the old harness inferred this from tick files instead.
+/// tmux resolves an unmatched `session:window` to the session's CURRENT
+/// window, so a gone seat would read as whatever pane happens to be active.
+/// Require an exact window-name match first; `%id` targets pass through.
+pub fn window_exists(target: &str) -> Result<bool, SeatError> {
+    let Some((session, window)) = target.split_once(':') else {
+        return Ok(true);
+    };
+    let names = tmux(&["list-windows", "-t", session, "-F", "#{window_name}"])?;
+    Ok(names.lines().any(|n| n.trim() == window))
+}
+
 pub fn pane_command(target: &str) -> Result<String, SeatError> {
+    if !window_exists(target)? {
+        return Ok("absent".into());
+    }
     tmux(&[
         "display-message",
         "-p",
@@ -395,5 +409,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, SeatError::NotIdle(_)), "{err}");
+    }
+
+    #[test]
+    fn an_unmatched_window_name_is_absent_not_the_current_pane() {
+        let fake = FakeSeat::spawn(Role::Impl, 9).unwrap();
+        // tmux itself would resolve `session:no-such` to the current window.
+        let cmd = pane_command(&format!("{}:no-such-window", fake.session)).unwrap();
+        assert_eq!(cmd, "absent");
+        assert!(
+            window_exists(&fake.session).unwrap(),
+            "a bare session target passes through"
+        );
     }
 }

@@ -38,13 +38,10 @@ v0.42 `fwf` command yet.
    fwfd init-manifest --from-profile profiles/transom.sh --repo tbaums/transom > .fwf/fwf.toml
    fwfd up            # validates, mints every App, prints the floor plan
    ```
-3. Create the local mirror and the seats (one impl + one QA per pair):
+3. Bring up the floor: the local mirror, one worktree clone per seat, and a
+   warm pane per seat (impl + QA per pair, plus GV/PM if `[models]` names them):
    ```
-   fwfd mirror-init --repo owner/name
-   git clone --branch staging ~/.fwf/floors/<name>/mirror/mirror.git ~/.fwf/floors/<name>/wt-impl1
-   git clone --branch staging ~/.fwf/floors/<name>/mirror/mirror.git ~/.fwf/floors/<name>/wt-qa1
-   one/scripts/seat-up.sh ~/.fwf/floors/<name>/home ~/.fwf/floors/<name>/wt-impl1 fwf-<name> impl1 opus
-   one/scripts/seat-up.sh ~/.fwf/floors/<name>/home ~/.fwf/floors/<name>/wt-qa1   fwf-<name> qa1   opus
+   fwfd seats --up      # idempotent; `fwfd seats --down` refuses while a seat is Working
    ```
    Seats authenticate from `~/.fwf/seat-token` (`claude setup-token`); the
    per-floor HOME holds the deny hooks and nothing else.
@@ -61,7 +58,7 @@ v0.42 `fwf` command yet.
 
 | verb | what it does | identity |
 |---|---|---|
-| `up`, `doctor`, `status`, `dash`, `why <pr>`, `cost` | read-only: validate, mint, one-screen status, the board from the run record, one PR's timeline, measured tokens | – |
+| `up`, `doctor`, `status`, `dash`, `why <pr>`, `cost`, `seats --up/--down` | read-only: validate, mint, one-screen status, the board from the run record, one PR's timeline, measured tokens | – |
 | `run [--once]` | the supervisor loop; only allow-listed issues; parks on the meter brake | all three |
 | `spec --issue N` | PM seat writes a spec into a **gated** issue; gate untouched | ops |
 | `triage --issue N` | GV seat judges an issue; not-ready ⇒ gate label + reason | ops |
