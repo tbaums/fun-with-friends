@@ -50,3 +50,14 @@ T-08, and it wrote back exactly one verdict, atomically:
 ```
 
 The PR, the approval and the merge were the loop's, visible in `fwfd why`.
+
+## Conductor-as-code proof (#568)
+
+Third slice: `fwfd run` carried it past the merge. One job reached this
+seat — issue #568 on `impl1/issue-568-thin-slice`, this section, `Closes
+#568`, publish to the mirror, write one verdict, stop.
+
+Everything after that verdict was the loop's: draft PR by fwf-impl[bot],
+approval at head by fwf-qa[bot], squash merge by fwf-ops[bot], and a
+`fwfd/fast` check-run posted on the new staging tip — no operator command
+at any step, the whole chain visible in `fwfd why`.
