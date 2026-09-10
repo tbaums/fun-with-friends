@@ -92,8 +92,13 @@ impl Gate {
     fn command(&self, sha: &Sha, suite: &str, cmd: &str) -> (Command, Option<String>) {
         match &self.venue {
             Venue::Local => {
-                let mut c = Command::new("sh");
-                c.arg("-c").arg(cmd).current_dir(&self.workdir);
+                // pipefail: a suite that ends in `| tail` must not turn Red into Green.
+                let mut c = Command::new("bash");
+                c.arg("-o")
+                    .arg("pipefail")
+                    .arg("-c")
+                    .arg(cmd)
+                    .current_dir(&self.workdir);
                 (c, None)
             }
             Venue::AppleContainer { image } => {

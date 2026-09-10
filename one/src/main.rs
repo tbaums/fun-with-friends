@@ -35,6 +35,8 @@ const USAGE: &str = "usage:
   fwfd review --repo o/r --pr N --by qa|impl|ops [--changes] [--body TEXT]   PR review anchored to the current head, under that App
   fwfd qa --repo o/r --pr N --seat tmux-target [--seat-no 1] [--timeout SECS]   wake a QA pane, post its verdict as a review under fwf-qa
   fwfd merge --repo o/r --pr N   typed squash-merge under fwf-ops (approval at head by a non-author, fence, checks)
+  fwfd gate --repo o/r --sha SHA --suite NAME --cmd 'shell' --workdir DIR [--venue local|container] [--memory GB] [--timeout SECS]   run a gate, record the verdict, post a check-run under fwf-ops
+  fwfd promote --repo o/r --from BRANCH --to BRANCH --suite NAME   fast-forward `to` to `from` if a Green verdict for (from-sha, suite) is recorded
   fwfd slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
   fwfd version";
 
@@ -462,6 +464,210 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("fwfd merge: refused: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("gate") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(sha), Some(suite), Some(cmd), Some(workdir)) = (
+                get("--repo"),
+                get("--sha"),
+                get("--suite"),
+                get("--cmd"),
+                get("--workdir"),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let sha = match types::Sha::parse(&sha) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("fwfd gate: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let venue = match get("--venue").as_deref() {
+                Some("container") => gate::Venue::AppleContainer {
+                    image: get("--image").unwrap_or_else(|| "alpine:latest".into()),
+                },
+                _ => gate::Venue::Local,
+            };
+            let g = gate::Gate {
+                venue,
+                memory_gb: get("--memory").and_then(|s| s.parse().ok()).unwrap_or(8),
+                timeout: Duration::from_secs(
+                    get("--timeout")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1800),
+                ),
+                workdir: PathBuf::from(&workdir),
+            };
+            let floor = std::env::var_os("HOME")
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".fwf/floors")
+                        .join(repo.rsplit('/').next().unwrap_or("repo"))
+                })
+                .unwrap_or_else(|| PathBuf::from("floor"));
+            let (run_log, _) = slice::defaults(&floor);
+            let log_path = floor.join(format!("gate-{}-{suite}.log", sha.short()));
+            let state = g.run(&sha, &suite, &cmd, &log_path);
+            println!("gate {} {suite}: {state:?}", sha.short());
+            if let Ok(mut l) = log::Log::open(&run_log) {
+                let _ = l.append(&log::Event {
+                    ts: seat::now(),
+                    repo: repo.clone(),
+                    kind: log::Kind::Gate { to: state.clone() },
+                });
+            }
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd gate: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get("ops") else {
+                eprintln!("fwfd gate: no [ops] app");
+                return ExitCode::from(2);
+            };
+            let perms =
+                std::collections::BTreeMap::from([("checks", "write"), ("metadata", "read")]);
+            let tok = match github::mint(app, Some(&perms)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd gate: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let client = checks::CheckClient {
+                base_url: "https://api.github.com".into(),
+                token: tok.token,
+            };
+            match checks::post_check_run(
+                &client,
+                &repo,
+                &sha,
+                &format!("fwfd/{suite}"),
+                &state,
+                None,
+            ) {
+                Ok(id) => {
+                    println!("check-run {id} posted");
+                    if matches!(state, types::GateState::Green { .. }) {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("fwfd gate: check-run not posted: {e:?}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("promote") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(from), Some(to), Some(suite)) =
+                (get("--repo"), get("--from"), get("--to"), get("--suite"))
+            else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd promote: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get("ops") else {
+                eprintln!("fwfd promote: no [ops] app");
+                return ExitCode::from(2);
+            };
+            let perms = std::collections::BTreeMap::from([
+                ("contents", "write"),
+                ("checks", "read"),
+                ("metadata", "read"),
+            ]);
+            let tok = match github::mint(app, Some(&perms)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd promote: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let (code, body) = match github::get_status(
+                &tok.token,
+                &format!("/repos/{repo}/git/ref/heads/{from}"),
+            ) {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("fwfd promote: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            if code != 200 {
+                eprintln!("fwfd promote: cannot read {from} ({code})");
+                return ExitCode::from(1);
+            }
+            let from_sha = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v["object"]["sha"]
+                        .as_str()
+                        .and_then(|s| types::Sha::parse(s).ok())
+                });
+            let Some(from_sha) = from_sha else {
+                eprintln!("fwfd promote: bad ref");
+                return ExitCode::from(1);
+            };
+            let floor = std::env::var_os("HOME")
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".fwf/floors")
+                        .join(repo.rsplit('/').next().unwrap_or("repo"))
+                })
+                .unwrap_or_else(|| PathBuf::from("floor"));
+            let (run_log, _) = slice::defaults(&floor);
+            let g = gate::Gate {
+                venue: gate::Venue::Local,
+                memory_gb: 0,
+                timeout: Duration::from_secs(1),
+                workdir: get("--workdir")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| floor.join("gate-wt")),
+            };
+            let state = g
+                .recorded(&from_sha, &suite)
+                .unwrap_or(types::GateState::Unknown);
+            let mut log = match log::Log::open(&run_log) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("fwfd promote: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let client = merge::Client {
+                base_url: "https://api.github.com".into(),
+                token: tok.token,
+            };
+            match promote::promote(&client, &repo, &from, &to, &state, &suite, &mut log) {
+                Ok(sha) => {
+                    println!("promoted {to} → {}", sha.as_str());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd promote: refused: {e}");
                     ExitCode::from(1)
                 }
             }
