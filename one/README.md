@@ -22,7 +22,11 @@ it replaces. Nothing here is wired into `fwf` yet.
 | T-06 seat waker + verdict reader | done — `wake`/`wait_verdict`; woken panes, no /loop, no claude -p |
 | T-07 canary | canary PASS (see below); 10-cycle cost comparison parked (needs real seats) |
 | T-08 thin slice (kill criterion) | **DONE 2026-09-09 19:00 PDT** — PR #565 opened by fwf-impl[bot] from a woken seat (`fwfd slice`) |
-| T-12 QA review object (identity proof) | `fwfd review`: fwf-impl approving its own PR #565 → **422 "Can not approve your own pull request"**; fwf-qa → APPROVED anchored to commit_id fc7092b8. The QA *seat cycle* is next. |
+| T-12 QA cycle | **DONE** — `fwfd qa`: a woken QA pane reviewed #565 from the mirror and its verdict became fwf-qa's APPROVED anchored to fc7092b8 (plus the identity proof: fwf-impl self-approve → 422). |
+| T-13 typed merge | **DONE** — `fwfd merge` squash-merged #565 into staging as 7b9fb7d8 under fwf-ops after fence + anchored-approval checks; claim ref deleted; Merged/Shipped recorded. |
+| T-19 gate runner | **DONE** — Local / Apple container / systemd-run venues; verdicts idempotent per (sha, suite); Local runs under `bash -o pipefail` (a trailing pipe once masked a Red). |
+| T-20 check-runs | **DONE** — `fwfd gate` posts `fwfd/<suite>` check-runs under fwf-ops; success on 7b9fb7d8 is live. |
+| T-21 promotion | **DONE** — `fwfd promote` refused on an Unknown/absent verdict and fast-forwarded a scratch branch to 7b9fb7d8 under fwf-ops on a recorded Green. |
 | T-09 poller + scheduler | done — `src/poll.rs`: `Poller` (base URL + bearer injectable; per-URL ETag cache with `If-None-Match`/304 body reuse; single-flight per URL; `requests()`/`not_modified()` counters; any failure = typed `PollError`, caller holds `Snapshot::unknown()`) reads `issues?state=open`, then `pulls/{n}` + `pulls/{n}/reviews` per PR and `git/ref/claims/{n}` per `claimed` issue. `src/sched.rs`: pure `plan(snapshot, seats, gate_label, owner_only, now) -> Plan` (WakeImpl / WakeQa / ReleaseClaim / Nothing). 14 tests: 5 proptest properties, 1 poll→plan→304→relabel contract test against the fake, single-flight proved with a barrier transport |
 | T-09 notes | `author_association` is derived (author == repo owner → OWNER) when the API omits it, as the fake does; `closes_issue` accepts GitHub's close/fix/resolve keyword set; `IssueView.claim: Option<Fence>` and `Snapshot.known` added beyond the spec so `ReleaseClaim` carries a real fence (never fabricated) and `Unknown` is a value; `ReleaseClaim` fires only for a fenced claim no live seat is working (Working past `deadline` counts as stalled) and no open PR closes; a seat id that is non-Idle in any slot, or listed under two roles, is never double-booked (found by proptest); `mod poll; mod sched;` not yet in `main.rs` |
 | T-11 local bare mirror | done — `src/mirror.rs`: `Mirror::init` (idempotent; `refs/remotes/upstream/*` + protected heads mirrored, HEAD=staging), `seat_remote_url()` (`file://`, the seat's only remote), `branch_head`/`upstream_head`, `sync_branch` (`--force-with-lease` CAS, expect-empty for new branches; `staging`/`main` → `Protected`), `create_claim_ref`/`release_claim_ref` on `refs/claims/<n>` (fence = ref sha). 6 tests against on-disk bare upstreams |
@@ -138,3 +142,11 @@ Lessons that are now code (`scripts/seat-up.sh`, `src/seat.rs`):
    from it. Unsent is unsent.
 5. Multi-line jobs go in as one bracketed paste (`load-buffer` +
    `paste-buffer -p`), then Enter.
+
+## The loop, proven live on fun-with-friends (2026-09-09 evening)
+
+claim ref → implementer seat (woken) → draft PR #565 by fwf-impl[bot] →
+QA seat (woken) → fwf-qa APPROVED anchored to the head → ready-for-review →
+`fwfd merge` (ops) → staging 7b9fb7d8 → `fwfd gate` (pipefail) → check-run
+`fwfd/fwfd-fast` success → `fwfd promote` fast-forwarded a scratch branch.
+No seat ever held a GitHub write token; every write is in the run record.
