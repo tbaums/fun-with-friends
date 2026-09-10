@@ -31,6 +31,8 @@ pub struct RunConfig {
     pub job_timeout: Duration,
     pub once: bool,
     pub prompts_dir: PathBuf,
+    /// Prompt family under prompts_dir (manifest `template`).
+    pub template: String,
     /// If non-empty, only these issues are ever planned.
     pub allow_issues: Vec<u64>,
     /// Park the floor while the last logged weekly meter % is at or above this.
@@ -179,7 +181,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         seat_expect_cmd: cfg.seat_expect_cmd.clone(),
                         floor_dir: cfg.floor_dir.clone(),
                         mirror_dir: cfg.mirror_dir.clone(),
-                        job_template: cfg.prompts_dir.join("impl-job.md"),
+                        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "impl"),
                         run_log: cfg.run_log.clone(),
                         timeout: cfg.job_timeout,
                         dry_run: false,
@@ -203,7 +205,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         seat_no: *seat,
                         floor_dir: cfg.floor_dir.clone(),
                         mirror_dir: cfg.mirror_dir.clone(),
-                        job_template: cfg.prompts_dir.join("qa-job.md"),
+                        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "qa"),
                         run_log: cfg.run_log.clone(),
                         timeout: cfg.job_timeout,
                     };

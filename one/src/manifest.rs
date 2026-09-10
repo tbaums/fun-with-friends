@@ -59,6 +59,10 @@ pub struct Manifest {
     /// Meter brake: park the floor at this weekly % and resume on reset.
     #[serde(default = "default_park")]
     pub park_at_weekly_pct: u8,
+    /// Prompt family under `prompts/` (dev, refactor, validate, ideation,
+    /// consulting, defect-report, user-testing). Missing roles fall back to dev.
+    #[serde(default = "default_template")]
+    pub template: String,
     /// Allow-list: if non-empty, the supervisor only ever works these issue
     /// numbers (the operator's safety rail while 1.0 is new). Empty = any
     /// eligible issue.
@@ -104,6 +108,9 @@ fn default_poll() -> u64 {
 }
 fn default_park() -> u8 {
     85
+}
+fn default_template() -> String {
+    "dev".into()
 }
 
 #[derive(Debug, PartialEq)]
@@ -238,6 +245,7 @@ gate_timeout_secs = 1800
 job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
+template = "dev"
 # Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
 issues = [564]
 

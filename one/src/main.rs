@@ -19,11 +19,13 @@ mod merge;
 mod mirror;
 mod poll;
 mod promote;
+mod prompts;
 mod qa;
 mod run;
 mod sched;
 mod seat;
 mod slice;
+mod spec;
 mod status;
 mod triage;
 mod types;
@@ -39,6 +41,7 @@ const USAGE: &str = "usage:
   fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
   fwfd status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
   fwfd run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
+  fwfd spec --repo o/r --issue N --seat tmux-target [--timeout SECS] [--template F]   wake the PM pane on a GATED issue; its spec is written into the issue under ops, gate untouched (T-26)
   fwfd triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
   fwfd ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
   fwfd release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
@@ -213,6 +216,7 @@ fn main() -> ExitCode {
                 job_timeout: Duration::from_secs(m.job_timeout_secs),
                 once: args.iter().any(|a| a == "--once"),
                 prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
+                template: m.template.clone(),
                 allow_issues: m.issues.clone(),
                 park_at_weekly_pct: m.park_at_weekly_pct,
                 gate_suite: m.fast_suite.clone(),
@@ -225,6 +229,67 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("fwfd run: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("spec") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(issue), Some(seat)) = (
+                get("--repo"),
+                get("--issue").and_then(|s| s.parse::<u64>().ok()),
+                get("--seat"),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some((owner, name)) = repo.split_once('/') else {
+                eprintln!("--repo must be owner/name");
+                return ExitCode::from(2);
+            };
+            let floor = std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
+                .unwrap_or_else(|| PathBuf::from("floor"));
+            let (run_log, _) = slice::defaults(&floor);
+            let cfg = spec::SpecConfig {
+                owner: owner.into(),
+                repo: name.into(),
+                issue,
+                gate_label: "product-wip".into(),
+                discovery_label: "discovery".into(),
+                seat_target: seat,
+                seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
+                floor_dir: floor,
+                job_template: spec::default_template(
+                    &get("--template").unwrap_or_else(|| "dev".into()),
+                ),
+                run_log,
+                timeout: Duration::from_secs(
+                    get("--timeout").and_then(|s| s.parse().ok()).unwrap_or(900),
+                ),
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd spec: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(ops) = apps.0.get("ops") else {
+                eprintln!("fwfd spec: no [ops] app");
+                return ExitCode::from(2);
+            };
+            match spec::run(&cfg, ops) {
+                Ok((title, questions)) => {
+                    println!("#{issue}: spec written — {title} ({} open question(s)); still gated, `fwfd ungate {issue}` to approve", questions.len());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd spec: {}", e.0);
                     ExitCode::from(1)
                 }
             }
@@ -259,10 +324,10 @@ fn main() -> ExitCode {
                 seat_target: seat,
                 seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
                 floor_dir: floor,
-                job_template: PathBuf::from(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/prompts/gv-job.md"
-                )),
+                job_template: prompts::job_path(
+                    &get("--template").unwrap_or_else(|| "dev".into()),
+                    "gv",
+                ),
                 run_log,
                 timeout: Duration::from_secs(
                     get("--timeout").and_then(|s| s.parse().ok()).unwrap_or(600),
@@ -779,10 +844,10 @@ fn main() -> ExitCode {
                 seat_no: get("--seat-no").and_then(|s| s.parse().ok()).unwrap_or(1),
                 floor_dir: floor.clone(),
                 mirror_dir,
-                job_template: PathBuf::from(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/prompts/qa-job.md"
-                )),
+                job_template: prompts::job_path(
+                    &get("--template").unwrap_or_else(|| "dev".into()),
+                    "qa",
+                ),
                 run_log,
                 timeout: Duration::from_secs(
                     get("--timeout")
@@ -1160,10 +1225,10 @@ fn main() -> ExitCode {
                 seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
                 floor_dir: floor.clone(),
                 mirror_dir,
-                job_template: PathBuf::from(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/prompts/impl-job.md"
-                )),
+                job_template: prompts::job_path(
+                    &get("--template").unwrap_or_else(|| "dev".into()),
+                    "impl",
+                ),
                 run_log,
                 timeout: Duration::from_secs(
                     get("--timeout")

@@ -37,6 +37,15 @@ pub enum Verdict {
     },
     /// PM/GV: a triage verdict on an issue.
     Triaged { ready: bool, reason: String },
+    /// PM: a spec for a gated issue; the supervisor writes it into the issue.
+    Specced {
+        title: String,
+        body: String,
+        #[serde(default)]
+        discovery: bool,
+        #[serde(default)]
+        questions: Vec<String>,
+    },
     /// The seat could not complete the job; the supervisor decides what next.
     Blocked { reason: String },
 }
