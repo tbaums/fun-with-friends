@@ -23,6 +23,8 @@ pub struct QaConfig {
     pub job_template: PathBuf,
     pub run_log: PathBuf,
     pub timeout: Duration,
+    /// The repo's own fast check (manifest `[suites] fast`), shown to the seat.
+    pub check_cmd: String,
 }
 
 #[derive(Debug)]
@@ -107,7 +109,8 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
         .replace("{{ISSUE}}", &issue.to_string())
         .replace("{{TITLE}}", &title)
         .replace("{{BODY}}", &pr_body)
-        .replace("{{BASE}}", &base);
+        .replace("{{BASE}}", &base)
+        .replace("{{CHECK}}", &cfg.check_cmd);
     let pane = Pane {
         target: cfg.seat_target.clone(),
         role: Role::Qa,

@@ -35,6 +35,9 @@ pub struct RunConfig {
     pub template: String,
     /// If non-empty, only these issues are ever planned.
     pub allow_issues: Vec<u64>,
+    /// Issues carrying any of these labels are never planned (0.x holds:
+    /// idea, release-hold, tracking epics).
+    pub skip_labels: Vec<String>,
     /// GV triage of new issues each tick (manifest `triage_new`); needs a GV seat.
     pub triage_new: bool,
     pub gv_seat: Option<String>,
@@ -133,6 +136,21 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         // subscription usage; park while the last logged weekly % is at or
         // above the manifest threshold, re-reading every interval.
         if let Some((weekly, when)) = last_meter_reading() {
+            // A reading older than METER_MAX_AGE is not a reading: the
+            // operator's meter helper (or its session) is gone, and a loop
+            // that cannot see the meter must not spend.
+            let age = meter_age_secs(&when, crate::seat::now());
+            if age.is_none_or(|a| a > METER_MAX_AGE) {
+                println!(
+                    "fwfd run: PARKED — last meter reading is {} (logged {when}); no seats woken until a fresh reading lands in ~/.fwf-meter-log",
+                    age.map(|a| format!("{}m old", a / 60)).unwrap_or_else(|| "unparseable".into())
+                );
+                if cfg.once {
+                    return Ok(());
+                }
+                std::thread::sleep(cfg.interval);
+                continue;
+            }
             if weekly >= cfg.park_at_weekly_pct {
                 println!("fwfd run: PARKED — weekly meter {weekly}% ≥ {}% (logged {when}); no seats woken", cfg.park_at_weekly_pct);
                 if cfg.once {
@@ -248,6 +266,8 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 }
             }
         }
+        snap.issues
+            .retain(|i| !i.labels.iter().any(|l| cfg.skip_labels.contains(l)));
         if !cfg.allow_issues.is_empty() {
             snap.issues.retain(|i| cfg.allow_issues.contains(&i.number));
             snap.prs.retain(|p| {
@@ -295,6 +315,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         run_log: cfg.run_log.clone(),
                         timeout: cfg.job_timeout,
                         dry_run: false,
+                        check_cmd: cfg.gate_cmd.clone(),
                     };
                     match slice::run_with(&sc, impl_app, ops_app) {
                         Ok(url) => println!("fwfd run: impl seat {seat} → {url}"),
@@ -318,6 +339,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "qa"),
                         run_log: cfg.run_log.clone(),
                         timeout: cfg.job_timeout,
+                        check_cmd: cfg.gate_cmd.clone(),
                     };
                     match qa::run(&qc, qa_app) {
                         Ok((id, state)) => {
@@ -562,6 +584,24 @@ pub fn last_meter() -> Option<(u8, Option<u8>, String)> {
     None
 }
 
+/// How old a meter reading may be before the loop treats it as absent.
+pub const METER_MAX_AGE: u64 = 45 * 60;
+
+/// Age of a "YYYY-MM-DD HH:MM:SS" local-time stamp, in seconds. The meter
+/// log is written by `date` on this machine, so local time is compared with
+/// local time via `date -j` — no timezone arithmetic in Rust.
+pub fn meter_age_secs(when: &str, now: u64) -> Option<u64> {
+    let out = std::process::Command::new("date")
+        .args(["-j", "-f", "%Y-%m-%d %H:%M:%S", when, "+%s"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let ts: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    Some(now.saturating_sub(ts))
+}
+
 fn last_meter_reading() -> Option<(u8, String)> {
     last_meter().map(|(w, _, when)| (w, when))
 }
@@ -588,6 +628,19 @@ mod tests {
                 None
             },
         }
+    }
+
+    #[test]
+    fn meter_age_parses_a_local_stamp_and_rejects_garbage() {
+        let now = crate::seat::now();
+        let out = std::process::Command::new("date")
+            .args(["-r", &(now - 600).to_string(), "+%Y-%m-%d %H:%M:%S"])
+            .output()
+            .unwrap();
+        let stamp = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let age = meter_age_secs(&stamp, now).unwrap();
+        assert!((595..=605).contains(&age), "{age}");
+        assert_eq!(meter_age_secs("not a date", now), None);
     }
 
     #[test]

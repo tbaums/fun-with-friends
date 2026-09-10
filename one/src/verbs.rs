@@ -464,6 +464,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
         template: m.template.clone(),
         allow_issues: m.issues.clone(),
+        skip_labels: m.skip_labels.clone(),
         triage_new: m.triage_new,
         gv_seat: m.models.contains_key("gv").then(|| m.seat_target("gv", 1)),
         park_at_weekly_pct: m.park_at_weekly_pct,

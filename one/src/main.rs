@@ -498,6 +498,7 @@ fn main() -> ExitCode {
                     "qa",
                 ),
                 run_log,
+                check_cmd: get("--check").unwrap_or_default(),
                 timeout: Duration::from_secs(
                     get("--timeout")
                         .and_then(|s| s.parse().ok())
@@ -879,6 +880,7 @@ fn main() -> ExitCode {
                     "impl",
                 ),
                 run_log,
+                check_cmd: get("--check").unwrap_or_default(),
                 timeout: Duration::from_secs(
                     get("--timeout")
                         .and_then(|s| s.parse().ok())

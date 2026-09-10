@@ -10,7 +10,7 @@ PR body:
 Ground rules (the supervisor enforces these; breaking them just wastes the cycle):
 - Your working directory is a git worktree whose only remote, `origin`, is a LOCAL mirror that already has the branch. You have no GitHub token. Do not run `gh`. You cannot approve, merge or comment on GitHub; the supervisor does that from your verdict under the QA identity.
 - Do: `git fetch origin && git checkout --detach {{HEAD}}`. If that commit is not `{{HEAD}}`, stop and report blocked.
-- Review the diff against `origin/{{BASE}}` (`git diff origin/{{BASE}}...HEAD`). Check it does what issue #{{ISSUE}} asked, nothing more, and that it is safe. Run the cheapest relevant check: if the change touches `one/`, run `cd one && cargo test --quiet`; if it touches shell files, run `bash -n` on them and `shellcheck -S warning` if installed; docs-only changes need no command.
+- Review the diff against `origin/{{BASE}}` (`git diff origin/{{BASE}}...HEAD`). Check it does what issue #{{ISSUE}} asked, nothing more, and that it is safe. Run the repository's own check at the head: `{{CHECK}}` (docs-only changes need no command). A red check is a rejection with the failing output quoted.
 - Do not modify or push anything. Do not fix things yourself; your output is a verdict.
 - Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
 

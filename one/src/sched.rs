@@ -154,7 +154,23 @@ pub fn plan(
         }
     }
 
-    let mut impl_seats = idle_seats(seats, Role::Impl);
+    // One PR in flight per impl seat: a seat whose branch `impl<n>/…` is
+    // still open (awaiting QA, changes, or merge) does not start the next
+    // issue — the next issue would branch from a base that lacks its work.
+    let seats_with_open_pr: BTreeSet<u8> = snapshot
+        .prs
+        .iter()
+        .filter(|p| p.state == "open")
+        .filter_map(|p| {
+            p.head_ref
+                .strip_prefix("impl")?
+                .split('/')
+                .next()?
+                .parse::<u8>()
+                .ok()
+        })
+        .collect();
+    let mut impl_seats = idle_seats(seats, Role::Impl).filter(|s| !seats_with_open_pr.contains(s));
 
     let mut issues: Vec<&IssueView> = snapshot
         .issues
@@ -694,5 +710,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_impl_seat_with_an_open_pr_is_not_woken_for_the_next_issue() {
+        use crate::poll::{IssueView, PrView};
+        let issue = |n: u64| IssueView {
+            number: n,
+            title: format!("i{n}"),
+            author_association: "OWNER".into(),
+            labels: vec![],
+            assignees: vec![],
+            state: "open".into(),
+            updated_at: String::new(),
+            claim: None,
+        };
+        let snap = Snapshot {
+            issues: vec![issue(1), issue(2)],
+            prs: vec![PrView {
+                number: 10,
+                head_sha: "a".repeat(40),
+                head_ref: "impl1/issue-1-x".into(),
+                base_ref: "staging".into(),
+                draft: false,
+                state: "open".into(),
+                closes_issue: Some(1),
+                reviews: vec![],
+            }],
+            fetched_at: 0,
+            known: true,
+        };
+        let seats = vec![
+            SeatSlot {
+                seat: 1,
+                role: Role::Impl,
+                state: SeatState::Idle,
+            },
+            SeatSlot {
+                seat: 1,
+                role: Role::Qa,
+                state: SeatState::Idle,
+            },
+        ];
+        let p = plan(&snap, &seats, "product-wip", true, 0);
+        assert!(
+            !p.actions
+                .iter()
+                .any(|a| matches!(a, Action::WakeImpl { .. })),
+            "{:?}",
+            p.actions
+        );
+        // The QA seat still gets the open PR.
+        assert!(
+            p.actions
+                .iter()
+                .any(|a| matches!(a, Action::WakeQa { pr: 10, .. })),
+            "{:?}",
+            p.actions
+        );
     }
 }

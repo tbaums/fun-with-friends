@@ -69,6 +69,9 @@ pub struct Manifest {
     /// because it labels and comments on real issues.
     #[serde(default)]
     pub triage_new: bool,
+    /// Issues carrying any of these labels are never planned.
+    #[serde(default = "default_skip_labels")]
+    pub skip_labels: Vec<String>,
     /// Allow-list: if non-empty, the supervisor only ever works these issue
     /// numbers (the operator's safety rail while 1.0 is new). Empty = any
     /// eligible issue.
@@ -114,6 +117,12 @@ fn default_poll() -> u64 {
 }
 fn default_park() -> u8 {
     85
+}
+fn default_skip_labels() -> Vec<String> {
+    ["idea", "release-hold", "tracking", "build-epic"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 fn default_template() -> String {
     "dev".into()
@@ -253,6 +262,7 @@ poll_interval_secs = 60
 park_at_weekly_pct = 85
 template = "dev"
 triage_new = false
+skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
 # Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
 issues = [564]
 

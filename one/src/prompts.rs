@@ -18,6 +18,7 @@ pub const PLACEHOLDERS: &[&str] = &[
     "{{PR}}",
     "{{HEAD}}",
     "{{BASE}}",
+    "{{CHECK}}",
 ];
 pub const ROLES: &[&str] = &["impl", "qa", "gv", "pm"];
 

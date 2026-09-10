@@ -34,6 +34,8 @@ pub struct SliceConfig {
     pub run_log: PathBuf,
     pub timeout: Duration,
     pub dry_run: bool,
+    /// The repo's own fast check (manifest `[suites] fast`), shown to the seat.
+    pub check_cmd: String,
 }
 
 #[derive(Debug)]
@@ -198,6 +200,7 @@ pub fn run_with(
         .replace("{{REPO}}", &repo)
         .replace("{{TITLE}}", &title)
         .replace("{{BODY}}", &body)
+        .replace("{{CHECK}}", &cfg.check_cmd)
         .replace("{{BRANCH}}", &branch);
     let pane = Pane {
         target: cfg.seat_target.clone(),
