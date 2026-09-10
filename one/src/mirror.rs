@@ -171,7 +171,9 @@ impl Mirror {
     /// `upstream_url`, and fetch so `refs/remotes/upstream/*` exist. The
     /// protected branches are also mirrored into `refs/heads/*` so a seat
     /// clone has a base to branch from; HEAD is `staging`. Idempotent.
-    pub fn init(dir: &Path, upstream_url: &str) -> Result<Mirror, MirrorError> {
+    /// Create/refresh the bare mirror. `token` (a `contents:read` App token)
+    /// is needed for a private upstream; empty means anonymous.
+    pub fn init_with(dir: &Path, upstream_url: &str, token: &str) -> Result<Mirror, MirrorError> {
         let git_dir = dir.join("mirror.git");
         if !git_dir.join("HEAD").exists() {
             std::fs::create_dir_all(&git_dir)
@@ -185,11 +187,22 @@ impl Mirror {
             git_dir,
             upstream: upstream_url.to_string(),
         };
-        let have = m.git(&["remote", "get-url", REMOTE])?;
+        m.ensure_remote()?;
+        m.fetch_with(token)?;
+        Ok(m)
+    }
+
+    /// Public-upstream form of `init_with`: anonymous fetch.
+    pub fn init(dir: &Path, upstream_url: &str) -> Result<Mirror, MirrorError> {
+        Mirror::init_with(dir, upstream_url, "")
+    }
+
+    fn ensure_remote(&self) -> Result<(), MirrorError> {
+        let have = self.git(&["remote", "get-url", REMOTE])?;
         let out = if have.ok() {
-            m.git(&["remote", "set-url", REMOTE, upstream_url])?
+            self.git(&["remote", "set-url", REMOTE, &self.upstream])?
         } else {
-            m.git(&["remote", "add", REMOTE, upstream_url])?
+            self.git(&["remote", "add", REMOTE, &self.upstream])?
         };
         if !out.ok() {
             return Err(MirrorError::Git(format!(
@@ -197,25 +210,38 @@ impl Mirror {
                 out.summary()
             )));
         }
-        let out = m.git(&["symbolic-ref", "HEAD", "refs/heads/staging"])?;
+        let out = self.git(&["symbolic-ref", "HEAD", "refs/heads/staging"])?;
         if !out.ok() {
             return Err(MirrorError::Git(format!(
                 "symbolic-ref HEAD: {}",
                 out.summary()
             )));
         }
-        m.fetch()?;
-        Ok(m)
+        Ok(())
     }
 
     /// Refresh `refs/remotes/upstream/*` (pruned) and the protected branches.
     /// Read-only against upstream; uses the recorded URL without a token.
     pub fn fetch(&self) -> Result<(), MirrorError> {
+        self.fetch_with("")
+    }
+
+    /// Same, authenticated: a private upstream needs a `contents:read` token.
+    /// The token goes into the URL at call time only (never into the remote
+    /// config) and is scrubbed from every captured git line.
+    pub fn fetch_with(&self, token: &str) -> Result<(), MirrorError> {
+        let url;
+        let remote: &str = if token.is_empty() {
+            REMOTE
+        } else {
+            url = self.push_url(token)?;
+            &url
+        };
         let mut args = vec![
             "fetch",
             "--quiet",
             "--prune",
-            REMOTE,
+            remote,
             "+refs/heads/*:refs/remotes/upstream/*",
         ];
         let protected: Vec<String> = PROTECTED
@@ -223,7 +249,7 @@ impl Mirror {
             .map(|b| format!("+refs/heads/{b}:refs/heads/{b}"))
             .collect();
         args.extend(protected.iter().map(String::as_str));
-        let out = self.git(&args)?;
+        let out = run_git(&self.git_dir, &args, token)?;
         if out.ok() {
             Ok(())
         } else {
@@ -807,5 +833,24 @@ mod tests {
         );
         // an unreachable git_dir fails closed (Unknown / Git), never Ok(None)
         assert!(m.branch_head("main").is_err());
+    }
+
+    #[test]
+    fn a_tokened_fetch_refuses_a_non_github_upstream() {
+        let d = std::env::temp_dir().join(format!("fwfd-mirror-tok-{}", std::process::id()));
+        let up = d.join("up.git");
+        std::fs::create_dir_all(&up).unwrap();
+        assert!(run_git(&up, &["init", "--bare", "--quiet"], "")
+            .unwrap()
+            .ok());
+        let m = Mirror {
+            git_dir: d.join("m").join("mirror.git"),
+            upstream: format!("file://{}", up.display()),
+        };
+        let e = m.fetch_with("secret-token").unwrap_err();
+        let shown = format!("{e:?}");
+        assert!(shown.contains("refusing"), "{shown}");
+        assert!(!shown.contains("secret-token"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

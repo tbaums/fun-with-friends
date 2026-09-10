@@ -32,5 +32,5 @@ e2e = 'cd tests/e2e && npx playwright test'
 [models]
 impl = "sonnet"
 qa = "sonnet"
-pm = "opus"
-gv = "opus"
+pm = "sonnet"
+gv = "haiku"

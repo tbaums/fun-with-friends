@@ -75,8 +75,19 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
     }
 
     // Make sure the mirror has the branch at this head (the seat reads from the mirror only).
-    let mirror = Mirror::init(&cfg.mirror_dir, &format!("https://github.com/{repo}.git"))?;
-    mirror.fetch()?;
+    let read_tok = github::mint(
+        qa_app,
+        Some(&BTreeMap::from([
+            ("contents", "read"),
+            ("metadata", "read"),
+        ])),
+    )?
+    .token;
+    let mirror = Mirror::init_with(
+        &cfg.mirror_dir,
+        &format!("https://github.com/{repo}.git"),
+        &read_tok,
+    )?;
     let mirror_head = mirror.upstream_head(&branch)?;
     if mirror_head.as_ref() != Some(&head) {
         return Err(QaError(format!(

@@ -328,9 +328,26 @@ pub fn seats(args: &[String]) -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    let mr = match mirror::Mirror::init(&mirror_dir, &format!("https://github.com/{}.git", m.repo))
-        .and_then(|mr| mr.fetch().map(|_| mr))
-    {
+    let read_tok = github::load_apps(&github::apps_path())
+        .ok()
+        .and_then(|apps| apps.0.get("ops").cloned())
+        .and_then(|a| {
+            github::mint(
+                &a,
+                Some(&std::collections::BTreeMap::from([
+                    ("contents", "read"),
+                    ("metadata", "read"),
+                ])),
+            )
+            .ok()
+        })
+        .map(|t| t.token)
+        .unwrap_or_default();
+    let mr = match mirror::Mirror::init_with(
+        &mirror_dir,
+        &format!("https://github.com/{}.git", m.repo),
+        &read_tok,
+    ) {
         Ok(mr) => mr,
         Err(e) => {
             eprintln!("fwfd seats: mirror: {e}");

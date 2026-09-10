@@ -442,10 +442,28 @@ fn gate_after_merge(
     sha: &crate::types::Sha,
 ) -> Result<crate::types::GateState, String> {
     let repo = format!("{}/{}", cfg.owner, cfg.repo);
-    let mirror =
-        crate::mirror::Mirror::init(&cfg.mirror_dir, &format!("https://github.com/{repo}.git"))
-            .map_err(|e| e.to_string())?;
-    mirror.fetch().map_err(|e| e.to_string())?;
+    let read_tok = apps
+        .0
+        .get("ops")
+        .map(|a| {
+            crate::github::mint(
+                a,
+                Some(&BTreeMap::from([
+                    ("contents", "read"),
+                    ("metadata", "read"),
+                ])),
+            )
+            .map(|t| t.token)
+        })
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let mirror = crate::mirror::Mirror::init_with(
+        &cfg.mirror_dir,
+        &format!("https://github.com/{repo}.git"),
+        &read_tok,
+    )
+    .map_err(|e| e.to_string())?;
     let wt = cfg.floor_dir.join("gate-wt");
     let sh = |args: &[&str], dir: &std::path::Path| -> Result<(), String> {
         let out = std::process::Command::new("git")

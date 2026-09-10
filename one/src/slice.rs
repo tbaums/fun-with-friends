@@ -153,8 +153,19 @@ pub fn run_with(
     }
 
     // 3. Claim = a ref the seat cannot forge, created expect-empty.
-    let mirror = Mirror::init(&cfg.mirror_dir, &format!("https://github.com/{repo}.git"))?;
-    mirror.fetch()?;
+    let read_tok = github::mint(
+        app,
+        Some(&BTreeMap::from([
+            ("contents", "read"),
+            ("metadata", "read"),
+        ])),
+    )?
+    .token;
+    let mirror = Mirror::init_with(
+        &cfg.mirror_dir,
+        &format!("https://github.com/{repo}.git"),
+        &read_tok,
+    )?;
     let base = mirror
         .upstream_head(&cfg.base_branch)?
         .ok_or_else(|| SliceError(format!("no upstream {}", cfg.base_branch)))?;
