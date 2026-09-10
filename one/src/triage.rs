@@ -13,7 +13,7 @@ use crate::log::{Event, Kind, Log};
 use crate::seat::{self, Pane, Verdict};
 use crate::types::{IssueState, JobRef, Role, SeatState};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub struct TriageConfig {
@@ -200,7 +200,7 @@ pub fn ungate(
     issue: u64,
     gate_label: &str,
     actor: &str,
-    run_log: &PathBuf,
+    run_log: &Path,
     ops: &AppEntry,
 ) -> Result<(), TriageError> {
     let full = format!("{owner}/{repo}");

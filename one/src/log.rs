@@ -257,7 +257,7 @@ mod tests {
     use crate::types::{Fence, JobRef, Sha};
 
     fn sha(c: char) -> Sha {
-        Sha::parse(&std::iter::repeat(c).take(40).collect::<String>()).unwrap()
+        Sha::parse(&std::iter::repeat_n(c, 40).collect::<String>()).unwrap()
     }
 
     fn fixture(dir: &Path) -> std::path::PathBuf {

@@ -1,0 +1,30 @@
+# fwf 1.0 manifest — the only launch input. Keep it small.
+# Scalars first; tables ([suites], [models]) last — TOML keys after a table
+# header belong to that table.
+repo = "tbaums/wholesome-swolesome"
+base_branch = "staging"
+release_branch = "main"
+gate_label = "product-wip"
+owner_only = true
+pairs = 1
+session = "fwf-wholesome-swolesome"
+fast_suite = "fast"
+promote_suite = "fast"
+gate_venue = "local"
+gate_memory_gb = 8
+gate_timeout_secs = 1800
+job_timeout_secs = 1800
+poll_interval_secs = 60
+park_at_weekly_pct = 85
+# Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
+issues = []  # fill in before the first run
+
+[suites]
+fast = "npm test --silent"
+e2e = "npm run e2e --silent"
+
+[models]
+impl = "opus"
+qa = "opus"
+pm = "haiku"
+gv = "haiku"

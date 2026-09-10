@@ -40,6 +40,7 @@ const USAGE: &str = "usage:
   fwfd run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
   fwfd triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
   fwfd ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
+  fwfd release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
@@ -336,6 +337,78 @@ fn main() -> ExitCode {
                 Err(e) => {
                     eprintln!("fwfd ungate: {}", e.0);
                     ExitCode::from(1)
+                }
+            }
+        }
+        Some("release-check") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(tag)) = (get("--repo"), get("--tag")) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let expect: usize = get("--expect").and_then(|s| s.parse().ok()).unwrap_or(4);
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd release-check: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(ops) = apps.0.get("ops") else {
+                eprintln!("fwfd release-check: no [ops] app");
+                return ExitCode::from(2);
+            };
+            let perms =
+                std::collections::BTreeMap::from([("contents", "read"), ("metadata", "read")]);
+            let tok = match github::mint(ops, Some(&perms)) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("fwfd release-check: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            match github::get_status(&tok.token, &format!("/repos/{repo}/releases/tags/{tag}")) {
+                Ok((200, body)) => {
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let assets: Vec<String> = v["assets"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x["name"].as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if assets.len() >= expect {
+                        println!(
+                            "{tag}: release ok, {} assets: {}",
+                            assets.len(),
+                            assets.join(" ")
+                        );
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!(
+                            "{tag}: release exists but has {} assets (expected ≥ {expect}): {}",
+                            assets.len(),
+                            assets.join(" ")
+                        );
+                        ExitCode::from(1)
+                    }
+                }
+                Ok((404, _)) => {
+                    eprintln!("{tag}: NO release object (a tag is not a release)");
+                    ExitCode::from(1)
+                }
+                Ok((code, _)) => {
+                    eprintln!("{tag}: unexpected {code}");
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("fwfd release-check: {e}");
+                    ExitCode::from(2)
                 }
             }
         }

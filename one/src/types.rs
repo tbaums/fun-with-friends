@@ -344,7 +344,7 @@ mod tests {
     use super::*;
 
     fn sha(c: char) -> Sha {
-        Sha::parse(&std::iter::repeat(c).take(40).collect::<String>()).unwrap()
+        Sha::parse(&std::iter::repeat_n(c, 40).collect::<String>()).unwrap()
     }
 
     #[test]
