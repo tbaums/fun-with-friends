@@ -13,9 +13,10 @@ issue ──GV triage──▶ gated ──human `fwfd ungate`──▶ eligible
   ──gate (bash -o pipefail, memory-capped venue)──▶ check-run ──▶ promote by literal SHA
 ```
 
-Status: M0–M3 done and proven live on this repository (`docs/BUILD-LOG.md`);
-M4 (soak, head-to-head, cutover) is next. Nothing here is wired into the
-v0.42 `fwf` command yet.
+Status: M0–M3 done; proven live on this repository and, unattended overnight,
+on two private repos (diaspective: an MVP from an empty repo in 10 merged PRs;
+baton) — see `docs/BUILD-LOG.md`. M4 (soak, head-to-head, cutover) is next.
+Nothing here is wired into the v0.42 `fwf` command yet.
 
 ## Requirements
 

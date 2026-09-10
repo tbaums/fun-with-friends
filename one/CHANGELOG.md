@@ -1,6 +1,15 @@
 # Changelog — fwf 1.0 (`one/`)
 
-## Unreleased (one/m0, 2026-09-09)
+## Unreleased (staging, 2026-09-10)
+
+- Overnight run on two private repos (diaspective 10/10, baton 1/1, 0 stalls). Fixes found by it:
+  ops undrafts PRs (impl cannot on private repos); `FinishPr` merges any PR already approved
+  at head; GraphQL errors surfaced; tokened (scrubbed) mirror fetch for private upstreams;
+  one PR in flight per impl seat; gate refuses a workdir at the wrong sha; brake parks on a
+  stale meter; `{{CHECK}}` carries the repo's own check into every seat prompt; `skip_labels`;
+  `fwfd seats --up/--down`, `fwfd ready`, `fwfd dash` meter line; `triage_new` (off).
+
+## one/m0, 2026-09-09
 
 - M0: crate, four state enums with `Unknown`, append-only JSONL run record,
   `why`; three GitHub Apps; GitHub client with narrowed installation tokens;
