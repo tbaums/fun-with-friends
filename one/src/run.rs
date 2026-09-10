@@ -33,6 +33,13 @@ pub struct RunConfig {
     pub prompts_dir: PathBuf,
     /// If non-empty, only these issues are ever planned.
     pub allow_issues: Vec<u64>,
+    /// Conductor-as-code: after every merge, run this suite on the new base
+    /// tip in the floor's gate worktree and post a check-run under ops.
+    pub gate_suite: String,
+    pub gate_cmd: String,
+    pub gate_venue: String,
+    pub gate_memory_gb: u32,
+    pub gate_timeout: Duration,
 }
 
 pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
@@ -157,7 +164,18 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                                 // precondition is re-checked inside merge_pr.
                                 match finish_pr(cfg, apps, *pr) {
                                     Ok(sha) => {
-                                        println!("fwfd run: merged #{pr} as {}", sha.short())
+                                        println!("fwfd run: merged #{pr} as {}", sha.short());
+                                        match gate_after_merge(cfg, apps, &sha) {
+                                            Ok(state) => println!(
+                                                "fwfd run: gate {} {} → {state:?}",
+                                                sha.short(),
+                                                cfg.gate_suite
+                                            ),
+                                            Err(e) => eprintln!(
+                                                "fwfd run: gate on {} not recorded: {e}",
+                                                sha.short()
+                                            ),
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("fwfd run: #{pr} approved but not merged: {e}")
@@ -248,4 +266,87 @@ fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha,
     };
     let mut log = crate::log::Log::open(&cfg.run_log).map_err(|e| e.to_string())?;
     crate::merge::merge_pr(&client, &repo, pr, &fence, &mut log).map_err(|e| e.to_string())
+}
+
+/// The conductor, as code: check out the merge sha in the floor's gate
+/// worktree (from the mirror), run the manifest's suite in the configured
+/// venue, record the verdict, post a check-run under ops. Never on a seat's
+/// worktree; never on the floor's live tree.
+fn gate_after_merge(
+    cfg: &RunConfig,
+    apps: &Apps,
+    sha: &crate::types::Sha,
+) -> Result<crate::types::GateState, String> {
+    let repo = format!("{}/{}", cfg.owner, cfg.repo);
+    let mirror =
+        crate::mirror::Mirror::init(&cfg.mirror_dir, &format!("https://github.com/{repo}.git"))
+            .map_err(|e| e.to_string())?;
+    mirror.fetch().map_err(|e| e.to_string())?;
+    let wt = cfg.floor_dir.join("gate-wt");
+    let sh = |args: &[&str], dir: &std::path::Path| -> Result<(), String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    };
+    if !wt.join(".git").exists() {
+        sh(
+            &[
+                "clone",
+                "-q",
+                &mirror.seat_remote_url(),
+                wt.to_str().unwrap_or("."),
+            ],
+            &cfg.floor_dir,
+        )?;
+    }
+    sh(&["fetch", "-q", "origin"], &wt)?;
+    sh(&["checkout", "-q", "--detach", sha.as_str()], &wt)?;
+    let venue = match cfg.gate_venue.as_str() {
+        "container" => crate::gate::Venue::AppleContainer {
+            image: "alpine:latest".into(),
+        },
+        "systemd" => crate::gate::Venue::SystemdRun,
+        _ => crate::gate::Venue::Local,
+    };
+    let g = crate::gate::Gate {
+        venue,
+        memory_gb: cfg.gate_memory_gb,
+        timeout: cfg.gate_timeout,
+        workdir: wt.clone(),
+    };
+    let log_path = cfg
+        .floor_dir
+        .join(format!("gate-{}-{}.log", sha.short(), cfg.gate_suite));
+    let state = g.run(sha, &cfg.gate_suite, &cfg.gate_cmd, &log_path);
+    if let Ok(mut l) = crate::log::Log::open(&cfg.run_log) {
+        let _ = l.append(&crate::log::Event {
+            ts: crate::seat::now(),
+            repo: repo.clone(),
+            kind: crate::log::Kind::Gate { to: state.clone() },
+        });
+    }
+    let ops = apps.0.get("ops").ok_or("no [ops] app")?;
+    let perms = BTreeMap::from([("checks", "write"), ("metadata", "read")]);
+    let tok = crate::github::mint(ops, Some(&perms)).map_err(|e| e.to_string())?;
+    let client = crate::checks::CheckClient {
+        base_url: "https://api.github.com".into(),
+        token: tok.token,
+    };
+    crate::checks::post_check_run(
+        &client,
+        &repo,
+        sha,
+        &format!("fwfd/{}", cfg.gate_suite),
+        &state,
+        None,
+    )
+    .map_err(|e| format!("{e:?}"))?;
+    Ok(state)
 }
