@@ -2,7 +2,7 @@
 # Bring up ONE real implementer seat for fwf 1.0: a warm interactive Claude
 # Code pane that the supervisor wakes. No /loop. No claude -p.
 #
-#   usage: one/scripts/seat-up.sh <floor-dir> <worktree> [session] [pane-name]
+#   usage: one/scripts/seat-up.sh <floor-dir> <worktree> [session] [pane-name] [model]
 #
 # floor-dir  : per-floor HOME (settings + injected auth live here; never the
 #              customer repo's .claude/settings.json — --setting-sources user)
@@ -13,7 +13,7 @@
 # protected branches and every `gh` write; the seat holds no GitHub write
 # token anyway (proven: contents:read token → 403 on label/push).
 set -euo pipefail
-floor="$1"; wt="$2"; session="${3:-fwf-one}"; pane="${4:-impl1}"
+floor="$1"; wt="$2"; session="${3:-fwf-one}"; pane="${4:-impl1}"; model="${5:-opus}"
 mkdir -p "$floor/.claude"
 # A fresh per-floor HOME would show onboarding (theme picker) and the
 # workspace-trust dialog; seed both as done so the pane comes up at the
@@ -51,7 +51,7 @@ printf "export HOME='%s' CLAUDE_CODE_OAUTH_TOKEN='%s' FWFD_SEAT='%s'\n" "$floor"
 # Launch claude DIRECTLY as the pane's command (no interactive shell, so no
 # prompt noise, no oh-my-zsh update dialog, nothing typed): bash --norc
 # sources the env file and execs claude.
-launch="bash --noprofile --norc -c \"source '$envf' && cd '$wt' && exec claude --permission-mode dontAsk --setting-sources user --settings '$floor/.claude/settings.json' --allowedTools 'Bash(*)' 'Read' 'Write' 'Edit' 'Glob' 'Grep' --disallowedTools 'Bash(gh:*)' 'Bash(curl:*)' 'WebFetch' 'WebSearch' --add-dir '$floor/..'\""
+launch="bash --noprofile --norc -c \"source '$envf' && cd '$wt' && exec claude --model '$model' --permission-mode dontAsk --setting-sources user --settings '$floor/.claude/settings.json' --allowedTools 'Bash(*)' 'Read' 'Write' 'Edit' 'Glob' 'Grep' --disallowedTools 'Bash(gh:*)' 'Bash(curl:*)' 'WebFetch' 'WebSearch' --add-dir '$floor/..'\""
 if ! tmux has-session -t "$session" 2>/dev/null; then
   tmux new-session -d -s "$session" -n "$pane" -c "$wt" -x 200 -y 50 "$launch"
 else
