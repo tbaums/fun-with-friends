@@ -17,7 +17,7 @@ job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
 # Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
-issues = [566]
+issues = [568]
 
 [suites]
 fast = "bash -n fwf lib.sh fwf-*.sh && echo SYNTAX-OK"
