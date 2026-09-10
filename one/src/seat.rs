@@ -118,7 +118,11 @@ pub fn wake(
     timeout: Duration,
 ) -> Result<SeatState, SeatError> {
     let cmd = pane_command(&pane.target)?;
-    if cmd != expect_cmd {
+    // The native Claude Code install names its binary by version (e.g.
+    // `2.1.266`), so a pane running claude reports that, not `claude`.
+    let is_claude =
+        expect_cmd == "claude" && cmd.chars().next().is_some_and(|c| c.is_ascii_digit());
+    if cmd != expect_cmd && !is_claude {
         return Err(SeatError::NotIdle(format!(
             "{} is running {cmd}, expected {expect_cmd}",
             pane.target
@@ -131,9 +135,35 @@ pub fn wake(
         "{job_text}\nWhen done, write your verdict JSON to: {}",
         verdict_path.display()
     );
-    // `-l` types literally (no key-name parsing); Enter is sent separately so a
-    // job containing the word "Enter" is never interpreted.
-    tmux(&["send-keys", "-t", &pane.target, "-l", &text])?;
+    // Deliver the job as ONE bracketed paste (load-buffer + paste-buffer -p),
+    // so a multi-line job lands in the input box intact instead of each line
+    // being submitted as its own prompt; Enter is sent separately so a job
+    // containing the word "Enter" is never interpreted as a key.
+    let buf =
+        std::env::temp_dir().join(format!("fwfd-job-{}-{}.txt", std::process::id(), pane.seat));
+    std::fs::write(&buf, &text).map_err(|e| SeatError::Tmux(e.to_string()))?;
+    // Clear anything staged in the input box first (ghost text is never
+    // ours to send; a stale draft must not be prepended to the job).
+    tmux(&["send-keys", "-t", &pane.target, "Escape"])?;
+    tmux(&["send-keys", "-t", &pane.target, "C-u"])?;
+    let bufname = format!("fwfd-{}", pane.seat);
+    tmux(&[
+        "load-buffer",
+        "-b",
+        &bufname,
+        buf.to_str().unwrap_or_default(),
+    ])?;
+    tmux(&[
+        "paste-buffer",
+        "-p",
+        "-d",
+        "-b",
+        &bufname,
+        "-t",
+        &pane.target,
+    ])?;
+    let _ = std::fs::remove_file(&buf);
+    std::thread::sleep(Duration::from_millis(300));
     tmux(&["send-keys", "-t", &pane.target, "Enter"])?;
     Ok(SeatState::Working {
         job: job.clone(),

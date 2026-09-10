@@ -16,12 +16,12 @@ it replaces. Nothing here is wired into `fwf` yet.
 | T-00 v0.42.10 security fix (#562) | PR open on the v0.42.x tree |
 | T-01 crate skeleton, four enums, event log, `why` | this directory |
 | T-02 three GitHub Apps (impl, qa, ops) | needs Jamie |
-| T-03 GitHub client | mint LIVE for fwf-impl; ETag client next |
+| T-03 GitHub client | mint LIVE; ETag poller in poll.rs |
 | T-04 fake GitHub | `src/fake_github.rs`, 9 contract tests |
 | T-05 fake seat pane (tmux-backed) | done — `src/seat.rs` FakeSeat |
 | T-06 seat waker + verdict reader | done — `wake`/`wait_verdict`; woken panes, no /loop, no claude -p |
 | T-07 canary | canary PASS (see below); 10-cycle cost comparison parked (needs real seats) |
-| T-08 thin slice (kill criterion) | unblocked (impl-only); needs T-09 scheduler + T-11 mirror first |
+| T-08 thin slice (kill criterion) | **DONE 2026-09-09 19:00 PDT** — PR #565 opened by fwf-impl[bot] from a woken seat (`fwfd slice`) |
 | T-09 poller + scheduler | done — `src/poll.rs`: `Poller` (base URL + bearer injectable; per-URL ETag cache with `If-None-Match`/304 body reuse; single-flight per URL; `requests()`/`not_modified()` counters; any failure = typed `PollError`, caller holds `Snapshot::unknown()`) reads `issues?state=open`, then `pulls/{n}` + `pulls/{n}/reviews` per PR and `git/ref/claims/{n}` per `claimed` issue. `src/sched.rs`: pure `plan(snapshot, seats, gate_label, owner_only, now) -> Plan` (WakeImpl / WakeQa / ReleaseClaim / Nothing). 14 tests: 5 proptest properties, 1 poll→plan→304→relabel contract test against the fake, single-flight proved with a barrier transport |
 | T-09 notes | `author_association` is derived (author == repo owner → OWNER) when the API omits it, as the fake does; `closes_issue` accepts GitHub's close/fix/resolve keyword set; `IssueView.claim: Option<Fence>` and `Snapshot.known` added beyond the spec so `ReleaseClaim` carries a real fence (never fabricated) and `Unknown` is a value; `ReleaseClaim` fires only for a fenced claim no live seat is working (Working past `deadline` counts as stalled) and no open PR closes; a seat id that is non-Idle in any slot, or listed under two roles, is never double-booked (found by proptest); `mod poll; mod sched;` not yet in `main.rs` |
 | T-11 local bare mirror | done — `src/mirror.rs`: `Mirror::init` (idempotent; `refs/remotes/upstream/*` + protected heads mirrored, HEAD=staging), `seat_remote_url()` (`file://`, the seat's only remote), `branch_head`/`upstream_head`, `sync_branch` (`--force-with-lease` CAS, expect-empty for new branches; `staging`/`main` → `Protected`), `create_claim_ref`/`release_claim_ref` on `refs/claims/<n>` (fence = ref sha). 6 tests against on-disk bare upstreams |
@@ -102,3 +102,30 @@ Not modelled: pagination, rate limits, GraphQL, fast-forward checks on
 protection / required checks, PR merge, assignees (week 0 showed Apps
 cannot be assignees), JWT verification on the mint route, `updated_at`
 on list ETags being anything but a body hash.
+
+## Thin slice — what it took (T-08, 4 attempts, one evening)
+
+`fwfd slice --repo tbaums/fun-with-friends --issue 564 --seat fwf-one:impl1`
+→ mint (narrowed) → poll → plan → `refs/claims/564` (fence) → paste job into
+the warm pane → verdict file → mirror `sync_branch` (force-with-lease) →
+draft PR #565 under fwf-impl[bot] → `fwfd why 565` shows the whole timeline.
+
+Lessons that are now code (`scripts/seat-up.sh`, `src/seat.rs`):
+1. `dontAsk` denies every tool not explicitly allowed, and an allow rule for
+   `git status:*` does not match a compound `git a && git b`. M0 seats get
+   `Bash(*)` plus denies (gh, curl, force-push, WebFetch) and the PreToolUse
+   hook; the seat holds no GitHub token and its only remote is the mirror.
+2. Never type a launch line into an interactive shell: the first keystroke
+   was eaten (`export` → `xport`), an oh-my-zsh update prompt ate more, HOME
+   never changed, and the OAuth token was echoed into tmux scrollback. The
+   pane now runs `bash --norc -c "source env.sh && exec claude …"` directly,
+   with `--settings`, `--allowedTools`, `--disallowedTools` and `--add-dir`
+   passed explicitly, and scrollback is cleared.
+3. A fresh per-floor HOME shows onboarding and the trust dialog; seed
+   `.claude.json` (onboarding done, project trusted) before launch.
+4. The seat's input box can contain staged text nobody typed ("go ahead,
+   bash is enabled now", "retry now, permissions are granted"). The waker
+   clears the box (Esc, C-u) before every paste and nothing is ever sent
+   from it. Unsent is unsent.
+5. Multi-line jobs go in as one bracketed paste (`load-buffer` +
+   `paste-buffer -p`), then Enter.

@@ -79,7 +79,10 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
 
     // 2. Poll → plan. One idle implementer seat.
     let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
-    let snap = poller.poll(now())?;
+    let mut snap = poller.poll(now())?;
+    // The slice is a targeted demo: plan over the one issue we were pointed
+    // at. The real supervisor plans over the whole open set (FIFO).
+    snap.issues.retain(|i| i.number == cfg.issue);
     if !snap.known {
         return Err(SliceError("snapshot Unknown; refusing to plan".into()));
     }
