@@ -1,7 +1,7 @@
 //! Verb bodies moved out of main.rs (the size ratchet): spec, triage,
 //! release-check, dash. Each takes the raw argv and returns the exit code.
 
-use crate::{dash, github, log, prompts, seat, slice, spec, triage};
+use crate::{dash, github, log, manifest, profile, prompts, seat, slice, spec, triage};
 use crate::{default_log, USAGE};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -235,4 +235,31 @@ pub fn dash(args: &[String]) -> ExitCode {
             }
         }
     }
+}
+
+pub fn init_manifest(args: &[String]) -> ExitCode {
+    let Some(path) = get(args, "--from-profile") else {
+        print!("{}", manifest::EXAMPLE);
+        return ExitCode::SUCCESS;
+    };
+    let Some(repo) = get(args, "--repo") else {
+        eprintln!("fwfd init-manifest: --from-profile needs --repo owner/name (a profile only knows a local path)");
+        return ExitCode::from(2);
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("fwfd init-manifest: cannot read {path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let name = repo.split_once('/').map(|(_, n)| n).unwrap_or("floor");
+    let session = get(args, "--session").unwrap_or_else(|| format!("fwf-{name}"));
+    let out = profile::to_manifest(&profile::parse(&text), &repo, &session);
+    if let Err(e) = manifest::Manifest::parse(&out) {
+        eprintln!("fwfd init-manifest: converted manifest does not validate: {e}");
+        return ExitCode::from(1);
+    }
+    print!("{out}");
+    ExitCode::SUCCESS
 }

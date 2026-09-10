@@ -1,30 +1,38 @@
-# fwf 1.0 manifest — the only launch input. Keep it small.
-# Scalars first; tables ([suites], [models]) last — TOML keys after a table
-# header belong to that table.
+# fwf 1.0 manifest converted from a v0.42 profile by `fwfd init-manifest --from-profile`.
+# Scalars first; tables ([suites], [models]) last.
 repo = "tbaums/baton"
 base_branch = "staging"
 release_branch = "main"
+# integration branch "integration" dropped: 1.0 promotes base → release after a gate
 gate_label = "product-wip"
 owner_only = true
 pairs = 1
 session = "fwf-baton"
 fast_suite = "fast"
-promote_suite = "fast"
+promote_suite = "e2e"
 gate_venue = "local"
 gate_memory_gb = 8
 gate_timeout_secs = 1800
 job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
-# Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
-issues = []  # fill in before the first run
+template = "dev"
+issues = []  # fill in before the first run: fwfd run refuses an empty allow-list
+# BUILD_CMD has no 1.0 equivalent (dropped)
+# DEV_UI_HINT has no 1.0 equivalent (dropped)
+# E2E_SETUP_CMD has no 1.0 equivalent (dropped)
+# UT_APP_URL has no 1.0 equivalent (dropped)
+# UT_BROWSER has no 1.0 equivalent (dropped)
+# WT_PREFIX has no 1.0 equivalent (dropped)
+# FWF_REPO: could not be read without running bash (left out, not guessed)
+# WT_BASE: could not be read without running bash (left out, not guessed)
 
 [suites]
-fast = "cargo check --quiet"
-e2e = "cargo test --quiet"
+fast = 'cargo fmt --check && cargo test --workspace && cargo check -p baton-frontend --target wasm32-unknown-unknown'
+e2e = 'if [ -d tests/e2e ]; then ( cd tests/e2e && npm install --no-audit --no-fund >/dev/null 2>&1 && ./node_modules/.bin/playwright test ); else echo "e2e: harness not present yet — skipping"; fi'
 
 [models]
 impl = "opus"
 qa = "opus"
-pm = "haiku"
+pm = "sonnet"
 gv = "haiku"
