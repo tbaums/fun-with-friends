@@ -68,6 +68,22 @@ impl Gate {
         if let Some(v) = self.recorded(sha, suite) {
             return v;
         }
+        // The workdir must BE the sha under test. A checkout that failed to
+        // update (mirror not fetched, wrong branch) would otherwise produce
+        // a verdict for one tree and record it against another — found live
+        // on fwf a632811 (gate-wt was still at 4ccf8d3). Unknown, not
+        // recorded: the gate did not run.
+        if let Some(head) = workdir_head(&self.workdir) {
+            if head != sha.as_str() {
+                eprintln!(
+                    "gate: workdir {} is at {} not {}; refusing to run",
+                    self.workdir.display(),
+                    &head[..8.min(head.len())],
+                    sha.short()
+                );
+                return GateState::Unknown;
+            }
+        }
         let verdict = self.run_uncached(sha, suite, cmd, log_path);
         if !matches!(verdict, GateState::Unknown) {
             self.record(sha, suite, &verdict);
@@ -273,6 +289,20 @@ fn kill_group(pid: u32) {
         kill(-pid, SIGKILL);
         kill(pid, SIGKILL);
     }
+}
+
+/// HEAD of a git checkout, or None when the workdir is not a checkout (tests
+/// use bare scratch directories).
+fn workdir_head(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn open_log(path: &Path) -> std::io::Result<File> {
@@ -547,5 +577,55 @@ mod tests {
             }
             Ok(()) => assert!(matches!(v, GateState::Green { .. }), "{v:?}"),
         }
+    }
+
+    #[test]
+    fn a_checkout_at_the_wrong_sha_is_refused_not_gated() {
+        let d = scratch("wrongsha");
+        let sh = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&d)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        sh(&["init", "--quiet"]);
+        sh(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "one",
+        ]);
+        let head = String::from_utf8_lossy(
+            &Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&d)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let g = Gate {
+            venue: Venue::Local,
+            memory_gb: 1,
+            timeout: Duration::from_secs(30),
+            workdir: d.clone(),
+        };
+        // Wrong sha: Unknown and nothing recorded.
+        let v = g.run(&sha('9'), "fast", "echo ok", &d.join("g.log"));
+        assert!(matches!(v, GateState::Unknown), "{v:?}");
+        assert!(g.recorded(&sha('9'), "fast").is_none());
+        // Right sha: runs and records.
+        let real = Sha::parse(&head).unwrap();
+        let v = g.run(&real, "fast", "echo ok", &d.join("g.log"));
+        assert!(matches!(v, GateState::Green { .. }), "{v:?}");
     }
 }

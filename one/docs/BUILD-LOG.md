@@ -183,3 +183,11 @@ Idle ticks cost 7–9 ETag reads and zero model requests.
 Two things fixed on the way: drafts are QA work (seats open drafts; ready
 follows approval), and the supervisor pushes branches under fwf-ops while
 fwf-impl (contents:read) only authors the PR.
+
+
+## Overnight 2026-09-10 — two customer repos, unattended
+
+- **diaspective** (private, empty except a brain dump): ten MVP issues filed at 23:45; the loop merged all ten to `staging` by 01:33 (PRs #11–#20), every gate Green, 0 stalls, 0 refusals. Promoted to `main` (4291f19a) at 09:20. Smoke-tested out of band (trunk build, server, full API walk).
+- **baton** (private): #127 → PR #128 merged 02:13, gate Green (42 tests), promoted to `main` (a2fde454).
+- Bugs the run found in fwfd, fixed on the spot: the impl App cannot undraft a PR on a private repo (`contents:write` needed → ops undrafts); no scheduler action for a PR already approved at head (`Action::FinishPr`); GraphQL errors folded into `false`; private-upstream mirror fetch needed a scrubbed read token; an impl seat could be woken for the next issue while its PR was open; a gate could run against a workdir at the wrong sha (now refused, Unknown).
+- Measured: an impl cycle 0.4–1.4M cached tokens in; a whole issue (impl → QA → merge → gate) 8–12 minutes on a small repo.
