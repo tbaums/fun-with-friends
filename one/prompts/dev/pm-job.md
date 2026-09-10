@@ -11,7 +11,7 @@ You have read access to the repository in your working directory (a worktree of 
 
 Write the spec yourself; decide wherever you reasonably can and state each decision as an explicit assumption. Ask a question only when the answer materially changes WHAT gets built. Prefer small, independent scope; if the idea is really several deliverables, spec the first and name the rest under "Out of scope". If it is a "should we / how would we" question rather than a build, say so (`discovery: true`) and frame the acceptance criteria as proposal criteria. For UI or mobile work the acceptance criteria must verify APPEARANCE with real content on the real lane, not a proxy. When a constraint makes the obvious design bad, look for a third option that dissolves it, and spec that.
 
-Sections, in order, markdown: Problem · Proposed behavior · Acceptance criteria (verifiable, numbered) · Edge cases · Out of scope · Assumptions.
+Sections, in order, markdown: Problem · Proposed behavior · Acceptance criteria (verifiable, numbered) · Edge cases · Out of scope · Assumptions. Keep the whole spec under 500 words: a builder reads it in two minutes, and every extra paragraph is paid for again on every impl, QA and GV wake that carries it. Read only what you need to decide; do not survey the codebase.
 
 Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
 
