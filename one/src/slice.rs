@@ -225,6 +225,18 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
 
     // 5. Wait for the verdict; never kill.
     let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
+    // Measured cost of this cycle: the seat's own transcript since the wake.
+    let seat_home = cfg.floor_dir.join("home");
+    let seat_wt = cfg.floor_dir.join(format!("wt-impl{}", seat_no));
+    let usage = crate::cost::cycle_usage(
+        &seat_home,
+        &seat_wt,
+        deadline.saturating_sub(cfg.timeout.as_secs()),
+    );
+    let (tokens_in, tokens_out) = usage
+        .as_ref()
+        .map(|u| (Some(u.tokens_in()), Some(u.tokens_out())))
+        .unwrap_or((None, None));
     record(
         &mut log,
         &repo,
@@ -232,8 +244,8 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
             seat: seat_no,
             role: Role::Impl,
             to: st.clone(),
-            tokens_in: None,
-            tokens_out: None,
+            tokens_in,
+            tokens_out,
         },
     )?;
     let (v_branch, v_head, summary) = match verdict {

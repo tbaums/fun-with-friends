@@ -132,6 +132,18 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
         },
     )?;
     let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
+    // Measured cost of this cycle: the seat's own transcript since the wake.
+    let seat_home = cfg.floor_dir.join("home");
+    let seat_wt = cfg.floor_dir.join(format!("wt-qa{}", cfg.seat_no));
+    let usage = crate::cost::cycle_usage(
+        &seat_home,
+        &seat_wt,
+        deadline.saturating_sub(cfg.timeout.as_secs()),
+    );
+    let (tokens_in, tokens_out) = usage
+        .as_ref()
+        .map(|u| (Some(u.tokens_in()), Some(u.tokens_out())))
+        .unwrap_or((None, None));
     record(
         &mut log,
         &repo,
@@ -139,8 +151,8 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
             seat: cfg.seat_no,
             role: Role::Qa,
             to: st.clone(),
-            tokens_in: None,
-            tokens_out: None,
+            tokens_in,
+            tokens_out,
         },
     )?;
     let (v_head, approve, notes) = match verdict {

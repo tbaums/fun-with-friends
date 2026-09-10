@@ -7,11 +7,13 @@
 #![allow(dead_code)]
 
 mod checks;
+mod cost;
 #[cfg(test)]
 mod fake_github;
 mod gate;
 mod github;
 mod log;
+mod manifest;
 mod merge;
 mod mirror;
 mod poll;
@@ -23,12 +25,15 @@ mod seat;
 mod slice;
 mod types;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "usage:
   fwfd why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
+  fwfd up [--manifest PATH]   validate the manifest (default ./.fwf/fwf.toml or --manifest), mint every App, print the floor plan; refuses without a manifest
+  fwfd init-manifest         print an example fwf.toml
+  fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
@@ -53,6 +58,100 @@ fn main() -> ExitCode {
         Some("version") => {
             println!("fwfd {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
+        }
+        Some("cost") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(floor), Some(seat)) = (get("--floor").map(PathBuf::from), get("--seat"))
+            else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let since = get("--since")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            match cost::cycle_usage(
+                &floor.join("home"),
+                &floor.join(format!("wt-{seat}")),
+                since,
+            ) {
+                Some(u) => {
+                    println!("{seat} since {since}: {} messages, in {} (input {} + cache-read {} + cache-create {}), out {}", u.messages, u.tokens_in(), u.input, u.cache_read, u.cache_create, u.output);
+                    ExitCode::SUCCESS
+                }
+                None => {
+                    eprintln!(
+                        "fwfd cost: no transcript for {seat} under {}",
+                        floor.display()
+                    );
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("init-manifest") => {
+            print!("{}", manifest::EXAMPLE);
+            ExitCode::SUCCESS
+        }
+        Some("up") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let path = get("--manifest")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+            let m = match manifest::Manifest::load(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("fwfd up: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            println!("manifest {} ok: repo {} · {} → {} · gate label {:?} · {} pair(s) · session {} · venue {} ({} GB, {} s) · suites {:?}",
+                path.display(), m.repo, m.base_branch, m.release_branch, m.gate_label, m.pairs, m.session, m.gate_venue, m.gate_memory_gb, m.gate_timeout_secs, m.suites.keys().collect::<Vec<_>>());
+            println!("  floor: {}", m.floor().display());
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd up: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let mut bad = 0;
+            for role in ["impl", "qa", "ops"] {
+                match apps.0.get(role) {
+                    None => {
+                        bad += 1;
+                        println!("  app {role:<4}: MISSING from apps.toml");
+                    }
+                    Some(entry) => match github::mint(
+                        entry,
+                        Some(&std::collections::BTreeMap::from([("metadata", "read")])),
+                    ) {
+                        Ok(_) => println!("  app {role:<4}: ok"),
+                        Err(e) => {
+                            bad += 1;
+                            println!("  app {role:<4}: NOT USABLE — {e}");
+                        }
+                    },
+                }
+            }
+            for n in 1..=m.pairs {
+                for role in ["impl", "qa"] {
+                    let target = m.seat_target(role, n);
+                    let cmd = seat::pane_command(&target).unwrap_or_else(|_| "absent".into());
+                    println!("  seat {target}: {cmd}");
+                }
+            }
+            if bad == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
         }
         Some("doctor") => {
             println!("fwfd {} (M0)", env!("CARGO_PKG_VERSION"));

@@ -595,11 +595,17 @@ mod tests {
             prop::collection::vec(arb_pr(), 0..5),
             any::<bool>(),
         )
-            .prop_map(|(issues, prs, known)| Snapshot {
-                issues,
-                prs,
-                fetched_at: 1,
-                known,
+            .prop_map(|(mut issues, prs, known)| {
+                // A snapshot is keyed by issue number (the poller reads each
+                // issue once); two views of one number is not a real input.
+                let mut seen = BTreeSet::new();
+                issues.retain(|i| seen.insert(i.number));
+                Snapshot {
+                    issues,
+                    prs,
+                    fetched_at: 1,
+                    known,
+                }
             })
     }
 

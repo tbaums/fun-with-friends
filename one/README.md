@@ -16,6 +16,8 @@ it replaces. Nothing here is wired into `fwf` yet.
 | T-00 v0.42.10 security fix (#562) | PR open on the v0.42.x tree |
 | T-01 crate skeleton, four enums, event log, `why` | this directory |
 | T-02 three GitHub Apps (impl, qa, ops) | done — all three mint (impl trimmed to 4 permissions) |
+| T-14 manifest | **DONE** — `fwf.toml` (≤25 top-level keys, validated; scalars before tables), `fwfd up` refuses without it and reports Apps + seat liveness; `fwfd init-manifest` prints the example |
+| T-16 cost accounting | **DONE** — measured from the seat's own transcript (`cost.rs`, `fwfd cost`); recorded on every Reported seat event |
 | T-03 GitHub client | mint LIVE; ETag poller in poll.rs |
 | T-04 fake GitHub | `src/fake_github.rs`, 9 contract tests |
 | T-05 fake seat pane (tmux-backed) | done — `src/seat.rs` FakeSeat |
@@ -150,3 +152,13 @@ QA seat (woken) → fwf-qa APPROVED anchored to the head → ready-for-review �
 `fwfd merge` (ops) → staging 7b9fb7d8 → `fwfd gate` (pipefail) → check-run
 `fwfd/fwfd-fast` success → `fwfd promote` fast-forwarded a scratch branch.
 No seat ever held a GitHub write token; every write is in the run record.
+
+## Measured cycle cost (T-16, from the seats' transcripts, 2026-09-09)
+
+| cycle | assistant messages | input-side tokens (98% cache reads) | output tokens |
+|---|---|---|---|
+| implementer, thin slice #564 → PR #565 | 20 | 1,011,612 | 4,884 |
+| QA review of #565 | 9 | 441,217 | 2,093 |
+
+Both seats were warm panes woken once; idle cost between jobs was zero
+requests. The old harness paid ~2.2M cached tokens per *idle* tick.

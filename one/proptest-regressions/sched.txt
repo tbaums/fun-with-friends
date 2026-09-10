@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8c73cc541b08b2cfd1933727b14bfffda61210f35b895c11d00a9dc816c7aaa1 # shrinks to s = Snapshot { issues: [IssueView { number: 32, title: "", author_association: "OWNER", labels: [], assignees: [], state: "open", updated_at: "", claim: None }, IssueView { number: 32, title: "", author_association: "OWNER", labels: [], assignees: [], state: "open", updated_at: "", claim: Some(Fence("f")) }, IssueView { number: 33, title: "", author_association: "OWNER", labels: [], assignees: [], state: "open", updated_at: "", claim: None }], prs: [], fetched_at: 1, known: true }, seats = [SeatSlot { seat: 1, role: Impl, state: Idle }], owner_only = false, now = 0
