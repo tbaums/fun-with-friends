@@ -373,6 +373,28 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     }
                     acted += 1;
                 }
+                Action::FinishPr { pr } => {
+                    match finish_pr(cfg, apps, *pr) {
+                        Ok(sha) => {
+                            println!(
+                                "fwfd run: merged #{pr} as {} (approval was already at head)",
+                                sha.short()
+                            );
+                            match gate_after_merge(cfg, apps, &sha) {
+                                Ok(state) => println!(
+                                    "fwfd run: gate {} {} → {state:?}",
+                                    sha.short(),
+                                    cfg.gate_suite
+                                ),
+                                Err(e) => {
+                                    eprintln!("fwfd run: gate on {} not recorded: {e}", sha.short())
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("fwfd run: #{pr} approved but not merged: {e}"),
+                    }
+                    acted += 1;
+                }
                 Action::ReleaseClaim { issue, fence } => {
                     eprintln!("fwfd run: claim on #{issue} ({}) is stale; release is an operator decision in M1", fence.0);
                 }
@@ -413,9 +435,22 @@ fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha,
     }
     let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if v["draft"].as_bool() == Some(true) {
+        // Undrafting needs contents:write on a private repo ("Resource not
+        // accessible by integration" for the impl App, proven on diaspective
+        // #11), so the ops identity does it; the PR's author stays impl.
+        let undraft = BTreeMap::from([
+            ("pull_requests", "write"),
+            ("contents", "write"),
+            ("metadata", "read"),
+        ]);
+        let otok = crate::github::mint(ops_app, Some(&undraft)).map_err(|e| e.to_string())?;
         let node = v["node_id"].as_str().unwrap_or("");
-        if !crate::github::mark_ready(&itok.token, node).map_err(|e| e.to_string())? {
-            return Err("could not mark ready".into());
+        match crate::github::mark_ready(&otok.token, node) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err("could not mark ready: still a draft after the mutation".into())
+            }
+            Err(e) => return Err(format!("could not mark ready: {e}")),
         }
     }
     let issue = v["body"]

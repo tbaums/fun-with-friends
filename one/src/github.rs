@@ -202,6 +202,18 @@ pub fn mark_ready(token: &str, node_id: &str) -> Result<bool, AuthError> {
     match resp {
         Ok(r) => {
             let v: serde_json::Value = r.into_json().map_err(|e| AuthError::Http(e.to_string()))?;
+            // GraphQL reports failures as 200 + `errors`; surface them, never
+            // fold them into a bare `false`.
+            if let Some(errs) = v["errors"].as_array() {
+                let msg: Vec<String> = errs
+                    .iter()
+                    .filter_map(|e| e["message"].as_str().map(String::from))
+                    .collect();
+                return Err(AuthError::Denied(
+                    200,
+                    msg.join("; ").chars().take(200).collect(),
+                ));
+            }
             Ok(
                 v["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"]
                     == serde_json::Value::Bool(false),

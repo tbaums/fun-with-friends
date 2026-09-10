@@ -536,3 +536,69 @@ pub fn up(args: &[String]) -> ExitCode {
         ExitCode::from(1)
     }
 }
+
+/// `fwfd ready --repo o/r --pr N`: mark a draft PR ready under the impl App
+/// (the same call the loop makes), printing the exact refusal if any.
+pub fn ready(args: &[String]) -> ExitCode {
+    let (Some(repo), Some(pr)) = (
+        get(args, "--repo"),
+        get(args, "--pr").and_then(|s| s.parse::<u64>().ok()),
+    ) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let apps = match github::load_apps(&github::apps_path()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("fwfd ready: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let by = get(args, "--by").unwrap_or_else(|| "impl".into());
+    let Some(app) = apps.0.get(by.as_str()) else {
+        eprintln!("fwfd ready: no [{by}] app");
+        return ExitCode::from(2);
+    };
+    let rw = std::collections::BTreeMap::from([
+        ("pull_requests", "write"),
+        ("contents", if by == "ops" { "write" } else { "read" }),
+        ("metadata", "read"),
+    ]);
+    let tok = match github::mint(app, Some(&rw)) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("fwfd ready: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let (code, body) = match github::get_status(&tok.token, &format!("/repos/{repo}/pulls/{pr}")) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("fwfd ready: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if code != 200 {
+        eprintln!("fwfd ready: cannot read PR ({code})");
+        return ExitCode::from(1);
+    }
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    if v["draft"].as_bool() != Some(true) {
+        println!("#{pr}: already ready");
+        return ExitCode::SUCCESS;
+    }
+    match github::mark_ready(&tok.token, v["node_id"].as_str().unwrap_or("")) {
+        Ok(true) => {
+            println!("#{pr}: marked ready under the {by} App (id {})", app.app_id);
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            eprintln!("#{pr}: GitHub answered but the PR is still a draft");
+            ExitCode::from(1)
+        }
+        Err(e) => {
+            eprintln!("#{pr}: {e}");
+            ExitCode::from(1)
+        }
+    }
+}

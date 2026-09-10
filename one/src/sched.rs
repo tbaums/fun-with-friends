@@ -24,6 +24,12 @@ pub enum Action {
         seat: u8,
         pr: u64,
     },
+    /// An open PR approved at its head by a reviewer who is not its author:
+    /// finish it (ready-for-review + typed merge). Covers the case where the
+    /// approval landed but the merge step failed in an earlier tick.
+    FinishPr {
+        pr: u64,
+    },
     /// A claim whose seat is not working it (stalled, gone, or absent) and
     /// that no open PR closes: release it, fenced by the live claim SHA.
     ReleaseClaim {
@@ -100,6 +106,22 @@ fn issue_eligible(i: &IssueView, gate_label: &str, owner_only: bool) -> bool {
         && (!owner_only || i.author_association == "OWNER")
         && i.assignees.is_empty()
         && i.claim.is_none()
+}
+
+/// Approved at the current head by someone other than the PR's own App.
+/// The author's login is not in the view; the QA App's login ends in
+/// `-qa[bot]`, which is the only reviewer whose approval counts here.
+fn pr_approved_at_head(p: &PrView) -> bool {
+    p.state == "open"
+        && p.reviews.iter().any(|(login, state, commit)| {
+            state == "APPROVED" && *commit == p.head_sha && login.ends_with("-qa[bot]")
+        })
+}
+
+fn touched_prs_pre(actions: &[Action], pr: u64) -> bool {
+    !actions
+        .iter()
+        .any(|a| matches!(a, Action::FinishPr { pr: p } if *p == pr))
 }
 
 fn pr_qa_eligible(p: &PrView) -> bool {
@@ -194,6 +216,12 @@ pub fn plan(
     // A seat id listed under two roles is a config error; never double-book it.
     let used: BTreeSet<u8> = actions.iter().filter_map(Action::seat).collect();
     let mut qa_seats = idle_seats(seats, Role::Qa).filter(|s| !used.contains(s));
+
+    for p in snapshot.prs.iter().filter(|p| pr_approved_at_head(p)) {
+        if !busy_prs.contains(&p.number) && touched_prs_pre(&actions, p.number) {
+            actions.push(Action::FinishPr { pr: p.number });
+        }
+    }
 
     let mut prs: Vec<&PrView> = snapshot
         .prs
@@ -768,5 +796,66 @@ mod tests {
             "{:?}",
             p.actions
         );
+    }
+
+    #[test]
+    fn an_approved_at_head_pr_is_finished_not_re_reviewed() {
+        use crate::poll::PrView;
+        let head = "b".repeat(40);
+        let pr = |reviews: Vec<(String, String, String)>| PrView {
+            number: 11,
+            head_sha: head.clone(),
+            head_ref: "impl1/issue-1".into(),
+            base_ref: "staging".into(),
+            draft: true,
+            state: "open".into(),
+            closes_issue: Some(1),
+            reviews,
+        };
+        let seats = vec![SeatSlot {
+            seat: 1,
+            role: Role::Qa,
+            state: SeatState::Idle,
+        }];
+        let snap = Snapshot {
+            issues: vec![],
+            prs: vec![pr(vec![(
+                "fwf-qa[bot]".into(),
+                "APPROVED".into(),
+                head.clone(),
+            )])],
+            fetched_at: 0,
+            known: true,
+        };
+        let p = plan(&snap, &seats, GATE, true, 0);
+        assert_eq!(p.actions, vec![Action::FinishPr { pr: 11 }]);
+        // Approval by the author App, or at an old head, is not an approval.
+        for reviews in [
+            vec![(
+                "fwf-impl[bot]".to_string(),
+                "APPROVED".to_string(),
+                head.clone(),
+            )],
+            vec![(
+                "fwf-qa[bot]".to_string(),
+                "APPROVED".to_string(),
+                "c".repeat(40),
+            )],
+        ] {
+            let snap = Snapshot {
+                issues: vec![],
+                prs: vec![pr(reviews)],
+                fetched_at: 0,
+                known: true,
+            };
+            let p = plan(&snap, &seats, GATE, true, 0);
+            assert!(
+                !p.actions
+                    .iter()
+                    .any(|a| matches!(a, Action::FinishPr { .. })),
+                "{:?}",
+                p.actions
+            );
+        }
     }
 }

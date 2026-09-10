@@ -39,6 +39,7 @@ use std::time::Duration;
 pub const USAGE: &str = "usage:
   fwfd why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
   fwfd up [--manifest PATH]   validate the manifest (default ./.fwf/fwf.toml or --manifest), mint every App, print the floor plan; refuses without a manifest
+  fwfd ready --repo o/r --pr N   mark a draft PR ready under the impl App (prints the exact refusal)
   fwfd seats [--up|--down] [--manifest PATH] [--force]   mirror + worktree clones + warm panes for every seat in the manifest (idempotent); --down refuses while a seat is Working
   fwfd init-manifest [--from-profile profiles/x.sh --repo o/r [--session S]]   print an example fwf.toml, or convert a v0.42 profile (T-29)
   fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
@@ -220,6 +221,7 @@ fn main() -> ExitCode {
         Some("release-check") => verbs::release_check(&args),
         Some("init-manifest") => verbs::init_manifest(&args),
         Some("seats") => verbs::seats(&args),
+        Some("ready") => verbs::ready(&args),
         Some("up") => verbs::up(&args),
         Some("doctor") => {
             println!("fwfd {} (M0)", env!("CARGO_PKG_VERSION"));

@@ -17,7 +17,7 @@ job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
 template = "dev"
-issues = []  # fill in before the first run: fwfd run refuses an empty allow-list
+issues = [127]
 # BUILD_CMD has no 1.0 equivalent (dropped)
 # DEV_UI_HINT has no 1.0 equivalent (dropped)
 # E2E_SETUP_CMD has no 1.0 equivalent (dropped)
@@ -34,5 +34,3 @@ e2e = 'if [ -d tests/e2e ]; then ( cd tests/e2e && npm install --no-audit --no-f
 [models]
 impl = "opus"
 qa = "opus"
-pm = "sonnet"
-gv = "haiku"
