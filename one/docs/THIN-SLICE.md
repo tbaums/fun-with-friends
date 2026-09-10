@@ -34,3 +34,19 @@ The supervisor reads that file, opens the draft PR against `staging` under
 the `fwf-impl` App identity, and stamps the body with `Closes #<N>` and
 `fwf-Provenance: fwfd thin slice`. The event log records the full path:
 claim(fence) → seat working → verdict → pr_opened.
+
+## Run-loop proof (#566)
+
+Second slice, no operator command between steps: `fwfd run` drove the
+implementer cycle, the QA cycle and the merge on its own.
+
+This seat received one job — implement issue #566 on branch
+`impl1/issue-566-thin-slice`, append this section, commit with `Closes
+#566`, publish the branch to the mirror, and stop. Same ground rules as
+T-08, and it wrote back exactly one verdict, atomically:
+
+```json
+{"verdict":"implemented","branch":"impl1/issue-566-thin-slice","head":"<sha>","summary":"<one sentence>"}
+```
+
+The PR, the approval and the merge were the loop's, visible in `fwfd why`.
