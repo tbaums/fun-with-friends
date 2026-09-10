@@ -59,6 +59,11 @@ pub struct Manifest {
     /// Meter brake: park the floor at this weekly % and resume on reset.
     #[serde(default = "default_park")]
     pub park_at_weekly_pct: u8,
+    /// Allow-list: if non-empty, the supervisor only ever works these issue
+    /// numbers (the operator's safety rail while 1.0 is new). Empty = any
+    /// eligible issue.
+    #[serde(default)]
+    pub issues: Vec<u64>,
 }
 
 fn default_staging() -> String {
@@ -233,6 +238,8 @@ gate_timeout_secs = 1800
 job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
+# Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
+issues = [564]
 
 [suites]
 fast = "bash -n fwf lib.sh fwf-*.sh && echo SYNTAX-OK"

@@ -36,6 +36,7 @@ const USAGE: &str = "usage:
   fwfd init-manifest         print an example fwf.toml
   fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
   fwfd status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
+  fwfd run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
@@ -155,6 +156,66 @@ fn main() -> ExitCode {
             };
             print!("{}", status::render(&inp));
             ExitCode::SUCCESS
+        }
+        Some("run") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let path = get("--manifest")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+            let m = match manifest::Manifest::load(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("fwfd run: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            if m.issues.is_empty() {
+                eprintln!("fwfd run: the manifest has no `issues` allow-list; refusing to run against every eligible issue while 1.0 is new");
+                return ExitCode::from(2);
+            }
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd run: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let floor = m.floor();
+            let (run_log, mirror_dir) = slice::defaults(&floor);
+            let mut impl_seats = Vec::new();
+            let mut qa_seats = Vec::new();
+            for n in 1..=m.pairs {
+                impl_seats.push((n, m.seat_target("impl", n)));
+                qa_seats.push((n, m.seat_target("qa", n)));
+            }
+            let cfg = run::RunConfig {
+                owner: m.owner().to_string(),
+                repo: m.name().to_string(),
+                base_branch: m.base_branch.clone(),
+                gate_label: m.gate_label.clone(),
+                floor_dir: floor.clone(),
+                mirror_dir,
+                run_log,
+                impl_seats,
+                qa_seats,
+                seat_expect_cmd: "claude".into(),
+                interval: Duration::from_secs(m.poll_interval_secs),
+                job_timeout: Duration::from_secs(m.job_timeout_secs),
+                once: args.iter().any(|a| a == "--once"),
+                prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
+                allow_issues: m.issues.clone(),
+            };
+            match run::run(&cfg, &apps) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("fwfd run: {e}");
+                    ExitCode::from(1)
+                }
+            }
         }
         Some("init-manifest") => {
             print!("{}", manifest::EXAMPLE);

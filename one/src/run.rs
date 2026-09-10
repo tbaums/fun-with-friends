@@ -31,6 +31,8 @@ pub struct RunConfig {
     pub job_timeout: Duration,
     pub once: bool,
     pub prompts_dir: PathBuf,
+    /// If non-empty, only these issues are ever planned.
+    pub allow_issues: Vec<u64>,
 }
 
 pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
@@ -47,7 +49,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         let tok = crate::github::mint(impl_app, Some(&read_perms)).map_err(|e| e.to_string())?;
         let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
         let now = crate::seat::now();
-        let snap = match poller.poll(now) {
+        let mut snap = match poller.poll(now) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("fwfd run: poll failed ({e}); holding this tick");
@@ -58,6 +60,29 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 continue;
             }
         };
+        // Issues already shipped (their PR merged to the base branch) stay open
+        // on GitHub until the release fast-forwards `main`; the run record is
+        // the source of truth that they are done, so they are never re-planned.
+        if let Ok(evs) = crate::log::read_all(&cfg.run_log) {
+            let shipped: std::collections::BTreeSet<u64> = evs
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    crate::log::Kind::Issue {
+                        issue,
+                        to: crate::types::IssueState::Shipped { .. },
+                    } => Some(*issue),
+                    _ => None,
+                })
+                .collect();
+            snap.issues.retain(|i| !shipped.contains(&i.number));
+        }
+        if !cfg.allow_issues.is_empty() {
+            snap.issues.retain(|i| cfg.allow_issues.contains(&i.number));
+            snap.prs.retain(|p| {
+                p.closes_issue
+                    .is_some_and(|n| cfg.allow_issues.contains(&n))
+            });
+        }
         // Every configured seat is presented as Idle: a pane whose foreground
         // command is not claude is refused by wake() and logged, which is the
         // liveness check — no tick files.
