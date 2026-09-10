@@ -33,6 +33,8 @@ pub struct RunConfig {
     pub prompts_dir: PathBuf,
     /// If non-empty, only these issues are ever planned.
     pub allow_issues: Vec<u64>,
+    /// Park the floor while the last logged weekly meter % is at or above this.
+    pub park_at_weekly_pct: u8,
     /// Conductor-as-code: after every merge, run this suite on the new base
     /// tip in the floor's gate worktree and post a check-run under ops.
     pub gate_suite: String,
@@ -54,6 +56,19 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
     ]);
     let mut cycles = 0u64;
     loop {
+        // Meter brake (T-28): the operator's meter log is the only source of
+        // subscription usage; park while the last logged weekly % is at or
+        // above the manifest threshold, re-reading every interval.
+        if let Some((weekly, when)) = last_meter_reading() {
+            if weekly >= cfg.park_at_weekly_pct {
+                println!("fwfd run: PARKED — weekly meter {weekly}% ≥ {}% (logged {when}); no seats woken", cfg.park_at_weekly_pct);
+                if cfg.once {
+                    return Ok(());
+                }
+                std::thread::sleep(cfg.interval);
+                continue;
+            }
+        }
         let tok = crate::github::mint(impl_app, Some(&read_perms)).map_err(|e| e.to_string())?;
         let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
         let now = crate::seat::now();
@@ -68,6 +83,43 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 continue;
             }
         };
+        // GitHub's list endpoints lag a few seconds behind a just-opened PR;
+        // if the run record shows a recent draft the snapshot lacks, re-poll
+        // once so the QA cycle is not delayed by a whole tick.
+        if let Ok(evs) = crate::log::read_all(&cfg.run_log) {
+            let merged: std::collections::BTreeSet<u64> = evs
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    crate::log::Kind::Pr {
+                        pr,
+                        to: crate::types::PrState::Merged { .. },
+                        ..
+                    } => Some(*pr),
+                    _ => None,
+                })
+                .collect();
+            let recent_prs: Vec<u64> = evs
+                .iter()
+                .filter(|e| now.saturating_sub(e.ts) < 600)
+                .filter_map(|e| match &e.kind {
+                    crate::log::Kind::Pr {
+                        pr,
+                        to: crate::types::PrState::Draft { .. },
+                        ..
+                    } if !merged.contains(pr) => Some(*pr),
+                    _ => None,
+                })
+                .collect();
+            let missing = recent_prs
+                .iter()
+                .any(|n| !snap.prs.iter().any(|p| p.number == *n));
+            if missing {
+                std::thread::sleep(Duration::from_secs(3));
+                if let Ok(s2) = poller.poll(now) {
+                    snap = s2;
+                }
+            }
+        }
         // Issues already shipped (their PR merged to the base branch) stay open
         // on GitHub until the release fast-forwards `main`; the run record is
         // the source of truth that they are done, so they are never re-planned.
@@ -349,4 +401,24 @@ fn gate_after_merge(
     )
     .map_err(|e| format!("{e:?}"))?;
     Ok(state)
+}
+
+/// Last `weekly=NN` from ~/.fwf-meter-log (written by the operator's meter
+/// tick). Returns (percent, the line's timestamp). None if unreadable.
+fn last_meter_reading() -> Option<(u8, String)> {
+    let home = std::env::var_os("HOME")?;
+    let text = std::fs::read_to_string(PathBuf::from(home).join(".fwf-meter-log")).ok()?;
+    for line in text.lines().rev() {
+        if let Some(i) = line.find("weekly=") {
+            let n: String = line[i + 7..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(v) = n.parse::<u8>() {
+                let when = line.split_whitespace().next().unwrap_or("").to_string();
+                return Some((v, when));
+            }
+        }
+    }
+    None
 }

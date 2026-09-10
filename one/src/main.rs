@@ -208,6 +208,7 @@ fn main() -> ExitCode {
                 once: args.iter().any(|a| a == "--once"),
                 prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
                 allow_issues: m.issues.clone(),
+                park_at_weekly_pct: m.park_at_weekly_pct,
                 gate_suite: m.fast_suite.clone(),
                 gate_cmd: m.suites.get(&m.fast_suite).cloned().unwrap_or_default(),
                 gate_venue: m.gate_venue.clone(),
