@@ -263,7 +263,7 @@ e2e = "cd one && cargo test --quiet"
 [models]
 impl = "opus"
 qa = "opus"
-pm = "haiku"
+pm = "sonnet"
 gv = "haiku"
 "#;
 
