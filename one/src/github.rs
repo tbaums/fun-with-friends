@@ -157,6 +157,39 @@ pub fn get_status(token: &str, path: &str) -> Result<(u16, String), AuthError> {
     }
 }
 
+/// POST/PATCH JSON with an installation token; returns status and body.
+/// Every authority-bearing write in the system goes through here, under
+/// the App the supervisor chose — never a seat.
+pub fn send_json(
+    method: &str,
+    token: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<(u16, String), AuthError> {
+    let url = format!("https://api.github.com{path}");
+    let req = match method {
+        "POST" => ureq::post(&url),
+        "PATCH" => ureq::patch(&url),
+        "PUT" => ureq::put(&url),
+        "DELETE" => ureq::delete(&url),
+        other => return Err(AuthError::Http(format!("unsupported method {other}"))),
+    };
+    let resp = req
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", "fwfd/0.1")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .send_string(&body.to_string());
+    match resp {
+        Ok(r) => {
+            let code = r.status();
+            Ok((code, r.into_string().unwrap_or_default()))
+        }
+        Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
+        Err(e) => Err(AuthError::Http(e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

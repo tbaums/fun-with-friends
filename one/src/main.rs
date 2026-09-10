@@ -10,16 +10,23 @@
 mod fake_github;
 mod github;
 mod log;
+mod mirror;
+mod poll;
+mod sched;
 mod seat;
+mod slice;
 mod types;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 const USAGE: &str = "usage:
   fwfd why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
+  fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
+  fwfd slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
   fwfd version";
 
 fn default_log() -> PathBuf {
@@ -144,6 +151,104 @@ fn main() -> ExitCode {
             }
             print!("{}", log::render(&tl));
             ExitCode::SUCCESS
+        }
+        Some("mirror-init") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let Some(repo) = get("--repo") else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let name = repo.rsplit('/').next().unwrap_or("repo").to_string();
+            let floor = get("--floor").map(PathBuf::from).unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".fwf/floors").join(&name))
+                    .unwrap_or_else(|| PathBuf::from("floor"))
+            });
+            let (_, mirror_dir) = slice::defaults(&floor);
+            match mirror::Mirror::init(&mirror_dir, &format!("https://github.com/{repo}.git"))
+                .and_then(|m| m.fetch().map(|_| m))
+            {
+                Ok(m) => {
+                    println!("{}", m.seat_remote_url());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd mirror-init: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Some("slice") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let (Some(repo), Some(issue), Some(seat)) = (
+                get("--repo"),
+                get("--issue").and_then(|s| s.parse::<u64>().ok()),
+                get("--seat"),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some((owner, name)) = repo.split_once('/') else {
+                eprintln!("--repo must be owner/name");
+                return ExitCode::from(2);
+            };
+            let floor = get("--floor").map(PathBuf::from).unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
+                    .unwrap_or_else(|| PathBuf::from("floor"))
+            });
+            let (run_log, mirror_dir) = slice::defaults(&floor);
+            let cfg = slice::SliceConfig {
+                owner: owner.to_string(),
+                repo: name.to_string(),
+                issue,
+                base_branch: get("--base").unwrap_or_else(|| "staging".into()),
+                gate_label: "product-wip".into(),
+                seat_target: seat,
+                seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
+                floor_dir: floor.clone(),
+                mirror_dir,
+                job_template: PathBuf::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/prompts/impl-job.md"
+                )),
+                run_log,
+                timeout: Duration::from_secs(
+                    get("--timeout")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1800),
+                ),
+                dry_run: args.iter().any(|a| a == "--dry-run"),
+            };
+            let apps = match github::load_apps(&github::apps_path()) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fwfd slice: {e}");
+                    return ExitCode::from(2);
+                }
+            };
+            let Some(app) = apps.0.get("impl") else {
+                eprintln!("fwfd slice: no [impl] app in apps.toml");
+                return ExitCode::from(2);
+            };
+            match slice::run(&cfg, app) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("fwfd slice: {}", e.0);
+                    ExitCode::from(1)
+                }
+            }
         }
         _ => {
             eprintln!("{USAGE}");
