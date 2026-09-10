@@ -8,6 +8,7 @@
 
 mod checks;
 mod cost;
+mod dash;
 #[cfg(test)]
 mod fake_github;
 mod gate;
@@ -41,6 +42,7 @@ const USAGE: &str = "usage:
   fwfd triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
   fwfd ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
   fwfd release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
+  fwfd dash [--log PATH] [--watch SECS]                       the board, folded from the run record only (T-27)
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
@@ -550,6 +552,38 @@ fn main() -> ExitCode {
                 Err(e) => {
                     eprintln!("fwfd probe: {e}");
                     ExitCode::from(2)
+                }
+            }
+        }
+        Some("dash") => {
+            let get = |flag: &str| {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|i| args.get(i + 1).cloned())
+            };
+            let path = get("--log").map(PathBuf::from).unwrap_or_else(default_log);
+            let watch: Option<u64> = get("--watch").and_then(|s| s.parse().ok());
+            loop {
+                let events = match log::read_all(&path) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("fwfd dash: cannot read {}: {e}", path.display());
+                        return ExitCode::from(2);
+                    }
+                };
+                let board = dash::fold(&events);
+                let text = dash::render(&board, seat::now());
+                match watch {
+                    Some(secs) => {
+                        print!("\x1b[2J\x1b[H{text}");
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
+                    }
+                    None => {
+                        print!("{text}");
+                        return ExitCode::SUCCESS;
+                    }
                 }
             }
         }
