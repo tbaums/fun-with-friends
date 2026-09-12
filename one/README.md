@@ -17,9 +17,8 @@ Status: **1.0.0.** M0–M3 built and proven; M4's soak is done: unattended overn
 runs on three private repos — diaspective (22 merged PRs in one day, from an empty
 repo to a styled MVP), baton, and transom (6 bug fixes drained 2026-09-11/12, promoted,
 released as transom v0.52.0 and deployed to prod, 0 stalls) — see `docs/BUILD-LOG.md`.
-Known gaps are tickets, not surprises: #574 (the dash is a cost ledger, not the 0.x
-board), #575 (slice must branch from the fence sha), #576 (no rework action on a
-changes-requested review). The v0.42 `fwf` command is untouched; `fwfd` runs beside it.
+Known gaps are tickets, not surprises: #575 (slice must branch from the fence
+sha), #576 (no rework action on a changes-requested review). The v0.42 `fwf` command is untouched; `fwfd` runs beside it.
 
 ## Requirements
 
@@ -55,14 +54,17 @@ changes-requested review). The v0.42 `fwf` command is untouched; `fwfd` runs bes
    fwfd run --once     # one tick: poll → plan → act
    fwfd run            # the loop
    fwfd status         # one screen: seats, issues, PRs, needs-you
-   fwfd dash --watch 30
+   fwfd dash --watch 30    # the board: seats · issues · PRs · decisions · usage
    ```
+   The board has five tabs (`1`-`5`, or `--tab issues`), `j`/`k` to move the
+   selection, `r` to refresh and `q` to quit. Every pane is folded from
+   `run.jsonl`; the only live reads are tmux pane liveness and the meter.
 
 ## The verbs
 
 | verb | what it does | identity |
 |---|---|---|
-| `up`, `doctor`, `status`, `dash`, `why <pr>`, `cost`, `seats --up/--down` | read-only: validate, mint, one-screen status, the board from the run record, one PR's timeline, measured tokens | – |
+| `up`, `doctor`, `status`, `dash`, `why <pr>`, `cost`, `seats --up/--down` | read-only: validate, mint, one-screen status, the five-tab board from the run record, one PR's timeline, measured tokens | – |
 | `run [--once]` | the supervisor loop; only allow-listed issues; parks on the meter brake | all three |
 | `spec --issue N` | PM seat writes a spec into a **gated** issue; gate untouched | ops |
 | `triage --issue N` | GV seat judges an issue; not-ready ⇒ gate label + reason | ops |
@@ -101,8 +103,11 @@ changes-requested review). The v0.42 `fwf` command is untouched; `fwfd` runs bes
 ```
 one/
   src/          fwfd (types, log, github, poll, sched, seat, mirror, slice, qa,
-                merge, gate, checks, promote, run, triage, spec, dash, cost,
+                merge, gate, checks, promote, run, triage, spec, cost,
                 manifest, profile, prompts, verbs)
+  src/dash/     the board: dash.rs folds the record, floor joins the manifest
+                and tmux, view draws the frame, panes the five tabs, tty the
+                terminal
   prompts/      one-job prompts per family and role (dev, refactor, validate,
                 ideation, consulting, defect-report, user-testing)
   manifests/    converted manifests for transom, baton, wholesome-swolesome

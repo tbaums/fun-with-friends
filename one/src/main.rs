@@ -49,7 +49,7 @@ pub const USAGE: &str = "usage:
   fwfd triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
   fwfd ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
   fwfd release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
-  fwfd dash [--log PATH] [--watch SECS]                       the board, folded from the run record only (T-27)
+  fwfd dash [--manifest PATH] [--log PATH] [--watch SECS] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; --watch takes 1-5/j/k/g/G/r/q on a terminal (T-27, #574)
   fwfd doctor                  mint a narrowed installation token per App in ~/.fwf/apps.toml
   fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
   fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL

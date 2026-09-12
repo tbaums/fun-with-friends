@@ -1,5 +1,19 @@
 # Changelog — fwf 1.0 (`one/`)
 
+## Unreleased
+
+- **`fwfd dash` is a board again (#574).** Header (repo, `base → release`, loop
+  state, version, meter freshness), five tabs — Seats / Issues / PRs / Decisions
+  / Usage — with a needs-you banner, bordered panes, a detail pane that follows
+  the selection, colour by state, and keyboard nav (`1`-`5`, `j`/`k`, `g`/`G`,
+  `r`, `q`) under `--watch`. Live seats come from the `kind: seat` transitions
+  (Idle / Working with job, elapsed and deadline / Reported / Stalled, with the
+  pane name and tmux liveness), the queue from `kind: issue` + the manifest's
+  allow-list, the pipeline from `kind: pr` / `gate` / `promote` (draft → QA →
+  approved@head → merged → gate → promoted). Source of truth is still the
+  append-only `run.jsonl`: no GitHub poll, no TUI crate. The old ledger is
+  tab 5, unchanged.
+
 ## 1.0.0 — 2026-09-12
 
 First release. Proven unattended on three customer repos; cut after the transom soak.
