@@ -11,11 +11,11 @@
 
 use crate::github::{self, AppEntry};
 use crate::log::{Event, Kind, Log};
-use crate::mirror::Mirror;
+use crate::mirror::{self, Mirror};
 use crate::poll::Poller;
 use crate::sched::{plan, Action, SeatSlot};
 use crate::seat::{self, Pane, Verdict};
-use crate::types::{IssueState, JobRef, PrState, Role, SeatState, Sha};
+use crate::types::{Fence, IssueState, JobRef, PrState, Role, SeatState, Sha};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -57,6 +57,84 @@ fn record(log: &mut Log, repo: &str, kind: Kind) -> Result<(), SliceError> {
         kind,
     })?;
     Ok(())
+}
+
+/// Realign the seat's worktree to the fence, so that the seat's own
+/// `git checkout -b <branch>` starts exactly there.
+///
+/// `seats --up` clones `wt-impl{n}` once and leaves it alone afterwards, so if
+/// the base moved since then the worktree's HEAD is stale and the seat would
+/// branch from a pre-merge base (transom #1270). Fetch the mirror, then detach
+/// onto the fence. A dirty worktree is refused, never cleaned or stashed: the
+/// cycle blocks so a human can look at whatever was left behind.
+fn align_seat_worktree(
+    log: &mut Log,
+    repo: &str,
+    issue: u64,
+    wt: &Path,
+    remote_url: &str,
+    fence: &Fence,
+) -> Result<(), SliceError> {
+    let refuse = |log: &mut Log, why: String| -> Result<(), SliceError> {
+        record(
+            log,
+            repo,
+            Kind::Refused {
+                what: format!("#{issue}"),
+                why: why.clone(),
+            },
+        )?;
+        Err(SliceError(why))
+    };
+    if !wt.join(".git").exists() {
+        let why = format!(
+            "seat worktree {} is absent; bring the seat up first",
+            wt.display()
+        );
+        return refuse(log, why);
+    }
+    let dirty = match mirror::git_in(wt, &["status", "--porcelain"]) {
+        Ok(s) => s,
+        Err(e) => return refuse(log, format!("seat worktree {}: {e}", wt.display())),
+    };
+    if !dirty.trim().is_empty() {
+        let why = format!(
+            "seat worktree {} is dirty; left untouched for the operator: {}",
+            wt.display(),
+            dirty.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+        return refuse(log, why);
+    }
+    let sha = Sha::parse(&fence.0)?;
+    for args in [
+        vec![
+            "fetch",
+            "--quiet",
+            remote_url,
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+        vec!["checkout", "--quiet", "--detach", sha.as_str()],
+    ] {
+        if let Err(e) = mirror::git_in(wt, &args) {
+            let why = format!(
+                "seat worktree {} could not be realigned to fence {}: {e}",
+                wt.display(),
+                sha.short()
+            );
+            return refuse(log, why);
+        }
+    }
+    record(
+        log,
+        repo,
+        Kind::Note {
+            text: format!(
+                "seat worktree {} realigned to fence {}",
+                wt.display(),
+                sha.short()
+            ),
+        },
+    )
 }
 
 pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
@@ -184,7 +262,19 @@ pub fn run_with(
         },
     )?;
 
-    // 4. Render the job and wake the pane.
+    // 4. The seat branches from its worktree's HEAD, which `seats --up` may
+    // have cloned several merges ago: realign it to the fence before the wake.
+    let seat_wt = cfg.floor_dir.join(format!("wt-impl{seat_no}"));
+    align_seat_worktree(
+        &mut log,
+        &repo,
+        cfg.issue,
+        &seat_wt,
+        &mirror.seat_remote_url(),
+        &fence,
+    )?;
+
+    // 5. Render the job and wake the pane.
     let issue_json = poller
         .get(&format!(
             "https://api.github.com/repos/{repo}/issues/{}",
@@ -253,11 +343,10 @@ pub fn run_with(
         },
     )?;
 
-    // 5. Wait for the verdict; never kill.
+    // 6. Wait for the verdict; never kill.
     let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
     // Measured cost of this cycle: the seat's own transcript since the wake.
     let seat_home = cfg.floor_dir.join("home");
-    let seat_wt = cfg.floor_dir.join(format!("wt-impl{}", seat_no));
     let usage = crate::cost::cycle_usage(
         &seat_home,
         &seat_wt,
@@ -320,7 +409,7 @@ pub fn run_with(
     }
     let head = Sha::parse(&v_head)?;
 
-    // 6. The seat pushed to the mirror; the supervisor syncs it upstream.
+    // 7. The seat pushed to the mirror; the supervisor syncs it upstream.
     let mirror_head = mirror
         .branch_head(&branch)?
         .ok_or_else(|| SliceError(format!("mirror has no {branch}")))?;
@@ -342,7 +431,7 @@ pub fn run_with(
         },
     )?;
 
-    // 7. Draft PR under the supervisor's App.
+    // 8. Draft PR under the supervisor's App.
     let pr_body = format!("Closes #{}\n\nfwf-Provenance: fwfd thin slice\nfwf-Seat: impl{seat_no}\nfwf-Fence: {}\n\n{summary}", cfg.issue, fence.0);
     let payload = serde_json::json!({ "title": format!("{title} (#{})", cfg.issue), "head": branch, "base": cfg.base_branch, "draft": true, "body": pr_body });
     let (code, body) = github::send_json(
@@ -389,6 +478,149 @@ pub fn defaults(floor: &Path) -> (PathBuf, PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static N: AtomicU32 = AtomicU32::new(0);
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let o = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=staging",
+            ])
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            o.status.success(),
+            "git {args:?} in {}: {}{}",
+            dir.display(),
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// A floor stand-in: a bare mirror with `staging` at one commit, a work
+    /// clone that can advance it (as a merge to staging would), and the seat
+    /// worktree `seats --up` would have cloned — at that first commit.
+    fn floor() -> (PathBuf, String, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "fwfd-slice-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q", "--bare", "mirror.git"]);
+        let url = format!("file://{}", root.join("mirror.git").display());
+        let work = root.join("work");
+        git(&root, &["init", "-q", "work"]);
+        std::fs::write(work.join("README"), "one").unwrap();
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-q", "-m", "one"]);
+        git(&work, &["push", "-q", &url, "HEAD:refs/heads/staging"]);
+        git(
+            &root,
+            &["clone", "-q", "--branch", "staging", &url, "wt-impl1"],
+        );
+        (root.clone(), url, work, root.join("wt-impl1"))
+    }
+
+    /// Land another commit on the mirror's `staging` and return it as the fence
+    /// the supervisor would claim.
+    fn advance(work: &Path, url: &str, name: &str) -> Fence {
+        std::fs::write(work.join(name), name).unwrap();
+        git(work, &["add", "."]);
+        git(work, &["commit", "-q", "-m", name]);
+        git(work, &["push", "-q", url, "HEAD:refs/heads/staging"]);
+        Fence(git(work, &["rev-parse", "HEAD"]))
+    }
+
+    fn refusals(run_log: &Path) -> Vec<String> {
+        crate::log::read_all(run_log)
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev.kind {
+                Kind::Refused { what, why } if what == "#575" => Some(why),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_seat_worktree_is_realigned_to_the_fence_before_the_wake() {
+        let (root, url, work, wt) = floor();
+        let stale = git(&wt, &["rev-parse", "HEAD"]);
+        // staging moves between `seats --up` and `fwfd slice`
+        let fence = advance(&work, &url, "later.txt");
+        assert_ne!(stale, fence.0);
+        let run_log = root.join("run.jsonl");
+        let mut log = Log::open(&run_log).unwrap();
+        align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).unwrap();
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), fence.0);
+        assert!(refusals(&run_log).is_empty());
+        // so the branch the seat then cuts is rooted at the fence, which is
+        // what the original bug broke: merge-base(PR head, fence) == fence
+        git(&wt, &["checkout", "-q", "-b", "impl1/issue-575-thin-slice"]);
+        std::fs::write(wt.join("fix.txt"), "fix").unwrap();
+        git(&wt, &["add", "."]);
+        git(&wt, &["commit", "-q", "-m", "fix"]);
+        assert_eq!(git(&wt, &["merge-base", "HEAD", &fence.0]), fence.0);
+        // a second realign onto the same fence is a harmless no-op
+        git(&wt, &["checkout", "-q", "--detach", "HEAD"]);
+        align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).unwrap();
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), fence.0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_dirty_seat_worktree_refuses_the_cycle_instead_of_cleaning_it() {
+        let (root, url, work, wt) = floor();
+        let before = git(&wt, &["rev-parse", "HEAD"]);
+        let fence = advance(&work, &url, "later.txt");
+        std::fs::write(wt.join("README"), "the seat scribbled here").unwrap();
+        let run_log = root.join("run.jsonl");
+        let mut log = Log::open(&run_log).unwrap();
+        // the wake is never reached: the refusal is returned to `run_with`
+        // before it renders the job text
+        let e = align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).unwrap_err();
+        assert!(e.0.contains("dirty"), "{}", e.0);
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before);
+        assert_eq!(refusals(&run_log).len(), 1);
+        assert!(refusals(&run_log)[0].contains("dirty"));
+        // untracked-only is dirty too; nothing is stashed or cleaned away
+        git(&wt, &["checkout", "-q", "--", "README"]);
+        std::fs::write(wt.join("scratch.txt"), "x").unwrap();
+        assert!(align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).is_err());
+        assert!(wt.join("scratch.txt").exists());
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before);
+        assert_eq!(refusals(&run_log).len(), 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_seat_that_was_never_brought_up_is_refused_not_panicked_on() {
+        let (root, url, work, _wt) = floor();
+        let fence = advance(&work, &url, "later.txt");
+        let run_log = root.join("run.jsonl");
+        let mut log = Log::open(&run_log).unwrap();
+        let missing = root.join("wt-impl9");
+        let e = align_seat_worktree(&mut log, "o/r", 575, &missing, &url, &fence).unwrap_err();
+        assert!(e.0.contains("absent"), "{}", e.0);
+        assert_eq!(refusals(&run_log).len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn from_error_carries_the_message() {
