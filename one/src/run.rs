@@ -626,15 +626,26 @@ pub const METER_MAX_AGE: u64 = 45 * 60;
 /// log is written by `date` on this machine, so local time is compared with
 /// local time via `date -j` — no timezone arithmetic in Rust.
 pub fn meter_age_secs(when: &str, now: u64) -> Option<u64> {
-    let out = std::process::Command::new("date")
-        .args(["-j", "-f", "%Y-%m-%d %H:%M:%S", when, "+%s"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let ts: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    let ts = local_stamp_to_epoch(when)?;
     Some(now.saturating_sub(ts))
+}
+
+/// `YYYY-MM-DD HH:MM:SS` in the local zone → epoch seconds, via the system
+/// `date`: BSD (`-j -f`, macOS) first, then GNU (`-d`, Linux). `None` when
+/// neither accepts the stamp — a stale-or-garbage meter must park, never guess.
+fn local_stamp_to_epoch(when: &str) -> Option<u64> {
+    let bsd = ["-j", "-f", "%Y-%m-%d %H:%M:%S", when, "+%s"];
+    let gnu = ["-d", when, "+%s"];
+    for args in [&bsd[..], &gnu[..]] {
+        if let Ok(out) = std::process::Command::new("date").args(args).output() {
+            if out.status.success() {
+                if let Ok(ts) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>() {
+                    return Some(ts);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn last_meter_reading() -> Option<(u8, String)> {
@@ -668,11 +679,27 @@ mod tests {
     #[test]
     fn meter_age_parses_a_local_stamp_and_rejects_garbage() {
         let now = crate::seat::now();
-        let out = std::process::Command::new("date")
-            .args(["-r", &(now - 600).to_string(), "+%Y-%m-%d %H:%M:%S"])
-            .output()
-            .unwrap();
-        let stamp = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // Render `now - 600` as a local stamp with whichever `date` this is
+        // (BSD `-r`, GNU `-d @`), so the test exercises the same fallback path
+        // the brake uses on Linux runners.
+        let then = (now - 600).to_string();
+        let attempts: [Vec<String>; 2] = [
+            vec!["-r".into(), then.clone()],
+            vec!["-d".into(), format!("@{then}")],
+        ];
+        let stamp = attempts
+            .iter()
+            .find_map(|a| {
+                let out = std::process::Command::new("date")
+                    .args(a)
+                    .arg("+%Y-%m-%d %H:%M:%S")
+                    .output()
+                    .ok()?;
+                out.status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            })
+            .expect("a date that renders epoch seconds as a local stamp");
         let age = meter_age_secs(&stamp, now).unwrap();
         assert!((595..=605).contains(&age), "{age}");
         assert_eq!(meter_age_secs("not a date", now), None);
