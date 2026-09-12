@@ -156,6 +156,23 @@ fn run_git(dir: &Path, args: &[&str], secret: &str) -> Result<Out, MirrorError> 
     })
 }
 
+/// One git command in a non-bare working tree (no secret in `args`): git's
+/// stdout, or a typed error carrying git's own message. The seat-worktree
+/// realign in `slice` runs through here so it inherits the hard timeout.
+pub(crate) fn git_in(dir: &Path, args: &[&str]) -> Result<String, MirrorError> {
+    let out = run_git(dir, args, "")?;
+    if out.ok() {
+        Ok(out.stdout)
+    } else {
+        Err(MirrorError::Git(format!(
+            "{} in {}: {}",
+            args.join(" "),
+            dir.display(),
+            out.summary()
+        )))
+    }
+}
+
 /// Outcome of one lease-guarded push, before it is mapped to a typed error.
 enum PushFail {
     /// `[rejected] (stale info)`: the lease did not hold.
