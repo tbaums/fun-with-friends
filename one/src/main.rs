@@ -287,13 +287,8 @@ fn main() -> ExitCode {
             };
             match github::get_status(&tok.token, api_path) {
                 Ok((code, body)) => {
-                    println!(
-                        "{code} {}",
-                        body.chars()
-                            .take(200)
-                            .collect::<String>()
-                            .replace('\n', " ")
-                    );
+                    let head: String = body.chars().take(200).collect();
+                    println!("{code} {}", head.replace('\n', " "));
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -873,6 +868,7 @@ fn main() -> ExitCode {
                 issue,
                 base_branch: get("--base").unwrap_or_else(|| "staging".into()),
                 gate_label: "product-wip".into(),
+                seat: slice::seat_no_of_target(&seat),
                 seat_target: seat,
                 seat_expect_cmd: get("--expect").unwrap_or_else(|| "claude".into()),
                 floor_dir: floor.clone(),

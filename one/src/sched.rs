@@ -140,6 +140,14 @@ fn pr_changes_requested_at_head(p: &PrView) -> bool {
         })
 }
 
+/// Opened by this floor's impl App, whose login ends in `-impl[bot]` — the same
+/// convention `pr_approved_at_head` reads QA's `-qa[bot]` by. A PR on an
+/// `impl<n>/…` branch that the floor did not author (a 0.x leftover, a human's)
+/// is not its seat's work in flight.
+fn is_floor_pr(p: &PrView) -> bool {
+    p.author.ends_with("-impl[bot]")
+}
+
 /// The impl seat a branch belongs to: `impl<n>/…` → `n`.
 fn impl_seat_of(head_ref: &str) -> Option<u8> {
     head_ref
@@ -213,10 +221,13 @@ pub fn plan(
     // One PR in flight per impl seat: a seat whose branch `impl<n>/…` is
     // still open (awaiting QA, changes, or merge) does not start the next
     // issue — the next issue would branch from a base that lacks its work.
+    // Only this floor's own PRs count (#579): the 0.x factory used the same
+    // `impl<n>/` prefix, so a legacy draft would otherwise hold a 1.0 seat
+    // forever. An unknown or foreign author is nobody's work in flight.
     let seats_with_open_pr: BTreeSet<u8> = snapshot
         .prs
         .iter()
-        .filter(|p| p.state == "open")
+        .filter(|p| p.state == "open" && is_floor_pr(p))
         .filter_map(|p| impl_seat_of(&p.head_ref))
         .collect();
     let idle_impl: BTreeSet<u8> = idle_seats(seats, Role::Impl).collect();

@@ -310,6 +310,9 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         issue: *issue,
                         base_branch: cfg.base_branch.clone(),
                         gate_label: cfg.gate_label.clone(),
+                        // The seat this plan picked, so the slice's own recheck
+                        // asks about the same seat the loop dispatched (#579).
+                        seat: *seat,
                         seat_target: target.clone(),
                         seat_expect_cmd: cfg.seat_expect_cmd.clone(),
                         floor_dir: cfg.floor_dir.clone(),

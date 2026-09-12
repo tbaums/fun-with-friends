@@ -30,6 +30,7 @@ fn pr(n: u64, closes: Option<u64>, draft: bool, reviewed_head: bool) -> PrView {
         base_ref: "staging".into(),
         draft,
         state: "open".into(),
+        author: "fwf-impl[bot]".into(),
         closes_issue: closes,
         reviews: if reviewed_head {
             vec![("qa".into(), "APPROVED".into(), head)]
@@ -634,6 +635,7 @@ fn an_impl_seat_with_an_open_pr_is_not_woken_for_the_next_issue() {
             base_ref: "staging".into(),
             draft: false,
             state: "open".into(),
+            author: "fwf-impl[bot]".into(),
             closes_issue: Some(1),
             reviews: vec![],
         }],
@@ -668,6 +670,30 @@ fn an_impl_seat_with_an_open_pr_is_not_woken_for_the_next_issue() {
         "{:?}",
         p.actions
     );
+    // …but only this floor's PRs hold a seat (#579). The 0.x factory used the
+    // same `impl<n>/` prefix, and its legacy draft #540 held seat 1 since July.
+    for foreign in ["someone", "fwf-qa[bot]", ""] {
+        let mut legacy = snap.clone();
+        legacy.prs[0].author = foreign.into();
+        let p = plan(&legacy, &seats, "product-wip", true, 0);
+        assert!(
+            p.actions
+                .iter()
+                .any(|a| matches!(a, Action::WakeImpl { seat: 1, issue: 2 })),
+            "author {foreign:?} must not hold seat 1: {:?}",
+            p.actions
+        );
+    }
+    // A floor PR still does, under any other name it is given.
+    let mut renamed = snap.clone();
+    renamed.prs[0].head_ref = "impl1/renamed".into();
+    assert!(
+        !plan(&renamed, &seats, "product-wip", true, 0)
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::WakeImpl { .. })),
+        "a floor PR holds its seat whatever its branch is called"
+    );
 }
 
 #[test]
@@ -680,6 +706,7 @@ fn a_refused_pr_is_rework_for_its_own_seat_not_a_parked_floor() {
         base_ref: "staging".into(),
         draft: false,
         state: state.into(),
+        author: "fwf-impl[bot]".into(),
         closes_issue: Some(575),
         reviews,
     };
@@ -792,6 +819,7 @@ fn an_approved_at_head_pr_is_finished_not_re_reviewed() {
         base_ref: "staging".into(),
         draft: true,
         state: "open".into(),
+        author: "fwf-impl[bot]".into(),
         closes_issue: Some(1),
         reviews,
     };
