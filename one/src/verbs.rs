@@ -210,39 +210,132 @@ pub fn release_check(args: &[String]) -> ExitCode {
     }
 }
 
+/// The floor around the record: the manifest's facts plus what tmux says
+/// right now. Read fresh every frame, because a pane can die between them.
+/// No manifest is not an error — the dash must still open any copy of a
+/// `run.jsonl` — the header simply says so.
+fn dash_floor(m: Option<&manifest::Manifest>, repo_in_record: &str) -> dash::Floor {
+    let meter = run::last_meter().map(|(weekly, session, when)| dash::Meter {
+        age: run::meter_age_secs(&when, seat::now()),
+        weekly,
+        session,
+        when,
+    });
+    let Some(m) = m else {
+        return dash::Floor {
+            repo: repo_in_record.to_string(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            loop_state: dash::loop_state(None, meter.as_ref(), 100),
+            meter,
+            park_at: 0,
+            ..Default::default()
+        };
+    };
+    let mut roles: Vec<(&str, u8)> = Vec::new();
+    for n in 1..=m.pairs {
+        roles.push(("impl", n));
+        roles.push(("qa", n));
+    }
+    for r in ["pm", "gv"] {
+        if m.models.contains_key(r) {
+            roles.push((r, 1));
+        }
+    }
+    let slots = roles
+        .into_iter()
+        .map(|(role, n)| {
+            let r = match role {
+                "impl" => crate::types::Role::Impl,
+                "qa" => crate::types::Role::Qa,
+                "pm" => crate::types::Role::Pm,
+                _ => crate::types::Role::Gv,
+            };
+            let target = m.seat_target(role, n);
+            dash::Slot {
+                role: r,
+                seat: n,
+                pane: dash::tty::pane_command(&target),
+                target,
+            }
+        })
+        .collect();
+    // The loop is a pane too: `run` in the floor's session. A tmux that does
+    // not answer is Unknown, never "not running".
+    let window = dash::tty::window_exists(&m.session, "run");
+    dash::Floor {
+        repo: m.repo.clone(),
+        base: m.base_branch.clone(),
+        release: m.release_branch.clone(),
+        session: m.session.clone(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        slots,
+        allow: m.issues.clone(),
+        loop_state: dash::loop_state(window, meter.as_ref(), m.park_at_weekly_pct),
+        meter,
+        park_at: m.park_at_weekly_pct,
+    }
+}
+
 pub fn dash(args: &[String]) -> ExitCode {
-    let path = get(args, "--log")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_log);
-    let watch: Option<u64> = get(args, "--watch").and_then(|s| s.parse().ok());
-    loop {
-        let events = match log::read_all(&path) {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("fwfd dash: cannot read {}: {e}", path.display());
-                return ExitCode::from(2);
-            }
-        };
-        let board = dash::fold(&events);
-        let meter = match run::last_meter() {
-            Some((w, s, when)) => format!(
-                "meter        weekly {w}% · session {} · read {when} (from ~/.fwf-meter-log; the brake parks the floor at the manifest's park_at_weekly_pct)\n",
-                s.map(|v| format!("{v}%")).unwrap_or_else(|| "?".into())
-            ),
-            None => "meter        no reading in ~/.fwf-meter-log (the brake cannot see the meter)\n".to_string(),
-        };
-        let text = format!("{}{meter}", dash::render(&board, seat::now()));
-        match watch {
-            Some(secs) => {
-                print!("\x1b[2J\x1b[H{text}");
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-                std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
-            }
-            None => {
-                print!("{text}");
-                return ExitCode::SUCCESS;
-            }
+    let m = manifest::Manifest::load(
+        &get(args, "--manifest")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| manifest::Manifest::default_path(Path::new("."))),
+    )
+    .ok();
+    let path = get(args, "--log").map(PathBuf::from).unwrap_or_else(|| {
+        m.as_ref()
+            .map(|m| slice::defaults(&m.floor()).0)
+            .filter(|p| p.exists())
+            .unwrap_or_else(default_log)
+    });
+    if let Some(t) = get(args, "--tab") {
+        if dash::view::Tab::parse(&t).is_none() {
+            eprintln!("fwfd dash: --tab {t:?} is not 1-5 or seats|issues|prs|decisions|usage");
+            return ExitCode::from(2);
+        }
+    }
+    let mut events = match log::read_all(&path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("fwfd dash: cannot read {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+    };
+    let record_repo = events.first().map(|e| e.repo.clone()).unwrap_or_default();
+    let (w, h) = dash::tty::size();
+    let view = dash::view::View {
+        tab: get(args, "--tab")
+            .and_then(|t| dash::view::Tab::parse(&t))
+            .unwrap_or(dash::view::Tab::Seats),
+        width: w,
+        height: h,
+        color: !args.iter().any(|a| a == "--no-color") && dash::tty::wants_color(),
+        ..Default::default()
+    };
+    match get(args, "--watch").and_then(|s| s.parse::<u64>().ok()) {
+        Some(secs) => {
+            dash::tty::watch(secs, view, move || {
+                // A record that cannot be re-read (mid-append, or gone) must
+                // not blank the board: keep folding the last good events, and
+                // let "last event N ago" age visibly.
+                if let Ok(e) = log::read_all(&path) {
+                    events = e;
+                }
+                (dash::fold(&events), dash_floor(m.as_ref(), &record_repo))
+            });
+            ExitCode::SUCCESS
+        }
+        None => {
+            print!(
+                "{}",
+                dash::tty::once(
+                    &dash::fold(&events),
+                    &dash_floor(m.as_ref(), &record_repo),
+                    &view
+                )
+            );
+            ExitCode::SUCCESS
         }
     }
 }

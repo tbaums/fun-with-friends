@@ -240,49 +240,54 @@ pub fn why(events: &[Event], pr: u64) -> Vec<&Event> {
         .collect()
 }
 
+/// One event as one line of prose. The `why` timeline and the dash's detail
+/// trails are the same sentence, written once.
+pub fn describe(kind: &Kind) -> String {
+    match kind {
+        Kind::Issue { issue, to } => format!("issue #{issue} → {}", state_name(to)),
+        Kind::Pr { pr, to, .. } => format!("pr #{pr} → {}", pr_name(to)),
+        Kind::Seat {
+            seat,
+            role,
+            to,
+            tokens_in,
+            tokens_out,
+        } => format!(
+            "seat {seat} ({role:?}) → {}{}",
+            seat_name(to),
+            match (tokens_in, tokens_out) {
+                (Some(i), Some(o)) => format!(" [{i} in / {o} out]"),
+                _ => String::new(),
+            }
+        ),
+        Kind::Gate { to } => format!("gate → {}", gate_name(to)),
+        Kind::Promote { branch, from, to } => format!(
+            "promote {branch} {}..{}",
+            &from[..8.min(from.len())],
+            &to[..8.min(to.len())]
+        ),
+        Kind::Human {
+            actor,
+            action,
+            target,
+        } => format!("human {actor}: {action} {target}"),
+        Kind::Refused { what, why } => format!("REFUSED {what}: {why}"),
+        Kind::Note { text } => format!("note: {text}"),
+    }
+}
+
 /// Render a timeline as one line per event, for humans.
 pub fn render(events: &[&Event]) -> String {
     let mut s = String::new();
     let t0 = events.first().map(|e| e.ts).unwrap_or(0);
     for e in events {
         let dt = e.ts.saturating_sub(t0);
-        let what = match &e.kind {
-            Kind::Issue { issue, to } => format!("issue #{issue} → {}", state_name(to)),
-            Kind::Pr { pr, to, .. } => format!("pr #{pr} → {}", pr_name(to)),
-            Kind::Seat {
-                seat,
-                role,
-                to,
-                tokens_in,
-                tokens_out,
-            } => format!(
-                "seat {seat} ({role:?}) → {}{}",
-                seat_name(to),
-                match (tokens_in, tokens_out) {
-                    (Some(i), Some(o)) => format!(" [{i} in / {o} out]"),
-                    _ => String::new(),
-                }
-            ),
-            Kind::Gate { to } => format!("gate → {}", gate_name(to)),
-            Kind::Promote { branch, from, to } => format!(
-                "promote {branch} {}..{}",
-                &from[..8.min(from.len())],
-                &to[..8.min(to.len())]
-            ),
-            Kind::Human {
-                actor,
-                action,
-                target,
-            } => format!("human {actor}: {action} {target}"),
-            Kind::Refused { what, why } => format!("REFUSED {what}: {why}"),
-            Kind::Note { text } => format!("note: {text}"),
-        };
-        s.push_str(&format!("+{:>6}s  {what}\n", dt));
+        s.push_str(&format!("+{:>6}s  {}\n", dt, describe(&e.kind)));
     }
     s
 }
 
-fn state_name(s: &IssueState) -> &'static str {
+pub fn state_name(s: &IssueState) -> &'static str {
     match s {
         IssueState::Gated => "gated",
         IssueState::Ready => "ready",
@@ -292,7 +297,7 @@ fn state_name(s: &IssueState) -> &'static str {
         IssueState::Unknown => "UNKNOWN",
     }
 }
-fn pr_name(s: &PrState) -> &'static str {
+pub fn pr_name(s: &PrState) -> &'static str {
     match s {
         PrState::Draft { .. } => "draft",
         PrState::Open { .. } => "open",
@@ -304,7 +309,7 @@ fn pr_name(s: &PrState) -> &'static str {
         PrState::Unknown => "UNKNOWN",
     }
 }
-fn seat_name(s: &SeatState) -> &'static str {
+pub fn seat_name(s: &SeatState) -> &'static str {
     match s {
         SeatState::Idle => "idle",
         SeatState::Working { .. } => "working",
@@ -314,7 +319,7 @@ fn seat_name(s: &SeatState) -> &'static str {
         SeatState::Unknown => "UNKNOWN",
     }
 }
-fn gate_name(s: &GateState) -> &'static str {
+pub fn gate_name(s: &GateState) -> &'static str {
     match s {
         GateState::Queued { .. } => "queued",
         GateState::Running { .. } => "running",
