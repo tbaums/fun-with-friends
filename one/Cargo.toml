@@ -1,6 +1,6 @@
 [package]
 name = "fwfd"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "fwf 1.0 supervisor: typed state, one event log, every authority-bearing write in one process"
 license = "MIT"

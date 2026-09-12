@@ -17,7 +17,7 @@ park_at_weekly_pct = 85
 template = "dev"
 triage_new = false
 skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
-issues = [21, 22]
+issues = [43]
 
 [suites]
 fast = "cargo fmt --all --check && cargo test --workspace --quiet && cargo check -p diaspective-web --target wasm32-unknown-unknown --quiet"
