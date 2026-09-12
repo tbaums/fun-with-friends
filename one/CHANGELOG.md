@@ -1,6 +1,8 @@
 # Changelog — fwf 1.0 (`one/`)
 
-## Unreleased
+## 1.0.1 — 2026-09-12
+
+The board is back. Built by the fwf 1.0 floor on its own repo (#574 → PR #580: Opus impl, Sonnet QA, fast gate, `fwfd promote`), 41 minutes seat time.
 
 - **`fwfd dash` is a board again (#574).** Header (repo, `base → release`, loop
   state, version, meter freshness), five tabs — Seats / Issues / PRs / Decisions
