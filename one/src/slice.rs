@@ -15,7 +15,7 @@ use crate::mirror::{self, Mirror};
 use crate::poll::Poller;
 use crate::sched::{plan, Action, SeatSlot};
 use crate::seat::{self, Pane, Verdict};
-use crate::types::{Fence, IssueState, JobRef, PrState, Role, SeatState, Sha};
+use crate::types::{IssueState, JobRef, PrState, Role, SeatState, Sha};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -59,28 +59,32 @@ fn record(log: &mut Log, repo: &str, kind: Kind) -> Result<(), SliceError> {
     Ok(())
 }
 
-/// Realign the seat's worktree to the fence, so that the seat's own
-/// `git checkout -b <branch>` starts exactly there.
+/// Realign the seat's worktree onto `target`, so the seat starts from exactly
+/// the sha the supervisor recorded.
 ///
 /// `seats --up` clones `wt-impl{n}` once and leaves it alone afterwards, so if
 /// the base moved since then the worktree's HEAD is stale and the seat would
-/// branch from a pre-merge base (transom #1270). Fetch the mirror, then detach
-/// onto the fence. A dirty worktree is refused, never cleaned or stashed: the
-/// cycle blocks so a human can look at whatever was left behind.
-fn align_seat_worktree(
+/// branch from a pre-merge base (transom #1270). Fetch the mirror, then check
+/// `target` out: `branch` None detaches (the impl slice cuts its own branch
+/// next), `Some(b)` puts `b` there (the rework cycle, #576, keeps working on
+/// the PR's own branch). A dirty worktree is refused, never cleaned or
+/// stashed: the cycle blocks so a human can look at whatever was left behind.
+/// `what` is the issue or PR number the refusal is recorded against.
+pub(crate) fn align_seat_worktree(
     log: &mut Log,
     repo: &str,
-    issue: u64,
+    what: u64,
     wt: &Path,
     remote_url: &str,
-    fence: &Fence,
+    target: &str,
+    branch: Option<&str>,
 ) -> Result<(), SliceError> {
     let refuse = |log: &mut Log, why: String| -> Result<(), SliceError> {
         record(
             log,
             repo,
             Kind::Refused {
-                what: format!("#{issue}"),
+                what: format!("#{what}"),
                 why: why.clone(),
             },
         )?;
@@ -105,7 +109,19 @@ fn align_seat_worktree(
         );
         return refuse(log, why);
     }
-    let sha = Sha::parse(&fence.0)?;
+    let sha = Sha::parse(target)?;
+    // A branch name is a git argument: take only the shape seats are given.
+    if branch.is_some_and(|b| !b.starts_with("impl") || b.contains("..")) {
+        let why = format!(
+            "{:?} is not a seat branch; refusing to check it out",
+            branch
+        );
+        return refuse(log, why);
+    }
+    let checkout = match branch {
+        Some(b) => vec!["checkout", "--quiet", "-B", b, sha.as_str()],
+        None => vec!["checkout", "--quiet", "--detach", sha.as_str()],
+    };
     for args in [
         vec![
             "fetch",
@@ -113,11 +129,11 @@ fn align_seat_worktree(
             remote_url,
             "+refs/heads/*:refs/remotes/origin/*",
         ],
-        vec!["checkout", "--quiet", "--detach", sha.as_str()],
+        checkout,
     ] {
         if let Err(e) = mirror::git_in(wt, &args) {
             let why = format!(
-                "seat worktree {} could not be realigned to fence {}: {e}",
+                "seat worktree {} could not be realigned to {}: {e}",
                 wt.display(),
                 sha.short()
             );
@@ -129,8 +145,9 @@ fn align_seat_worktree(
         repo,
         Kind::Note {
             text: format!(
-                "seat worktree {} realigned to fence {}",
+                "seat worktree {} realigned to {} {}",
                 wt.display(),
+                branch.unwrap_or("(detached)"),
                 sha.short()
             ),
         },
@@ -271,7 +288,8 @@ pub fn run_with(
         cfg.issue,
         &seat_wt,
         &mirror.seat_remote_url(),
-        &fence,
+        &fence.0,
+        None,
     )?;
 
     // 5. Render the job and wake the pane.
@@ -539,12 +557,12 @@ mod tests {
 
     /// Land another commit on the mirror's `staging` and return it as the fence
     /// the supervisor would claim.
-    fn advance(work: &Path, url: &str, name: &str) -> Fence {
+    fn advance(work: &Path, url: &str, name: &str) -> String {
         std::fs::write(work.join(name), name).unwrap();
         git(work, &["add", "."]);
         git(work, &["commit", "-q", "-m", name]);
         git(work, &["push", "-q", url, "HEAD:refs/heads/staging"]);
-        Fence(git(work, &["rev-parse", "HEAD"]))
+        git(work, &["rev-parse", "HEAD"])
     }
 
     fn refusals(run_log: &Path) -> Vec<String> {
@@ -564,11 +582,11 @@ mod tests {
         let stale = git(&wt, &["rev-parse", "HEAD"]);
         // staging moves between `seats --up` and `fwfd slice`
         let fence = advance(&work, &url, "later.txt");
-        assert_ne!(stale, fence.0);
+        assert_ne!(stale, fence);
         let run_log = root.join("run.jsonl");
         let mut log = Log::open(&run_log).unwrap();
-        align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).unwrap();
-        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), fence.0);
+        align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence, None).unwrap();
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), fence);
         assert!(refusals(&run_log).is_empty());
         // so the branch the seat then cuts is rooted at the fence, which is
         // what the original bug broke: merge-base(PR head, fence) == fence
@@ -576,11 +594,34 @@ mod tests {
         std::fs::write(wt.join("fix.txt"), "fix").unwrap();
         git(&wt, &["add", "."]);
         git(&wt, &["commit", "-q", "-m", "fix"]);
-        assert_eq!(git(&wt, &["merge-base", "HEAD", &fence.0]), fence.0);
+        assert_eq!(git(&wt, &["merge-base", "HEAD", &fence]), fence);
         // a second realign onto the same fence is a harmless no-op
         git(&wt, &["checkout", "-q", "--detach", "HEAD"]);
-        align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).unwrap();
-        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), fence.0);
+        align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence, None).unwrap();
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), fence);
+        // named, the target lands on that branch (the rework cycle's use), and
+        // a name that is not a seat branch is refused before any checkout
+        align_seat_worktree(
+            &mut log,
+            "o/r",
+            575,
+            &wt,
+            &url,
+            &fence,
+            Some("impl1/rework"),
+        )
+        .unwrap();
+        assert_eq!(
+            git(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "impl1/rework"
+        );
+        assert!(
+            align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence, Some("staging")).is_err()
+        );
+        assert_eq!(
+            git(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "impl1/rework"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -594,7 +635,7 @@ mod tests {
         let mut log = Log::open(&run_log).unwrap();
         // the wake is never reached: the refusal is returned to `run_with`
         // before it renders the job text
-        let e = align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).unwrap_err();
+        let e = align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence, None).unwrap_err();
         assert!(e.0.contains("dirty"), "{}", e.0);
         assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before);
         assert_eq!(refusals(&run_log).len(), 1);
@@ -602,7 +643,7 @@ mod tests {
         // untracked-only is dirty too; nothing is stashed or cleaned away
         git(&wt, &["checkout", "-q", "--", "README"]);
         std::fs::write(wt.join("scratch.txt"), "x").unwrap();
-        assert!(align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence).is_err());
+        assert!(align_seat_worktree(&mut log, "o/r", 575, &wt, &url, &fence, None).is_err());
         assert!(wt.join("scratch.txt").exists());
         assert_eq!(git(&wt, &["rev-parse", "HEAD"]), before);
         assert_eq!(refusals(&run_log).len(), 2);
@@ -616,7 +657,8 @@ mod tests {
         let run_log = root.join("run.jsonl");
         let mut log = Log::open(&run_log).unwrap();
         let missing = root.join("wt-impl9");
-        let e = align_seat_worktree(&mut log, "o/r", 575, &missing, &url, &fence).unwrap_err();
+        let e =
+            align_seat_worktree(&mut log, "o/r", 575, &missing, &url, &fence, None).unwrap_err();
         assert!(e.0.contains("absent"), "{}", e.0);
         assert_eq!(refusals(&run_log).len(), 1);
         let _ = std::fs::remove_dir_all(root);

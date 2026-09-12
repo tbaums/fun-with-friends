@@ -69,6 +69,9 @@ pub struct Floor {
     pub loop_state: LoopState,
     pub meter: Option<Meter>,
     pub park_at: u8,
+    /// Manifest `rework_cap`: rounds the loop gives a refused PR before it
+    /// becomes a human's decision (#576).
+    pub rework_cap: u32,
 }
 
 /// How old a meter reading may be before the brake treats it as absent —
@@ -294,10 +297,17 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
                 "PR #{} is approved at head: `fwfd merge --pr {}`",
                 p.pr, p.pr
             )),
-            Stage::Changes => v.push(format!(
-                "PR #{} has changes requested and no rework action (#576)",
-                p.pr
-            )),
+            // Changes requested is the loop's work now: it re-wakes the impl
+            // seat on its own branch. Only a PR out of rounds needs a human.
+            Stage::Changes => {
+                let rounds = b.rework_rounds.get(&p.pr).copied().unwrap_or(0);
+                if rounds >= f.rework_cap {
+                    v.push(format!(
+                        "PR #{} hit the rework cap ({}): close it or push a fix yourself",
+                        p.pr, f.rework_cap
+                    ));
+                }
+            }
             _ => {}
         }
         // A red or killed gate on the merge sha is a human's problem whether
@@ -373,6 +383,93 @@ mod tests {
             repo: "o/r".into(),
             kind,
         }
+    }
+
+    /// #576: changes requested is the loop's work until the rounds run out.
+    #[test]
+    fn a_refused_pr_needs_a_human_only_once_it_is_out_of_rounds() {
+        let refused = |head: Sha| {
+            vec![
+                ev(
+                    10,
+                    Kind::Pr {
+                        pr: 1270,
+                        issue: Some(575),
+                        to: PrState::Draft { head: head.clone() },
+                    },
+                ),
+                ev(
+                    20,
+                    Kind::Pr {
+                        pr: 1270,
+                        issue: Some(575),
+                        to: PrState::ChangesRequested { head },
+                    },
+                ),
+            ]
+        };
+        let round = |ts: u64| {
+            ev(
+                ts,
+                Kind::Seat {
+                    seat: 1,
+                    role: Role::Impl,
+                    to: SeatState::Working {
+                        job: crate::types::JobRef {
+                            role: Role::Impl,
+                            issue: Some(575),
+                            pr: Some(1270),
+                        },
+                        deadline: ts + 100,
+                    },
+                    tokens_in: None,
+                    tokens_out: None,
+                },
+            )
+        };
+        let f = Floor {
+            rework_cap: 2,
+            ..Default::default()
+        };
+        let cap_line = |evs: &[Event]| {
+            needs_you(&fold(evs), &f, 9000)
+                .into_iter()
+                .find(|l| l.contains("rework cap"))
+        };
+        // no rounds yet, and after one: the loop handles it, no banner
+        let mut evs = refused(sha());
+        assert_eq!(cap_line(&evs), None);
+        assert_eq!(fold(&evs).rework_rounds.get(&1270), None);
+        evs.push(round(30));
+        assert_eq!(cap_line(&evs), None);
+        assert_eq!(fold(&evs).rework_rounds.get(&1270), Some(&1));
+        // the second round uses the cap up: now a human has to decide
+        evs.push(round(40));
+        assert_eq!(fold(&evs).rework_rounds.get(&1270), Some(&2));
+        assert_eq!(
+            cap_line(&evs).as_deref(),
+            Some("PR #1270 hit the rework cap (2): close it or push a fix yourself")
+        );
+        // a QA wake on the same PR is not a rework round
+        let mut qa = refused(sha());
+        qa.push(ev(
+            30,
+            Kind::Seat {
+                seat: 1,
+                role: Role::Qa,
+                to: SeatState::Working {
+                    job: crate::types::JobRef {
+                        role: Role::Qa,
+                        issue: Some(575),
+                        pr: Some(1270),
+                    },
+                    deadline: 130,
+                },
+                tokens_in: None,
+                tokens_out: None,
+            },
+        ));
+        assert_eq!(fold(&qa).rework_rounds.get(&1270), None);
     }
 
     #[test]

@@ -22,6 +22,7 @@ mod profile;
 mod promote;
 mod prompts;
 mod qa;
+mod rework;
 mod run;
 mod sched;
 mod seat;
@@ -153,11 +154,9 @@ fn main() -> ExitCode {
             let snap = poller
                 .poll(now)
                 .unwrap_or_else(|_| poll::Snapshot::unknown());
-            let mut targets = Vec::new();
-            for n in 1..=m.pairs {
-                targets.push(m.seat_target("impl", n));
-                targets.push(m.seat_target("qa", n));
-            }
+            let targets: Vec<String> = (1..=m.pairs)
+                .flat_map(|n| [m.seat_target("impl", n), m.seat_target("qa", n)])
+                .collect();
             let (run_log, _) = slice::defaults(&m.floor());
             let inp = status::StatusInput {
                 snapshot: &snap,
@@ -166,6 +165,7 @@ fn main() -> ExitCode {
                 seats: status::seat_commands(&targets),
                 run_log: &run_log,
                 now,
+                rework_cap: m.rework_cap,
             };
             print!("{}", status::render(&inp));
             ExitCode::SUCCESS

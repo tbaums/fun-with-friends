@@ -273,6 +273,7 @@ fn dash_floor(m: Option<&manifest::Manifest>, repo_in_record: &str) -> dash::Flo
         loop_state: dash::loop_state(window, meter.as_ref(), m.park_at_weekly_pct),
         meter,
         park_at: m.park_at_weekly_pct,
+        rework_cap: m.rework_cap,
     }
 }
 
@@ -561,6 +562,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         triage_new: m.triage_new,
         gv_seat: m.models.contains_key("gv").then(|| m.seat_target("gv", 1)),
         park_at_weekly_pct: m.park_at_weekly_pct,
+        rework_cap: m.rework_cap,
         gate_suite: m.fast_suite.clone(),
         gate_cmd: m.suites.get(&m.fast_suite).cloned().unwrap_or_default(),
         gate_venue: m.gate_venue.clone(),

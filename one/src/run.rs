@@ -43,6 +43,9 @@ pub struct RunConfig {
     pub gv_seat: Option<String>,
     /// Park the floor while the last logged weekly meter % is at or above this.
     pub park_at_weekly_pct: u8,
+    /// How many rework rounds one PR may have before it becomes a human's
+    /// decision (manifest `rework_cap`).
+    pub rework_cap: u32,
     /// Conductor-as-code: after every merge, run this suite on the new base
     /// tip in the floor's gate worktree and post a check-run under ops.
     pub gate_suite: String,
@@ -392,6 +395,48 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                             }
                         }
                         Err(e) => eprintln!("fwfd run: #{pr} approved but not merged: {e}"),
+                    }
+                    acted += 1;
+                }
+                Action::Rework { seat, pr, issue } => {
+                    let Some((_, target)) = cfg.impl_seats.iter().find(|(n, _)| n == seat) else {
+                        continue;
+                    };
+                    let rc = crate::rework::ReworkConfig {
+                        owner: cfg.owner.clone(),
+                        repo: cfg.repo.clone(),
+                        pr: *pr,
+                        seat_no: *seat,
+                        seat_target: target.clone(),
+                        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
+                        base_branch: cfg.base_branch.clone(),
+                        floor_dir: cfg.floor_dir.clone(),
+                        mirror_dir: cfg.mirror_dir.clone(),
+                        job_template: crate::prompts::rework_path(&cfg.prompts_dir, &cfg.template),
+                        run_log: cfg.run_log.clone(),
+                        timeout: cfg.job_timeout,
+                        check_cmd: cfg.gate_cmd.clone(),
+                        cap: cfg.rework_cap,
+                    };
+                    match crate::rework::run(&rc, impl_app, ops_app) {
+                        Ok(crate::rework::Outcome::Pushed { head, round }) => println!(
+                            "fwfd run: impl seat {seat} reworked #{pr} (round {round}) → {}",
+                            head.short()
+                        ),
+                        // Past the cap nothing is closed and no issue released:
+                        // two passes that did not convince QA are a human's call.
+                        Ok(crate::rework::Outcome::AtCap { rounds }) => eprintln!(
+                            "fwfd run: #{pr} has had {rounds} rework round(s) (cap {}); close it or push it yourself — the loop will not wake the seat again",
+                            cfg.rework_cap
+                        ),
+                        Ok(crate::rework::Outcome::Gone) => {
+                            println!("fwfd run: #{pr} is no longer open; nothing to rework")
+                        }
+                        Err(e) => eprintln!(
+                            "fwfd run: rework of #{pr}{} failed: {}",
+                            issue.map(|i| format!(" (#{i})")).unwrap_or_default(),
+                            e.0
+                        ),
                     }
                     acted += 1;
                 }
