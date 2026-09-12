@@ -1,6 +1,20 @@
 # Changelog — fwf 1.0 (`one/`)
 
-## Unreleased (staging, 2026-09-10)
+## 1.0.0 — 2026-09-12
+
+First release. Proven unattended on three customer repos; cut after the transom soak.
+
+- **Transom soak (2026-09-11/12):** six `product-wip` bugs (#1259, #1261–#1265) → Sonnet PM
+  specs (1.7M tokens in each vs 4.7M on Opus) → un-gated by proxy → Opus impl / Sonnet QA →
+  typed merges → post-merge fast gates (4 green, 2 flakes filed: transom #1268, #1271) →
+  `fwfd promote` on the recorded Green → transom v0.52.0 released and deployed. 0 stalls.
+- **Found by the soak, filed:** #574 dash regression vs the 0.x board; #575 `slice` branches
+  from a stale worktree HEAD instead of the fence sha (one PR needed a hand rework);
+  #576 no rework action on `ChangesRequested` (the loop idles with 0 actions).
+- **Operational notes:** the loop logs only to `run.jsonl` (stdout is quiet); `seats --down`
+  kills the whole tmux session, so run gates and releases in their own sessions; the
+  transom e2e promote suite now runs `npm ci` first.
+- Everything under the former “Unreleased” heading:
 
 - Overnight run on two private repos (diaspective 10/10, baton 1/1, 0 stalls). Fixes found by it:
   ops undrafts PRs (impl cannot on private repos); `FinishPr` merges any PR already approved

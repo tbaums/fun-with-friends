@@ -191,3 +191,24 @@ fwf-impl (contents:read) only authors the PR.
 - **baton** (private): #127 → PR #128 merged 02:13, gate Green (42 tests), promoted to `main` (a2fde454).
 - Bugs the run found in fwfd, fixed on the spot: the impl App cannot undraft a PR on a private repo (`contents:write` needed → ops undrafts); no scheduler action for a PR already approved at head (`Action::FinishPr`); GraphQL errors folded into `false`; private-upstream mirror fetch needed a scrubbed read token; an impl seat could be woken for the next issue while its PR was open; a gate could run against a workdir at the wrong sha (now refused, Unknown).
 - Measured: an impl cycle 0.4–1.4M cached tokens in; a whole issue (impl → QA → merge → gate) 8–12 minutes on a small repo.
+
+## Overnight 2026-09-11/12 — transom, the T-31 soak, to prod
+
+Jamie's brief: drain transom's six `product-wip` bugs, fully autonomous including un-gating,
+release, and prod deploy by morning; meter every 10 minutes, never above 90%.
+
+- 22:50 six `fwfd spec` cycles on Sonnet (1.7M in each); all six un-gated by `jamie-proxy`.
+- 22:53–02:05 `fwfd run`: #1261 → PR #1266 (impl 7.2M in, QA 2.1M in) merged 23:13; #1259,
+  #1262, #1263, #1264, #1265 followed. Post-merge fast gates: green ×4, red ×2 — both
+  single-test flakes (3/3 green isolated), filed transom #1268 and #1271.
+- PR #1270 (#1263) was built on the stale worktree base and conflicted with #1262; the QA
+  seat refused it correctly. No rework action exists, so a rebase job was pasted into the
+  impl seat and its head pushed to GitHub by hand (fwf #575, #576).
+- e2e promote gate: 7 failed / 453 passed. Bisect against the pre-#1265 sha showed the mobile
+  lane was already red (3 deterministic, 2 flaky; transom #1274). Promoted on `--suite fast`.
+- Release by the repo's own runbook: docs commit, `chore(release): v0.52.0`, local publisher
+  (Docker down → macOS-only), `fwfd release-check` ok, merge-back from a scratch clone,
+  `deploy.sh`, prod verified by PID age + `sw.js` cache name + `/api/health`.
+- Cost of the night: session 47% → 51% of the 5-hour window at the end; weekly 26% → 32%.
+- Memory pressure on the 16 GB box killed background watchers; `seats --down` on the other
+  floors freed it. Long jobs belong in their own tmux sessions.

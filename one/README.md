@@ -13,10 +13,13 @@ issue ──GV triage──▶ gated ──human `fwfd ungate`──▶ eligible
   ──gate (bash -o pipefail, memory-capped venue)──▶ check-run ──▶ promote by literal SHA
 ```
 
-Status: M0–M3 done; proven live on this repository and, unattended overnight,
-on two private repos (diaspective: an MVP from an empty repo in 10 merged PRs;
-baton) — see `docs/BUILD-LOG.md`. M4 (soak, head-to-head, cutover) is next.
-Nothing here is wired into the v0.42 `fwf` command yet.
+Status: **1.0.0.** M0–M3 built and proven; M4's soak is done: unattended overnight
+runs on three private repos — diaspective (22 merged PRs in one day, from an empty
+repo to a styled MVP), baton, and transom (6 bug fixes drained 2026-09-11/12, promoted,
+released as transom v0.52.0 and deployed to prod, 0 stalls) — see `docs/BUILD-LOG.md`.
+Known gaps are tickets, not surprises: #574 (the dash is a cost ledger, not the 0.x
+board), #575 (slice must branch from the fence sha), #576 (no rework action on a
+changes-requested review). The v0.42 `fwf` command is untouched; `fwfd` runs beside it.
 
 ## Requirements
 
