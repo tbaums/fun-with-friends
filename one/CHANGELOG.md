@@ -1,5 +1,18 @@
 # Changelog — fwf 1.0 (`one/`)
 
+## Unreleased
+
+- **A refused PR is rework, not a parked floor (#576).** `sched::plan` gains
+  `Action::Rework`: an open PR with a CHANGES_REQUESTED review anchored at its
+  head, on a branch that names an idle impl seat, wakes that seat on its own
+  branch with the review body as the job (`prompts/<family>/impl-rework.md`, new
+  `{{REVIEW}}`) — no new claim, no new PR. The worktree is realigned to the head
+  QA reviewed (a dirty tree refuses the round), and the reworked branch is pushed
+  upstream under a lease on that same head. Rounds are capped by the new manifest
+  key `rework_cap` (default 2) and counted from the run record; at the cap nothing
+  is woken and nothing is closed — `fwfd status` and the dash say "PR #N hit the
+  rework cap", which is the one case a human has to clear.
+
 ## 1.0.1 — 2026-09-12
 
 The board is back. Built by the fwf 1.0 floor on its own repo (#574 → PR #580: Opus impl, Sonnet QA, fast gate, `fwfd promote`), 41 minutes seat time.

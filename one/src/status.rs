@@ -18,6 +18,9 @@ pub struct StatusInput<'a> {
     pub seats: Vec<(String, String)>, // (target, foreground command)
     pub run_log: &'a Path,
     pub now: u64,
+    /// Manifest `rework_cap`: how many rounds the loop gives a refused PR
+    /// before it becomes a human's decision (#576).
+    pub rework_cap: u32,
 }
 
 fn eligible(i: &crate::poll::IssueView, gate: &str, owner_only: bool) -> bool {
@@ -154,6 +157,21 @@ pub fn render(inp: &StatusInput) -> String {
                 p.number, p.number
             ));
         }
+        // Changes requested is the loop's work now (#576) — it re-wakes the
+        // seat. Only a PR that used up its rounds needs a human.
+        let refused = p
+            .reviews
+            .iter()
+            .any(|(_, st, c)| st == "CHANGES_REQUESTED" && *c == p.head_sha);
+        if refused && !approved {
+            let rounds = crate::rework::rounds_in(inp.run_log, p.number);
+            if rounds >= inp.rework_cap {
+                needs_you.push(format!(
+                    "PR #{} hit the rework cap ({}): close it or push a fix yourself",
+                    p.number, inp.rework_cap
+                ));
+            }
+        }
     }
 
     out.push_str("recent\n");
@@ -243,6 +261,7 @@ mod tests {
             seats: vec![],
             run_log: Path::new("/nonexistent"),
             now: 0,
+            rework_cap: 2,
         };
         let r = render(&inp);
         assert!(r.starts_with("snapshot: UNKNOWN"));
@@ -294,12 +313,83 @@ mod tests {
             seats: vec![("fwf-one:impl1".into(), "bash".into())],
             run_log: Path::new("/nonexistent"),
             now: 5,
+            rework_cap: 2,
         };
         let r = render(&inp);
+        assert!(!r.contains("rework cap"), "nothing is refused here");
         assert!(r.contains("GONE (bash)"));
         assert!(r.contains("ready #2"));
         assert!(r.contains("approved at head by fwf-qa[bot]"));
         assert!(r.contains("fwfd merge --pr 9"));
         assert!(r.contains("un-gate the ones worth building"));
+    }
+
+    /// #576: a refused PR is the loop's work (it re-wakes the seat) until the
+    /// rounds in the record reach the cap; only then is it a human's problem.
+    #[test]
+    fn a_refused_pr_reaches_needs_you_only_at_the_rework_cap() {
+        let head = "b".repeat(40);
+        let s = Snapshot {
+            issues: vec![],
+            prs: vec![PrView {
+                number: 1270,
+                head_sha: head.clone(),
+                head_ref: "impl1/issue-575-thin-slice".into(),
+                base_ref: "staging".into(),
+                draft: true,
+                state: "open".into(),
+                closes_issue: Some(575),
+                reviews: vec![(
+                    "fwf-qa[bot]".into(),
+                    "CHANGES_REQUESTED".into(),
+                    head.clone(),
+                )],
+            }],
+            fetched_at: 1,
+            known: true,
+        };
+        let dir = std::env::temp_dir().join(format!("fwfd-status-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_log = dir.join("run.jsonl");
+        let mut l = log::Log::open(&run_log).unwrap();
+        let inp = || StatusInput {
+            snapshot: &s,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: vec![],
+            run_log: &run_log,
+            now: 5,
+            rework_cap: 2,
+        };
+        let wake = |n: u64| log::Event {
+            ts: n,
+            repo: "o/r".into(),
+            kind: Kind::Seat {
+                seat: 1,
+                role: crate::types::Role::Impl,
+                to: crate::types::SeatState::Working {
+                    job: crate::types::JobRef {
+                        role: crate::types::Role::Impl,
+                        issue: Some(575),
+                        pr: Some(1270),
+                    },
+                    deadline: n + 10,
+                },
+                tokens_in: None,
+                tokens_out: None,
+            },
+        };
+        let r = render(&inp());
+        assert!(r.contains("changes requested at head by fwf-qa[bot]"));
+        assert!(!r.contains("rework cap"), "round 1 is the loop's to do");
+        l.append(&wake(1)).unwrap();
+        assert!(!render(&inp()).contains("rework cap"));
+        l.append(&wake(2)).unwrap();
+        let r = render(&inp());
+        assert!(
+            r.contains("PR #1270 hit the rework cap (2): close it or push a fix yourself"),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

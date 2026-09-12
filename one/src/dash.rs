@@ -171,6 +171,8 @@ pub struct Board {
     pub last_gate: Option<GateState>,
     pub refusals: Vec<(u64, String, String)>,
     pub humans: Vec<(u64, String, String, String)>,
+    /// Rework rounds per PR (#576): one per impl wake whose job names the PR.
+    pub rework_rounds: BTreeMap<u64, u32>,
     /// Per-entity event trails, keyed `seat:impl1` / `issue:574` / `pr:9`.
     pub trails: BTreeMap<String, Vec<(u64, String)>>,
 }
@@ -339,6 +341,12 @@ pub fn fold(events: &[Event]) -> Board {
                     }
                     if let Some(n) = job.pr {
                         b.trail(format!("pr:{n}"), e.ts, &what);
+                        // An impl seat woken on a PR is a rework round (#576);
+                        // the slice's impl job names an issue, never a PR. Same
+                        // rule as `rework::rounds`, folded in one pass here.
+                        if *role == Role::Impl && matches!(to, SeatState::Working { .. }) {
+                            *b.rework_rounds.entry(n).or_default() += 1;
+                        }
                         if let Some(p) = b.prs.get_mut(&n) {
                             p.qa = match (role, to) {
                                 (Role::Qa, SeatState::Working { .. }) => Some((*seat, e.ts)),

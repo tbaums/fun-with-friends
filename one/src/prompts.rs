@@ -19,17 +19,32 @@ pub const PLACEHOLDERS: &[&str] = &[
     "{{HEAD}}",
     "{{BASE}}",
     "{{CHECK}}",
+    "{{REVIEW}}",
 ];
 pub const ROLES: &[&str] = &["impl", "qa", "gv", "pm"];
 
-/// The prompt file for `role` under `family`, falling back to `dev`.
-pub fn path(root: &Path, family: &str, role: &str) -> PathBuf {
-    let p = root.join(family).join(format!("{role}-job.md"));
+/// The impl seat's second pass over a PR QA refused (#576). Not a `<role>-job`
+/// file: one role can be woken for more than one shape of job.
+pub const REWORK: &str = "impl-rework.md";
+
+/// The prompt file `name` under `family`, falling back to `dev`.
+fn named(root: &Path, family: &str, name: &str) -> PathBuf {
+    let p = root.join(family).join(name);
     if p.is_file() {
         p
     } else {
-        root.join("dev").join(format!("{role}-job.md"))
+        root.join("dev").join(name)
     }
+}
+
+/// The prompt file for `role` under `family`, falling back to `dev`.
+pub fn path(root: &Path, family: &str, role: &str) -> PathBuf {
+    named(root, family, &format!("{role}-job.md"))
+}
+
+/// The rework job under `family`, falling back to `dev`.
+pub fn rework_path(root: &Path, family: &str) -> PathBuf {
+    named(root, family, REWORK)
 }
 
 pub fn job_path(family: &str, role: &str) -> PathBuf {
@@ -73,9 +88,16 @@ mod tests {
         assert!(families.contains(&"dev".to_string()));
         assert!(families.len() >= 7, "{families:?}");
         for f in &families {
-            for r in ROLES {
-                let p = path(root, f, r);
-                assert!(p.is_file(), "{f}/{r}: no file and no dev fallback");
+            let jobs = ROLES
+                .iter()
+                .map(|r| path(root, f, r))
+                .chain(std::iter::once(rework_path(root, f)));
+            for p in jobs {
+                assert!(
+                    p.is_file(),
+                    "{f}: {} has no file and no dev fallback",
+                    p.display()
+                );
                 let text = std::fs::read_to_string(&p).unwrap();
                 assert!(
                     text.contains("exactly ONE"),
@@ -108,6 +130,10 @@ mod tests {
         assert!(p.ends_with("dev/gv-job.md"));
         let p = path(Path::new(ROOT), "no-such-family", "impl");
         assert!(p.ends_with("dev/impl-job.md"));
+        // no family overrides the rework job yet; every one resolves to dev's
+        let p = rework_path(Path::new(ROOT), "refactor");
+        assert!(p.ends_with("dev/impl-rework.md"), "{}", p.display());
+        assert!(std::fs::read_to_string(&p).unwrap().contains("{{REVIEW}}"));
         assert_eq!(
             unknown_placeholders("a {{SEAT}} b {{NOPE}} c {{NOPE}} {{BASE}}"),
             vec!["{{NOPE}}".to_string()]

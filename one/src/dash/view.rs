@@ -518,6 +518,7 @@ pub(crate) mod fixture {
                 age: Some(120),
             }),
             park_at: 85,
+            rework_cap: 2,
         }
     }
 

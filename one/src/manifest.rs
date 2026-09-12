@@ -59,6 +59,10 @@ pub struct Manifest {
     /// Meter brake: park the floor at this weekly % and resume on reset.
     #[serde(default = "default_park")]
     pub park_at_weekly_pct: u8,
+    /// How many times the loop re-wakes an impl seat on one PR after QA asked
+    /// for changes (#576). Past it the PR waits for a human; nothing is closed.
+    #[serde(default = "default_rework_cap")]
+    pub rework_cap: u32,
     /// Prompt family under `prompts/` (dev, refactor, validate, ideation,
     /// consulting, defect-report, user-testing). Missing roles fall back to dev.
     #[serde(default = "default_template")]
@@ -117,6 +121,9 @@ fn default_poll() -> u64 {
 }
 fn default_park() -> u8 {
     85
+}
+fn default_rework_cap() -> u32 {
+    2
 }
 fn default_skip_labels() -> Vec<String> {
     ["idea", "release-hold", "tracking", "build-epic"]
@@ -260,6 +267,7 @@ gate_timeout_secs = 1800
 job_timeout_secs = 1800
 poll_interval_secs = 60
 park_at_weekly_pct = 85
+rework_cap = 2
 template = "dev"
 triage_new = false
 skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
