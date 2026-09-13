@@ -100,6 +100,41 @@ pub fn read_all(path: &Path) -> std::io::Result<Vec<Event>> {
     Ok(out)
 }
 
+/// Issues a seat holds right now: the latest `Claimed` per issue that no later
+/// state for that issue has superseded. Replayed in record order, so a claim
+/// released (`Ready`), shipped, re-gated or closed is gone, and a re-claim after
+/// a release is back.
+///
+/// The record is the only place that knows this (#588): `poll.rs` reads
+/// `refs/claims/<n>` only for issues carrying the `claimed` GitHub label, and
+/// nothing applies that label, so `IssueView.claim` is `None` in production even
+/// while a seat works a fenced claim.
+pub fn claimed_issues(
+    events: &[Event],
+) -> std::collections::BTreeMap<u64, (u8, crate::types::Fence)> {
+    let mut out: std::collections::BTreeMap<u64, (u8, crate::types::Fence)> = Default::default();
+    for e in events {
+        let Kind::Issue { issue, to } = &e.kind else {
+            continue;
+        };
+        match to {
+            IssueState::Claimed { seat, fence } => {
+                out.insert(*issue, (*seat, fence.clone()));
+            }
+            IssueState::Ready
+            | IssueState::Shipped { .. }
+            | IssueState::Gated
+            | IssueState::Closed => {
+                out.remove(issue);
+            }
+            // Unknown says the tracker could not be read, not that the claim
+            // went away: leave whatever the record last established.
+            IssueState::Unknown => {}
+        }
+    }
+    out
+}
+
 /// The timeline of one PR: every event that names it, or names the issue it
 /// closes, or is a gate/promote event for its merge sha.
 /// Seats whose LAST recorded state is Working with a deadline already past:
@@ -511,6 +546,73 @@ mod tests {
         let err = read_all(&p).unwrap_err();
         assert!(err.to_string().contains("line 2"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #588: the record is the only thing that knows a claim is live, so it has
+    /// to be replayed exactly — the latest `Claimed` that nothing superseded.
+    #[test]
+    fn claimed_issues_are_the_claims_no_later_state_took_back() {
+        let ev = |ts: u64, issue: u64, to: IssueState| Event {
+            ts,
+            repo: "x/y".into(),
+            kind: Kind::Issue { issue, to },
+        };
+        let claim = |seat: u8, f: &str| IssueState::Claimed {
+            seat,
+            fence: Fence(f.repeat(40)),
+        };
+        // a claim with nothing after it is held
+        let mut evs = vec![ev(1, 1268, IssueState::Ready), ev(2, 1268, claim(1, "7"))];
+        assert_eq!(
+            claimed_issues(&evs).into_iter().collect::<Vec<_>>(),
+            vec![(1268, (1, Fence("7".repeat(40))))]
+        );
+        // another issue's events do not disturb it
+        evs.push(ev(3, 42, claim(2, "a")));
+        evs.push(ev(
+            4,
+            42,
+            IssueState::Shipped {
+                pr: 9,
+                sha: sha('b'),
+            },
+        ));
+        assert_eq!(
+            claimed_issues(&evs).keys().copied().collect::<Vec<_>>(),
+            vec![1268]
+        );
+        // released, shipped, re-gated and closed each take the claim back
+        for taken in [
+            IssueState::Ready,
+            IssueState::Shipped {
+                pr: 7,
+                sha: sha('c'),
+            },
+            IssueState::Gated,
+            IssueState::Closed,
+        ] {
+            let mut with = evs.clone();
+            with.push(ev(5, 1268, taken));
+            assert!(
+                claimed_issues(&with).is_empty(),
+                "{:?} left the claim standing",
+                with.last()
+            );
+        }
+        // an Unknown snapshot says nothing about the claim, so it stands
+        let mut unknown = evs.clone();
+        unknown.push(ev(5, 1268, IssueState::Unknown));
+        assert_eq!(claimed_issues(&unknown).len(), 1);
+        // and a re-claim after a release is held again, by its new seat
+        let mut again = evs.clone();
+        again.push(ev(5, 1268, IssueState::Ready));
+        again.push(ev(6, 1268, claim(2, "d")));
+        assert_eq!(
+            claimed_issues(&again).get(&1268),
+            Some(&(2, Fence("d".repeat(40))))
+        );
+        // nothing to replay is nothing claimed
+        assert!(claimed_issues(&[]).is_empty());
     }
 
     #[test]

@@ -122,6 +122,7 @@ pub fn render(inp: &StatusInput) -> String {
         return out;
     }
     let mut needs_you: Vec<String> = Vec::new();
+    let evs = log::read_all(inp.run_log).unwrap_or_default();
 
     out.push_str("seats\n");
     for (target, cmd) in &inp.seats {
@@ -140,10 +141,25 @@ pub fn render(inp: &StatusInput) -> String {
     }
 
     out.push_str("issues\n");
+    // Who holds what comes from the record, not from the snapshot (#588): the
+    // poller fills `IssueView.claim` only for issues carrying the `claimed`
+    // label, and nothing applies that label, so a fenced claim being actively
+    // worked read as `ready` here. Only open issues count — a claim whose issue
+    // has left the open set is not the operator's business on this screen.
+    let held = log::claimed_issues(&evs);
+    let claimed: Vec<(u64, u8, String)> = s
+        .issues
+        .iter()
+        .filter_map(|i| {
+            held.get(&i.number)
+                .map(|(seat, fence)| (i.number, *seat, fence.0.chars().take(8).collect()))
+        })
+        .collect();
     let mut elig: Vec<&crate::poll::IssueView> = s
         .issues
         .iter()
         .filter(|i| eligible(i, inp.gate_label, inp.owner_only))
+        .filter(|i| !held.contains_key(&i.number))
         .collect();
     elig.sort_by_key(|i| i.number);
     let gated = s
@@ -151,8 +167,6 @@ pub fn render(inp: &StatusInput) -> String {
         .iter()
         .filter(|i| i.labels.iter().any(|l| l == inp.gate_label))
         .count();
-    let claimed: Vec<&crate::poll::IssueView> =
-        s.issues.iter().filter(|i| i.claim.is_some()).collect();
     out.push_str(&format!(
         "  open {} · eligible {} · gated {} · claimed {}\n",
         s.issues.len(),
@@ -167,14 +181,9 @@ pub fn render(inp: &StatusInput) -> String {
             i.title.chars().take(70).collect::<String>()
         ));
     }
-    for i in &claimed {
+    for (number, seat, fence) in &claimed {
         out.push_str(&format!(
-            "  claimed #{:<5} fence {}\n",
-            i.number,
-            i.claim
-                .as_ref()
-                .map(|f| f.0.chars().take(8).collect::<String>())
-                .unwrap_or_default()
+            "  claimed #{number} → impl{seat} (fence {fence})\n"
         ));
     }
     if gated > 0 {
@@ -221,7 +230,6 @@ pub fn render(inp: &StatusInput) -> String {
         }
     }
 
-    let evs = log::read_all(inp.run_log).unwrap_or_default();
     // A refusal the loop repeats every tick used to scroll out of "recent" and
     // leave nothing behind (#579): the floor looked busy while an issue was
     // claimed, refused and released forever. Surface the live ones.
@@ -323,6 +331,113 @@ mod tests {
             state: "open".into(),
             updated_at: String::new(),
             claim: None,
+        }
+    }
+
+    /// #588, transom 11:33 PDT: `refs/claims/1268` live and impl1 Working on it,
+    /// yet the issue carried no `claimed` label — so the poller never filled
+    /// `IssueView.claim`, and status called it `ready` with `claimed 0`.
+    #[test]
+    fn a_claim_in_the_record_is_claimed_even_when_the_snapshot_says_nothing() {
+        let s = Snapshot {
+            issues: vec![open_issue(1268), open_issue(1269)],
+            prs: vec![],
+            fetched_at: 1,
+            known: true,
+        };
+        assert!(
+            s.issues.iter().all(|i| i.claim.is_none()),
+            "the snapshot is the broken half of this bug"
+        );
+        let dir = std::env::temp_dir().join(format!("fwfd-status-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_log = dir.join("run.jsonl");
+        let mut l = log::Log::open(&run_log).unwrap();
+        let render_now = |run_log: &Path| {
+            render(&StatusInput {
+                snapshot: &s,
+                gate_label: "product-wip",
+                owner_only: true,
+                seats: vec![],
+                run_log,
+                now: 5,
+                rework_cap: 2,
+            })
+        };
+        // before any claim: both issues are the loop's to take
+        let r = render_now(&run_log);
+        assert!(r.contains("eligible 2 · gated 0 · claimed 0"), "{r}");
+        assert!(r.contains("ready #1268"), "{r}");
+        l.append(&issue_ev(
+            2,
+            1268,
+            IssueState::Claimed {
+                seat: 1,
+                fence: Fence("7d39b3c4".to_string() + &"0".repeat(32)),
+            },
+        ))
+        .unwrap();
+        let r = render_now(&run_log);
+        assert!(r.contains("eligible 1 · gated 0 · claimed 1"), "{r}");
+        assert!(r.contains("claimed #1268 → impl1 (fence 7d39b3c4)"), "{r}");
+        assert!(
+            !r.contains("ready #1268"),
+            "a claimed issue is not ready: {r}"
+        );
+        assert!(r.contains("ready #1269"), "{r}");
+        // released again, it goes back on the queue
+        l.append(&issue_ev(3, 1268, IssueState::Ready)).unwrap();
+        let r = render_now(&run_log);
+        assert!(r.contains("eligible 2 · gated 0 · claimed 0"), "{r}");
+        assert!(r.contains("ready #1268"), "{r}");
+        // an unreadable record degrades to "nothing claimed", never an error
+        let r = render_now(Path::new("/nonexistent/run.jsonl"));
+        assert!(r.contains("claimed 0"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #588: every seat window the manifest defines is listed, gv and pm too.
+    #[test]
+    fn the_seat_list_is_whatever_the_manifest_defines() {
+        let mut m = crate::manifest::Manifest::parse(crate::manifest::EXAMPLE).unwrap();
+        assert_eq!(
+            m.seats(),
+            vec![("impl", 1), ("qa", 1), ("gv", 1), ("pm", 1)],
+            "the example manifest names a gv and a pm model"
+        );
+        m.pairs = 2;
+        m.models.remove("gv");
+        assert_eq!(
+            m.seats(),
+            vec![("impl", 1), ("qa", 1), ("impl", 2), ("qa", 2), ("pm", 1)]
+        );
+        // …and they reach the screen as their own targets
+        let targets: Vec<String> = m
+            .seats()
+            .iter()
+            .map(|(r, n)| m.seat_target(r, *n))
+            .collect();
+        let s = Snapshot {
+            issues: vec![],
+            prs: vec![],
+            fetched_at: 1,
+            known: true,
+        };
+        let r = render(&StatusInput {
+            snapshot: &s,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: targets
+                .iter()
+                .map(|t| (t.clone(), "claude".into()))
+                .collect(),
+            run_log: Path::new("/nonexistent"),
+            now: 5,
+            rework_cap: 2,
+        });
+        for t in ["fwf-one:impl2", "fwf-one:qa2", "fwf-one:pm1"] {
+            assert!(r.contains(t), "{t} missing from\n{r}");
         }
     }
 
