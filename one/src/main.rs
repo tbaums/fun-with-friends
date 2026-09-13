@@ -154,8 +154,11 @@ fn main() -> ExitCode {
             let snap = poller
                 .poll(now)
                 .unwrap_or_else(|_| poll::Snapshot::unknown());
-            let targets: Vec<String> = (1..=m.pairs)
-                .flat_map(|n| [m.seat_target("impl", n), m.seat_target("qa", n)])
+            // Every seat the manifest defines, gv and pm included (#588).
+            let targets: Vec<String> = m
+                .seats()
+                .iter()
+                .map(|(r, n)| m.seat_target(r, *n))
                 .collect();
             let (run_log, _) = slice::defaults(&m.floor());
             let inp = status::StatusInput {

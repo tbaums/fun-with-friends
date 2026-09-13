@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **`fwfd status` knows who holds what (#588).** "claimed" came from
+  `IssueView.claim`, which the poller fills only for issues carrying a `claimed`
+  GitHub label — and nothing applies that label, so transom's #1268 read as
+  `ready` with `claimed 0` while `refs/claims/1268` was live and impl1 was
+  working it. The new `log::claimed_issues` replays the run record instead (the
+  latest `Claimed` per issue that no `Ready`/`Shipped`/`Gated`/`Closed` took
+  back), and status drops those from eligible/ready and prints
+  `claimed #N → impl<seat> (fence …)`. The seat list now comes from
+  `Manifest::seats()` — every seat the manifest defines, `gv` and `pm` included,
+  the same set `fwfd seats` brings up.
+
 - **A verdict is a file that parses, not a file that exists (#587).**
   `wait_verdict` read the verdict the moment the path appeared and failed hard on
   a partial read: `fwfd spec` died with `verdict malformed: …` seconds before

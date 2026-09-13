@@ -243,6 +243,23 @@ impl Manifest {
     pub fn seat_target(&self, role: &str, n: u8) -> String {
         format!("{}:{role}{n}", self.session)
     }
+    /// Every seat this manifest defines, as `(role, n)`: an impl/qa pair per
+    /// `pairs`, then `gv`/`pm` when `[models]` names them. `fwfd seats` brings
+    /// up exactly these, so anything reporting on seats lists exactly these
+    /// (#588 — `fwfd status` was showing impl/qa only).
+    pub fn seats(&self) -> Vec<(&'static str, u8)> {
+        let mut v: Vec<(&'static str, u8)> = Vec::new();
+        for n in 1..=self.pairs {
+            v.push(("impl", n));
+            v.push(("qa", n));
+        }
+        for r in ["gv", "pm"] {
+            if self.models.contains_key(r) {
+                v.push((r, 1));
+            }
+        }
+        v
+    }
     /// Where the manifest lives by default: in the customer repo.
     pub fn default_path(repo_dir: &Path) -> PathBuf {
         repo_dir.join(".fwf/fwf.toml")
