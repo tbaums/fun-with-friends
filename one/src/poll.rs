@@ -42,6 +42,9 @@ pub struct PrView {
     pub base_ref: String,
     pub draft: bool,
     pub state: String,
+    /// Who opened it (`pr.user.login`). The floor's own PRs are authored by the
+    /// impl App (`…-impl[bot]`); empty when the API did not say.
+    pub author: String,
     /// `Closes #N` (or fixes/resolves) parsed from the body.
     pub closes_issue: Option<u64>,
     /// (login, state, commit_id)
@@ -351,6 +354,7 @@ impl Poller {
             base_ref: pr["base"]["ref"].as_str().unwrap_or("").to_string(),
             draft: pr["draft"].as_bool().unwrap_or(false),
             state: pr["state"].as_str().unwrap_or("").to_string(),
+            author: pr["user"]["login"].as_str().unwrap_or("").to_string(),
             closes_issue: closes_issue(pr["body"].as_str().unwrap_or("")),
             reviews,
         })

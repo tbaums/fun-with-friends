@@ -12,7 +12,7 @@
 use crate::github::{self, AppEntry};
 use crate::log::{Event, Kind, Log};
 use crate::mirror::{self, Mirror};
-use crate::poll::Poller;
+use crate::poll::{Poller, Snapshot};
 use crate::sched::{plan, Action, SeatSlot};
 use crate::seat::{self, Pane, Verdict};
 use crate::types::{IssueState, JobRef, PrState, Role, SeatState, Sha};
@@ -26,6 +26,9 @@ pub struct SliceConfig {
     pub issue: u64,
     pub base_branch: String,
     pub gate_label: String,
+    /// The impl seat this cycle is for — the one `run`'s plan picked. The
+    /// recheck below plans over this seat, not a hardcoded 1 (#579).
+    pub seat: u8,
     pub seat_target: String,
     pub seat_expect_cmd: String,
     pub floor_dir: PathBuf,
@@ -154,6 +157,43 @@ pub(crate) fn align_seat_worktree(
     )
 }
 
+/// The slice's own eligibility recheck, over the issue it was pointed at and
+/// the seat it was dispatched to. `Ok(seat)` is the seat the scheduler agrees
+/// should take it; `Err(why)` is what to record and tell the operator.
+///
+/// The seat matters: planning over a hardcoded seat 1 made the slice refuse
+/// every issue whenever seat 1 was held by an open PR, even though `run` had
+/// planned the wake for a free seat (#579) — claim, refuse, release, repeat.
+fn recheck(snap: &Snapshot, cfg: &SliceConfig, now: u64) -> Result<u8, String> {
+    let seats = [SeatSlot {
+        seat: cfg.seat,
+        role: Role::Impl,
+        state: SeatState::Idle,
+    }];
+    let p = plan(snap, &seats, &cfg.gate_label, true, now);
+    let wake = p.actions.iter().find_map(|a| match a {
+        Action::WakeImpl { seat, issue } if *issue == cfg.issue => Some(*seat),
+        _ => None,
+    });
+    wake.ok_or_else(|| {
+        let why = snap
+            .issues
+            .iter()
+            .find(|i| i.number == cfg.issue)
+            .map(|i| {
+                format!(
+                    "labels={:?} assoc={} assignees={:?} claim={:?}",
+                    i.labels, i.author_association, i.assignees, i.claim
+                )
+            })
+            .unwrap_or_else(|| "issue not in the open set".into());
+        format!(
+            "seat {} cannot take #{}: {why}; plan was {:?}",
+            cfg.seat, cfg.issue, p.actions
+        )
+    })
+}
+
 pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
     run_with(cfg, app, None)
 }
@@ -190,7 +230,7 @@ pub fn run_with(
         None => github::mint(app, Some(&push_perms))?,
     };
 
-    // 2. Poll → plan. One idle implementer seat.
+    // 2. Poll → plan, over this cycle's own seat.
     let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
     let mut snap = poller.poll(now())?;
     // The slice is a targeted demo: plan over the one issue we were pointed
@@ -199,40 +239,22 @@ pub fn run_with(
     if !snap.known {
         return Err(SliceError("snapshot Unknown; refusing to plan".into()));
     }
-    let seats = [SeatSlot {
-        seat: 1,
-        role: Role::Impl,
-        state: SeatState::Idle,
-    }];
-    let p = plan(&snap, &seats, &cfg.gate_label, true, now());
-    let wake = p.actions.iter().find_map(|a| match a {
-        Action::WakeImpl { seat, issue } if *issue == cfg.issue => Some(*seat),
-        _ => None,
-    });
-    let Some(seat_no) = wake else {
-        let why = snap
-            .issues
-            .iter()
-            .find(|i| i.number == cfg.issue)
-            .map(|i| {
-                format!(
-                    "labels={:?} assoc={} assignees={:?} claim={:?}",
-                    i.labels, i.author_association, i.assignees, i.claim
-                )
-            })
-            .unwrap_or_else(|| "issue not in the open set".into());
-        record(
-            &mut log,
-            &repo,
-            Kind::Refused {
-                what: format!("#{}", cfg.issue),
-                why: format!("scheduler did not plan it: {why}"),
-            },
-        )?;
-        return Err(SliceError(format!(
-            "issue #{} is not eligible: {why}; plan was {:?}",
-            cfg.issue, p.actions
-        )));
+    let seat_no = match recheck(&snap, cfg, now()) {
+        Ok(seat) => seat,
+        Err(why) => {
+            record(
+                &mut log,
+                &repo,
+                Kind::Refused {
+                    what: format!("#{}", cfg.issue),
+                    why: format!("scheduler did not plan it: {why}"),
+                },
+            )?;
+            return Err(SliceError(format!(
+                "issue #{} is not eligible: {why}",
+                cfg.issue
+            )));
+        }
     };
     record(
         &mut log,
@@ -488,6 +510,16 @@ pub fn run_with(
     Ok(url)
 }
 
+/// The seat number inside a tmux target like `fwf-one:impl2`. The loop knows
+/// the number from its own plan; the `fwfd slice` verb is given a pane name, so
+/// it reads the number back out of it. Anything unreadable is seat 1.
+pub fn seat_no_of_target(target: &str) -> u8 {
+    target
+        .rsplit_once("impl")
+        .and_then(|(_, n)| n.trim().parse().ok())
+        .unwrap_or(1)
+}
+
 /// Resolve the slice's default paths under the floor dir.
 pub fn defaults(floor: &Path) -> (PathBuf, PathBuf) {
     (floor.join("run.jsonl"), floor.join("mirror"))
@@ -662,6 +694,129 @@ mod tests {
         assert!(e.0.contains("absent"), "{}", e.0);
         assert_eq!(refusals(&run_log).len(), 1);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn cfg_for(issue: u64, seat: u8) -> SliceConfig {
+        SliceConfig {
+            owner: "tbaums".into(),
+            repo: "fun-with-friends".into(),
+            issue,
+            base_branch: "staging".into(),
+            gate_label: "product-wip".into(),
+            seat,
+            seat_target: format!("fwf-one:impl{seat}"),
+            seat_expect_cmd: "claude".into(),
+            floor_dir: PathBuf::from("/tmp/floor"),
+            mirror_dir: PathBuf::from("/tmp/floor/mirror"),
+            job_template: PathBuf::from("job.md"),
+            run_log: PathBuf::from("/tmp/floor/run.jsonl"),
+            timeout: Duration::from_secs(60),
+            dry_run: false,
+            check_cmd: "cargo test".into(),
+        }
+    }
+
+    /// #579: the recheck must ask about the seat the loop dispatched to. With a
+    /// hardcoded 1 it refused every issue whenever seat 1 was held — claim,
+    /// refuse, release, repeat, three ticks running on #574.
+    #[test]
+    fn the_recheck_plans_over_the_seat_the_loop_picked_not_seat_one() {
+        let issue = crate::poll::IssueView {
+            number: 574,
+            title: "the dash is a board again".into(),
+            author_association: "OWNER".into(),
+            labels: vec![],
+            assignees: vec![],
+            state: "open".into(),
+            updated_at: String::new(),
+            claim: None,
+        };
+        // seat 1 is held by its own open floor PR; seat 2 is free
+        let held = crate::poll::PrView {
+            number: 581,
+            head_sha: "a".repeat(40),
+            head_ref: "impl1/issue-575-thin-slice".into(),
+            base_ref: "staging".into(),
+            draft: true,
+            state: "open".into(),
+            author: "fwf-impl[bot]".into(),
+            closes_issue: Some(575),
+            reviews: vec![],
+        };
+        let snap = Snapshot {
+            issues: vec![issue],
+            prs: vec![held],
+            fetched_at: 1,
+            known: true,
+        };
+        assert_eq!(recheck(&snap, &cfg_for(574, 2), 100), Ok(2));
+        let e = recheck(&snap, &cfg_for(574, 1), 100).unwrap_err();
+        assert!(e.contains("seat 1 cannot take #574"), "{e}");
+        // the refusal still names what the scheduler saw, for the record
+        assert!(e.contains("labels=[]") && e.contains("Nothing"), "{e}");
+        // an issue the snapshot does not carry is refused, not woken
+        let e = recheck(&snap, &cfg_for(999, 2), 100).unwrap_err();
+        assert!(e.contains("issue not in the open set"), "{e}");
+    }
+
+    /// Tonight's shape, through the real poller: a legacy 0.x draft on
+    /// `impl1/…` that the floor did not author, and one eligible issue. The
+    /// loop plans the wake and the slice's recheck agrees with it, instead of
+    /// refusing "not eligible … plan was [Nothing]" every tick (#579).
+    #[test]
+    fn a_legacy_impl_branch_no_longer_makes_the_slice_refuse_what_run_planned() {
+        use crate::fake_github::FakeGitHub;
+        const O: &str = "tbaums";
+        const R: &str = "fun-with-friends";
+        let fake = FakeGitHub::start();
+        let ops = fake.token("fwf-ops[bot]", &[]);
+        let human = fake.token("tbaums", &[]);
+        fake.seed_ref(O, R, "heads/staging", &FakeGitHub::sha("s"));
+        fake.seed_ref(O, R, "heads/impl1/issue-473-old", &FakeGitHub::sha("old"));
+        let issue = fake.seed_issue(O, R, "the dash is a board again", O, &[]);
+        // #540: opened by a person in July, on the prefix the 0.x factory used
+        let legacy = ureq::post(&format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
+            .set("Authorization", &format!("Bearer {human}"))
+            .send_string(
+                &serde_json::json!({"title":"0.x leftover","head":"impl1/issue-473-old","base":"staging","draft":true})
+                    .to_string(),
+            )
+            .unwrap()
+            .into_json::<serde_json::Value>()
+            .unwrap();
+        assert_eq!(legacy["user"]["login"], "tbaums");
+        let poller = Poller::new(fake.base_url(), &ops, O, R);
+        let mut snap = poller.poll(1).unwrap();
+        assert_eq!(snap.prs[0].author, "tbaums");
+        let seats = [SeatSlot {
+            seat: 1,
+            role: Role::Impl,
+            state: SeatState::Idle,
+        }];
+        // what `run` plans…
+        assert!(
+            plan(&snap, &seats, "product-wip", true, 1)
+                .actions
+                .contains(&Action::WakeImpl { seat: 1, issue }),
+            "{:?}",
+            plan(&snap, &seats, "product-wip", true, 1).actions
+        );
+        // …and what the slice makes of it, over the one issue it was given
+        snap.issues.retain(|i| i.number == issue);
+        assert_eq!(recheck(&snap, &cfg_for(issue, 1), 1), Ok(1));
+        // the floor's own PR on that seat still holds it
+        snap.prs[0].author = "fwf-impl[bot]".into();
+        assert!(recheck(&snap, &cfg_for(issue, 1), 1).is_err());
+    }
+
+    #[test]
+    fn a_pane_name_yields_its_seat_number_and_anything_else_is_seat_one() {
+        assert_eq!(seat_no_of_target("fwf-one:impl2"), 2);
+        assert_eq!(seat_no_of_target("fwf-one:impl11"), 11);
+        assert_eq!(seat_no_of_target("impl3"), 3);
+        assert_eq!(seat_no_of_target("fwf-one:qa1"), 1);
+        assert_eq!(seat_no_of_target("%7"), 1);
+        assert_eq!(seat_no_of_target(""), 1);
     }
 
     #[test]

@@ -65,6 +65,53 @@ fn pr_line(p: &PrView) -> String {
     )
 }
 
+/// Refusals a human still has to look at: per issue that is *still* open and
+/// unclaimed in the snapshot, the newest `Kind::Refused` naming it that no
+/// later claim or ship has overtaken, with how many times it was refused.
+///
+/// Keyed by issue, so the loop refusing the same issue on every tick is one
+/// line, not one per tick; a `#N` that is not an open issue in the snapshot
+/// (a PR number, a closed issue) is not one of these.
+fn stuck_refusals(s: &Snapshot, evs: &[log::Event]) -> Vec<(u64, String, usize)> {
+    let mut out = Vec::new();
+    for i in &s.issues {
+        if i.state != "open" || i.claim.is_some() {
+            continue;
+        }
+        let mine = format!("#{}", i.number);
+        let last_refusal = evs
+            .iter()
+            .rfind(|e| matches!(&e.kind, Kind::Refused { what, .. } if *what == mine));
+        let Some(e) = last_refusal else { continue };
+        let Kind::Refused { why, .. } = &e.kind else {
+            continue;
+        };
+        // A claim or a ship *after* the refusal means the loop got past it.
+        // Strictly after: the claim/refuse/release loop this line exists for
+        // records all three inside one second, and must stay visible.
+        let moved_on = evs.iter().any(|x| {
+            x.ts > e.ts
+                && matches!(
+                    &x.kind,
+                    Kind::Issue {
+                        issue,
+                        to: crate::types::IssueState::Claimed { .. }
+                            | crate::types::IssueState::Shipped { .. },
+                    } if *issue == i.number
+                )
+        });
+        if moved_on {
+            continue;
+        }
+        let times = evs
+            .iter()
+            .filter(|x| matches!(&x.kind, Kind::Refused { what, .. } if *what == mine))
+            .count();
+        out.push((i.number, why.clone(), times));
+    }
+    out
+}
+
 pub fn render(inp: &StatusInput) -> String {
     let s = inp.snapshot;
     let mut out = String::new();
@@ -174,54 +221,68 @@ pub fn render(inp: &StatusInput) -> String {
         }
     }
 
+    let evs = log::read_all(inp.run_log).unwrap_or_default();
+    // A refusal the loop repeats every tick used to scroll out of "recent" and
+    // leave nothing behind (#579): the floor looked busy while an issue was
+    // claimed, refused and released forever. Surface the live ones.
+    for (issue, why, times) in stuck_refusals(s, &evs) {
+        needs_you.push(format!(
+            "#{issue} is still open but the loop refused it{}: {}",
+            if times > 1 {
+                format!(" {times}× in this record")
+            } else {
+                String::new()
+            },
+            why.chars().take(100).collect::<String>()
+        ));
+    }
+
     out.push_str("recent\n");
-    if let Ok(evs) = log::read_all(inp.run_log) {
-        for e in evs
-            .iter()
-            .rev()
-            .take(8)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            let age = inp.now.saturating_sub(e.ts);
-            let what = match &e.kind {
-                Kind::Issue { issue, to } => format!("issue #{issue} → {to:?}"),
-                Kind::Pr { pr, to, .. } => format!(
-                    "pr #{pr} → {}",
-                    match to {
-                        PrState::Merged { .. } => "merged".to_string(),
-                        other => format!("{other:?}"),
-                    }
-                ),
-                Kind::Seat {
-                    seat,
-                    role,
-                    to,
-                    tokens_in,
-                    tokens_out,
-                } => format!(
-                    "seat {seat} {role:?} → {to:?} {}",
-                    match (tokens_in, tokens_out) {
-                        (Some(i), Some(o)) => format!("[{i} in/{o} out]"),
-                        _ => String::new(),
-                    }
-                ),
-                Kind::Gate { to } => format!("gate → {to:?}"),
-                Kind::Promote { branch, to, .. } => {
-                    format!("promote {branch} → {}", &to[..8.min(to.len())])
+    for e in evs
+        .iter()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        let age = inp.now.saturating_sub(e.ts);
+        let what = match &e.kind {
+            Kind::Issue { issue, to } => format!("issue #{issue} → {to:?}"),
+            Kind::Pr { pr, to, .. } => format!(
+                "pr #{pr} → {}",
+                match to {
+                    PrState::Merged { .. } => "merged".to_string(),
+                    other => format!("{other:?}"),
                 }
-                Kind::Human {
-                    actor,
-                    action,
-                    target,
-                } => format!("human {actor} {action} {target}"),
-                Kind::Refused { what, why } => format!("REFUSED {what}: {why}"),
-                Kind::Note { text } => format!("note {text}"),
-            };
-            let what: String = what.chars().take(110).collect();
-            out.push_str(&format!("  {:>6}s ago  {what}\n", age));
-        }
+            ),
+            Kind::Seat {
+                seat,
+                role,
+                to,
+                tokens_in,
+                tokens_out,
+            } => format!(
+                "seat {seat} {role:?} → {to:?} {}",
+                match (tokens_in, tokens_out) {
+                    (Some(i), Some(o)) => format!("[{i} in/{o} out]"),
+                    _ => String::new(),
+                }
+            ),
+            Kind::Gate { to } => format!("gate → {to:?}"),
+            Kind::Promote { branch, to, .. } => {
+                format!("promote {branch} → {}", &to[..8.min(to.len())])
+            }
+            Kind::Human {
+                actor,
+                action,
+                target,
+            } => format!("human {actor} {action} {target}"),
+            Kind::Refused { what, why } => format!("REFUSED {what}: {why}"),
+            Kind::Note { text } => format!("note {text}"),
+        };
+        let what: String = what.chars().take(110).collect();
+        out.push_str(&format!("  {:>6}s ago  {what}\n", age));
     }
 
     out.push_str("needs you\n");
@@ -250,6 +311,152 @@ pub fn seat_commands(targets: &[String]) -> Vec<(String, String)> {
 mod tests {
     use super::*;
     use crate::poll::IssueView;
+    use crate::types::{Fence, IssueState, Sha};
+
+    fn open_issue(n: u64) -> IssueView {
+        IssueView {
+            number: n,
+            title: format!("issue {n}"),
+            author_association: "OWNER".into(),
+            labels: vec![],
+            assignees: vec![],
+            state: "open".into(),
+            updated_at: String::new(),
+            claim: None,
+        }
+    }
+
+    fn refused(ts: u64, what: &str, why: &str) -> log::Event {
+        log::Event {
+            ts,
+            repo: "o/r".into(),
+            kind: Kind::Refused {
+                what: what.into(),
+                why: why.into(),
+            },
+        }
+    }
+
+    fn issue_ev(ts: u64, issue: u64, to: IssueState) -> log::Event {
+        log::Event {
+            ts,
+            repo: "o/r".into(),
+            kind: Kind::Issue { issue, to },
+        }
+    }
+
+    /// #579: a refusal the loop repeats every tick has to stay visible — it
+    /// used to scroll out of "recent" and leave the floor looking busy.
+    #[test]
+    fn a_repeating_refusal_stays_in_needs_you_until_the_issue_moves() {
+        let s = Snapshot {
+            issues: vec![open_issue(574), open_issue(575)],
+            prs: vec![],
+            fetched_at: 1,
+            known: true,
+        };
+        let why = "scheduler did not plan it: seat 1 cannot take #574";
+        let mut evs = vec![refused(10, "#574", why)];
+        let line = |evs: &[log::Event]| {
+            stuck_refusals(&s, evs)
+                .into_iter()
+                .map(|(n, w, t)| format!("#{n} {t}× {w}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(line(&evs), vec![format!("#574 1× {why}")]);
+        // every tick refuses it again: still one line, with the count and the
+        // newest reason
+        evs.push(refused(70, "#574", why));
+        evs.push(refused(130, "#574", "and again"));
+        assert_eq!(line(&evs), vec!["#574 3× and again".to_string()]);
+        // a claim after the refusal means the loop got past it
+        let mut claimed = evs.clone();
+        claimed.push(issue_ev(
+            140,
+            574,
+            IssueState::Claimed {
+                seat: 2,
+                fence: Fence("f".repeat(40)),
+            },
+        ));
+        assert!(line(&claimed).is_empty());
+        // so does a ship, and a claim the snapshot still holds
+        let mut shipped = evs.clone();
+        shipped.push(issue_ev(
+            140,
+            574,
+            IssueState::Shipped {
+                pr: 581,
+                sha: Sha::parse(&"b".repeat(40)).unwrap(),
+            },
+        ));
+        assert!(line(&shipped).is_empty());
+        let mut live_claim = s.clone();
+        live_claim.issues[0].claim = Some(Fence("c".repeat(40)));
+        assert!(stuck_refusals(&live_claim, &evs).is_empty());
+        // a closed issue, and a refusal naming a PR rather than an issue, are
+        // nobody's needs-you line
+        let mut closed = s.clone();
+        closed.issues[0].state = "closed".into();
+        assert!(stuck_refusals(&closed, &evs).is_empty());
+        assert!(stuck_refusals(&s, &[refused(10, "#1270", "QA seat stalled")]).is_empty());
+        // the loop's own claim → refuse → release, all within one second, is
+        // the shape this line is for: it does not count as having moved on
+        let churn = vec![
+            issue_ev(
+                200,
+                574,
+                IssueState::Claimed {
+                    seat: 1,
+                    fence: Fence("f".repeat(40)),
+                },
+            ),
+            refused(200, "#574", "seat worktree is dirty"),
+            issue_ev(200, 574, IssueState::Ready),
+        ];
+        assert_eq!(
+            line(&churn),
+            vec!["#574 1× seat worktree is dirty".to_string()]
+        );
+        // an older claim does not clear a newer refusal
+        let mut reclaimed = vec![issue_ev(
+            5,
+            574,
+            IssueState::Claimed {
+                seat: 1,
+                fence: Fence("f".repeat(40)),
+            },
+        )];
+        reclaimed.extend(evs.clone());
+        assert_eq!(line(&reclaimed), vec!["#574 3× and again".to_string()]);
+        // and it reaches the rendered page, once
+        let dir = std::env::temp_dir().join(format!("fwfd-status-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_log = dir.join("run.jsonl");
+        let mut l = log::Log::open(&run_log).unwrap();
+        for e in &evs {
+            l.append(e).unwrap();
+        }
+        let r = render(&StatusInput {
+            snapshot: &s,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: vec![],
+            run_log: &run_log,
+            now: 200,
+            rework_cap: 2,
+        });
+        let lines: Vec<&str> = r
+            .lines()
+            .filter(|l| l.contains("the loop refused it"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{r}");
+        assert!(
+            lines[0].contains("#574 is still open but the loop refused it 3× in this record"),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn unknown_snapshot_renders_a_warning_and_nothing_else() {
@@ -300,6 +507,7 @@ mod tests {
                 base_ref: "staging".into(),
                 draft: false,
                 state: "open".into(),
+                author: "fwf-impl[bot]".into(),
                 closes_issue: Some(2),
                 reviews: vec![("fwf-qa[bot]".into(), "APPROVED".into(), "a".repeat(40))],
             }],
@@ -338,6 +546,7 @@ mod tests {
                 base_ref: "staging".into(),
                 draft: true,
                 state: "open".into(),
+                author: "fwf-impl[bot]".into(),
                 closes_issue: Some(575),
                 reviews: vec![(
                     "fwf-qa[bot]".into(),

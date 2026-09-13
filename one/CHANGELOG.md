@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The loop and the slice agree on which seat is free (#579).** `PrView` carries
+  the PR's `author`, and "one PR in flight per impl seat" counts only PRs this
+  floor opened (`…-impl[bot]`) — the 0.x factory used the same `impl<n>/` prefix,
+  so legacy draft #540 had been holding seat 1 since July. `SliceConfig` gains
+  `seat`, set from the `WakeImpl` the loop is dispatching, so `slice`'s own
+  eligibility recheck asks about that seat instead of a hardcoded 1: the real
+  cause of "run plans it, slice refuses it, three ticks running" on #574. And a
+  refusal no longer scrolls away — `fwfd status`'s needs-you carries the newest
+  refusal per still-open, unclaimed issue, once, with how many times it repeated.
+
 - **A refused PR is rework, not a parked floor (#576).** `sched::plan` gains
   `Action::Rework`: an open PR with a CHANGES_REQUESTED review anchored at its
   head, on a branch that names an idle impl seat, wakes that seat on its own
