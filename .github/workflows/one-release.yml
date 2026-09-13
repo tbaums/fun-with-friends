@@ -78,7 +78,11 @@ jobs:
           out="$RUNNER_TEMP/release"
           mkdir -p "$out/$name"
           cp "target/x86_64-unknown-linux-gnu/release/${{ steps.meta.outputs.bin }}" "$out/$name/"
-          cp README.md RELEASING.md CHANGELOG.md "$out/$name/"
+          # #609: runbook and changelog now live at docs/releasing.md and the
+          # repo-root CHANGELOG.md; the asset keeps its old filenames.
+          cp README.md "$out/$name/"
+          cp ../docs/releasing.md "$out/$name/RELEASING.md"
+          cp ../CHANGELOG.md "$out/$name/"
           tar -C "$out" -czf "$out/$name.tar.gz" "$name"
           ( cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
           cat "$out/$name.tar.gz.sha256"
