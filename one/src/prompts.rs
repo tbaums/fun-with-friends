@@ -1,13 +1,17 @@
 //! T-26 — job prompts per (template family, role), one job per wake.
 //!
-//! `prompts/<family>/<role>-job.md`; a family that does not override a role
+//! Repo-root `prompts/<family>/<role>-job.md`; a family that does not override a role
 //! falls back to `dev`. Every file may use only the placeholders the
 //! supervisor fills, checked by test so a typo never reaches a seat as
 //! literal `{{FOO}}`.
 
 use std::path::{Path, PathBuf};
 
-pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/prompts");
+/// Repo-root `prompts/`: the job prompts are the product's content, not a
+/// crate detail (#605). Read from disk at runtime, not embedded at build time.
+/// `one/prompts` stays as a symlink here for one release; this points past it
+/// at the real directory so the two can never be read as different trees.
+pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts");
 pub const PLACEHOLDERS: &[&str] = &[
     "{{SEAT}}",
     "{{REPO}}",
