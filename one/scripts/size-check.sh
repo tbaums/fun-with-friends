@@ -14,5 +14,5 @@ while IFS= read -r f; do
     else echo "ok   $f: $n (grandfathered, ceiling $cap)"; fi
   elif [ "$n" -gt "$LIMIT" ]; then echo "FAIL $f: $n lines > $LIMIT"; rc=1
   else echo "ok   $f: $n"; fi
-done < <(find src scripts prompts -type f \( -name '*.rs' -o -name '*.sh' -o -name '*.md' \) | sort)
+done < <(find src scripts ../prompts -type f \( -name '*.rs' -o -name '*.sh' -o -name '*.md' \) | sort)
 exit $rc

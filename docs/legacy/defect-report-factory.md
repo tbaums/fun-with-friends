@@ -50,7 +50,7 @@ is nothing to diverge on for a single grounded report).
 
 Nine repeated failure modes motivated this ticket; each maps to a specific
 stage so a regression on any one shows up as a failed checklist item, not a
-vibe. See [`templates/defect-report/README.md`](../templates/defect-report/README.md#the-9-failure-modes--the-stage-that-catches-each)
+vibe. See [`templates/defect-report/README.md`](../../templates/defect-report/README.md#the-9-failure-modes--the-stage-that-catches-each)
 for the full table. The two structural bets worth calling out here:
 
 | Bet | Where it lives |
@@ -98,9 +98,9 @@ opportunity. The full protocol — sample size, effect-size threshold, blinding
 procedure, the three adversarial fixtures (planted identifier, planted wrong
 fact, a write-side-effect target), cost-as-axis reporting, and the bounded
 fail-closed iteration cap — is committed in
-[`templates/defect-report/README.md`](../templates/defect-report/README.md#proving-the-thesis--the-pre-registered-eval-protocol)
+[`templates/defect-report/README.md`](../../templates/defect-report/README.md#proving-the-thesis--the-pre-registered-eval-protocol)
 and scaffolded under
-[`templates/defect-report/eval/`](../templates/defect-report/eval/README.md).
+[`templates/defect-report/eval/`](../../templates/defect-report/eval/README.md).
 A losing tier in that comparison is a valid, reportable outcome, never
 suppressed — see that section for the exact decision rule.
 

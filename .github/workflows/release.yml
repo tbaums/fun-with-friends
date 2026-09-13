@@ -1,4 +1,7 @@
-name: Release
+# Named "legacy release" (#608): this cuts the 0.x bash tool's release. fwf
+# 1.0's asset build is one-release.yml. Job-level `name:` fields below are
+# untouched for the same reason as legacy CI's.
+name: legacy release
 
 on:
   push:

@@ -28,7 +28,7 @@ the factory is a fold over that file.
 ## Ten-minute start
 
 You need macOS or Linux with `tmux`, `git` and a stable Rust toolchain, a Claude
-subscription, and [three GitHub Apps](one/docs/github-apps.md) installed on the
+subscription, and [three GitHub Apps](docs/github-apps.md) installed on the
 repository with their keys in `~/.fwf/keys/` and ids in `~/.fwf/apps.toml`.
 
 ```sh
@@ -90,15 +90,15 @@ define falls back to `dev`.
 
 | family | impl | qa | gv | pm | rework |
 |---|---|---|---|---|---|
-| `consulting` | [impl](one/prompts/consulting/impl-job.md) | [qa](one/prompts/consulting/qa-job.md) | [gv](one/prompts/consulting/gv-job.md) | · | · |
-| `defect-report` | [impl](one/prompts/defect-report/impl-job.md) | [qa](one/prompts/defect-report/qa-job.md) | · | · | · |
-| `dev` | [impl](one/prompts/dev/impl-job.md) | [qa](one/prompts/dev/qa-job.md) | [gv](one/prompts/dev/gv-job.md) | [pm](one/prompts/dev/pm-job.md) | [rework](one/prompts/dev/impl-rework.md) |
-| `ideation` | [impl](one/prompts/ideation/impl-job.md) | [qa](one/prompts/ideation/qa-job.md) | [gv](one/prompts/ideation/gv-job.md) | · | · |
-| `refactor` | [impl](one/prompts/refactor/impl-job.md) | [qa](one/prompts/refactor/qa-job.md) | · | · | · |
-| `user-testing` | [impl](one/prompts/user-testing/impl-job.md) | [qa](one/prompts/user-testing/qa-job.md) | · | · | · |
-| `validate` | [impl](one/prompts/validate/impl-job.md) | [qa](one/prompts/validate/qa-job.md) | [gv](one/prompts/validate/gv-job.md) | · | · |
+| `consulting` | [impl](prompts/consulting/impl-job.md) | [qa](prompts/consulting/qa-job.md) | [gv](prompts/consulting/gv-job.md) | · | · |
+| `defect-report` | [impl](prompts/defect-report/impl-job.md) | [qa](prompts/defect-report/qa-job.md) | · | · | · |
+| `dev` | [impl](prompts/dev/impl-job.md) | [qa](prompts/dev/qa-job.md) | [gv](prompts/dev/gv-job.md) | [pm](prompts/dev/pm-job.md) | [rework](prompts/dev/impl-rework.md) |
+| `ideation` | [impl](prompts/ideation/impl-job.md) | [qa](prompts/ideation/qa-job.md) | [gv](prompts/ideation/gv-job.md) | · | · |
+| `refactor` | [impl](prompts/refactor/impl-job.md) | [qa](prompts/refactor/qa-job.md) | · | · | · |
+| `user-testing` | [impl](prompts/user-testing/impl-job.md) | [qa](prompts/user-testing/qa-job.md) | · | · | · |
+| `validate` | [impl](prompts/validate/impl-job.md) | [qa](prompts/validate/qa-job.md) | [gv](prompts/validate/gv-job.md) | · | · |
 
-[`one/prompts/README.md`](one/prompts/README.md) explains the families and the
+[`one/prompts/README.md`](prompts/README.md) explains the families and the
 fallback rule, and records which coordination the port removed rather than
 translated.
 
@@ -163,12 +163,12 @@ identities, fences and typed merges, the run record, and the meter.
 
 - [`one/README.md`](one/README.md) — the detailed guide: layout, every flag, the
   full enforcement list.
-- [`one/docs/github-apps.md`](one/docs/github-apps.md) — registering the three
+- [`one/docs/github-apps.md`](docs/github-apps.md) — registering the three
   Apps with their minimal permissions.
-- [`one/RELEASING.md`](one/RELEASING.md) — cutting a release.
-- [`one/CHANGELOG.md`](one/CHANGELOG.md) — what shipped in each 1.0 version.
+- [`one/RELEASING.md`](docs/releasing.md) — cutting a release.
+- [`one/CHANGELOG.md`](CHANGELOG.md) — what shipped in each 1.0 version.
 
-[MIT](LICENSE) © 2026 Jamie Tanenbaum.
+[MIT](LICENSE) © 2026 Jamie Tanenbaum. What the three App identities can and cannot do, and how to report a problem, is in [`SECURITY.md`](SECURITY.md).
 
 ## Legacy
 

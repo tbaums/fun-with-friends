@@ -1,12 +1,13 @@
 name: one CI
 
-# fwf 1.0 lives under one/. Three short parallel jobs; target < 5 min total.
+# fwf 1.0 lives under one/; its documentation lives at the repo root under
+# docs/ (#609). Four short parallel jobs; target < 5 min total.
 on:
   push:
     branches: [main, staging, 'one/**']
-    paths: ['one/**', '.github/workflows/one-ci.yml']
+    paths: ['one/**', 'prompts/**', 'docs/**', 'scripts/link-check.sh', '.github/workflows/one-ci.yml']
   pull_request:
-    paths: ['one/**', '.github/workflows/one-ci.yml']
+    paths: ['one/**', 'prompts/**', 'docs/**', 'scripts/link-check.sh', '.github/workflows/one-ci.yml']
   workflow_dispatch:
 
 permissions:
@@ -48,3 +49,17 @@ jobs:
       - uses: actions/checkout@v5
       - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/release-publish.sh
       - run: scripts/size-check.sh
+
+  links:
+    name: docs links resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    # docs/ is at the repo root, not under one/, so this job opts out of the
+    # workflow-level working-directory.
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash -n scripts/link-check.sh
+      - run: bash scripts/link-check.sh
