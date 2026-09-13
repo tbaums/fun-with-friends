@@ -1,6 +1,6 @@
 # Changelog — fwf 1.0 (`one/`)
 
-## Unreleased
+## 1.0.2 — 2026-09-12
 
 - **A release is one command (#584).** Both 1.0 cuts were hand-made, macOS-only,
   with no guarantee `release-check` ever ran. `one/scripts/release-publish.sh
