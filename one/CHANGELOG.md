@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Every wake gets its own tmux buffer and job file (#586).** The paste buffer
+  was named `fwfd-<seat>` and the job file `fwfd-job-<pid>-<seat>.txt`, but
+  tmux's buffer namespace belongs to the server and the temp dir is shared: the
+  loop's GV wake and a hand-run `fwfd spec`, both seat 1, raced and one's
+  `paste-buffer -d` deleted the other's buffer (`tmux: no buffer fwfd-1`), while
+  two tests in one `cargo test` process deleted each other's job file on ubuntu
+  CI. Both names now carry a per-wake token (seat, pid, an in-process counter
+  and a nanosecond stamp), so no lock is needed for either.
+
 - **GV triage honours `skip_labels` (#585).** `triage_candidates` read the gate
   label but not the manifest's skip list, and it runs before the tick's own
   skip-label filter, so on a `triage_new` floor every parked `idea` / `tracking`
