@@ -14,7 +14,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 - If your branch no longer sits on current `{{BASE}}`, rebase it: `git fetch origin && git rebase origin/{{BASE}}`. Resolve conflicts in favour of both changes; never drop someone else's merged work.
 - Before you push, the repository's own check must pass in your worktree: `{{CHECK}}`. Keep the commit message trailer `Closes #{{ISSUE}}` on the branch.
 - Push the branch to `origin` (the mirror), force-with-lease because you may have rebased: `git push --force-with-lease -u origin {{BRANCH}}`.
-- Then write your verdict as JSON to the path named at the end of this message, atomically (write to `<path>.tmp` then `mv`), and stop. Nothing else. The supervisor pushes the branch to GitHub and lets QA look again.
+- Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop. Nothing else. The supervisor pushes the branch to GitHub and lets QA look again.
 
 Verdict format (exactly one of these, valid JSON, no prose around it):
 {"verdict":"implemented","branch":"{{BRANCH}}","head":"<the 40-char sha of your final commit>","summary":"<one sentence on what you changed>"}

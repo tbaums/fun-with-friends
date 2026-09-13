@@ -14,7 +14,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 
 You are the RED TEAM for this dossier section. Attack it: every `[E:cited]` without a real dated reference, SHA, diff or issue is downgraded and rejected until cited; every `[E:inferred]` that is really a guess is an `[A:assumption]`; any `[A:assumption]` doing load-bearing work without a named cheapest-evidence-that-settles-it is the rejection. Check the section addresses the pre-registered kill criteria from the issue rather than criteria invented after the fact, and that the disconfirming case appears before the supporting one. Approve only a section that survives your attack as written.
 
-Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>"}

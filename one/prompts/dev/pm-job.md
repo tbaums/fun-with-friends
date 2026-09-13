@@ -13,7 +13,7 @@ Write the spec yourself; decide wherever you reasonably can and state each decis
 
 Sections, in order, markdown: Problem · Proposed behavior · Acceptance criteria (verifiable, numbered) · Edge cases · Out of scope · Assumptions. Keep the whole spec under 500 words: a builder reads it in two minutes, and every extra paragraph is paid for again on every impl, QA and GV wake that carries it. Read only what you need to decide; do not survey the codebase.
 
-Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"specced","title":"<final title, or the current one>","body":"<the full markdown spec>","discovery":false,"questions":["<only questions that change what gets built; usually empty>"]}

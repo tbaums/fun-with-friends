@@ -12,7 +12,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 - Do: `git fetch origin && git checkout --detach {{HEAD}}`. If that commit is not `{{HEAD}}`, stop and report blocked.
 - Review the diff against `origin/{{BASE}}` (`git diff origin/{{BASE}}...HEAD`). Check it does what issue #{{ISSUE}} asked, nothing more, and that it is safe. Run the repository's own check at the head: `{{CHECK}}` (docs-only changes need no command). A red check is a rejection with the failing output quoted.
 - Do not modify or push anything. Do not fix things yourself; your output is a verdict.
-- Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+- Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>"}

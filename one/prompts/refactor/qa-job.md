@@ -14,7 +14,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 
 This is a refactoring PR: the one unforgivable failure is a silent behavior change, so your bar is stricter than a feature review. Verify, in order: (1) no existing test expectation was edited (`git diff origin/{{BASE}}...HEAD -- '*test*'` shows only additions or pure restructuring); (2) the diff reads as a sequence of mechanical moves, one kind per commit, with no logic change riding along; (3) the fast check passes at the head (run the repository's own check: `{{CHECK}}`); (4) any behavior change you can find, however small, is a rejection with the exact line named. A refactor that also "fixes" something is rejected: the fix belongs in its own PR.
 
-Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>"}

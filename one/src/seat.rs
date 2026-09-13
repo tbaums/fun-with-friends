@@ -221,8 +221,36 @@ pub fn wake(
     })
 }
 
+/// The whole verdict in `path`, if there is one there yet.
+///
+/// `Ok(None)` — no file (including one that vanished between two polls).
+/// `Err(_)` — a file that is not a verdict *yet*: half-written by a seat that
+/// redirected straight into `<path>` instead of writing `<path>.tmp` and
+/// renaming, or JSON the seat typed by hand with an unescaped quote in it.
+/// Both are "not yet" to [`wait_verdict`], never its answer.
+fn read_verdict(path: &Path) -> Result<Option<Verdict>, SeatError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(SeatError::Malformed(format!("unreadable: {e}"))),
+    };
+    serde_json::from_str(&text).map(Some).map_err(|e| {
+        SeatError::Malformed(format!(
+            "{e}; the file holds: {}",
+            text.chars().take(400).collect::<String>()
+        ))
+    })
+}
+
 /// Wait for the verdict file. Returns Reported (with the verdict) or Stalled.
 /// Never kills anything; the caller decides.
+///
+/// A verdict is a file that *parses*, not a file that exists (#587): `fwfd spec`
+/// read a half-written `verdict-spec-1268.json` and failed outright, seconds
+/// before the file held a valid verdict. So a read or parse failure is simply
+/// "not yet" and polling continues to the deadline; only the deadline decides,
+/// and it says Stalled — with the parse error and the raw text on stderr, so a
+/// seat that hand-typed its JSON can be seen doing it.
 pub fn wait_verdict(
     job: &JobRef,
     verdict_path: &Path,
@@ -230,20 +258,15 @@ pub fn wait_verdict(
     poll: Duration,
 ) -> Result<(SeatState, Option<Verdict>), SeatError> {
     let start = Instant::now();
+    let mut last_bad: Option<SeatError> = None;
     loop {
-        if verdict_path.exists() {
-            let text = std::fs::read_to_string(verdict_path)
-                .map_err(|e| SeatError::Malformed(e.to_string()))?;
-            let v: Verdict = serde_json::from_str(&text).map_err(|e| {
-                SeatError::Malformed(format!(
-                    "{e}: {}",
-                    text.chars().take(120).collect::<String>()
-                ))
-            })?;
-            return Ok((SeatState::Reported { job: job.clone() }, Some(v)));
+        match read_verdict(verdict_path) {
+            Ok(Some(v)) => return Ok((SeatState::Reported { job: job.clone() }, Some(v))),
+            Ok(None) => {}
+            Err(e) => last_bad = Some(e),
         }
         if now() >= deadline {
-            return Ok((SeatState::Stalled { job: job.clone() }, None));
+            break;
         }
         std::thread::sleep(poll);
         if start.elapsed()
@@ -254,9 +277,19 @@ pub fn wait_verdict(
             )
             && now() >= deadline
         {
-            return Ok((SeatState::Stalled { job: job.clone() }, None));
+            break;
         }
     }
+    // Stalled. If something was there but never became a verdict, say what it
+    // was: the caller turns Stalled into a non-zero exit either way, and this
+    // is the only record of why a present file did not count.
+    if let Some(e) = last_bad {
+        eprintln!(
+            "fwfd: {} never became a verdict by the deadline: {e}",
+            verdict_path.display()
+        );
+    }
+    Ok((SeatState::Stalled { job: job.clone() }, None))
 }
 
 /// Kill a pane. The supervisor is the only caller; nothing else in the
@@ -345,6 +378,92 @@ mod tests {
             issue: Some(41),
             pr: None,
         }
+    }
+
+    /// A seat that writes straight into `<path>` instead of `<path>.tmp` + `mv`,
+    /// in two chunks with a pause between them — transom #1268's `fwfd spec`
+    /// (#587). The reader must see the half-written file as "not yet".
+    fn sloppy_writer(path: PathBuf, text: String, finish: bool) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let (head, tail) = text.split_at(text.len() / 2);
+            std::fs::write(&path, head).unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+            if finish {
+                std::fs::write(&path, format!("{head}{tail}")).unwrap();
+            }
+        })
+    }
+
+    #[test]
+    fn a_half_written_verdict_is_not_yet_and_the_finished_one_is_read() {
+        let dir = std::env::temp_dir().join(format!("fwfd-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("verdict-spec-1268.json");
+        let text = serde_json::json!({
+            "verdict": "specced", "title": "a spec", "body": "the body", "discovery": false
+        })
+        .to_string();
+        let w = sloppy_writer(out.clone(), text, true);
+        // polls much faster than the writer's pause, so the partial file IS seen
+        let (st, v) = wait_verdict(&job(), &out, now() + 10, Duration::from_millis(20))
+            .expect("a partial read is not an error");
+        w.join().unwrap();
+        assert!(matches!(st, SeatState::Reported { .. }), "{st:?}");
+        assert!(
+            matches!(v, Some(Verdict::Specced { ref title, .. }) if title == "a spec"),
+            "{v:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_verdict_that_never_parses_is_stalled_at_the_deadline_not_an_error() {
+        let dir = std::env::temp_dir().join(format!("fwfd-unparsable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // the write that never completes
+        let out = dir.join("verdict-spec-1.json");
+        let w = sloppy_writer(
+            out.clone(),
+            serde_json::json!({"verdict": "triaged", "ready": true, "reason": "ok"}).to_string(),
+            false,
+        );
+        let (st, v) = wait_verdict(&job(), &out, now() + 1, Duration::from_millis(20))
+            .expect("an unfinished write is not an error");
+        w.join().unwrap();
+        assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
+        assert!(v.is_none());
+        // and the file the seat typed by hand, quotes and all: complete, valid
+        // UTF-8, not JSON. Still Stalled, still not an error (#587's round two).
+        let typed = dir.join("verdict-triage-579.json");
+        std::fs::write(
+            &typed,
+            "{\"verdict\":\"triaged\",\"ready\":true,\"reason\":\"it[\"user\"][\"login\"] is empty\"}",
+        )
+        .unwrap();
+        let (st, v) = wait_verdict(&job(), &typed, now() + 1, Duration::from_millis(20)).unwrap();
+        assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
+        assert!(v.is_none(), "a tolerant read must not invent a verdict");
+        // syntactically valid JSON that is not a verdict is also not one
+        let empty = dir.join("verdict-empty.json");
+        std::fs::write(&empty, "{}").unwrap();
+        let (st, v) = wait_verdict(&job(), &empty, now() + 1, Duration::from_millis(20)).unwrap();
+        assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
+        assert!(v.is_none());
+        // a file that disappears between polls is "not yet", not a failure
+        let gone = dir.join("verdict-gone.json");
+        std::fs::write(&gone, "{\"verdict\":\"blocked\"").unwrap();
+        let g = gone.clone();
+        let rm = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::remove_file(&g).unwrap();
+        });
+        let (st, v) = wait_verdict(&job(), &gone, now() + 1, Duration::from_millis(20)).unwrap();
+        rm.join().unwrap();
+        assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
+        assert!(v.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #586: the names a wake writes into are shared with every other wake on

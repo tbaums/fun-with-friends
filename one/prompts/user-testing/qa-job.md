@@ -14,7 +14,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 
 This PR is a persona diary, not code. You are the RESEARCHER: reject a diary whose entries do not follow EXPECT → ACT → OBSERVE, that lacks a screenshot per action, that breaks character, or that shows the persona read product source. Approve a diary from which a findings report could be written; put the three sharpest FRICTION entries, ranked, in your notes so the supervisor's report cycle can start from them.
 
-Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>"}
