@@ -1,7 +1,7 @@
 # Cutover and rollback (T-33)
 
 The v0.42.x install stays. 1.0 runs beside it until the head-to-head says
-otherwise, and going back is a `fwf up` away.
+otherwise, and going back is a `fwf-legacy up` away.
 
 ## Before
 
@@ -10,7 +10,7 @@ otherwise, and going back is a `fwf up` away.
   (convert with `fwf init-manifest --from-profile`).
 - `~/.fwf/seat-token` exists (`claude setup-token`); seats come up
   authenticated with `one/scripts/seat-up.sh`.
-- The v0.42 floor for that repo is DOWN (`fwf down`); two factories on one
+- The v0.42 floor for that repo is DOWN (`fwf-legacy down`); two factories on one
   repo would race on claims.
 
 ## Cut over (one repo at a time)
@@ -30,7 +30,7 @@ otherwise, and going back is a `fwf up` away.
    GitHub write is a single request, and the record shows the last one).
 2. Delete any live claim refs it held: `git push origin :refs/claims/<n>`
    under the operator's own credentials.
-3. `fwf up` on the v0.42 profile. Nothing 1.0 did needs undoing: its PRs
+3. `fwf-legacy up` on the v0.42 profile. Nothing 1.0 did needs undoing: its PRs
    are ordinary PRs, its merges ordinary merges, its check-runs inert.
 
 ## Keep both
