@@ -1,4 +1,10 @@
-# fwf 1.0 — `fwfd`
+# fwf 1.0 — `fwf`
+
+`fwf` IS 1.0: `one/`'s binary is the default command. The v0.42 bash tool is
+`fwf-legacy` (same code, renamed). For one release the 1.0 binary also installs
+as `fwfd`, its old name, so existing scripts and notes keep working; the
+`fwfd/<suite>` check-run name and the `.fwfd/gate` state directory keep theirs
+too. Both go next release.
 
 One Rust supervisor runs a software factory on a GitHub repository. It reads
 the tracker, decides what to do next, wakes an idle Claude Code pane with
@@ -7,7 +13,7 @@ itself under three narrow GitHub App identities. Seats never hold a GitHub
 write token, never poll, never loop, and cost nothing while idle.
 
 ```
-issue ──GV triage──▶ gated ──human `fwfd ungate`──▶ eligible
+issue ──GV triage──▶ gated ──human `fwf ungate`──▶ eligible
   ──impl seat──▶ branch on the local mirror ──ops push, impl PR──▶ draft PR
   ──QA seat──▶ review under fwf-qa (anchored to the head) ──▶ typed merge under fwf-ops
   ──gate (bash -o pipefail, memory-capped venue)──▶ check-run ──▶ promote by literal SHA
@@ -18,7 +24,8 @@ runs on three private repos — diaspective (22 merged PRs in one day, from an e
 repo to a styled MVP), baton, and transom (6 bug fixes drained 2026-09-11/12, promoted,
 released as transom v0.52.0 and deployed to prod, 0 stalls) — see `docs/BUILD-LOG.md`.
 Known gaps are tickets, not surprises: #575 (slice must branch from the fence
-sha), #576 (no rework action on a changes-requested review). The v0.42 `fwf` command is untouched; `fwfd` runs beside it.
+sha), #576 (no rework action on a changes-requested review). The v0.42 tool still
+ships, as `fwf-legacy`, and is unchanged apart from its name.
 
 ## Requirements
 
@@ -37,24 +44,24 @@ sha), #576 (no rework action on a changes-requested review). The v0.42 `fwf` com
    ```
 2. Write the manifest into the customer repo (or convert a v0.42 profile):
    ```
-   fwfd init-manifest > .fwf/fwf.toml
-   fwfd init-manifest --from-profile profiles/transom.sh --repo tbaums/transom > .fwf/fwf.toml
-   fwfd up            # validates, mints every App, prints the floor plan
+   fwf init-manifest > .fwf/fwf.toml
+   fwf init-manifest --from-profile profiles/transom.sh --repo tbaums/transom > .fwf/fwf.toml
+   fwf up            # validates, mints every App, prints the floor plan
    ```
 3. Bring up the floor: the local mirror, one worktree clone per seat, and a
    warm pane per seat (impl + QA per pair, plus GV/PM if `[models]` names them):
    ```
-   fwfd seats --up      # idempotent; `fwfd seats --down` refuses while a seat is Working
+   fwf seats --up      # idempotent; `fwf seats --down` refuses while a seat is Working
    ```
    Seats authenticate from `~/.fwf/seat-token` (`claude setup-token`); the
    per-floor HOME holds the deny hooks and nothing else.
 4. Put the issue numbers you want worked in the manifest's `issues = [...]`
-   allow-list (`fwfd run` refuses an empty one), then:
+   allow-list (`fwf run` refuses an empty one), then:
    ```
-   fwfd run --once     # one tick: poll → plan → act
-   fwfd run            # the loop
-   fwfd status         # one screen: seats, issues, PRs, needs-you
-   fwfd dash --watch 30    # the board: seats · issues · PRs · decisions · usage
+   fwf run --once     # one tick: poll → plan → act
+   fwf run            # the loop
+   fwf status         # one screen: seats, issues, PRs, needs-you
+   fwf dash --watch 30    # the board: seats · issues · PRs · decisions · usage
    ```
    The board has five tabs (`1`-`5`, or `--tab issues`), `j`/`k` to move the
    selection, `r` to refresh and `q` to quit. Every pane is folded from
@@ -76,7 +83,7 @@ sha), #576 (no rework action on a changes-requested review). The v0.42 `fwf` com
 | `promote --from A --to B` | fast-forward by literal SHA, only on a recorded Green | ops |
 | `release-check --tag vX` | refuse unless the tag has a release object with the expected assets | ops |
 
-`fwfd <verb>` with no arguments prints the exact flags.
+`fwf <verb>` with no arguments prints the exact flags.
 
 ## What is enforced, not asked
 
@@ -91,18 +98,18 @@ sha), #576 (no rework action on a changes-requested review). The v0.42 `fwf` com
   file written atomically; a missing verdict is `Stalled`, never guessed.
 - **Triage is opt-in.** `triage_new = true` makes `run` wake the GV seat once
   per new un-gated issue (it labels and comments on real issues); off by default.
-- **Only humans un-gate.** A model can gate an issue; only `fwfd ungate`
+- **Only humans un-gate.** A model can gate an issue; only `fwf ungate`
   makes it eligible, and the run record names who.
 - **The meter brakes the floor.** `run` parks at `park_at_weekly_pct` from
   the last real reading in `~/.fwf-meter-log`.
 - **The record is append-only.** `~/.fwf/floors/<name>/run.jsonl` is the
-  source for `why`, `status`, `dash`, and cost; `fwfd` never edits it.
+  source for `why`, `status`, `dash`, and cost; `fwf` never edits it.
 
 ## Layout
 
 ```
 one/
-  src/          fwfd (types, log, github, poll, sched, seat, mirror, slice, qa,
+  src/          fwf (types, log, github, poll, sched, seat, mirror, slice, qa,
                 merge, gate, checks, promote, run, triage, spec, cost,
                 manifest, profile, prompts, verbs)
   src/dash/     the board: dash.rs folds the record, floor joins the manifest

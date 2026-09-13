@@ -497,7 +497,7 @@ pub fn run_with(
     )?;
 
     // 8. Draft PR under the supervisor's App.
-    let pr_body = format!("Closes #{}\n\nfwf-Provenance: fwfd thin slice\nfwf-Seat: impl{seat_no}\nfwf-Fence: {}\n\n{summary}", cfg.issue, fence.0);
+    let pr_body = format!("Closes #{}\n\nfwf-Provenance: fwf thin slice\nfwf-Seat: impl{seat_no}\nfwf-Fence: {}\n\n{summary}", cfg.issue, fence.0);
     let payload = serde_json::json!({ "title": format!("{title} (#{})", cfg.issue), "head": branch, "base": cfg.base_branch, "draft": true, "body": pr_body });
     let (code, body) = github::send_json(
         "POST",
@@ -536,7 +536,7 @@ pub fn run_with(
 }
 
 /// The seat number inside a tmux target like `fwf-one:impl2`. The loop knows
-/// the number from its own plan; the `fwfd slice` verb is given a pane name, so
+/// the number from its own plan; the `fwf slice` verb is given a pane name, so
 /// it reads the number back out of it. Anything unreadable is seat 1.
 pub fn seat_no_of_target(target: &str) -> u8 {
     target
@@ -637,7 +637,7 @@ mod tests {
     fn the_seat_worktree_is_realigned_to_the_fence_before_the_wake() {
         let (root, url, work, wt) = floor();
         let stale = git(&wt, &["rev-parse", "HEAD"]);
-        // staging moves between `seats --up` and `fwfd slice`
+        // staging moves between `seats --up` and `fwf slice`
         let fence = advance(&work, &url, "later.txt");
         assert_ne!(stale, fence);
         let run_log = root.join("run.jsonl");

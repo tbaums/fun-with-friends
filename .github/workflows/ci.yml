@@ -189,7 +189,7 @@ jobs:
   # Hole 3: the verdict gets a DURABLE consequence here, not a log line.
   # `reconcile-guard` files one self-closing tracking issue and exits non-zero,
   # so this check goes red and stays red while the divergence stands. Do NOT
-  # "simplify" this back to `./fwf reconcile || echo "::warning::..."` -- that
+  # "simplify" this back to `./fwf-legacy reconcile || echo "::warning::..."` -- that
   # reproduces Hole 2 on the newly-added path and would still pass a test that
   # only asserts reconcile RAN.
   reconcile:
@@ -206,4 +206,4 @@ jobs:
         env:
           FWF_REPO: ${{ github.workspace }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./fwf reconcile-guard
+        run: ./fwf-legacy reconcile-guard

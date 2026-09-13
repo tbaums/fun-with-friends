@@ -160,7 +160,9 @@ fwf_install_ghguard() {
   slug="$(git -C "$FWF_REPO" config --get remote.origin.url 2>/dev/null || true)"
   slug="${slug%.git}"; slug="${slug#git@github.com:}"; slug="${slug#https://github.com/}"; slug="${slug#ssh://git@github.com/}"
   mkdir -p "$FWF_GHGUARD_DIR"
-  ln -sf "$FWF_LIB_DIR/fwf" "$FWF_GHGUARD_DIR/fwf"
+  # The link keeps the name 0.x panes and prompts call (`fwf`); its target is
+  # the renamed dispatcher (#583).
+  ln -sf "$FWF_LIB_DIR/fwf-legacy" "$FWF_GHGUARD_DIR/fwf"
   # Part (a): a `gh` shim that routes the hot, high-frequency reads through the
   # shared cache in EVERY mode. Baked install-time values (real gh path, repo,
   # cache dir) keep it self-contained in non-login panes.

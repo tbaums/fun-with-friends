@@ -70,7 +70,7 @@ pub fn seat_identity(wt: &Path) -> Option<(String, String)> {
 
 /// One line per worktree the manifest names, plus the gate's, and how many of
 /// them commit as something other than themselves. Read-only: the fix for a
-/// wrong identity is another `fwfd seats --up`.
+/// wrong identity is another `fwf seats --up`.
 fn identity_report(floor: &Path, seats: &[(&str, u8)]) -> (Vec<String>, usize) {
     let mut lines = Vec::new();
     let mut wrong = 0;
@@ -92,7 +92,7 @@ fn identity_report(floor: &Path, seats: &[(&str, u8)]) -> (Vec<String>, usize) {
             }
             // Not an identity problem: there is nothing there to commit with.
             None if !wt.join(".git").exists() => {
-                format!("  {dir:<12} not provisioned (`fwfd seats --up`)")
+                format!("  {dir:<12} not provisioned (`fwf seats --up`)")
             }
             None => {
                 wrong += 1;
@@ -143,21 +143,21 @@ pub fn spec(args: &[String]) -> ExitCode {
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("fwfd spec: {e}");
+            eprintln!("fwf spec: {e}");
             return ExitCode::from(2);
         }
     };
     let Some(ops) = apps.0.get("ops") else {
-        eprintln!("fwfd spec: no [ops] app");
+        eprintln!("fwf spec: no [ops] app");
         return ExitCode::from(2);
     };
     match spec::run(&cfg, ops) {
         Ok((title, questions)) => {
-            println!("#{issue}: spec written — {title} ({} open question(s)); still gated, `fwfd ungate {issue}` to approve", questions.len());
+            println!("#{issue}: spec written — {title} ({} open question(s)); still gated, `fwf ungate {issue}` to approve", questions.len());
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("fwfd spec: {}", e.0);
+            eprintln!("fwf spec: {}", e.0);
             ExitCode::from(1)
         }
     }
@@ -202,12 +202,12 @@ pub fn triage(args: &[String]) -> ExitCode {
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("fwfd triage: {e}");
+            eprintln!("fwf triage: {e}");
             return ExitCode::from(2);
         }
     };
     let Some(ops) = apps.0.get("ops") else {
-        eprintln!("fwfd triage: no [ops] app");
+        eprintln!("fwf triage: no [ops] app");
         return ExitCode::from(2);
     };
     match triage::run(&cfg, ops) {
@@ -223,7 +223,7 @@ pub fn triage(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("fwfd triage: {}", e.0);
+            eprintln!("fwf triage: {}", e.0);
             ExitCode::from(1)
         }
     }
@@ -240,19 +240,19 @@ pub fn release_check(args: &[String]) -> ExitCode {
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("fwfd release-check: {e}");
+            eprintln!("fwf release-check: {e}");
             return ExitCode::from(2);
         }
     };
     let Some(ops) = apps.0.get("ops") else {
-        eprintln!("fwfd release-check: no [ops] app");
+        eprintln!("fwf release-check: no [ops] app");
         return ExitCode::from(2);
     };
     let perms = std::collections::BTreeMap::from([("contents", "read"), ("metadata", "read")]);
     let tok = match github::mint(ops, Some(&perms)) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("fwfd release-check: {e}");
+            eprintln!("fwf release-check: {e}");
             return ExitCode::from(2);
         }
     };
@@ -292,7 +292,7 @@ pub fn release_check(args: &[String]) -> ExitCode {
             ExitCode::from(1)
         }
         Err(e) => {
-            eprintln!("fwfd release-check: {e}");
+            eprintln!("fwf release-check: {e}");
             ExitCode::from(2)
         }
     }
@@ -380,14 +380,14 @@ pub fn dash(args: &[String]) -> ExitCode {
     });
     if let Some(t) = get(args, "--tab") {
         if dash::view::Tab::parse(&t).is_none() {
-            eprintln!("fwfd dash: --tab {t:?} is not 1-5 or seats|issues|prs|decisions|usage");
+            eprintln!("fwf dash: --tab {t:?} is not 1-5 or seats|issues|prs|decisions|usage");
             return ExitCode::from(2);
         }
     }
     let mut events = match log::read_all(&path) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("fwfd dash: cannot read {}: {e}", path.display());
+            eprintln!("fwf dash: cannot read {}: {e}", path.display());
             return ExitCode::from(2);
         }
     };
@@ -435,13 +435,13 @@ pub fn init_manifest(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let Some(repo) = get(args, "--repo") else {
-        eprintln!("fwfd init-manifest: --from-profile needs --repo owner/name (a profile only knows a local path)");
+        eprintln!("fwf init-manifest: --from-profile needs --repo owner/name (a profile only knows a local path)");
         return ExitCode::from(2);
     };
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("fwfd init-manifest: cannot read {path}: {e}");
+            eprintln!("fwf init-manifest: cannot read {path}: {e}");
             return ExitCode::from(2);
         }
     };
@@ -449,7 +449,7 @@ pub fn init_manifest(args: &[String]) -> ExitCode {
     let session = get(args, "--session").unwrap_or_else(|| format!("fwf-{name}"));
     let out = profile::to_manifest(&profile::parse(&text), &repo, &session);
     if let Err(e) = manifest::Manifest::parse(&out) {
-        eprintln!("fwfd init-manifest: converted manifest does not validate: {e}");
+        eprintln!("fwf init-manifest: converted manifest does not validate: {e}");
         return ExitCode::from(1);
     }
     print!("{out}");
@@ -460,13 +460,13 @@ fn seat_live(cmd: &str) -> bool {
     cmd == "claude" || cmd.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
-/// `fwfd doctor [--manifest PATH]`: what this floor can and cannot do right
+/// `fwf doctor [--manifest PATH]`: what this floor can and cannot do right
 /// now. Every App's token is minted narrow (metadata:read) to prove the keys
 /// work, and every worktree the manifest names is asked what it commits as
-/// (#590). Read-only: a wrong identity is fixed by `fwfd seats --up`.
+/// (#590). Read-only: a wrong identity is fixed by `fwf seats --up`.
 /// Non-zero when an App is unusable or a worktree commits as the wrong seat.
 pub fn doctor(args: &[String]) -> ExitCode {
-    println!("fwfd {}", env!("CARGO_PKG_VERSION"));
+    println!("fwf {}", env!("CARGO_PKG_VERSION"));
     println!(
         "  event log  : append+fsync JSONL, read, `why <pr>` at {}",
         default_log().display()
@@ -520,7 +520,7 @@ pub fn doctor(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fwfd seats [--up|--down] [--manifest PATH]`: bring every seat the
+/// `fwf seats [--up|--down] [--manifest PATH]`: bring every seat the
 /// manifest names up (mirror, worktree clone, warm pane) or take them down.
 /// Up is idempotent: a live pane is left alone. Down refuses while the run
 /// record says a seat is still Working, unless --force.
@@ -531,7 +531,7 @@ pub fn seats(args: &[String]) -> ExitCode {
     let m = match manifest::Manifest::load(&path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("fwfd seats: {e}");
+            eprintln!("fwf seats: {e}");
             return ExitCode::from(2);
         }
     };
@@ -554,7 +554,7 @@ pub fn seats(args: &[String]) -> ExitCode {
             .unwrap_or(0);
         if stale > 0 && !args.iter().any(|a| a == "--force") {
             eprintln!(
-                "fwfd seats --down: {stale} seat(s) are Working per the run record; wait for the verdict or pass --force"
+                "fwf seats --down: {stale} seat(s) are Working per the run record; wait for the verdict or pass --force"
             );
             return ExitCode::from(1);
         }
@@ -592,7 +592,7 @@ pub fn seats(args: &[String]) -> ExitCode {
     ) {
         Ok(mr) => mr,
         Err(e) => {
-            eprintln!("fwfd seats: mirror: {e}");
+            eprintln!("fwf seats: mirror: {e}");
             return ExitCode::from(1);
         }
     };
@@ -659,7 +659,7 @@ pub fn seats(args: &[String]) -> ExitCode {
         }
     }
     // The gate worktree is cloned on demand by the loop, not here; stamp it
-    // when it is already there so `fwfd doctor` sees the whole floor.
+    // when it is already there so `fwf doctor` sees the whole floor.
     let gate_wt = floor.join("gate-wt");
     if gate_wt.join(".git").exists() {
         if let Err(e) = set_seat_identity(&gate_wt, GATE_IDENTITY) {
@@ -681,18 +681,18 @@ pub fn run_loop(args: &[String]) -> ExitCode {
     let m = match manifest::Manifest::load(&path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("fwfd run: {e}");
+            eprintln!("fwf run: {e}");
             return ExitCode::from(2);
         }
     };
     if m.issues.is_empty() {
-        eprintln!("fwfd run: the manifest has no `issues` allow-list; refusing to run against every eligible issue while 1.0 is new");
+        eprintln!("fwf run: the manifest has no `issues` allow-list; refusing to run against every eligible issue while 1.0 is new");
         return ExitCode::from(2);
     }
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("fwfd run: {e}");
+            eprintln!("fwf run: {e}");
             return ExitCode::from(2);
         }
     };
@@ -735,7 +735,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
     match run::run(&cfg, &apps) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("fwfd run: {e}");
+            eprintln!("fwf run: {e}");
             ExitCode::from(1)
         }
     }
@@ -748,7 +748,7 @@ pub fn up(args: &[String]) -> ExitCode {
     let m = match manifest::Manifest::load(&path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("fwfd up: {e}");
+            eprintln!("fwf up: {e}");
             return ExitCode::from(2);
         }
     };
@@ -758,7 +758,7 @@ pub fn up(args: &[String]) -> ExitCode {
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("fwfd up: {e}");
+            eprintln!("fwf up: {e}");
             return ExitCode::from(2);
         }
     };
@@ -795,7 +795,7 @@ pub fn up(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fwfd ready --repo o/r --pr N`: mark a draft PR ready under the impl App
+/// `fwf ready --repo o/r --pr N`: mark a draft PR ready under the impl App
 /// (the same call the loop makes), printing the exact refusal if any.
 pub fn ready(args: &[String]) -> ExitCode {
     let (Some(repo), Some(pr)) = (
@@ -808,13 +808,13 @@ pub fn ready(args: &[String]) -> ExitCode {
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("fwfd ready: {e}");
+            eprintln!("fwf ready: {e}");
             return ExitCode::from(2);
         }
     };
     let by = get(args, "--by").unwrap_or_else(|| "impl".into());
     let Some(app) = apps.0.get(by.as_str()) else {
-        eprintln!("fwfd ready: no [{by}] app");
+        eprintln!("fwf ready: no [{by}] app");
         return ExitCode::from(2);
     };
     let rw = std::collections::BTreeMap::from([
@@ -825,19 +825,19 @@ pub fn ready(args: &[String]) -> ExitCode {
     let tok = match github::mint(app, Some(&rw)) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("fwfd ready: {e}");
+            eprintln!("fwf ready: {e}");
             return ExitCode::from(2);
         }
     };
     let (code, body) = match github::get_status(&tok.token, &format!("/repos/{repo}/pulls/{pr}")) {
         Ok(x) => x,
         Err(e) => {
-            eprintln!("fwfd ready: {e}");
+            eprintln!("fwf ready: {e}");
             return ExitCode::from(1);
         }
     };
     if code != 200 {
-        eprintln!("fwfd ready: cannot read PR ({code})");
+        eprintln!("fwf ready: cannot read PR ({code})");
         return ExitCode::from(1);
     }
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
@@ -952,7 +952,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&floor);
     }
 
-    /// #590: what `fwfd doctor` prints, and what it counts as wrong.
+    /// #590: what `fwf doctor` prints, and what it counts as wrong.
     #[test]
     fn doctor_names_the_worktree_that_commits_as_someone_else() {
         let floor = tmp();

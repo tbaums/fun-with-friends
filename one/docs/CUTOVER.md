@@ -5,9 +5,9 @@ otherwise, and going back is a `fwf up` away.
 
 ## Before
 
-- `fwfd doctor` mints all three Apps on the target repo.
-- `.fwf/fwf.toml` exists in the customer repo and `fwfd up` prints the plan
-  (convert with `fwfd init-manifest --from-profile`).
+- `fwf doctor` mints all three Apps on the target repo.
+- `.fwf/fwf.toml` exists in the customer repo and `fwf up` prints the plan
+  (convert with `fwf init-manifest --from-profile`).
 - `~/.fwf/seat-token` exists (`claude setup-token`); seats come up
   authenticated with `one/scripts/seat-up.sh`.
 - The v0.42 floor for that repo is DOWN (`fwf down`); two factories on one
@@ -15,18 +15,18 @@ otherwise, and going back is a `fwf up` away.
 
 ## Cut over (one repo at a time)
 
-1. `fwfd mirror-init --repo o/r`; clone the seat worktrees from the mirror
+1. `fwf mirror-init --repo o/r`; clone the seat worktrees from the mirror
    (README, step 3). Old `~/tx-*`-style worktrees are not reused: archive
    them (`mv ~/tx-impl1 ~/archive/`) once their branches are pushed.
 2. Put only the issues you mean to work in the manifest allow-list.
-3. `fwfd run --once`; read `fwfd status` and `fwfd dash`; then `fwfd run`.
+3. `fwf run --once`; read `fwf status` and `fwf dash`; then `fwf run`.
 4. State lives only in `~/.fwf/floors/<name>/` (mirror, worktrees, verdicts,
    `run.jsonl`) and in GitHub's own objects. There is no v0.42 state to
    migrate: claims are refs, not comments; the run record starts empty.
 
 ## Roll back
 
-1. Stop `fwfd run` (Ctrl-C; it never leaves a half-applied write: each
+1. Stop `fwf run` (Ctrl-C; it never leaves a half-applied write: each
    GitHub write is a single request, and the record shows the last one).
 2. Delete any live claim refs it held: `git push origin :refs/claims/<n>`
    under the operator's own credentials.

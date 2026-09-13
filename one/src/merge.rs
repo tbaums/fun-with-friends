@@ -209,7 +209,7 @@ pub(crate) fn record(log: &mut Log, repo: &str, kind: Kind) {
     // The log is the run record; a failed append is a real fault but must
     // not turn a completed GitHub write into a reported failure.
     if let Err(e) = log.append(&ev) {
-        eprintln!("fwfd: run log append failed: {e}");
+        eprintln!("fwf: run log append failed: {e}");
     }
 }
 

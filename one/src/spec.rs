@@ -3,7 +3,7 @@
 //! The seat returns `Specced { title, body, discovery, questions }`; the
 //! supervisor edits the issue under the ops identity (title + body), adds the
 //! discovery label when asked, and posts the open questions as one comment.
-//! The gate label is never touched here: only `fwfd ungate` does that.
+//! The gate label is never touched here: only `fwf ungate` does that.
 
 use crate::github::{self, AppEntry};
 use crate::log::{Event, Kind, Log};
@@ -63,7 +63,7 @@ pub fn edit_payload(
     serde_json::json!({
         "title": title,
         "body": format!(
-            "{}\n\n<details><summary>Original text before the PM spec</summary>\n\n{}\n\n</details>\n\n<!-- fwf-Provenance: fwfd spec (PM seat); gate untouched -->",
+            "{}\n\n<details><summary>Original text before the PM spec</summary>\n\n{}\n\n</details>\n\n<!-- fwf-Provenance: fwf spec (PM seat); gate untouched -->",
             body.trim_end(),
             original.trim()
         ),
@@ -228,7 +228,7 @@ pub fn run(cfg: &SpecConfig, ops: &AppEntry) -> Result<(String, Vec<String>), Sp
         )));
     }
     let mut comment = format!(
-        "**fwfd spec: PM seat drafted the spec** (issue body replaced; still gated with `{}`{}).",
+        "**fwf spec: PM seat drafted the spec** (issue body replaced; still gated with `{}`{}).",
         cfg.gate_label,
         if discovery {
             format!(", marked `{}`", cfg.discovery_label)
@@ -243,7 +243,7 @@ pub fn run(cfg: &SpecConfig, ops: &AppEntry) -> Result<(String, Vec<String>), Sp
         }
     }
     comment.push_str(&format!(
-        "\nA human un-gate (`fwfd ungate {}`) makes it eligible.\n\nfwf-Provenance: fwfd spec cycle",
+        "\nA human un-gate (`fwf ungate {}`) makes it eligible.\n\nfwf-Provenance: fwf spec cycle",
         cfg.issue
     ));
     let (c2, _) = github::send_json(
@@ -292,7 +292,7 @@ mod tests {
         assert!(p["body"]
             .as_str()
             .unwrap()
-            .contains("fwf-Provenance: fwfd spec"));
+            .contains("fwf-Provenance: fwf spec"));
         let p2 = edit_payload("T", "body", false, "discovery", &labels, "orig");
         assert_eq!(p2["labels"].as_array().unwrap().len(), 2);
         let p3 = edit_payload(

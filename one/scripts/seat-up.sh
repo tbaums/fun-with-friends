@@ -31,7 +31,7 @@ cat > "$floor/.claude/settings.json" <<'JSON'
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "read -r inp; cmd=$(printf '%s' \"$inp\" | jq -r '.tool_input.command // \"\"'); case \"$cmd\" in *'push'*'staging'*|*'push'*'main'*|*'push'*'--force'*|*'push -f'*) echo 'fwfd: pushes to staging/main and force-pushes are denied for seats' >&2; exit 2;; esac; exit 0" } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "read -r inp; cmd=$(printf '%s' \"$inp\" | jq -r '.tool_input.command // \"\"'); case \"$cmd\" in *'push'*'staging'*|*'push'*'main'*|*'push'*'--force'*|*'push -f'*) echo 'fwf: pushes to staging/main and force-pushes are denied for seats' >&2; exit 2;; esac; exit 0" } ] }
     ]
   }
 }

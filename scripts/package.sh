@@ -16,7 +16,12 @@ trap 'rm -rf "$STAGE"' EXIT
 # NOTE: docs/ and templates/ are cp -R'd whole below — pre-creating their
 # destinations would nest them (cp -R src dest/src when dest exists).
 mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "$DEST/containers"
-cp fwf config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
+# The 0.x tarball's entrypoint stays named `fwf`: `fwf upgrade` extracts one of
+# these over an older install and re-points the `bin/fwf` symlink at it, so the
+# name inside the tarball is that mechanism's contract (#583 renamed the file in
+# the repo, not the release layout).
+cp fwf-legacy "$DEST/fwf"
+cp config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
 cp fwf-*.sh "$DEST/"   # ALL engine scripts — a glob so a new fwf-*.sh can't be forgotten
 cp lib/*.sh "$DEST/lib/"   # ALL lib scripts — a glob so a new lib/*.sh can't be forgotten (issue #94 lesson)
 cp profiles/example.sh "$DEST/profiles/"        # generic template only

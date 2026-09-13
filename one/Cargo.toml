@@ -6,6 +6,15 @@ description = "fwf 1.0 supervisor: typed state, one event log, every authority-b
 license = "MIT"
 publish = false
 
+# 1.0 is the default: the binary is `fwf` (#583). The crate keeps its old name
+# so `cargo build -p fwfd` and every release asset path still resolve.
+[[bin]]
+name = "fwf"
+path = "src/main.rs"
+
+# Temporary alias, one release only: scripts and operator notes that still say
+# `fwfd` keep working. Remove both this target and the README's alias note next
+# release.
 [[bin]]
 name = "fwfd"
 path = "src/main.rs"

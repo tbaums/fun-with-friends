@@ -36,7 +36,7 @@ jobs:
           FWF_REPO: ${{ github.workspace }}
         run: |
           set -o pipefail
-          if ! out="$(./fwf reconcile --check 2>&1)"; then
+          if ! out="$(./fwf-legacy reconcile --check 2>&1)"; then
             printf '%s\n' "$out"
             {
               echo "## Release blocked: diverged base"
@@ -364,7 +364,7 @@ jobs:
           # benign writer, not a divergence), which files no artifact at all.
           # Claiming "a tracking issue has been filed" on that exit code would
           # be false, so the warning is worded from the exit code, not assumed.
-          rc=0; ./fwf reconcile-guard || rc=$?
+          rc=0; ./fwf-legacy reconcile-guard || rc=$?
           if [ "$rc" -eq 2 ]; then
             echo "::warning::post-publish reconcile hit a transient, self-healing race (lock-busy/cas-lost) — no tracking issue filed, next run re-classifies; the release itself succeeded"
           elif [ "$rc" -ne 0 ]; then

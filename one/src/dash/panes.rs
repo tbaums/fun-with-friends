@@ -338,7 +338,7 @@ pub(super) fn decisions_tab(b: &Board, f: &Floor, v: &View, now: u64) -> TabBody
     )
 }
 
-/// The 1.0 cost ledger, kept whole: this is what `fwfd dash` printed before
+/// The 1.0 cost ledger, kept whole: this is what `fwf dash` printed before
 /// the board arrived, and it is still the answer to "what did this cost".
 pub fn usage(b: &Board, f: &Floor) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn the_decisions_tab_lists_needs_you_and_the_human_actions() {
         let f = frame(Tab::Decisions);
-        assert!(f.contains("⛔ gated, awaiting `fwfd ungate`: #575"), "{f}");
+        assert!(f.contains("⛔ gated, awaiting `fwf ungate`: #575"), "{f}");
         assert!(f.contains("Detail · human actions"));
         assert!(f.contains("jamie ungate #574"));
         assert!(f.contains("(none — nothing was refused)"));

@@ -231,7 +231,7 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
     } else {
         "REQUEST_CHANGES"
     };
-    let text = format!("fwfd QA seat {} reviewed {} — {}\n\n{notes}\n\nfwf-Provenance: fwfd qa cycle · author {author}", cfg.seat_no, head.short(), if approve { "approved" } else { "changes requested" });
+    let text = format!("fwf QA seat {} reviewed {} — {}\n\n{notes}\n\nfwf-Provenance: fwf qa cycle · author {author}", cfg.seat_no, head.short(), if approve { "approved" } else { "changes requested" });
     let payload = serde_json::json!({ "commit_id": head.as_str(), "event": event, "body": text });
     let (code, body) = github::send_json(
         "POST",

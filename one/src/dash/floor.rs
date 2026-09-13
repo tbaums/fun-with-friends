@@ -44,7 +44,7 @@ pub struct Slot {
 
 impl Slot {
     /// A warm seat runs `claude` — the native install names its binary by
-    /// version, so a digit counts too (the same test `fwfd seats` uses).
+    /// version, so a digit counts too (the same test `fwf seats` uses).
     pub fn live(&self) -> Option<bool> {
         self.pane
             .as_deref()
@@ -75,7 +75,7 @@ pub struct Floor {
 }
 
 /// How old a meter reading may be before the brake treats it as absent —
-/// the same 45 minutes `fwfd run` uses, restated here so the dash agrees
+/// the same 45 minutes `fwf run` uses, restated here so the dash agrees
 /// with the loop rather than approximating it.
 pub const METER_MAX_AGE: u64 = crate::run::METER_MAX_AGE;
 
@@ -258,7 +258,7 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
     let mut v = Vec::new();
     if let LoopState::NotRunning = f.loop_state {
         v.push(format!(
-            "the loop is not running: no `{}:run` window — start `fwfd run`",
+            "the loop is not running: no `{}:run` window — start `fwf run`",
             f.session
         ));
     }
@@ -275,7 +275,7 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
         }
         if row.live == Some(false) {
             v.push(format!(
-                "seat {} pane is gone ({}): `fwfd seats --up`",
+                "seat {} pane is gone ({}): `fwf seats --up`",
                 row.label,
                 row.pane_word()
             ));
@@ -283,7 +283,7 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
     }
     if !b.gated_issues.is_empty() {
         v.push(format!(
-            "gated, awaiting `fwfd ungate`: {}",
+            "gated, awaiting `fwf ungate`: {}",
             b.gated_issues
                 .iter()
                 .map(|i| format!("#{i}"))
@@ -294,7 +294,7 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
     for p in pr_rows(b) {
         match p.stage() {
             Stage::Approved => v.push(format!(
-                "PR #{} is approved at head: `fwfd merge --pr {}`",
+                "PR #{} is approved at head: `fwf merge --pr {}`",
                 p.pr, p.pr
             )),
             // Changes requested is the loop's work now: it re-wakes the impl
@@ -357,7 +357,7 @@ impl SeatRow<'_> {
     pub fn pane_word(&self) -> String {
         match (self.pane.as_deref(), self.live) {
             (Some(c), Some(true)) => format!("live, {c}"),
-            // `fwfd seats` reports a missing window as "absent"; a pane that
+            // `fwf seats` reports a missing window as "absent"; a pane that
             // exists but dropped to a shell is a different problem.
             (Some("absent"), Some(false)) => "no pane in tmux".to_string(),
             (Some(c), Some(false)) => format!("gone, running {c}"),
@@ -628,7 +628,7 @@ mod tests {
         assert!(!needs.iter().any(|n| n.contains("gv1 pane is gone")));
         assert!(needs
             .iter()
-            .any(|n| n.contains("awaiting `fwfd ungate`: #9")));
+            .any(|n| n.contains("awaiting `fwf ungate`: #9")));
         assert!(needs.iter().any(|n| n.contains("refused #7")));
         // the loop re-refuses the same issue every tick: one line, with a count
         let mut evs = test_record();

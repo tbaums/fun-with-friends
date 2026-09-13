@@ -4,7 +4,7 @@
 //! issue and returns `Triaged { ready, reason }`. If not ready, the supervisor
 //! applies the gate label and posts the reason under the ops App. "Ready" is
 //! never granted by a model: the only way an issue becomes eligible is the
-//! human un-gate, `fwfd ungate <n>`, which removes the label under ops and
+//! human un-gate, `fwf ungate <n>`, which removes the label under ops and
 //! records a Human event. That is the design's one human decision, made
 //! mechanical and attributable.
 
@@ -166,7 +166,7 @@ pub fn run(cfg: &TriageConfig, ops: &AppEntry) -> Result<(bool, String), TriageE
             "POST",
             &wtok.token,
             &format!("/repos/{repo}/issues/{}/comments", cfg.issue),
-            &serde_json::json!({ "body": format!("**fwfd GV triage: not ready.** {reason}\n\nGated with `{}` under the ops identity. A human un-gate (`fwfd ungate {}`) makes it eligible.\n\nfwf-Provenance: fwfd triage cycle", cfg.gate_label, cfg.issue) }),
+            &serde_json::json!({ "body": format!("**fwf GV triage: not ready.** {reason}\n\nGated with `{}` under the ops identity. A human un-gate (`fwf ungate {}`) makes it eligible.\n\nfwf-Provenance: fwf triage cycle", cfg.gate_label, cfg.issue) }),
         )?;
         if c1 != 200 || (c2 != 201 && c2 != 200) {
             return Err(TriageError(format!(
@@ -227,7 +227,7 @@ pub fn ungate(
         "POST",
         &tok.token,
         &format!("/repos/{full}/issues/{issue}/comments"),
-        &serde_json::json!({ "body": format!("**OPERATOR-UNGATE #{issue}** by {actor} via `fwfd ungate` — eligible for the factory.\n\nfwf-Provenance: fwfd ungate") }),
+        &serde_json::json!({ "body": format!("**OPERATOR-UNGATE #{issue}** by {actor} via `fwf ungate` — eligible for the factory.\n\nfwf-Provenance: fwf ungate") }),
     )?;
     if c2 != 201 && c2 != 200 {
         return Err(TriageError(format!("un-gate comment refused ({c2})")));

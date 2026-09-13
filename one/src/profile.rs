@@ -95,7 +95,7 @@ fn toml_str(s: &str) -> String {
 pub fn to_manifest(p: &Profile, repo: &str, session: &str) -> String {
     let g = |k: &str| p.vars.get(k).map(String::as_str);
     let mut out = String::new();
-    out.push_str("# fwf 1.0 manifest converted from a v0.42 profile by `fwfd init-manifest --from-profile`.\n");
+    out.push_str("# fwf 1.0 manifest converted from a v0.42 profile by `fwf init-manifest --from-profile`.\n");
     out.push_str("# Scalars first; tables ([suites], [models]) last.\n");
     out.push_str(&format!("repo = \"{repo}\"\n"));
     out.push_str(&format!(
@@ -126,7 +126,7 @@ pub fn to_manifest(p: &Profile, repo: &str, session: &str) -> String {
     ));
     out.push_str("gate_venue = \"local\"\ngate_memory_gb = 8\ngate_timeout_secs = 1800\njob_timeout_secs = 1800\npoll_interval_secs = 60\npark_at_weekly_pct = 85\ntemplate = \"dev\"\n");
     out.push_str(
-        "issues = []  # fill in before the first run: fwfd run refuses an empty allow-list\n",
+        "issues = []  # fill in before the first run: fwf run refuses an empty allow-list\n",
     );
     for k in [
         "BUILD_CMD",
