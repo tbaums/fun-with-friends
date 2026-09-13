@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A release is one command (#584).** Both 1.0 cuts were hand-made, macOS-only,
+  with no guarantee `release-check` ever ran. `one/scripts/release-publish.sh
+  <notes.md>` now refuses a dirty tree and a version already tagged here or on
+  the remote, runs the same gate CI runs, builds release, stages
+  `<bin>-<version>-macos-arm64/` (binary named from `Cargo.toml`, plus README,
+  RELEASING, CHANGELOG), tars it with a `.sha256`, publishes with one `gh release
+  create` — tag and release together, so nothing can race a release that does not
+  exist — and proves the result with `release-check --expect 2`. The tag push
+  runs the new `one-release.yml` on `ubuntu-latest`, which adds the
+  `linux-x86_64` pair by upload only, failing loudly if the release is not there.
+  Four assets, and `install.sh` fetches exactly those names.
+
 - **Factory commits are authored by the seat that wrote them (#590).** Seat
   worktrees had no identity of their own, so git guessed one from the machine —
   the same author for every seat, indistinguishable from a human's local commit.

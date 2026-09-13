@@ -1,0 +1,95 @@
+name: one release (linux asset)
+
+# The Linux half of a 1.0 cut (#584). `one/scripts/release-publish.sh` builds and
+# publishes the macos-arm64 pair and creates the release AND its tag in one `gh
+# release create`; that tag push lands here, and this job adds the linux-x86_64
+# pair to the release that already exists. It never creates a release: if the
+# tag arrived without one, that is a broken cut and this fails loudly.
+#
+# ubuntu-latest, like one-ci.yml. (The legacy tool's release.yml runs on a local
+# devbox for reasons particular to its own long suite; that rule is not this
+# crate's.)
+on:
+  push:
+    tags: ['one-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the one-v* tag to upload onto
+        required: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: one
+
+jobs:
+  linux:
+    name: linux-x86_64 asset
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      # The binary's name and the version both come from Cargo.toml; the tag has
+      # to agree with the version, or the asset would be named for a release it
+      # does not belong to.
+      - name: Read Cargo.toml, check the tag agrees
+        id: meta
+        run: |
+          version="$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' Cargo.toml | head -1)"
+          bin="$(awk '/^\[\[bin\]\]/{inbin=1; next} inbin && /^name *=/{gsub(/.*= *"|"/,""); print; exit}' Cargo.toml)"
+          [ -n "$version" ] || { echo "::error::no version in one/Cargo.toml"; exit 1; }
+          [ -n "$bin" ] || { echo "::error::no [[bin]] name in one/Cargo.toml"; exit 1; }
+          [ "$TAG" = "one-v$version" ] || {
+            echo "::error::tag $TAG does not match one/Cargo.toml version $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      # Upload-only, by construction: the release must already be there.
+      - name: Refuse unless the release already exists
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null || {
+            echo "::error::no release for $TAG — it is published by one/scripts/release-publish.sh, which creates the tag and the release together. Publish it, then re-run this workflow."
+            exit 1; }
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: one
+
+      - name: Build (release, locked)
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          cargo build --release --locked --target x86_64-unknown-linux-gnu
+
+      # Same layout as the macOS pair: the binary plus the three documents a
+      # release is useless without.
+      - name: Stage the tarball and its checksum
+        id: stage
+        run: |
+          name="${{ steps.meta.outputs.bin }}-${{ steps.meta.outputs.version }}-linux-x86_64"
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out/$name"
+          cp "target/x86_64-unknown-linux-gnu/release/${{ steps.meta.outputs.bin }}" "$out/$name/"
+          cp README.md RELEASING.md CHANGELOG.md "$out/$name/"
+          tar -C "$out" -czf "$out/$name.tar.gz" "$name"
+          ( cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+          cat "$out/$name.tar.gz.sha256"
+          tar -tzf "$out/$name.tar.gz"
+          echo "tar=$out/$name.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sum=$out/$name.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload onto the release
+        run: |
+          gh release upload "$TAG" \
+            "${{ steps.stage.outputs.tar }}" "${{ steps.stage.outputs.sum }}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name'
