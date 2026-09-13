@@ -61,33 +61,35 @@ if [ -d "$ONE" ] && command -v cargo >/dev/null 2>&1; then
   fi
 fi
 
-# No cargo (or the build failed): take the published asset for this platform and
-# verify its sha256 against the release's checksums file. A download that cannot
-# be verified is never installed.
+# No cargo (or the build failed): take the published tarball for this platform,
+# verify its sha256, and install the binary out of it. A download that cannot be
+# verified is never installed. The names are one/RELEASING.md's contract (#584):
+# `<bin>-<version>-<slug>.tar.gz` plus `<asset>.sha256`, built by
+# `release-publish.sh` (macos-arm64) and `one-release.yml` (linux-x86_64).
 if [ -z "$BUILT" ] && command -v curl >/dev/null 2>&1; then
   case "$(uname -s)-$(uname -m)" in
-    Darwin-arm64)   SLUG="darwin-arm64";;
-    Darwin-x86_64)  SLUG="darwin-x86_64";;
-    Linux-aarch64)  SLUG="linux-arm64";;
-    Linux-x86_64)   SLUG="linux-x86_64";;
+    Darwin-arm64)  SLUG="macos-arm64";;
+    Linux-x86_64)  SLUG="linux-x86_64";;
     *) SLUG="";;
   esac
-  # The names one/RELEASING.md publishes: `fwf-<version>-<slug>` with a
-  # per-asset `.sha256` line beside it, as release.yml already does for dash.
-  ASSET="fwf-${ONE_VERSION}-${SLUG}"
+  ASSET="fwf-${ONE_VERSION}-${SLUG}.tar.gz"
   BASE="https://github.com/tbaums/fun-with-friends/releases/download/one-v${ONE_VERSION}"
   if [ -n "$SLUG" ] && [ -n "$ONE_VERSION" ]; then
     DL="$(mktemp -d)"
     echo "install: no cargo; fetching $ASSET from one-v$ONE_VERSION"
-    if curl -fsSL "$BASE/$ASSET" -o "$DL/fwf" && curl -fsSL "$BASE/$ASSET.sha256" -o "$DL/want"; then
+    if curl -fsSL "$BASE/$ASSET" -o "$DL/$ASSET" && curl -fsSL "$BASE/$ASSET.sha256" -o "$DL/want"; then
       WANT="$(awk '{print $1}' "$DL/want" | head -1)"
-      if command -v shasum >/dev/null 2>&1; then GOT="$(shasum -a 256 "$DL/fwf" | awk '{print $1}')"
-      else GOT="$(sha256sum "$DL/fwf" | awk '{print $1}')"; fi
+      if command -v shasum >/dev/null 2>&1; then GOT="$(shasum -a 256 "$DL/$ASSET" | awk '{print $1}')"
+      else GOT="$(sha256sum "$DL/$ASSET" | awk '{print $1}')"; fi
       if [ -n "$WANT" ] && [ "$WANT" = "$GOT" ]; then
-        chmod +x "$DL/fwf"
-        mkdir -p "$ONE/target/release"
-        mv "$DL/fwf" "$ONE/target/release/fwf"
-        BUILT="$ONE/target/release/fwf"
+        tar -C "$DL" -xzf "$DL/$ASSET"
+        if [ -x "$DL/fwf-${ONE_VERSION}-${SLUG}/fwf" ]; then
+          mkdir -p "$ONE/target/release"
+          mv "$DL/fwf-${ONE_VERSION}-${SLUG}/fwf" "$ONE/target/release/fwf"
+          BUILT="$ONE/target/release/fwf"
+        else
+          echo "install: $ASSET carries no fwf binary — not installing it" >&2
+        fi
       else
         echo "install: sha256 mismatch for $ASSET (want ${WANT:-<none published>}, got $GOT) — not installing it" >&2
       fi
