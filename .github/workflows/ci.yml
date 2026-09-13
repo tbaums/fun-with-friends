@@ -1,4 +1,8 @@
-name: CI
+# Named "legacy CI" (#608): this is the 0.x bash factory's suite. The badge row
+# for fwf 1.0 is one-ci.yml. Job-level `name:` fields below are reported status
+# contexts pinned by .github/branch-policy.json — renaming one silently blocks
+# every PR forever, so only this workflow-level name changed.
+name: legacy CI
 
 on:
   push:

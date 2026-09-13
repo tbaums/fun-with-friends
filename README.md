@@ -1423,4 +1423,5 @@ release is documented in [`RELEASING.md`](RELEASING.md); see
 
 ## License
 
-[MIT](LICENSE) © 2026 Jamie Tanenbaum
+[MIT](LICENSE) © 2026 Jamie Tanenbaum — security contact and the factory's
+trust boundaries are in [`SECURITY.md`](SECURITY.md).

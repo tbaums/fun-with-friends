@@ -1,0 +1,5 @@
+# Issue #608: fwf is solo-maintained and not soliciting contributors, so the
+# "new issue" page stays plain — a blank issue and nothing else. No templates
+# and no contact_links on purpose: an empty contact_links key would still
+# render chooser chrome, so the key is absent rather than empty.
+blank_issues_enabled: true
