@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A verdict is a file that parses, not a file that exists (#587).**
+  `wait_verdict` read the verdict the moment the path appeared and failed hard on
+  a partial read: `fwfd spec` died with `verdict malformed: …` seconds before
+  transom #1268's file was complete, and a seat that hand-typed its JSON with an
+  unescaped quote (`triage #579`) failed the same way. A read or parse failure is
+  now "not yet" and polling continues; only the deadline decides, and it says
+  Stalled — printing the parse error and the raw text, so the bad file is
+  diagnosable — which every verb already turns into a non-zero exit. All 20 job
+  prompts now spell the rule out: build the JSON with a real serializer, write
+  `<path>.tmp`, never `<path>`, then `mv` as a separate step.
+
 - **Every wake gets its own tmux buffer and job file (#586).** The paste buffer
   was named `fwfd-<seat>` and the job file `fwfd-job-<pid>-<seat>.txt`, but
   tmux's buffer namespace belongs to the server and the temp dir is shared: the

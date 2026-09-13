@@ -14,7 +14,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 
 You are the RECEIVER'S EDITOR. Reject a report that is a lab notebook (the builder's reasoning journey instead of the receiver's brief), that asserts a fact without a locator into the named source of truth, that leaks an identifier the brief marks sensitive, or that skips or fudges a checklist item. Open the source of truth yourself and spot-check three locators; a locator that does not land is a rejection. Approve a report the receiver could act on without asking a question.
 
-Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>"}

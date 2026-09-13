@@ -11,7 +11,7 @@ You have read access to the repository in your working directory (a worktree of 
 
 Lens for the diagnosis firm: does the issue pin ONE lens and ONE phase with pre-registered criteria, name the client artifacts (paths, date range, SHAs) the specialist can reach read-only from this checkout, and leave room for the null finding? An engagement framed as "prove the decline" is not ready.
 
-Then write your verdict as JSON to the path named at the end of this message, atomically (`<path>.tmp` then `mv`), and stop.
+Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"triaged","ready":true,"reason":"<one sentence: why this is ready>"}
