@@ -110,7 +110,12 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
         .replace("{{TITLE}}", &title)
         .replace("{{BODY}}", &pr_body)
         .replace("{{BASE}}", &base)
-        .replace("{{CHECK}}", &cfg.check_cmd);
+        .replace("{{CHECK}}", &cfg.check_cmd)
+        // When this cycle ends, so a long proof can be cut short (#589).
+        .replace(
+            "{{DEADLINE}}",
+            &seat::local_hhmm(now() + cfg.timeout.as_secs()),
+        );
     let pane = Pane {
         target: cfg.seat_target.clone(),
         role: Role::Qa,

@@ -109,7 +109,12 @@ pub fn run(cfg: &SpecConfig, ops: &AppEntry) -> Result<(String, Vec<String>), Sp
         .replace("{{ISSUE}}", &cfg.issue.to_string())
         .replace("{{REPO}}", &repo)
         .replace("{{TITLE}}", &title)
-        .replace("{{BODY}}", &issue_body);
+        .replace("{{BODY}}", &issue_body)
+        // When this cycle ends, so a long proof can be cut short (#589).
+        .replace(
+            "{{DEADLINE}}",
+            &seat::local_hhmm(seat::now() + cfg.timeout.as_secs()),
+        );
     let pane = Pane {
         target: cfg.seat_target.clone(),
         role: Role::Pm,
