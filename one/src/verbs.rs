@@ -16,6 +16,94 @@ fn get(args: &[String], flag: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
+/// Where a seat's commits come from. Not a real mail domain on purpose: these
+/// addresses say "a seat on this floor wrote this", nothing more.
+pub const IDENTITY_DOMAIN: &str = "fwf.local";
+/// The gate worktree commits nothing today; it still gets a name of its own.
+pub const GATE_IDENTITY: &str = "fwf-gate";
+
+/// Give a worktree its own commit identity: `<who>` / `<who>@fwf.local` (#590).
+///
+/// A seat worktree is an independent clone with its own config, and nothing was
+/// writing one, so git fell back to whatever it could guess from the machine —
+/// the same author for every seat, and indistinguishable from a human's local
+/// commit. Repo config beats the global and system files, so this is the last
+/// word short of `GIT_AUTHOR_*` in the environment. Written every time `seats
+/// --up` runs, so an identity that drifted is corrected rather than kept.
+pub fn set_seat_identity(wt: &Path, who: &str) -> Result<(), String> {
+    for (key, value) in [
+        ("user.name", who.to_string()),
+        ("user.email", format!("{who}@{IDENTITY_DOMAIN}")),
+    ] {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt)
+            .args(["config", key, &value])
+            .output()
+            .map_err(|e| format!("git config {key}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "git config {key} in {}: {}",
+                wt.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// What a worktree says it commits as: `(user.name, user.email)` from its own
+/// config. `None` when there is no worktree, or it has no identity of its own.
+pub fn seat_identity(wt: &Path) -> Option<(String, String)> {
+    let read = |key: &str| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt)
+            .args(["config", "--local", "--get", key])
+            .output()
+            .ok()?;
+        let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !v.is_empty()).then_some(v)
+    };
+    Some((read("user.name")?, read("user.email")?))
+}
+
+/// One line per worktree the manifest names, plus the gate's, and how many of
+/// them commit as something other than themselves. Read-only: the fix for a
+/// wrong identity is another `fwfd seats --up`.
+fn identity_report(floor: &Path, seats: &[(&str, u8)]) -> (Vec<String>, usize) {
+    let mut lines = Vec::new();
+    let mut wrong = 0;
+    let mut expected: Vec<(String, String)> = seats
+        .iter()
+        .map(|(role, n)| (format!("wt-{role}{n}"), format!("{role}{n}")))
+        .collect();
+    expected.push(("gate-wt".to_string(), GATE_IDENTITY.to_string()));
+    for (dir, who) in expected {
+        let wt = floor.join(&dir);
+        let want = format!("{who} <{who}@{IDENTITY_DOMAIN}>");
+        let line = match seat_identity(&wt) {
+            Some((name, email)) if name == who && email == format!("{who}@{IDENTITY_DOMAIN}") => {
+                format!("  {dir:<12} {want}")
+            }
+            Some((name, email)) => {
+                wrong += 1;
+                format!("  {dir:<12} WRONG: {name} <{email}> — expected {want}")
+            }
+            // Not an identity problem: there is nothing there to commit with.
+            None if !wt.join(".git").exists() => {
+                format!("  {dir:<12} not provisioned (`fwfd seats --up`)")
+            }
+            None => {
+                wrong += 1;
+                format!("  {dir:<12} no identity of its own — expected {want}")
+            }
+        };
+        lines.push(line);
+    }
+    (lines, wrong)
+}
+
 pub fn spec(args: &[String]) -> ExitCode {
     let (Some(repo), Some(issue), Some(seat)) = (
         get(args, "--repo"),
@@ -372,6 +460,66 @@ fn seat_live(cmd: &str) -> bool {
     cmd == "claude" || cmd.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
+/// `fwfd doctor [--manifest PATH]`: what this floor can and cannot do right
+/// now. Every App's token is minted narrow (metadata:read) to prove the keys
+/// work, and every worktree the manifest names is asked what it commits as
+/// (#590). Read-only: a wrong identity is fixed by `fwfd seats --up`.
+/// Non-zero when an App is unusable or a worktree commits as the wrong seat.
+pub fn doctor(args: &[String]) -> ExitCode {
+    println!("fwfd {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "  event log  : append+fsync JSONL, read, `why <pr>` at {}",
+        default_log().display()
+    );
+    let mut bad = 0;
+    let path = get(args, "--manifest")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
+    match manifest::Manifest::load(&path) {
+        Ok(m) => {
+            let floor = m.floor();
+            println!("  floor      : {} ({})", floor.display(), m.repo);
+            println!("seat identity");
+            let (lines, wrong) = identity_report(&floor, &m.seats());
+            for l in lines {
+                println!("{l}");
+            }
+            bad += wrong;
+        }
+        // No manifest is not a failure here: the Apps are still worth checking.
+        Err(e) => println!("  floor      : no manifest ({e}); skipping seat identity"),
+    }
+    let apps = match github::load_apps(&github::apps_path()) {
+        Ok(a) => a,
+        Err(e) => {
+            println!("  apps       : {e}");
+            return ExitCode::from(1);
+        }
+    };
+    println!("apps");
+    for (name, entry) in &apps.0 {
+        let narrow = std::collections::BTreeMap::from([("metadata", "read")]);
+        match github::mint(entry, Some(&narrow)) {
+            Ok(t) => println!(
+                "  {name:<10} token minted (app {}, installation {}), expires {}, scopes {:?}",
+                entry.app_id,
+                entry.installation_id,
+                t.expires_at,
+                t.permissions.keys().collect::<Vec<_>>()
+            ),
+            Err(e) => {
+                bad += 1;
+                println!("  {name:<10} NOT USABLE — {e}");
+            }
+        }
+    }
+    if bad == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 /// `fwfd seats [--up|--down] [--manifest PATH]`: bring every seat the
 /// manifest names up (mirror, worktree clone, warm pane) or take them down.
 /// Up is idempotent: a live pane is left alone. Down refuses while the run
@@ -475,6 +623,12 @@ pub fn seats(args: &[String]) -> ExitCode {
                 }
             }
         }
+        // Every run, not only the clone: a seat that commits as the machine (or
+        // as whoever hand-edited it) is put back to committing as itself (#590).
+        if let Err(e) = set_seat_identity(&wt, &pane) {
+            eprintln!("  {target:<18} identity: {e}");
+            failures += 1;
+        }
         let cmd = seat::pane_command(&target).unwrap_or_else(|_| "absent".into());
         if seat_live(&cmd) {
             println!("  {target:<18} already up ({cmd})");
@@ -502,6 +656,15 @@ pub fn seats(args: &[String]) -> ExitCode {
                 eprintln!("  {target:<18} seat-up: {e}");
                 failures += 1;
             }
+        }
+    }
+    // The gate worktree is cloned on demand by the loop, not here; stamp it
+    // when it is already there so `fwfd doctor` sees the whole floor.
+    let gate_wt = floor.join("gate-wt");
+    if gate_wt.join(".git").exists() {
+        if let Err(e) = set_seat_identity(&gate_wt, GATE_IDENTITY) {
+            eprintln!("  {:<18} identity: {e}", "gate-wt");
+            failures += 1;
         }
     }
     if failures > 0 {
@@ -695,5 +858,132 @@ pub fn ready(args: &[String]) -> ExitCode {
             eprintln!("#{pr}: {e}");
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static N: AtomicU32 = AtomicU32::new(0);
+
+    fn tmp() -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "fwfd-identity-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn repo(at: &Path) {
+        std::fs::create_dir_all(at).unwrap();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git init in {}", at.display());
+    }
+
+    /// #590: a seat commits as itself, and keeps doing so after a hand-edit.
+    #[test]
+    fn a_seat_worktree_commits_as_itself_and_drift_is_corrected() {
+        let floor = tmp();
+        let wt = floor.join("wt-impl1");
+        repo(&wt);
+        // a fresh clone has no identity of its own: git would guess one
+        assert_eq!(seat_identity(&wt), None);
+        set_seat_identity(&wt, "impl1").unwrap();
+        assert_eq!(
+            seat_identity(&wt),
+            Some(("impl1".into(), "impl1@fwf.local".into()))
+        );
+        // and it is the identity git actually uses, not merely a value on disk
+        let ident = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .args(["var", "GIT_AUTHOR_IDENT"])
+            .output()
+            .unwrap();
+        let ident = String::from_utf8_lossy(&ident.stdout);
+        assert!(ident.starts_with("impl1 <impl1@fwf.local>"), "{ident}");
+        // and a commit made there carries it, author and committer both —
+        // which is the whole point: `git log` can tell the seats apart
+        std::fs::write(wt.join("fix.txt"), "a seat's work").unwrap();
+        for args in [vec!["add", "."], vec!["commit", "-q", "-m", "from a seat"]] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&wt)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let who = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .args(["log", "-1", "--format=%an <%ae> | %cn <%ce>"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&who.stdout).trim(),
+            "impl1 <impl1@fwf.local> | impl1 <impl1@fwf.local>"
+        );
+        // someone edits it to a person, or the operator's own name leaks in
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .args(["config", "user.email", "jamie@example.com"])
+            .status()
+            .unwrap();
+        set_seat_identity(&wt, "impl1").unwrap();
+        assert_eq!(
+            seat_identity(&wt),
+            Some(("impl1".into(), "impl1@fwf.local".into()))
+        );
+        // a path that is not a repo is a refusal, not a panic
+        assert!(set_seat_identity(&floor.join("nope"), "impl1").is_err());
+        let _ = std::fs::remove_dir_all(&floor);
+    }
+
+    /// #590: what `fwfd doctor` prints, and what it counts as wrong.
+    #[test]
+    fn doctor_names_the_worktree_that_commits_as_someone_else() {
+        let floor = tmp();
+        let seats = [("impl", 1u8), ("qa", 1u8), ("gv", 1u8)];
+        // impl1 correct, qa1 drifted, gv1 never provisioned, gate-wt correct
+        repo(&floor.join("wt-impl1"));
+        set_seat_identity(&floor.join("wt-impl1"), "impl1").unwrap();
+        repo(&floor.join("wt-qa1"));
+        set_seat_identity(&floor.join("wt-qa1"), "somebody-else").unwrap();
+        repo(&floor.join("gate-wt"));
+        set_seat_identity(&floor.join("gate-wt"), GATE_IDENTITY).unwrap();
+        let (lines, wrong) = identity_report(&floor, &seats);
+        assert_eq!(wrong, 1, "{lines:#?}");
+        assert!(lines[0].contains("wt-impl1") && lines[0].contains("impl1 <impl1@fwf.local>"));
+        assert!(
+            lines[1].contains("WRONG: somebody-else <somebody-else@fwf.local>")
+                && lines[1].contains("expected qa1 <qa1@fwf.local>"),
+            "{}",
+            lines[1]
+        );
+        assert!(lines[2].contains("wt-gv1") && lines[2].contains("not provisioned"));
+        assert!(lines[3].contains("gate-wt") && lines[3].contains("fwf-gate@fwf.local"));
+        // a provisioned worktree with no identity at all is wrong too
+        repo(&floor.join("wt-gv1"));
+        let (lines, wrong) = identity_report(&floor, &seats);
+        assert_eq!(wrong, 2, "{lines:#?}");
+        assert!(lines[2].contains("no identity of its own"), "{}", lines[2]);
+        // every seat right: nothing for a human to do
+        set_seat_identity(&floor.join("wt-qa1"), "qa1").unwrap();
+        set_seat_identity(&floor.join("wt-gv1"), "gv1").unwrap();
+        assert_eq!(identity_report(&floor, &seats).1, 0);
+        let _ = std::fs::remove_dir_all(&floor);
     }
 }

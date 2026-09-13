@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Factory commits are authored by the seat that wrote them (#590).** Seat
+  worktrees had no identity of their own, so git guessed one from the machine —
+  the same author for every seat, indistinguishable from a human's local commit.
+  `fwfd seats --up` now sets `user.name`/`user.email` to `<seat>` /
+  `<seat>@fwf.local` in each worktree on every run, so a drifted or inherited
+  identity is corrected and not merely created; the gate worktree gets
+  `fwf-gate`, stamped where the loop clones it. `fwfd doctor` grew a seat-identity
+  section (and moved into `verbs.rs`): it reports what every worktree the manifest
+  names commits as, flags the ones that are wrong, and exits non-zero. What pushes
+  and opens the PR is unchanged — that stays `fwf-impl[bot]`.
+
 - **Every seat is told when its cycle ends (#589).** A flake-fix spec asking for
   "run the suite 20× back-to-back" had seats starting a 50-minute loop against a
   40-minute `job_timeout_secs` and then idling on the shell — three human
