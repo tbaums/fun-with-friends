@@ -78,7 +78,12 @@ STAGE="$OUT/$NAME"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp "target/release/$BIN" "$STAGE/$BIN"
-cp README.md RELEASING.md CHANGELOG.md "$STAGE/"
+# #609: the runbook and changelog moved out of the crate to docs/releasing.md
+# and the repo-root CHANGELOG.md. The asset keeps its old filenames so a
+# published tarball's contents do not change shape.
+cp README.md "$STAGE/"
+cp ../docs/releasing.md "$STAGE/RELEASING.md"
+cp ../CHANGELOG.md "$STAGE/"
 tar -C "$OUT" -czf "$OUT/$NAME.tar.gz" "$NAME"
 ( cd "$OUT" && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
 echo "ok: $OUT/$NAME.tar.gz"

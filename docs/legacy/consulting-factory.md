@@ -121,7 +121,7 @@ role→model map (first-class evidence, since the target is agent-built), the
 claimed good-era boundary to test, and the OFF-by-default switches for
 orchestration logs and Phase-3 replay. The role prompts read the manifest and
 discover sources by type; they never assume literal client paths. See
-[`templates/consulting/README.md`](../templates/consulting/README.md) for the full
+[`templates/consulting/README.md`](../../templates/consulting/README.md) for the full
 runbook and the three acceptance fixtures under `templates/consulting/eval/`.
 
 > **Never run two factories at once** (OOM on a single workstation), and run a

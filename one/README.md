@@ -1,109 +1,21 @@
 # fwf 1.0 — `fwf`
 
-`fwf` IS 1.0: `one/`'s binary is the default command. The v0.42 bash tool is
-`fwf-legacy` (same code, renamed). For one release the 1.0 binary also installs
-as `fwfd`, its old name, so existing scripts and notes keep working; the
-`fwfd/<suite>` check-run name and the `.fwfd/gate` state directory keep theirs
-too. Both go next release.
-
 One Rust supervisor runs a software factory on a GitHub repository. It reads
 the tracker, decides what to do next, wakes an idle Claude Code pane with
 exactly one job, reads back a JSON verdict, and performs every GitHub write
 itself under three narrow GitHub App identities. Seats never hold a GitHub
 write token, never poll, never loop, and cost nothing while idle.
 
-```
-issue ──GV triage──▶ gated ──human `fwf ungate`──▶ eligible
-  ──impl seat──▶ branch on the local mirror ──ops push, impl PR──▶ draft PR
-  ──QA seat──▶ review under fwf-qa (anchored to the head) ──▶ typed merge under fwf-ops
-  ──gate (bash -o pipefail, memory-capped venue)──▶ check-run ──▶ promote by literal SHA
-```
+**Start at [`docs/getting-started.md`](../docs/getting-started.md).** The
+documentation lives at the repository root, not in this crate — see
+[`docs/index.md`](../docs/index.md) for the full index. This file is the
+crate's own orientation and nothing else, so nothing is documented twice.
 
-Status: **1.0.0.** M0–M3 built and proven; M4's soak is done: unattended overnight
-runs on three private repos — diaspective (22 merged PRs in one day, from an empty
-repo to a styled MVP), baton, and transom (6 bug fixes drained 2026-09-11/12, promoted,
-released as transom v0.52.0 and deployed to prod, 0 stalls) — see `docs/BUILD-LOG.md`.
-Known gaps are tickets, not surprises: #575 (slice must branch from the fence
-sha), #576 (no rework action on a changes-requested review). The v0.42 tool still
-ships, as `fwf-legacy`, and is unchanged apart from its name.
-
-## Requirements
-
-- macOS or Linux, `tmux`, `git`, a Rust toolchain (stable).
-- A Claude subscription; the seats are ordinary interactive `claude` panes.
-- Three GitHub Apps installed on the repository (`docs/github-apps.md`):
-  `impl` (pull_requests:write), `qa` (pull_requests:write), `ops`
-  (contents, issues, checks: write). Keys in `~/.fwf/keys/`, ids in
-  `~/.fwf/apps.toml`.
-
-## Ten-minute start
-
-1. Build and check the Apps:
-   ```
-   cd one && cargo build --release && cargo run --quiet -- doctor
-   ```
-2. Write the manifest into the customer repo (or convert a v0.42 profile):
-   ```
-   fwf init-manifest > .fwf/fwf.toml
-   fwf init-manifest --from-profile profiles/transom.sh --repo tbaums/transom > .fwf/fwf.toml
-   fwf up            # validates, mints every App, prints the floor plan
-   ```
-3. Bring up the floor: the local mirror, one worktree clone per seat, and a
-   warm pane per seat (impl + QA per pair, plus GV/PM if `[models]` names them):
-   ```
-   fwf seats --up      # idempotent; `fwf seats --down` refuses while a seat is Working
-   ```
-   Seats authenticate from `~/.fwf/seat-token` (`claude setup-token`); the
-   per-floor HOME holds the deny hooks and nothing else.
-4. Put the issue numbers you want worked in the manifest's `issues = [...]`
-   allow-list (`fwf run` refuses an empty one), then:
-   ```
-   fwf run --once     # one tick: poll → plan → act
-   fwf run            # the loop
-   fwf status         # one screen: seats, issues, PRs, needs-you
-   fwf dash --watch 30    # the board: seats · issues · PRs · decisions · usage
-   ```
-   The board has five tabs (`1`-`5`, or `--tab issues`), `j`/`k` to move the
-   selection, `r` to refresh and `q` to quit. Every pane is folded from
-   `run.jsonl`; the only live reads are tmux pane liveness and the meter.
-
-## The verbs
-
-| verb | what it does | identity |
-|---|---|---|
-| `up`, `doctor`, `status`, `dash`, `why <pr>`, `cost`, `seats --up/--down` | read-only: validate, mint, one-screen status, the five-tab board from the run record, one PR's timeline, measured tokens | – |
-| `run [--once]` | the supervisor loop; only allow-listed issues; parks on the meter brake | all three |
-| `spec --issue N` | PM seat writes a spec into a **gated** issue; gate untouched | ops |
-| `triage --issue N` | GV seat judges an issue; not-ready ⇒ gate label + reason | ops |
-| `ungate --issue N --by NAME` | the one human decision, made mechanical and recorded | ops |
-| `slice --issue N` | wake an impl seat; push its branch; open the draft PR | ops, impl |
-| `qa --pr N` | wake a QA seat; post its verdict as a review anchored to the head | qa |
-| `merge --pr N` | typed squash-merge: approval at head by a non-author, fence, checks | ops |
-| `gate --sha S --suite X` | run a suite in a venue (local / Apple container / systemd), record a verdict, post a check-run | ops |
-| `promote --from A --to B` | fast-forward by literal SHA, only on a recorded Green | ops |
-| `release-check --tag vX` | refuse unless the tag has a release object with the expected assets | ops |
-
-`fwf <verb>` with no arguments prints the exact flags.
-
-## What is enforced, not asked
-
-- **Seats cannot write to GitHub.** No token in the pane; `gh` and `curl`
-  disallowed; deny hooks under `--permission-mode dontAsk`; the only remote is
-  a local bare mirror; `staging`/`main` pushes refused by the mirror layer.
-- **Every write is typed.** Issue / PR / Seat / Gate states are enums with
-  `Unknown` first-class; a merge needs an approval anchored to the exact head
-  by a non-author, a live claim fence, and green checks; a promotion needs a
-  recorded Green for the exact SHA; a release needs a release object.
-- **Nothing is inferred from pane text.** Seats answer with one JSON verdict
-  file written atomically; a missing verdict is `Stalled`, never guessed.
-- **Triage is opt-in.** `triage_new = true` makes `run` wake the GV seat once
-  per new un-gated issue (it labels and comments on real issues); off by default.
-- **Only humans un-gate.** A model can gate an issue; only `fwf ungate`
-  makes it eligible, and the run record names who.
-- **The meter brakes the floor.** `run` parks at `park_at_weekly_pct` from
-  the last real reading in `~/.fwf-meter-log`.
-- **The record is append-only.** `~/.fwf/floors/<name>/run.jsonl` is the
-  source for `why`, `status`, `dash`, and cost; `fwf` never edits it.
+`fwf` IS 1.0: this crate's binary is the default command. The v0.42 bash tool
+is `fwf-legacy` (same code, renamed). For one release the 1.0 binary also
+installs as `fwfd`, its old name, so existing scripts and notes keep working;
+the `fwfd/<suite>` check-run name and the `.fwfd/gate` state directory keep
+theirs too. Both go next release.
 
 ## Layout
 
@@ -119,9 +31,30 @@ one/
                 ideation, consulting, defect-report, user-testing)
   manifests/    converted manifests for transom, baton, wholesome-swolesome
   scripts/      seat-up.sh, size-check.sh (+ baseline)
-  docs/         github-apps.md, BUILD-LOG.md, CUTOVER.md
-  RELEASING.md  CHANGELOG.md
 ```
 
-Tests: `cargo test` (97, including proptest properties and a fake GitHub);
-CI: `.github/workflows/one-ci.yml` (test, fmt+clippy, size ratchet).
+## Build and test
+
+```
+cargo build --release
+cargo test
+```
+
+CI is [`.github/workflows/one-ci.yml`](../.github/workflows/one-ci.yml): test,
+fmt + clippy, the size ratchet, and the docs link check.
+
+## Where things went
+
+| You want | Read |
+|---|---|
+| to install and make a first run | [`docs/getting-started.md`](../docs/getting-started.md) |
+| every verb and what it refuses | [`docs/verbs.md`](../docs/verbs.md) |
+| the three Apps and their permissions | [`docs/github-apps.md`](../docs/github-apps.md) |
+| to cut a release | [`docs/releasing.md`](../docs/releasing.md) |
+| why the harness is shaped this way | [`docs/design.md`](../docs/design.md) |
+| what shipped in each version | [`CHANGELOG.md`](../CHANGELOG.md) |
+| the 0.x bash factory | [`docs/legacy/README.md`](../docs/legacy/README.md) |
+
+## See also
+
+- [`docs/index.md`](../docs/index.md) — the fwf 1.0 documentation index.
