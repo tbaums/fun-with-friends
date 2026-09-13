@@ -4,9 +4,9 @@ name: one CI
 on:
   push:
     branches: [main, staging, 'one/**']
-    paths: ['one/**', '.github/workflows/one-ci.yml']
+    paths: ['one/**', 'prompts/**', '.github/workflows/one-ci.yml']
   pull_request:
-    paths: ['one/**', '.github/workflows/one-ci.yml']
+    paths: ['one/**', 'prompts/**', '.github/workflows/one-ci.yml']
   workflow_dispatch:
 
 permissions:

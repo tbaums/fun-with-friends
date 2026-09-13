@@ -847,6 +847,14 @@ sizing/model/template knobs (`FWF_PAIRS`, `FWF_MODEL`, `FWF_MODEL_<ROLE>`,
 set to `""` to opt a floor back out). Role prompts are the source of truth and
 live in `templates/<name>/` (one directory per factory design).
 
+## Prompts
+
+fwf 1.0's judgment is the job prompts, and they live at the repo root in
+[`prompts/`](prompts/) — one file per (family, role), one job per wake, one JSON
+verdict back. [`prompts/README.md`](prompts/README.md) has the layout, the family
+table and the placeholders the supervisor fills. `one/prompts` is a compatibility
+symlink for one release; read and edit the root copy.
+
 ## Commands
 
 ```
