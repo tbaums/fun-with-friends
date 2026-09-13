@@ -624,10 +624,10 @@ mod tests {
             ],
         );
 
-        // A seat id no other test uses: FakeSeat names its tmux session after
-        // (pid, seat), and these run in one process. Only the pane target is
-        // taken from it; the cycle's own seat number stays 1 (wt-impl1).
-        let fake = seat::FakeSeat::spawn(Role::Impl, 6).unwrap();
+        // Seat 1, the same number `seat.rs`'s own wake test uses: these run
+        // concurrently in one `cargo test` process, which is how the buffer and
+        // job-file collision of #586 showed up on CI. Both must still land.
+        let fake = seat::FakeSeat::spawn(Role::Impl, 1).unwrap();
         let verdict = serde_json::json!({"verdict":"implemented","branch":branch,"head":reworked,"summary":"addressed it"}).to_string();
         std::fs::write(
             floor.join("job.md"),

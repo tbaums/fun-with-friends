@@ -130,6 +130,30 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// A name no other wake will use: the seat, this process, a counter within it,
+/// and a nanosecond stamp.
+///
+/// Both namespaces a wake writes into are shared far wider than one seat (#586).
+/// tmux's buffer namespace belongs to the *server*, so the loop's wake and a
+/// hand-run `fwfd spec` both loaded `fwfd-1` and one's `paste-buffer -d`
+/// deleted the other's buffer ("no buffer fwfd-1"). The temp dir is shared too:
+/// two tests in one process waking seat 1 both wrote `fwfd-job-<pid>-1.txt` and
+/// one removed the other's file mid-paste (ubuntu CI on PR #593). A unique name
+/// per call replaces every lock this would otherwise need.
+fn wake_token(seat: u8) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!(
+        "{seat}-{}-{}-{nanos:09}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// Type one job into an idle pane. The job text ends with a line naming the
 /// verdict path so the seat knows where to write. Returns the Working state.
 pub fn wake(
@@ -162,14 +186,17 @@ pub fn wake(
     // so a multi-line job lands in the input box intact instead of each line
     // being submitted as its own prompt; Enter is sent separately so a job
     // containing the word "Enter" is never interpreted as a key.
-    let buf =
-        std::env::temp_dir().join(format!("fwfd-job-{}-{}.txt", std::process::id(), pane.seat));
+    // The job file and the tmux buffer both carry this wake's own token, so no
+    // other wake — in this process or any other on this tmux server — can
+    // delete either out from under us (#586).
+    let token = wake_token(pane.seat);
+    let buf = std::env::temp_dir().join(format!("fwfd-job-{token}.txt"));
     std::fs::write(&buf, &text).map_err(|e| SeatError::Tmux(e.to_string()))?;
     // Clear anything staged in the input box first (ghost text is never
     // ours to send; a stale draft must not be prepended to the job).
     tmux(&["send-keys", "-t", &pane.target, "Escape"])?;
     tmux(&["send-keys", "-t", &pane.target, "C-u"])?;
-    let bufname = format!("fwfd-{}", pane.seat);
+    let bufname = format!("fwfd-{token}");
     tmux(&[
         "load-buffer",
         "-b",
@@ -250,7 +277,9 @@ pub struct FakeSeat {
 
 impl FakeSeat {
     pub fn spawn(role: Role, seat: u8) -> Result<FakeSeat, SeatError> {
-        let session = format!("fwfd-fake-{}-{}", std::process::id(), seat);
+        // Unique per spawn, like a wake's own names: two fakes may stand for the
+        // same seat number in different roles, which is the case #586 broke.
+        let session = format!("fwfd-fake-{}", wake_token(seat));
         let dir = std::env::temp_dir().join(&session);
         std::fs::create_dir_all(&dir).map_err(|e| SeatError::Tmux(e.to_string()))?;
         let script = dir.join("seat.sh");
@@ -316,6 +345,94 @@ mod tests {
             issue: Some(41),
             pr: None,
         }
+    }
+
+    /// #586: the names a wake writes into are shared with every other wake on
+    /// the machine, so they have to differ per call — including two calls for
+    /// the same seat in one process (two tests in one `cargo test`, which is how
+    /// ubuntu CI found it).
+    #[test]
+    fn every_wake_gets_names_no_other_wake_will_use() {
+        let mine = wake_token(1);
+        assert_ne!(mine, wake_token(1));
+        assert!(mine.starts_with("1-"), "{mine}");
+        assert!(
+            mine.contains(&std::process::id().to_string()),
+            "{mine} lacks the pid"
+        );
+        // many at once, from several threads, all distinct
+        let made: Vec<String> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..4)
+                .map(|_| s.spawn(|| (0..250).map(|_| wake_token(1)).collect::<Vec<_>>()))
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let uniq: std::collections::BTreeSet<&String> = made.iter().collect();
+        assert_eq!(uniq.len(), made.len(), "{} of {}", uniq.len(), made.len());
+        // and a name tmux and the filesystem both accept
+        assert!(made
+            .iter()
+            .all(|t| t.chars().all(|c| c.is_ascii_digit() || c == '-')));
+    }
+
+    /// #586: two logical seats that share a seat number — the loop's GV seat 1
+    /// and a hand-run `fwfd spec` seat 1 — woken at the same time. Both wakes
+    /// land, and each pane gets ITS OWN job, not the other's.
+    #[test]
+    fn two_concurrent_wakes_for_the_same_seat_number_do_not_steal_each_others_buffer() {
+        if !tmux_available() {
+            eprintln!("skip: no tmux");
+            return;
+        }
+        let one = FakeSeat::spawn(Role::Gv, 1).unwrap();
+        let two = FakeSeat::spawn(Role::Pm, 1).unwrap();
+        assert_eq!(one.pane.seat, two.pane.seat);
+        assert_ne!(one.pane.target, two.pane.target, "different tmux sessions");
+        let dir = std::env::temp_dir().join(format!("fwfd-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // distinct job texts, so a stolen buffer shows up as the wrong verdict
+        let plan = |n: u8, fake: &FakeSeat| {
+            let out = dir.join(format!("verdict-{n}.json"));
+            let verdict = serde_json::json!({
+                "verdict": "triaged", "ready": true, "reason": format!("seat {n} did its own job")
+            })
+            .to_string();
+            (
+                out,
+                format!("JOB verdict={verdict} mode=answer"),
+                fake.pane.clone(),
+            )
+        };
+        let (out1, text1, pane1) = plan(1, &one);
+        let (out2, text2, pane2) = plan(2, &two);
+        let go = |pane: Pane, text: String, out: std::path::PathBuf| {
+            move || -> Result<(SeatState, Option<Verdict>), SeatError> {
+                let st = wake(&pane, "bash", &job(), &text, &out, Duration::from_secs(20))?;
+                let deadline = match st {
+                    SeatState::Working { deadline, .. } => deadline,
+                    other => panic!("expected Working, got {other:?}"),
+                };
+                wait_verdict(&job(), &out, deadline, Duration::from_millis(100))
+            }
+        };
+        let (a, b) = std::thread::scope(|s| {
+            let h1 = s.spawn(go(pane1, text1, out1));
+            let h2 = s.spawn(go(pane2, text2, out2));
+            (h1.join().unwrap(), h2.join().unwrap())
+        });
+        // neither wake hit "no buffer", and neither job file went missing
+        let (st1, v1) = a.expect("seat 1's wake");
+        let (st2, v2) = b.expect("seat 2's wake");
+        assert!(matches!(st1, SeatState::Reported { .. }), "{st1:?}");
+        assert!(matches!(st2, SeatState::Reported { .. }), "{st2:?}");
+        let reason = |v: Option<Verdict>| match v {
+            Some(Verdict::Triaged { reason, .. }) => reason,
+            other => panic!("expected a triaged verdict, got {other:?}"),
+        };
+        assert_eq!(reason(v1), "seat 1 did its own job");
+        assert_eq!(reason(v2), "seat 2 did its own job");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
