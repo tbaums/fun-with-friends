@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Per-cycle tokens are a window, and now there are tests that say so (#581).**
+  Transom's impl seat recorded 7M → 22M → 58M → 95M tokens in over four cycles,
+  which reads like a cumulative counter. It was not: `cost`'s time window was
+  already exact, and two new tests hold it there — one over a single growing
+  transcript spanning two cycles (byte-exact, boundary turn included, a silent
+  seat summing to zero), one over two sequential recorded cycles of the same seat
+  asserting what lands in the run record. The growth is real, because every
+  request re-reads the conversation the seat has grown, so `dash` now says so
+  where the numbers are: the Usage ledger and each seat's per-cycle line call
+  in/cycle an upper bound rather than a per-task price.
+
 - **The loop and the slice agree on which seat is free (#579).** `PrView` carries
   the PR's `author`, and "one PR in flight per impl seat" counts only PRs this
   floor opened (`…-impl[bot]`) — the 0.x factory used the same `impl<n>/` prefix,
