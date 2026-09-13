@@ -1,4 +1,4 @@
-//! T-27 / #574 — `fwfd dash`: the board, computed from the run record alone.
+//! T-27 / #574 — `fwf dash`: the board, computed from the run record alone.
 //!
 //! This module is the FOLD half and nothing else: append-only JSONL in, one
 //! `Board` out, no clock, no tmux, no GitHub call. It works offline on any

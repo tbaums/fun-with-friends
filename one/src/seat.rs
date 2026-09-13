@@ -164,7 +164,7 @@ fn hhmm_via(date_bin: &str, epoch: u64) -> String {
 ///
 /// Both namespaces a wake writes into are shared far wider than one seat (#586).
 /// tmux's buffer namespace belongs to the *server*, so the loop's wake and a
-/// hand-run `fwfd spec` both loaded `fwfd-1` and one's `paste-buffer -d`
+/// hand-run `fwf spec` both loaded `fwfd-1` and one's `paste-buffer -d`
 /// deleted the other's buffer ("no buffer fwfd-1"). The temp dir is shared too:
 /// two tests in one process waking seat 1 both wrote `fwfd-job-<pid>-1.txt` and
 /// one removed the other's file mid-paste (ubuntu CI on PR #593). A unique name
@@ -274,7 +274,7 @@ fn read_verdict(path: &Path) -> Result<Option<Verdict>, SeatError> {
 /// Wait for the verdict file. Returns Reported (with the verdict) or Stalled.
 /// Never kills anything; the caller decides.
 ///
-/// A verdict is a file that *parses*, not a file that exists (#587): `fwfd spec`
+/// A verdict is a file that *parses*, not a file that exists (#587): `fwf spec`
 /// read a half-written `verdict-spec-1268.json` and failed outright, seconds
 /// before the file held a valid verdict. So a read or parse failure is simply
 /// "not yet" and polling continues to the deadline; only the deadline decides,
@@ -314,7 +314,7 @@ pub fn wait_verdict(
     // is the only record of why a present file did not count.
     if let Some(e) = last_bad {
         eprintln!(
-            "fwfd: {} never became a verdict by the deadline: {e}",
+            "fwf: {} never became a verdict by the deadline: {e}",
             verdict_path.display()
         );
     }
@@ -410,7 +410,7 @@ mod tests {
     }
 
     /// A seat that writes straight into `<path>` instead of `<path>.tmp` + `mv`,
-    /// in two chunks with a pause between them — transom #1268's `fwfd spec`
+    /// in two chunks with a pause between them — transom #1268's `fwf spec`
     /// (#587). The reader must see the half-written file as "not yet".
     fn sloppy_writer(path: PathBuf, text: String, finish: bool) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
@@ -524,7 +524,7 @@ mod tests {
     }
 
     /// #586: two logical seats that share a seat number — the loop's GV seat 1
-    /// and a hand-run `fwfd spec` seat 1 — woken at the same time. Both wakes
+    /// and a hand-run `fwf spec` seat 1 — woken at the same time. Both wakes
     /// land, and each pane gets ITS OWN job, not the other's.
     #[test]
     fn two_concurrent_wakes_for_the_same_seat_number_do_not_steal_each_others_buffer() {

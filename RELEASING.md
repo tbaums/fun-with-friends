@@ -98,7 +98,7 @@ two-way divergence the pre-publish guard below then has to (correctly) refuse.
 6. **Pre-tag divergence check — DO NOT SKIP.** Before tagging, run the same
    non-mutating check the release workflow's pre-publish guard runs:
    ```bash
-   ./fwf reconcile --check
+   ./fwf-legacy reconcile --check
    ```
    **On `check-diverged` (or `check-suspect`), STOP — do not tag.** That is a
    genuine divergence needing a human decision, not a rerun; resolve it (see
@@ -157,7 +157,7 @@ forgotten manual step. It classifies each of `staging`/`integration` against
   names the divergent SHAs; it never auto-merges/rebases/force-pushes. Resolve
   by hand:
   ```bash
-  FWF_REPO="$PWD" ./fwf reconcile --branch staging --branch integration --against main
+  FWF_REPO="$PWD" ./fwf-legacy reconcile --branch staging --branch integration --against main
   ```
   then reconcile the named branch(es) yourself (e.g. `git push --force-with-lease`
   after confirming which side should win).
@@ -289,7 +289,7 @@ anything. Cut the release manually — same gates, run locally:
    a race that is not actually transient still gets a durable consequence.
 
    Run it yourself anyway for the immediate answer:
-   `FWF_REPO="$PWD" ./fwf reconcile` (see "Re-syncing staging/integration" above).
+   `FWF_REPO="$PWD" ./fwf-legacy reconcile` (see "Re-syncing staging/integration" above).
 
    > **Why this note exists.** `fwf-reconcile.sh` records that #114 exists
    > *because* the previous manual re-sync step got skipped (the 2026-07-14

@@ -1,4 +1,4 @@
-//! `fwfd run` — the supervisor loop (M1 shape).
+//! `fwf run` — the supervisor loop (M1 shape).
 //!
 //! poll → plan → act, forever (or `--once`). An idle floor costs GitHub reads
 //! only (ETag-cached, mostly 304s) and zero model requests: seats are warm
@@ -152,7 +152,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
             let age = meter_age_secs(&when, crate::seat::now());
             if age.is_none_or(|a| a > METER_MAX_AGE) {
                 println!(
-                    "fwfd run: PARKED — last meter reading is {} (logged {when}); no seats woken until a fresh reading lands in ~/.fwf-meter-log",
+                    "fwf run: PARKED — last meter reading is {} (logged {when}); no seats woken until a fresh reading lands in ~/.fwf-meter-log",
                     age.map(|a| format!("{}m old", a / 60)).unwrap_or_else(|| "unparseable".into())
                 );
                 if cfg.once {
@@ -162,7 +162,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 continue;
             }
             if weekly >= cfg.park_at_weekly_pct {
-                println!("fwfd run: PARKED — weekly meter {weekly}% ≥ {}% (logged {when}); no seats woken", cfg.park_at_weekly_pct);
+                println!("fwf run: PARKED — weekly meter {weekly}% ≥ {}% (logged {when}); no seats woken", cfg.park_at_weekly_pct);
                 if cfg.once {
                     return Ok(());
                 }
@@ -176,7 +176,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         let mut snap = match poller.poll(now) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("fwfd run: poll failed ({e}); holding this tick");
+                eprintln!("fwf run: poll failed ({e}); holding this tick");
                 if cfg.once {
                     return Err(e.to_string());
                 }
@@ -332,8 +332,8 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                         check_cmd: cfg.gate_cmd.clone(),
                     };
                     match slice::run_with(&sc, impl_app, ops_app) {
-                        Ok(url) => println!("fwfd run: impl seat {seat} → {url}"),
-                        Err(e) => eprintln!("fwfd run: impl cycle for #{issue} failed: {}", e.0),
+                        Ok(url) => println!("fwf run: impl seat {seat} → {url}"),
+                        Err(e) => eprintln!("fwf run: impl cycle for #{issue} failed: {}", e.0),
                     }
                     acted += 1;
                 }
@@ -357,33 +357,33 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     };
                     match qa::run(&qc, qa_app) {
                         Ok((id, state)) => {
-                            println!("fwfd run: qa seat {seat} → review {id} {state} on #{pr}");
+                            println!("fwf run: qa seat {seat} → review {id} {state} on #{pr}");
                             if state == "APPROVED" {
                                 // The loop finishes the job: ready-for-review under the
                                 // author App, then the typed merge under ops. Every
                                 // precondition is re-checked inside merge_pr.
                                 match finish_pr(cfg, apps, *pr) {
                                     Ok(sha) => {
-                                        println!("fwfd run: merged #{pr} as {}", sha.short());
+                                        println!("fwf run: merged #{pr} as {}", sha.short());
                                         match gate_after_merge(cfg, apps, &sha) {
                                             Ok(state) => println!(
-                                                "fwfd run: gate {} {} → {state:?}",
+                                                "fwf run: gate {} {} → {state:?}",
                                                 sha.short(),
                                                 cfg.gate_suite
                                             ),
                                             Err(e) => eprintln!(
-                                                "fwfd run: gate on {} not recorded: {e}",
+                                                "fwf run: gate on {} not recorded: {e}",
                                                 sha.short()
                                             ),
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("fwfd run: #{pr} approved but not merged: {e}")
+                                        eprintln!("fwf run: #{pr} approved but not merged: {e}")
                                     }
                                 }
                             }
                         }
-                        Err(e) => eprintln!("fwfd run: qa cycle for #{pr} failed: {}", e.0),
+                        Err(e) => eprintln!("fwf run: qa cycle for #{pr} failed: {}", e.0),
                     }
                     acted += 1;
                 }
@@ -391,21 +391,21 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     match finish_pr(cfg, apps, *pr) {
                         Ok(sha) => {
                             println!(
-                                "fwfd run: merged #{pr} as {} (approval was already at head)",
+                                "fwf run: merged #{pr} as {} (approval was already at head)",
                                 sha.short()
                             );
                             match gate_after_merge(cfg, apps, &sha) {
                                 Ok(state) => println!(
-                                    "fwfd run: gate {} {} → {state:?}",
+                                    "fwf run: gate {} {} → {state:?}",
                                     sha.short(),
                                     cfg.gate_suite
                                 ),
                                 Err(e) => {
-                                    eprintln!("fwfd run: gate on {} not recorded: {e}", sha.short())
+                                    eprintln!("fwf run: gate on {} not recorded: {e}", sha.short())
                                 }
                             }
                         }
-                        Err(e) => eprintln!("fwfd run: #{pr} approved but not merged: {e}"),
+                        Err(e) => eprintln!("fwf run: #{pr} approved but not merged: {e}"),
                     }
                     acted += 1;
                 }
@@ -431,20 +431,20 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     };
                     match crate::rework::run(&rc, impl_app, ops_app) {
                         Ok(crate::rework::Outcome::Pushed { head, round }) => println!(
-                            "fwfd run: impl seat {seat} reworked #{pr} (round {round}) → {}",
+                            "fwf run: impl seat {seat} reworked #{pr} (round {round}) → {}",
                             head.short()
                         ),
                         // Past the cap nothing is closed and no issue released:
                         // two passes that did not convince QA are a human's call.
                         Ok(crate::rework::Outcome::AtCap { rounds }) => eprintln!(
-                            "fwfd run: #{pr} has had {rounds} rework round(s) (cap {}); close it or push it yourself — the loop will not wake the seat again",
+                            "fwf run: #{pr} has had {rounds} rework round(s) (cap {}); close it or push it yourself — the loop will not wake the seat again",
                             cfg.rework_cap
                         ),
                         Ok(crate::rework::Outcome::Gone) => {
-                            println!("fwfd run: #{pr} is no longer open; nothing to rework")
+                            println!("fwf run: #{pr} is no longer open; nothing to rework")
                         }
                         Err(e) => eprintln!(
-                            "fwfd run: rework of #{pr}{} failed: {}",
+                            "fwf run: rework of #{pr}{} failed: {}",
                             issue.map(|i| format!(" (#{i})")).unwrap_or_default(),
                             e.0
                         ),
@@ -452,14 +452,14 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     acted += 1;
                 }
                 Action::ReleaseClaim { issue, fence } => {
-                    eprintln!("fwfd run: claim on #{issue} ({}) is stale; release is an operator decision in M1", fence.0);
+                    eprintln!("fwf run: claim on #{issue} ({}) is stale; release is an operator decision in M1", fence.0);
                 }
                 Action::Nothing => {}
             }
         }
         cycles += 1;
         println!(
-            "fwfd run: tick {cycles}: {} issues, {} prs, {} actions, {} requests ({} not-modified)",
+            "fwf run: tick {cycles}: {} issues, {} prs, {} actions, {} requests ({} not-modified)",
             snap.issues.len(),
             snap.prs.len(),
             acted,

@@ -14,18 +14,18 @@ only overrides the roles whose judgment differs.
 
 | family (0.x) | impl | qa | gv | pm | notes |
 |---|---|---|---|---|---|
-| dev | ✔ | ✔ | ✔ | ✔ new: `fwfd spec` cycle | proven live (PRs #565/#567/#569, triage #570) |
+| dev | ✔ | ✔ | ✔ | ✔ new: `fwf spec` cycle | proven live (PRs #565/#567/#569, triage #570) |
 | refactor | ✔ | ✔ | dev | dev | characterize-first, one mechanical move per commit, never edit an expectation |
 | validate | ✔ | ✔ | ✔ | dev | evidence tiers `[E:cited]/[E:inferred]/[A:assumption]`; red-team QA |
 | ideation | ✔ | ✔ | ✔ | dev | assigned stance, one idea per brief |
 | consulting | ✔ | ✔ | ✔ | dev | validate + client repo read-only + roles not names |
 | defect-report | ✔ | ✔ | dev | dev | locators into a named source of truth; receiver's editor |
 | user-testing | ✔ (persona) | ✔ (researcher) | dev | dev | source-blind by construction: the seat worktree holds no product source |
-| dev-sre | – | – | – | – | not a seat: prod ops is `fwfd status`/`dash` plus the operator |
+| dev-sre | – | – | – | – | not a seat: prod ops is `fwf status`/`dash` plus the operator |
 | _local-issues | – | – | – | – | absorbed: every 1.0 seat already works only against the local mirror |
 
-captain and conductor are code, not prompts: `fwfd status`, `fwfd dash`, `fwfd gate`,
-`fwfd promote`.
+captain and conductor are code, not prompts: `fwf status`, `fwf dash`, `fwf gate`,
+`fwf promote`.
 
 Placeholders the supervisor fills: `{{SEAT}} {{REPO}} {{ISSUE}} {{TITLE}} {{BODY}}
 {{BRANCH}} {{PR}} {{HEAD}} {{BASE}}`. `prompts.rs` refuses a file that uses any other.

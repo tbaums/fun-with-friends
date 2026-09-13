@@ -2,6 +2,10 @@
 # shellcheck disable=SC2034  # profile vars are consumed by lib.sh and the engine scripts
 # fun-with-friends profile: EXAMPLE / template.
 #
+# DEPRECATED with the rest of v0.42 (#583): profiles configure `fwf-legacy`.
+# fwf 1.0 takes one `.fwf/fwf.toml` manifest instead — `fwf init-manifest
+# --from-profile <this file>` converts one. See one/README.md.
+#
 # `fwf init <git-url>` writes one of these for you automatically (detecting the
 # commands). This hand-written copy documents every knob so you can author one
 # by hand or tune a generated one. Sourced after config.sh by lib.sh.

@@ -11,6 +11,17 @@ is the per-item guarantee that the doc changes are in (see `RELEASING.md`).
 
 ## [Unreleased]
 
+### Changed
+
+- **1.0 is the default command: `fwf` is the Rust supervisor, this bash tool is
+  `fwf-legacy`** (#583) — `one/`'s binary is now built and installed as `fwf`
+  (plus a temporary `fwfd` alias for one release, so existing scripts and notes
+  keep working), and the v0.42 dispatcher is renamed `fwf-legacy`, unchanged
+  apart from its name and a one-time deprecation notice on stderr naming
+  `one/README.md`. `install.sh` installs both; the release tarball's own
+  entrypoint keeps the name `fwf upgrade` re-points, so 0.x self-upgrade is
+  untouched. The suite, both workflows and `RELEASING.md` invoke `./fwf-legacy`.
+
 ## [0.42.9] - 2026-09-05
 
 ### Changed

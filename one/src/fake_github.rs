@@ -1,5 +1,5 @@
 //! Fake GitHub (T-04): an in-process HTTP stand-in for the dozen REST
-//! endpoints `fwfd` uses, with the semantics the real API has and the old
+//! endpoints `fwf` uses, with the semantics the real API has and the old
 //! harness got wrong. Tests construct a [`FakeGitHub`], seed it, point the
 //! client at [`FakeGitHub::base_url`], and assert on [`FakeGitHub::writes`].
 //!

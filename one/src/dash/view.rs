@@ -244,7 +244,7 @@ fn header(b: &Board, f: &Floor, v: &View, now: u64, w: usize) -> Vec<String> {
         f.repo.clone()
     };
     let one = format!(
-        "repo {repo}  ·  {} → {}  ·  {} {}  ·  fwfd {}",
+        "repo {repo}  ·  {} → {}  ·  {} {}  ·  fwf {}",
         if f.base.is_empty() { "?" } else { &f.base },
         if f.release.is_empty() {
             "?"
@@ -284,7 +284,7 @@ fn header(b: &Board, f: &Floor, v: &View, now: u64, w: usize) -> Vec<String> {
         ),
         None => "meter no reading in ~/.fwf-meter-log (the brake cannot see it)".to_string(),
     };
-    boxed("fwfd dash", &[one, format!("{record}   {meter}")], w, 4)
+    boxed("fwf dash", &[one, format!("{record}   {meter}")], w, 4)
 }
 
 pub(super) fn span_hours(b: &Board) -> f64 {
@@ -553,11 +553,11 @@ mod tests {
     #[test]
     fn the_header_names_the_repo_the_branches_the_loop_and_the_meter() {
         let f = frame(Tab::Seats);
-        assert!(f.starts_with("┌ fwfd dash "), "{f}");
+        assert!(f.starts_with("┌ fwf dash "), "{f}");
         assert!(f.contains("repo tbaums/fun-with-friends"));
         assert!(f.contains("staging → main"));
         assert!(f.contains("● running"));
-        assert!(f.contains("fwfd 1.0.0"));
+        assert!(f.contains("fwf 1.0.0"));
         assert!(f.contains("meter weekly 62% session 11%"));
         assert!(f.contains("last event 40s ago"));
     }
@@ -570,7 +570,7 @@ mod tests {
         assert!(f.contains("3 PRs (1)"));
         assert!(f.contains("4 Decisions (1)"));
         assert!(f.contains("5 Usage"));
-        assert!(f.contains("⛔ NEEDS YOU — gated, awaiting `fwfd ungate`: #575"));
+        assert!(f.contains("⛔ NEEDS YOU — gated, awaiting `fwf ungate`: #575"));
         assert!(f.contains("1-5 tab · j/k row"));
     }
 

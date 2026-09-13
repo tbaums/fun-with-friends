@@ -1,4 +1,4 @@
-# fwf 1.0 manifest converted from a v0.42 profile by `fwfd init-manifest --from-profile`.
+# fwf 1.0 manifest converted from a v0.42 profile by `fwf init-manifest --from-profile`.
 # Scalars first; tables ([suites], [models]) last.
 repo = "tbaums/baton"
 base_branch = "staging"

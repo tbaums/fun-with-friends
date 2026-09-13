@@ -1,5 +1,5 @@
 //! T-14 — the manifest. One `fwf.toml` per customer repo is the ONLY launch
-//! input: repo, branches, seats, suites, models. `fwfd up` refuses without it
+//! input: repo, branches, seats, suites, models. `fwf up` refuses without it
 //! and every verb reads its defaults from it, so nothing is ever inferred from
 //! ambient environment (the 200-knob problem, closed by construction).
 //!
@@ -67,7 +67,7 @@ pub struct Manifest {
     /// consulting, defect-report, user-testing). Missing roles fall back to dev.
     #[serde(default = "default_template")]
     pub template: String,
-    /// GV triage cycle inside `fwfd run`: every tick, wake the GV seat once
+    /// GV triage cycle inside `fwf run`: every tick, wake the GV seat once
     /// per open, un-gated, never-triaged issue (allow-list does not apply:
     /// triage is how issues become worth allow-listing). Off by default
     /// because it labels and comments on real issues.
@@ -148,7 +148,7 @@ impl std::fmt::Display for ManifestError {
         match self {
             ManifestError::Missing(p) => write!(
                 f,
-                "no manifest at {} (fwfd refuses to guess; write fwf.toml)",
+                "no manifest at {} (fwf refuses to guess; write fwf.toml)",
                 p.display()
             ),
             ManifestError::Unparseable(e) => write!(f, "manifest unparseable: {e}"),
@@ -244,9 +244,9 @@ impl Manifest {
         format!("{}:{role}{n}", self.session)
     }
     /// Every seat this manifest defines, as `(role, n)`: an impl/qa pair per
-    /// `pairs`, then `gv`/`pm` when `[models]` names them. `fwfd seats` brings
+    /// `pairs`, then `gv`/`pm` when `[models]` names them. `fwf seats` brings
     /// up exactly these, so anything reporting on seats lists exactly these
-    /// (#588 — `fwfd status` was showing impl/qa only).
+    /// (#588 — `fwf status` was showing impl/qa only).
     pub fn seats(&self) -> Vec<(&'static str, u8)> {
         let mut v: Vec<(&'static str, u8)> = Vec::new();
         for n in 1..=self.pairs {

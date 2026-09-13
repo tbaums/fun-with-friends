@@ -1,4 +1,4 @@
-//! T-24 — `fwfd status`: the captain's sweeps as one query, no model.
+//! T-24 — `fwf status`: the captain's sweeps as one query, no model.
 //!
 //! What a human needs to see in one screen: eligible issues waiting, open
 //! PRs with their review/check state, live claims, seat liveness, and the
@@ -209,7 +209,7 @@ pub fn render(inp: &StatusInput) -> String {
         }
         if !p.draft && approved {
             needs_you.push(format!(
-                "PR #{} is approved at head: `fwfd merge --pr {}`",
+                "PR #{} is approved at head: `fwf merge --pr {}`",
                 p.number, p.number
             ));
         }
@@ -643,7 +643,7 @@ mod tests {
         assert!(r.contains("GONE (bash)"));
         assert!(r.contains("ready #2"));
         assert!(r.contains("approved at head by fwf-qa[bot]"));
-        assert!(r.contains("fwfd merge --pr 9"));
+        assert!(r.contains("fwf merge --pr 9"));
         assert!(r.contains("un-gate the ones worth building"));
     }
 

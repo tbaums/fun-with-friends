@@ -24,6 +24,20 @@ done
 FWF_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 unset _src _dir
 
+# 1.0 is the default command (#583): `fwf` is now the Rust binary in `one/`, and
+# this v0.42 tool — unchanged apart from its name — is `fwf-legacy`. Say so once
+# per machine, on STDERR only: every script that parses our stdout, this repo's
+# own test suite included, must never see a word of it. FWF_NO_LEGACY_NOTICE=1
+# silences it; FWF_LEGACY_NOTICE_FILE moves the once-only marker.
+_fwf_legacy_notice() {
+  [ -n "${FWF_NO_LEGACY_NOTICE:-}" ] && return 0
+  local marker="${FWF_LEGACY_NOTICE_FILE:-$HOME/.fwf/legacy-notice}"
+  [ -e "$marker" ] && return 0
+  mkdir -p "$(dirname "$marker")" 2>/dev/null && : > "$marker" 2>/dev/null || true
+  printf '%s\n' "fwf-legacy: deprecated — this is the v0.42 bash tool. \`fwf\` is now fwf 1.0 (the Rust supervisor); see one/README.md. This notice prints once." >&2
+}
+_fwf_legacy_notice
+
 # Base config (workspace paths, run dir) + detection, without requiring a
 # profile to exist yet — `fwf init` runs before any profile is written.
 source "$FWF_DIR/config.sh"

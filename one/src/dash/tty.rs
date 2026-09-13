@@ -63,7 +63,7 @@ fn tmux_within(args: &[&str]) -> Option<String> {
 /// The pane's foreground command, bounded — `None` when tmux did not answer.
 /// tmux resolves an unmatched `session:window` to the session's CURRENT
 /// window, so the window name is matched exactly first (the same rule
-/// `fwfd seats` follows); a missing window reads as `absent`.
+/// `fwf seats` follows); a missing window reads as `absent`.
 pub fn pane_command(target: &str) -> Option<String> {
     if let Some((session, window)) = target.split_once(':') {
         let names = tmux_within(&["list-windows", "-t", session, "-F", "#{window_name}"])?;
@@ -245,7 +245,7 @@ fn draw(text: &str, interactive: bool) {
     let _ = out.flush();
 }
 
-/// One frame, printed plainly: what `fwfd dash` without `--watch` does, and
+/// One frame, printed plainly: what `fwf dash` without `--watch` does, and
 /// what a pipe or a CI log gets.
 pub fn once(b: &Board, f: &Floor, v: &View) -> String {
     render(b, f, v, now())

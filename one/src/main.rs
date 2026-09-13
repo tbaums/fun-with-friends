@@ -1,4 +1,4 @@
-//! fwfd — the fwf 1.0 supervisor. M0 skeleton: the four state machines, the
+//! fwf — the fwf 1.0 supervisor. M0 skeleton: the four state machines, the
 //! event log, and `why`. No GitHub client, no seats, no gate runner yet.
 
 // M0 only: the transitions and the appender have no caller until T-06/T-09
@@ -38,29 +38,29 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 pub const USAGE: &str = "usage:
-  fwfd why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
-  fwfd up [--manifest PATH]   validate the manifest (default ./.fwf/fwf.toml or --manifest), mint every App, print the floor plan; refuses without a manifest
-  fwfd ready --repo o/r --pr N   mark a draft PR ready under the impl App (prints the exact refusal)
-  fwfd seats [--up|--down] [--manifest PATH] [--force]   mirror + worktree clones + warm panes for every seat in the manifest (idempotent); --down refuses while a seat is Working
-  fwfd init-manifest [--from-profile profiles/x.sh --repo o/r [--session S]]   print an example fwf.toml, or convert a v0.42 profile (T-29)
-  fwfd cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
-  fwfd status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
-  fwfd run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
-  fwfd spec --repo o/r --issue N --seat tmux-target [--timeout SECS] [--template F]   wake the PM pane on a GATED issue; its spec is written into the issue under ops, gate untouched (T-26)
-  fwfd triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
-  fwfd ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
-  fwfd release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
-  fwfd dash [--manifest PATH] [--log PATH] [--watch SECS] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; --watch takes 1-5/j/k/g/G/r/q on a terminal (T-27, #574)
-  fwfd doctor [--manifest PATH]   what the floor can do: each App's token minted narrow, and what every seat worktree commits as
-  fwfd probe <role> <api-path> GET an API path with that App's token; prints the status
-  fwfd mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
-  fwfd review --repo o/r --pr N --by qa|impl|ops [--changes] [--body TEXT]   PR review anchored to the current head, under that App
-  fwfd qa --repo o/r --pr N --seat tmux-target [--seat-no 1] [--timeout SECS]   wake a QA pane, post its verdict as a review under fwf-qa
-  fwfd merge --repo o/r --pr N   typed squash-merge under fwf-ops (approval at head by a non-author, fence, checks)
-  fwfd gate --repo o/r --sha SHA --suite NAME --cmd 'shell' --workdir DIR [--venue local|container] [--memory GB] [--timeout SECS]   run a gate, record the verdict, post a check-run under fwf-ops
-  fwfd promote --repo o/r --from BRANCH --to BRANCH --suite NAME   fast-forward `to` to `from` if a Green verdict for (from-sha, suite) is recorded
-  fwfd slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
-  fwfd version";
+  fwf why <pr> [--log PATH]   timeline of one PR from the run record (default ~/.fwf/run.jsonl)
+  fwf up [--manifest PATH]   validate the manifest (default ./.fwf/fwf.toml or --manifest), mint every App, print the floor plan; refuses without a manifest
+  fwf ready --repo o/r --pr N   mark a draft PR ready under the impl App (prints the exact refusal)
+  fwf seats [--up|--down] [--manifest PATH] [--force]   mirror + worktree clones + warm panes for every seat in the manifest (idempotent); --down refuses while a seat is Working
+  fwf init-manifest [--from-profile profiles/x.sh --repo o/r [--session S]]   print an example fwf.toml, or convert a v0.42 profile (T-29)
+  fwf cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
+  fwf status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
+  fwf run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
+  fwf spec --repo o/r --issue N --seat tmux-target [--timeout SECS] [--template F]   wake the PM pane on a GATED issue; its spec is written into the issue under ops, gate untouched (T-26)
+  fwf triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
+  fwf ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
+  fwf release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
+  fwf dash [--manifest PATH] [--log PATH] [--watch SECS] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; --watch takes 1-5/j/k/g/G/r/q on a terminal (T-27, #574)
+  fwf doctor [--manifest PATH]   what the floor can do: each App's token minted narrow, and what every seat worktree commits as
+  fwf probe <role> <api-path> GET an API path with that App's token; prints the status
+  fwf mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
+  fwf review --repo o/r --pr N --by qa|impl|ops [--changes] [--body TEXT]   PR review anchored to the current head, under that App
+  fwf qa --repo o/r --pr N --seat tmux-target [--seat-no 1] [--timeout SECS]   wake a QA pane, post its verdict as a review under fwf-qa
+  fwf merge --repo o/r --pr N   typed squash-merge under fwf-ops (approval at head by a non-author, fence, checks)
+  fwf gate --repo o/r --sha SHA --suite NAME --cmd 'shell' --workdir DIR [--venue local|container] [--memory GB] [--timeout SECS]   run a gate, record the verdict, post a check-run under fwf-ops
+  fwf promote --repo o/r --from BRANCH --to BRANCH --suite NAME   fast-forward `to` to `from` if a Green verdict for (from-sha, suite) is recorded
+  fwf slice --repo o/r --issue N --seat tmux-target [--expect claude|bash] [--floor DIR] [--base staging] [--timeout SECS] [--dry-run]
+  fwf version";
 
 pub fn default_log() -> PathBuf {
     std::env::var_os("FWF_RUN_LOG")
@@ -73,7 +73,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("version") => {
-            println!("fwfd {}", env!("CARGO_PKG_VERSION"));
+            println!("fwf {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some("cost") => {
@@ -101,7 +101,7 @@ fn main() -> ExitCode {
                 }
                 None => {
                     eprintln!(
-                        "fwfd cost: no transcript for {seat} under {}",
+                        "fwf cost: no transcript for {seat} under {}",
                         floor.display()
                     );
                     ExitCode::from(1)
@@ -120,19 +120,19 @@ fn main() -> ExitCode {
             let m = match manifest::Manifest::load(&path) {
                 Ok(m) => m,
                 Err(e) => {
-                    eprintln!("fwfd status: {e}");
+                    eprintln!("fwf status: {e}");
                     return ExitCode::from(2);
                 }
             };
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd status: {e}");
+                    eprintln!("fwf status: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get("impl") else {
-                eprintln!("fwfd status: no [impl] app");
+                eprintln!("fwf status: no [impl] app");
                 return ExitCode::from(2);
             };
             let perms = std::collections::BTreeMap::from([
@@ -144,7 +144,7 @@ fn main() -> ExitCode {
             let tok = match github::mint(app, Some(&perms)) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("fwfd status: {e}");
+                    eprintln!("fwf status: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -202,12 +202,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd ungate: {e}");
+                    eprintln!("fwf ungate: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(ops) = apps.0.get("ops") else {
-                eprintln!("fwfd ungate: no [ops] app");
+                eprintln!("fwf ungate: no [ops] app");
                 return ExitCode::from(2);
             };
             match triage::ungate(owner, name, issue, "product-wip", &by, &run_log, ops) {
@@ -216,7 +216,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd ungate: {}", e.0);
+                    eprintln!("fwf ungate: {}", e.0);
                     ExitCode::from(1)
                 }
             }
@@ -235,18 +235,18 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd probe: {e}");
+                    eprintln!("fwf probe: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(entry) = apps.0.get(role) else {
-                eprintln!("fwfd probe: no app named {role}");
+                eprintln!("fwf probe: no app named {role}");
                 return ExitCode::from(2);
             };
             let tok = match github::mint(entry, None) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("fwfd probe: {e}");
+                    eprintln!("fwf probe: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -257,7 +257,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd probe: {e}");
+                    eprintln!("fwf probe: {e}");
                     ExitCode::from(2)
                 }
             }
@@ -281,7 +281,7 @@ fn main() -> ExitCode {
             let events = match log::read_all(&path) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("fwfd why: cannot read {}: {e}", path.display());
+                    eprintln!("fwf why: cannot read {}: {e}", path.display());
                     return ExitCode::from(2);
                 }
             };
@@ -318,7 +318,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd mirror-init: {e}");
+                    eprintln!("fwf mirror-init: {e}");
                     ExitCode::from(1)
                 }
             }
@@ -340,12 +340,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd review: {e}");
+                    eprintln!("fwf review: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get(&by) else {
-                eprintln!("fwfd review: no app {by}");
+                eprintln!("fwf review: no app {by}");
                 return ExitCode::from(2);
             };
             let perms = std::collections::BTreeMap::from([
@@ -356,7 +356,7 @@ fn main() -> ExitCode {
             let tok = match github::mint(app, Some(&perms)) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("fwfd review: {e}");
+                    eprintln!("fwf review: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -364,12 +364,12 @@ fn main() -> ExitCode {
                 match github::get_status(&tok.token, &format!("/repos/{repo}/pulls/{pr}")) {
                     Ok(x) => x,
                     Err(e) => {
-                        eprintln!("fwfd review: {e}");
+                        eprintln!("fwf review: {e}");
                         return ExitCode::from(2);
                     }
                 };
             if code != 200 {
-                eprintln!("fwfd review: cannot read PR ({code})");
+                eprintln!("fwf review: cannot read PR ({code})");
                 return ExitCode::from(1);
             }
             let head = serde_json::from_str::<serde_json::Value>(&body)
@@ -379,7 +379,7 @@ fn main() -> ExitCode {
             let head = match types::Sha::parse(&head) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("fwfd review: {e}");
+                    eprintln!("fwf review: {e}");
                     return ExitCode::from(1);
                 }
             };
@@ -389,7 +389,7 @@ fn main() -> ExitCode {
                 "APPROVE"
             };
             let text = get("--body")
-                .unwrap_or_else(|| format!("fwfd review by {by}: {event} at {}", head.as_str()));
+                .unwrap_or_else(|| format!("fwf review by {by}: {event} at {}", head.as_str()));
             let payload =
                 serde_json::json!({ "commit_id": head.as_str(), "event": event, "body": text });
             match github::send_json(
@@ -411,13 +411,13 @@ fn main() -> ExitCode {
                 }
                 Ok((code, b)) => {
                     eprintln!(
-                        "fwfd review: refused ({code}): {}",
+                        "fwf review: refused ({code}): {}",
                         b.chars().take(200).collect::<String>()
                     );
                     ExitCode::from(1)
                 }
                 Err(e) => {
-                    eprintln!("fwfd review: {e}");
+                    eprintln!("fwf review: {e}");
                     ExitCode::from(2)
                 }
             }
@@ -470,12 +470,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd qa: {e}");
+                    eprintln!("fwf qa: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get("qa") else {
-                eprintln!("fwfd qa: no [qa] app");
+                eprintln!("fwf qa: no [qa] app");
                 return ExitCode::from(2);
             };
             match qa::run(&cfg, app) {
@@ -484,7 +484,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd qa: {}", e.0);
+                    eprintln!("fwf qa: {}", e.0);
                     ExitCode::from(1)
                 }
             }
@@ -505,12 +505,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd merge: {e}");
+                    eprintln!("fwf merge: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get("ops") else {
-                eprintln!("fwfd merge: no [ops] app");
+                eprintln!("fwf merge: no [ops] app");
                 return ExitCode::from(2);
             };
             let perms = std::collections::BTreeMap::from([
@@ -523,7 +523,7 @@ fn main() -> ExitCode {
             let tok = match github::mint(app, Some(&perms)) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("fwfd merge: {e}");
+                    eprintln!("fwf merge: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -538,7 +538,7 @@ fn main() -> ExitCode {
             let mut log = match log::Log::open(&run_log) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("fwfd merge: {e}");
+                    eprintln!("fwf merge: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -551,12 +551,12 @@ fn main() -> ExitCode {
                 match github::get_status(&tok.token, &format!("/repos/{repo}/pulls/{pr}")) {
                     Ok(x) => x,
                     Err(e) => {
-                        eprintln!("fwfd merge: {e}");
+                        eprintln!("fwf merge: {e}");
                         return ExitCode::from(2);
                     }
                 };
             if code != 200 {
-                eprintln!("fwfd merge: cannot read PR ({code})");
+                eprintln!("fwf merge: cannot read PR ({code})");
                 return ExitCode::from(1);
             }
             let issue = serde_json::from_str::<serde_json::Value>(&body)
@@ -569,7 +569,7 @@ fn main() -> ExitCode {
             ) {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("fwfd merge: {e}");
+                    eprintln!("fwf merge: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -585,7 +585,7 @@ fn main() -> ExitCode {
                 None
             };
             let Some(fence) = fence else {
-                eprintln!("fwfd merge: no live claim ref for issue #{issue}; refusing");
+                eprintln!("fwf merge: no live claim ref for issue #{issue}; refusing");
                 return ExitCode::from(1);
             };
             match merge::merge_pr(&client, &repo, pr, &fence, &mut log) {
@@ -594,7 +594,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd merge: refused: {e}");
+                    eprintln!("fwf merge: refused: {e}");
                     ExitCode::from(1)
                 }
             }
@@ -618,7 +618,7 @@ fn main() -> ExitCode {
             let sha = match types::Sha::parse(&sha) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("fwfd gate: {e}");
+                    eprintln!("fwf gate: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -659,12 +659,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd gate: {e}");
+                    eprintln!("fwf gate: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get("ops") else {
-                eprintln!("fwfd gate: no [ops] app");
+                eprintln!("fwf gate: no [ops] app");
                 return ExitCode::from(2);
             };
             let perms =
@@ -672,7 +672,7 @@ fn main() -> ExitCode {
             let tok = match github::mint(app, Some(&perms)) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("fwfd gate: {e}");
+                    eprintln!("fwf gate: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -697,7 +697,7 @@ fn main() -> ExitCode {
                     }
                 }
                 Err(e) => {
-                    eprintln!("fwfd gate: check-run not posted: {e:?}");
+                    eprintln!("fwf gate: check-run not posted: {e:?}");
                     ExitCode::from(1)
                 }
             }
@@ -717,12 +717,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd promote: {e}");
+                    eprintln!("fwf promote: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get("ops") else {
-                eprintln!("fwfd promote: no [ops] app");
+                eprintln!("fwf promote: no [ops] app");
                 return ExitCode::from(2);
             };
             let perms = std::collections::BTreeMap::from([
@@ -733,7 +733,7 @@ fn main() -> ExitCode {
             let tok = match github::mint(app, Some(&perms)) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("fwfd promote: {e}");
+                    eprintln!("fwf promote: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -743,12 +743,12 @@ fn main() -> ExitCode {
             ) {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("fwfd promote: {e}");
+                    eprintln!("fwf promote: {e}");
                     return ExitCode::from(2);
                 }
             };
             if code != 200 {
-                eprintln!("fwfd promote: cannot read {from} ({code})");
+                eprintln!("fwf promote: cannot read {from} ({code})");
                 return ExitCode::from(1);
             }
             let from_sha = serde_json::from_str::<serde_json::Value>(&body)
@@ -759,7 +759,7 @@ fn main() -> ExitCode {
                         .and_then(|s| types::Sha::parse(s).ok())
                 });
             let Some(from_sha) = from_sha else {
-                eprintln!("fwfd promote: bad ref");
+                eprintln!("fwf promote: bad ref");
                 return ExitCode::from(1);
             };
             let floor = std::env::var_os("HOME")
@@ -784,7 +784,7 @@ fn main() -> ExitCode {
             let mut log = match log::Log::open(&run_log) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("fwfd promote: {e}");
+                    eprintln!("fwf promote: {e}");
                     return ExitCode::from(2);
                 }
             };
@@ -798,7 +798,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd promote: refused: {e}");
+                    eprintln!("fwf promote: refused: {e}");
                     ExitCode::from(1)
                 }
             }
@@ -854,12 +854,12 @@ fn main() -> ExitCode {
             let apps = match github::load_apps(&github::apps_path()) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("fwfd slice: {e}");
+                    eprintln!("fwf slice: {e}");
                     return ExitCode::from(2);
                 }
             };
             let Some(app) = apps.0.get("impl") else {
-                eprintln!("fwfd slice: no [impl] app in apps.toml");
+                eprintln!("fwf slice: no [impl] app in apps.toml");
                 return ExitCode::from(2);
             };
             match slice::run(&cfg, app) {
@@ -868,7 +868,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    eprintln!("fwfd slice: {}", e.0);
+                    eprintln!("fwf slice: {}", e.0);
                     ExitCode::from(1)
                 }
             }

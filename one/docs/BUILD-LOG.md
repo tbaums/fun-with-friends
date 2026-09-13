@@ -16,26 +16,26 @@ it replaces. Nothing here is wired into `fwf` yet.
 | T-00 v0.42.10 security fix (#562) | PR open on the v0.42.x tree |
 | T-01 crate skeleton, four enums, event log, `why` | this directory |
 | T-02 three GitHub Apps (impl, qa, ops) | done — all three mint (impl trimmed to 4 permissions) |
-| T-14 manifest | **DONE** — `fwf.toml` (≤25 top-level keys, validated; scalars before tables), `fwfd up` refuses without it and reports Apps + seat liveness; `fwfd init-manifest` prints the example |
-| T-16 cost accounting | **DONE** — measured from the seat's own transcript (`cost.rs`, `fwfd cost`); recorded on every Reported seat event |
+| T-14 manifest | **DONE** — `fwf.toml` (≤25 top-level keys, validated; scalars before tables), `fwf up` refuses without it and reports Apps + seat liveness; `fwf init-manifest` prints the example |
+| T-16 cost accounting | **DONE** — measured from the seat's own transcript (`cost.rs`, `fwf cost`); recorded on every Reported seat event |
 | T-03 GitHub client | mint LIVE; ETag poller in poll.rs |
 | T-04 fake GitHub | `src/fake_github.rs`, 9 contract tests |
 | T-05 fake seat pane (tmux-backed) | done — `src/seat.rs` FakeSeat |
 | T-06 seat waker + verdict reader | done — `wake`/`wait_verdict`; woken panes, no /loop, no claude -p |
 | T-07 canary | canary PASS (see below); 10-cycle cost comparison parked (needs real seats) |
-| T-08 thin slice (kill criterion) | **DONE 2026-09-09 19:00 PDT** — PR #565 opened by fwf-impl[bot] from a woken seat (`fwfd slice`) |
-| T-12 QA cycle | **DONE** — `fwfd qa`: a woken QA pane reviewed #565 from the mirror and its verdict became fwf-qa's APPROVED anchored to fc7092b8 (plus the identity proof: fwf-impl self-approve → 422). |
-| T-13 typed merge | **DONE** — `fwfd merge` squash-merged #565 into staging as 7b9fb7d8 under fwf-ops after fence + anchored-approval checks; claim ref deleted; Merged/Shipped recorded. |
+| T-08 thin slice (kill criterion) | **DONE 2026-09-09 19:00 PDT** — PR #565 opened by fwf-impl[bot] from a woken seat (`fwf slice`) |
+| T-12 QA cycle | **DONE** — `fwf qa`: a woken QA pane reviewed #565 from the mirror and its verdict became fwf-qa's APPROVED anchored to fc7092b8 (plus the identity proof: fwf-impl self-approve → 422). |
+| T-13 typed merge | **DONE** — `fwf merge` squash-merged #565 into staging as 7b9fb7d8 under fwf-ops after fence + anchored-approval checks; claim ref deleted; Merged/Shipped recorded. |
 | T-19 gate runner | **DONE** — Local / Apple container / systemd-run venues; verdicts idempotent per (sha, suite); Local runs under `bash -o pipefail` (a trailing pipe once masked a Red). |
-| T-20 check-runs | **DONE** — `fwfd gate` posts `fwfd/<suite>` check-runs under fwf-ops; success on 7b9fb7d8 is live. |
-| T-21 promotion | **DONE** — `fwfd promote` refused on an Unknown/absent verdict and fast-forwarded a scratch branch to 7b9fb7d8 under fwf-ops on a recorded Green. |
-| T-22 release-check | **DONE** — `fwfd release-check --repo o/r --tag vX --expect N` refuses unless a release object with ≥N assets exists (a tag is not a release): v0.42.9 → ok 4 assets; v0.42.5 → refused |
-| T-27 dash | **DONE** — `fwfd dash [--watch N]` folds the run record only: merges/cycles per hour, gate green/red/killed, measured tokens per role, refusals + gated issues as needs-you. No pane scraping, no GitHub call. |
+| T-20 check-runs | **DONE** — `fwf gate` posts `fwfd/<suite>` check-runs under fwf-ops; success on 7b9fb7d8 is live. |
+| T-21 promotion | **DONE** — `fwf promote` refused on an Unknown/absent verdict and fast-forwarded a scratch branch to 7b9fb7d8 under fwf-ops on a recorded Green. |
+| T-22 release-check | **DONE** — `fwf release-check --repo o/r --tag vX --expect N` refuses unless a release object with ≥N assets exists (a tag is not a release): v0.42.9 → ok 4 assets; v0.42.5 → refused |
+| T-27 dash | **DONE** — `fwf dash [--watch N]` folds the run record only: merges/cycles per hour, gate green/red/killed, measured tokens per role, refusals + gated issues as needs-you. No pane scraping, no GitHub call. |
 | #574 dash board | **DONE** — the 0.x board, back and folded: header (repo, `base → release`, loop running/parked/not-running, version, meter), five tabs (Seats / Issues / PRs / Decisions / Usage) with counts, a needs-you banner, a bordered list pane beside a detail pane that follows the selection, colour by state, `1`-`5`/`j`/`k`/`g`/`G`/`r`/`q` under `--watch`. Still one fold + one render, no TUI crate, no GitHub call: the only live reads are tmux pane liveness and `~/.fwf-meter-log`. |
-| T-29 multi-repo manifests | **DONE** — `manifests/{transom,baton,wholesome-swolesome}.toml` validate under `fwfd up` (empty allow-lists until a first run is chosen) |
+| T-29 multi-repo manifests | **DONE** — `manifests/{transom,baton,wholesome-swolesome}.toml` validate under `fwf up` (empty allow-lists until a first run is chosen) |
 | T-30 hosted CI | **DONE** — `.github/workflows/one-ci.yml`: cargo test / fmt+clippy / size ratchet as three parallel jobs on public fwf; first run caught a false Red (systemd venue unusable on the runner → now Killed via venue preflight); green on 6834d4d |
-| T-26 live proof | `fwfd spec` on #571 (Opus PM seat): 17k-char spec written into the gated issue under fwf-ops, original text kept, gate untouched, one ops comment. **Measured cost 4.7M cached-in / 66k out — 5–15× an impl cycle**, so the prompt now caps the spec at 500 words and forbids codebase surveys; run PM on Sonnet/Haiku unless the issue is hard. |
-| T-26 template port | **DONE (prompts)** — `prompts/<family>/<role>-job.md` for 7 families, de-markered to one-job verdicts; `template` manifest key; `fwfd spec` PM cycle (writes the spec into a GATED issue under ops, gate untouched). Eval-harness re-run parked: `eval/run.sh` is `claude -p`-driven and its scenarios describe the looping protocol. |
+| T-26 live proof | `fwf spec` on #571 (Opus PM seat): 17k-char spec written into the gated issue under fwf-ops, original text kept, gate untouched, one ops comment. **Measured cost 4.7M cached-in / 66k out — 5–15× an impl cycle**, so the prompt now caps the spec at 500 words and forbids codebase surveys; run PM on Sonnet/Haiku unless the issue is hard. |
+| T-26 template port | **DONE (prompts)** — `prompts/<family>/<role>-job.md` for 7 families, de-markered to one-job verdicts; `template` manifest key; `fwf spec` PM cycle (writes the spec into a GATED issue under ops, gate untouched). Eval-harness re-run parked: `eval/run.sh` is `claude -p`-driven and its scenarios describe the looping protocol. |
 | T-09 poller + scheduler | done — `src/poll.rs`: `Poller` (base URL + bearer injectable; per-URL ETag cache with `If-None-Match`/304 body reuse; single-flight per URL; `requests()`/`not_modified()` counters; any failure = typed `PollError`, caller holds `Snapshot::unknown()`) reads `issues?state=open`, then `pulls/{n}` + `pulls/{n}/reviews` per PR and `git/ref/claims/{n}` per `claimed` issue. `src/sched.rs`: pure `plan(snapshot, seats, gate_label, owner_only, now) -> Plan` (WakeImpl / WakeQa / ReleaseClaim / Nothing). 14 tests: 5 proptest properties, 1 poll→plan→304→relabel contract test against the fake, single-flight proved with a barrier transport |
 | T-09 notes | `author_association` is derived (author == repo owner → OWNER) when the API omits it, as the fake does; `closes_issue` accepts GitHub's close/fix/resolve keyword set; `IssueView.claim: Option<Fence>` and `Snapshot.known` added beyond the spec so `ReleaseClaim` carries a real fence (never fabricated) and `Unknown` is a value; `ReleaseClaim` fires only for a fenced claim no live seat is working (Working past `deadline` counts as stalled) and no open PR closes; a seat id that is non-Idle in any slot, or listed under two roles, is never double-booked (found by proptest); `mod poll; mod sched;` not yet in `main.rs` |
 | T-11 local bare mirror | done — `src/mirror.rs`: `Mirror::init` (idempotent; `refs/remotes/upstream/*` + protected heads mirrored, HEAD=staging), `seat_remote_url()` (`file://`, the seat's only remote), `branch_head`/`upstream_head`, `sync_branch` (`--force-with-lease` CAS, expect-empty for new branches; `staging`/`main` → `Protected`), `create_claim_ref`/`release_claim_ref` on `refs/claims/<n>` (fence = ref sha). 6 tests against on-disk bare upstreams |
@@ -82,7 +82,7 @@ cd one && cargo test && cargo run -- doctor
   `--force-with-lease`; the fencing token is that ref's SHA.
 - **App token mint (T-03): LIVE.** With the real ids (App ID 4889626,
   installation 160423751, discovered via `GET /app/installations` with an App
-  JWT) `fwfd doctor` mints a narrowed installation token for fwf-impl.
+  JWT) `fwf doctor` mints a narrowed installation token for fwf-impl.
   Proven with a `contents:read,metadata:read` token: `GET contents/VERSION`
   → 200; `POST issues/562/labels` → **403**; `PATCH git/refs/heads/main` →
   **403** ("Resource not accessible by integration"). The seat-token model
@@ -127,10 +127,10 @@ on list ETags being anything but a body hash.
 
 ## Thin slice — what it took (T-08, 4 attempts, one evening)
 
-`fwfd slice --repo tbaums/fun-with-friends --issue 564 --seat fwf-one:impl1`
+`fwf slice --repo tbaums/fun-with-friends --issue 564 --seat fwf-one:impl1`
 → mint (narrowed) → poll → plan → `refs/claims/564` (fence) → paste job into
 the warm pane → verdict file → mirror `sync_branch` (force-with-lease) →
-draft PR #565 under fwf-impl[bot] → `fwfd why 565` shows the whole timeline.
+draft PR #565 under fwf-impl[bot] → `fwf why 565` shows the whole timeline.
 
 Lessons that are now code (`scripts/seat-up.sh`, `src/seat.rs`):
 1. `dontAsk` denies every tool not explicitly allowed, and an allow rule for
@@ -156,8 +156,8 @@ Lessons that are now code (`scripts/seat-up.sh`, `src/seat.rs`):
 
 claim ref → implementer seat (woken) → draft PR #565 by fwf-impl[bot] →
 QA seat (woken) → fwf-qa APPROVED anchored to the head → ready-for-review →
-`fwfd merge` (ops) → staging 7b9fb7d8 → `fwfd gate` (pipefail) → check-run
-`fwfd/fwfd-fast` success → `fwfd promote` fast-forwarded a scratch branch.
+`fwf merge` (ops) → staging 7b9fb7d8 → `fwf gate` (pipefail) → check-run
+`fwfd/fwfd-fast` success → `fwf promote` fast-forwarded a scratch branch.
 No seat ever held a GitHub write token; every write is in the run record.
 
 ## Measured cycle cost (T-16, from the seats' transcripts, 2026-09-09)
@@ -170,11 +170,11 @@ No seat ever held a GitHub write token; every write is in the run record.
 Both seats were warm panes woken once; idle cost between jobs was zero
 requests. The old harness paid ~2.2M cached tokens per *idle* tick.
 
-| T-15 run loop on a real issue | **DONE** — `fwfd run --once` ×3 took #566 from eligible → PR #567 (fwf-impl) → QA seat verdict → fwf-qa APPROVED → ready → squash-merged by fwf-ops (74dc9b28), no operator command between steps |
+| T-15 run loop on a real issue | **DONE** — `fwf run --once` ×3 took #566 from eligible → PR #567 (fwf-impl) → QA seat verdict → fwf-qa APPROVED → ready → squash-merged by fwf-ops (74dc9b28), no operator command between steps |
 
-## The loop, driven by `fwfd run` (2026-09-09 23:35 PDT)
+## The loop, driven by `fwf run` (2026-09-09 23:35 PDT)
 
-`fwfd run --once` (manifest `issues = [566]`), three ticks, no operator
+`fwf run --once` (manifest `issues = [566]`), three ticks, no operator
 command between them: tick 1 planned WakeImpl → PR #567 by fwf-impl[bot];
 tick 2 saw a stale PR list and the targeted re-plan refused to double-work;
 tick 3 planned WakeQa → verdict → fwf-qa APPROVED at head → ready-for-review
@@ -190,7 +190,7 @@ fwf-impl (contents:read) only authors the PR.
 
 - **diaspective** (private, empty except a brain dump): ten MVP issues filed at 23:45; the loop merged all ten to `staging` by 01:33 (PRs #11–#20), every gate Green, 0 stalls, 0 refusals. Promoted to `main` (4291f19a) at 09:20. Smoke-tested out of band (trunk build, server, full API walk).
 - **baton** (private): #127 → PR #128 merged 02:13, gate Green (42 tests), promoted to `main` (a2fde454).
-- Bugs the run found in fwfd, fixed on the spot: the impl App cannot undraft a PR on a private repo (`contents:write` needed → ops undrafts); no scheduler action for a PR already approved at head (`Action::FinishPr`); GraphQL errors folded into `false`; private-upstream mirror fetch needed a scrubbed read token; an impl seat could be woken for the next issue while its PR was open; a gate could run against a workdir at the wrong sha (now refused, Unknown).
+- Bugs the run found in fwf, fixed on the spot: the impl App cannot undraft a PR on a private repo (`contents:write` needed → ops undrafts); no scheduler action for a PR already approved at head (`Action::FinishPr`); GraphQL errors folded into `false`; private-upstream mirror fetch needed a scrubbed read token; an impl seat could be woken for the next issue while its PR was open; a gate could run against a workdir at the wrong sha (now refused, Unknown).
 - Measured: an impl cycle 0.4–1.4M cached tokens in; a whole issue (impl → QA → merge → gate) 8–12 minutes on a small repo.
 
 ## Overnight 2026-09-11/12 — transom, the T-31 soak, to prod
@@ -198,8 +198,8 @@ fwf-impl (contents:read) only authors the PR.
 Jamie's brief: drain transom's six `product-wip` bugs, fully autonomous including un-gating,
 release, and prod deploy by morning; meter every 10 minutes, never above 90%.
 
-- 22:50 six `fwfd spec` cycles on Sonnet (1.7M in each); all six un-gated by `jamie-proxy`.
-- 22:53–02:05 `fwfd run`: #1261 → PR #1266 (impl 7.2M in, QA 2.1M in) merged 23:13; #1259,
+- 22:50 six `fwf spec` cycles on Sonnet (1.7M in each); all six un-gated by `jamie-proxy`.
+- 22:53–02:05 `fwf run`: #1261 → PR #1266 (impl 7.2M in, QA 2.1M in) merged 23:13; #1259,
   #1262, #1263, #1264, #1265 followed. Post-merge fast gates: green ×4, red ×2 — both
   single-test flakes (3/3 green isolated), filed transom #1268 and #1271.
 - PR #1270 (#1263) was built on the stale worktree base and conflicted with #1262; the QA
@@ -208,7 +208,7 @@ release, and prod deploy by morning; meter every 10 minutes, never above 90%.
 - e2e promote gate: 7 failed / 453 passed. Bisect against the pre-#1265 sha showed the mobile
   lane was already red (3 deterministic, 2 flaky; transom #1274). Promoted on `--suite fast`.
 - Release by the repo's own runbook: docs commit, `chore(release): v0.52.0`, local publisher
-  (Docker down → macOS-only), `fwfd release-check` ok, merge-back from a scratch clone,
+  (Docker down → macOS-only), `fwf release-check` ok, merge-back from a scratch clone,
   `deploy.sh`, prod verified by PID age + `sw.js` cache name + `/api/health`.
 - Cost of the night: session 47% → 51% of the 5-hour window at the end; weekly 26% → 32%.
 - Memory pressure on the 16 GB box killed background watchers; `seats --down` on the other

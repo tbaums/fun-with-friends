@@ -32,6 +32,12 @@ unset TMUX
 # suite green without touching each individual fixture's env string.
 export CLAUDE_CODE_OAUTH_TOKEN="fwf-selftest-fake-token-$$"
 
+# #583: `fwf` is now the 1.0 binary and this tool is `fwf-legacy`, which says so
+# once on stderr. The suite captures stderr in dozens of places, so silence the
+# notice for every invocation below; the notice itself is tested explicitly in
+# the dispatcher section, with its own HOME.
+export FWF_NO_LEGACY_NOTICE=1
+
 # HERMETICITY (issue #175): this suite builds its own throwaway fixtures and
 # pins their env explicitly at each call site. An ambient FWF_REPO/FWF_PROFILE/
 # FWF_PAIRS from the caller silently OVERRIDES those fixtures — measured at 41
@@ -924,12 +930,12 @@ esac
 
 # fwf pr-context CLI (the entrypoint an agent actually runs at PR-create/
 # squash-merge time): same fixture, through the dispatcher end-to-end.
-CLI_CTX="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example "$ROOT/fwf" pr-context 1 2>&1)"
+CLI_CTX="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example "$ROOT/fwf-legacy" pr-context 1 2>&1)"
 assert_contains "fwf pr-context prints the context fold" "$CLI_CTX" "## Context & rationale"
 assert_contains "fwf pr-context has no fwf-internal leak" "$CLI_CTX" "Fix the thing"
 case "$CLI_CTX" in *impl[0-9]*|*QA-*) bad "fwf pr-context output has no fwf-internal token" "$CLI_CTX";; *) ok "fwf pr-context output has no fwf-internal token";; esac
 # --issue is the explicit, self-describing spelling of the same bare-form call.
-CLI_CTX_ISSUE="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example "$ROOT/fwf" pr-context --issue 1 2>&1)"
+CLI_CTX_ISSUE="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example "$ROOT/fwf-legacy" pr-context --issue 1 2>&1)"
 assert_eq "fwf pr-context --issue <n> matches the bare-form call in local-issues mode" "$CLI_CTX" "$CLI_CTX_ISSUE"
 
 # issue #189: fwf pr-context PR-vs-issue confusion -- the defect that shipped
@@ -989,7 +995,7 @@ esac
 STUB
 chmod +x "$PCTX189GHBIN/gh"
 PCTX189RUN="$TMP/pr-context-189-run"
-PCTX189_CTX() { PATH="$PCTX189GHBIN:$PATH" PCTX189_VIEWS="$PCTX189/views" FWF_RUN_DIR="$PCTX189RUN" FWF_REPO="$PCTX189REPO" FWF_PROFILE=example "$ROOT/fwf" pr-context "$@"; }
+PCTX189_CTX() { PATH="$PCTX189GHBIN:$PATH" PCTX189_VIEWS="$PCTX189/views" FWF_RUN_DIR="$PCTX189RUN" FWF_REPO="$PCTX189REPO" FWF_PROFILE=example "$ROOT/fwf-legacy" pr-context "$@"; }
 
 # --- AC(a): bare-number backstop -------------------------------------------
 BARE_601_OUT="$(PCTX189_CTX 601 2>&1)"; BARE_601_RC=$?
@@ -1281,7 +1287,7 @@ assert_eq "guard regression: 'product-wip' as a label name in prose does not fal
 
 # --- CLI end-to-end: the real #195 fixture through the guard doesn't refuse --
 I195_CLI_RC=0
-FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/fwf" pr-context --issue 6 >/dev/null 2>&1 || I195_CLI_RC=$?
+FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/fwf-legacy" pr-context --issue 6 >/dev/null 2>&1 || I195_CLI_RC=$?
 assert_eq "CLI: the real #195 fixture (containing legitimate 'GV'/'worktree'/'captain' prose) is not refused by the guard" "0" "$I195_CLI_RC"
 
 section "history-card guard (issue #136): the permanent squash-merge invariant"
@@ -1434,13 +1440,13 @@ assert_contains "AC(i2): the wiring's own refusal message names issue #136" \
   "$(cat "$ROOT/fwf-gate-promote.sh")" "issue #136"
 
 # --- fwf merge (prevention layer) -------------------------------------------
-assert_eq "fwf merge with no PR number is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf" merge >/dev/null 2>&1; echo $?)"
+assert_eq "fwf merge with no PR number is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" merge >/dev/null 2>&1; echo $?)"
 # Regression: -h/--help was being swallowed as the positional <num> before
 # flag parsing ran, so `fwf merge --help` printed "PR #--help has no
 # resolvable linked issue" instead of the usage text.
-assert_eq "fwf merge --help prints usage and exits 0 (not swallowed as <num>)" "0" "$(FWF_PROFILE=example "$ROOT/fwf" merge --help >/dev/null 2>&1; echo $?)"
-assert_eq "fwf merge with a non-numeric <num> is a usage error, not a PR lookup attempt" "1" "$(FWF_PROFILE=example "$ROOT/fwf" merge abc >/dev/null 2>&1; echo $?)"
-assert_contains "fwf-gate-promote.sh dispatch: 'fwf merge' is wired into the fwf CLI" "$(cat "$ROOT/fwf")" "merge)     engine fwf-merge.sh"
+assert_eq "fwf merge --help prints usage and exits 0 (not swallowed as <num>)" "0" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" merge --help >/dev/null 2>&1; echo $?)"
+assert_eq "fwf merge with a non-numeric <num> is a usage error, not a PR lookup attempt" "1" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" merge abc >/dev/null 2>&1; echo $?)"
+assert_contains "fwf-gate-promote.sh dispatch: 'fwf merge' is wired into the fwf CLI" "$(cat "$ROOT/fwf-legacy")" "merge)     engine fwf-merge.sh"
 assert_contains "AC(c)-analog: templates/dev/qa.tmpl's merge step now calls fwf merge, not an inline gh pr merge --body construction" \
   "$(cat "$ROOT/templates/dev/qa.tmpl")" "fwf merge <num>"
 assert_contains "AC(c)-analog: templates/refactor/qa.tmpl matches" \
@@ -1497,7 +1503,7 @@ esac
 STUB
 chmod +x "$FMRGGHBIN/gh"
 FMRGREPO="$TMP/fmrg-repo"; mkdir -p "$FMRGREPO"; ( cd "$FMRGREPO" && git init -q )
-FMRG() { PATH="$FMRGGHBIN:$PATH" FWF_REPO="$FMRGREPO" FWF_PROFILE=example "$ROOT/fwf" merge "$@"; }
+FMRG() { PATH="$FMRGGHBIN:$PATH" FWF_REPO="$FMRGREPO" FWF_PROFILE=example "$ROOT/fwf-legacy" merge "$@"; }
 
 rm -f "$FMRG_MERGE_LOG"
 FMRG_OUT="$(FMRG 701 2>&1)"; FMRG_RC=$?
@@ -1669,7 +1675,7 @@ assert_contains "AC(h): ...and its 'Constraints' section specifically" "$NOTE_NO
 case "$NOTE_NONCANON" in *"Must never appear on a backfilled card"*) bad "AC(h): the 'For PM / GV' section stays denied even in a backfilled note" "$NOTE_NONCANON";; *) ok "AC(h): the 'For PM / GV' section stays denied even in a backfilled note";; esac
 
 # --- CLI end-to-end: dry-run, real run, idempotency, --force, no-rewrite ----
-B212CLI() { FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_REPO="$B212WT" FWF_PROFILE=example "$ROOT/fwf" backfill-context "$@"; }
+B212CLI() { FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_REPO="$B212WT" FWF_PROFILE=example "$ROOT/fwf-legacy" backfill-context "$@"; }
 
 DRY_OUT="$(B212CLI --to "$TIP_212" --dry-run 2>&1)"
 assert_contains "CLI --dry-run: reports what it would backfill" "$DRY_OUT" "would backfill $HOLLOW_SHA_212"
@@ -1700,13 +1706,13 @@ $FULL_CARD_212
 
 fwf-Provenance: fwf=1.0@abc" )
 EMPTY_TIP="$(cd "$B212EMPTYWT" && git rev-parse HEAD)"
-EMPTY_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_REPO="$B212EMPTYWT" FWF_PROFILE=example "$ROOT/fwf" backfill-context --to "$EMPTY_TIP" 2>&1)"; EMPTY_RC=$?
+EMPTY_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_REPO="$B212EMPTYWT" FWF_PROFILE=example "$ROOT/fwf-legacy" backfill-context --to "$EMPTY_TIP" 2>&1)"; EMPTY_RC=$?
 assert_eq "nothing-to-backfill: exits 0, not an error" "0" "$EMPTY_RC"
 assert_contains "nothing-to-backfill: says so plainly" "$EMPTY_OUT" "nothing to backfill"
 
 # --- CLI wiring ---------------------------------------------------------
-assert_contains "'fwf backfill-context' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "backfill-context) engine fwf-backfill-context.sh"
-assert_eq "fwf backfill-context refuses cleanly when \$FWF_REPO isn't a git repo" "1" "$(FWF_PROFILE=example FWF_REPO=/nonexistent-repo-path "$ROOT/fwf" backfill-context >/dev/null 2>&1; echo $?)"
+assert_contains "'fwf backfill-context' is wired into the dispatch table" "$(cat "$ROOT/fwf-legacy")" "backfill-context) engine fwf-backfill-context.sh"
+assert_eq "fwf backfill-context refuses cleanly when \$FWF_REPO isn't a git repo" "1" "$(FWF_PROFILE=example FWF_REPO=/nonexistent-repo-path "$ROOT/fwf-legacy" backfill-context >/dev/null 2>&1; echo $?)"
 # --------------------------------------------------------------------------
 section "fwf merge: authorization at the point of action (issue #207)"
 
@@ -1815,7 +1821,7 @@ FMRG_CLASS_RUN() { # $1=fake authz exit code -> real fwf-merge.sh's own exit cod
   rm -f "$FMRG_CLASS_MERGE_LOG"
   local rc=0
   PATH="$FMRGGHBIN2:$PATH" FWF_REPO="$FMRGREPO" FWF_PROFILE=example FWF_MERGE_AUTHZ_SCRIPT="$FMRG_FAKE_AZ" \
-    "$ROOT/fwf" merge 601 >/dev/null 2>&1 || rc=$?
+    "$ROOT/fwf-legacy" merge 601 >/dev/null 2>&1 || rc=$?
   printf '%s' "$rc"
 }
 assert_eq "exit-code classification: authz 0 (AUTHORIZED) -> merge proceeds" "0" "$(FMRG_CLASS_RUN 0)"
@@ -2114,8 +2120,8 @@ assert_eq "the logger's OWN failure IS reported, separately, to a caller that as
 
 # the `fwf tick` subcommand is the agent-facing entrypoint and echoes the count.
 assert_eq "fwf tick <role> subcommand bumps + echoes the count" "1" \
-  "$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run2" "$ROOT/fwf" tick impl9)"
-TICK_USAGE="$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run3" "$ROOT/fwf" tick 2>&1 || true)"
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run2" "$ROOT/fwf-legacy" tick impl9)"
+TICK_USAGE="$(FWF_PROFILE=example FWF_RUN_DIR="$TK/run3" "$ROOT/fwf-legacy" tick 2>&1 || true)"
 assert_contains "fwf tick with no role errors with usage" "$TICK_USAGE" "usage: fwf tick <role>"
 
 section "fwf tick: context-derived profile beats ambient env, so a live role's heartbeat never misroutes (#182)"
@@ -2127,7 +2133,7 @@ section "fwf tick: context-derived profile beats ambient env, so a live role's h
 MARKED="$TMP/marked-worktree"; mkdir -p "$MARKED"
 ( cd "$MARKED" && git init -q && printf 'example\n' > .fwf-profile )
 CTX_RUN="$TK/run-ctx"
-CTX_OUT="$(cd "$MARKED" && FWF_PROFILE=WRONG-AMBIENT FWF_RUN_DIR="$CTX_RUN" "$ROOT/fwf" tick impl9 2>"$CTX_RUN.stderr")"
+CTX_OUT="$(cd "$MARKED" && FWF_PROFILE=WRONG-AMBIENT FWF_RUN_DIR="$CTX_RUN" "$ROOT/fwf-legacy" tick impl9 2>"$CTX_RUN.stderr")"
 assert_eq "marked worktree: tick still echoes the bumped count" "1" "$CTX_OUT"
 assert_eq "marked worktree: heartbeat lands under the MARKER's profile (example), not ambient" \
   "yes" "$([ -f "$CTX_RUN/state/example/tick/impl9" ] && echo yes || echo no)"
@@ -2156,7 +2162,7 @@ UNMARKED="$TMP/unmarked-plain-dir"; mkdir -p "$UNMARKED"
 PHANTOM_RUN="$TK/run-phantom"
 mkdir -p "$PHANTOM_RUN/state/example/tick"
 touch "$PHANTOM_RUN/state/example/tick/qa1"   # "example" has live activity
-PHANTOM_OUT="$(cd "$UNMARKED" && FWF_PROFILE=zzp182 FWF_RUN_DIR="$PHANTOM_RUN" "$ROOT/fwf" tick impl9 2>"$PHANTOM_RUN.stderr")"
+PHANTOM_OUT="$(cd "$UNMARKED" && FWF_PROFILE=zzp182 FWF_RUN_DIR="$PHANTOM_RUN" "$ROOT/fwf-legacy" tick impl9 2>"$PHANTOM_RUN.stderr")"
 assert_eq "no marker + phantom ambient: tick STILL succeeds (warn-only, never blocks)" "1" "$PHANTOM_OUT"
 assert_eq "no marker + phantom ambient: still writes under ambient (no marker to redirect to)" \
   "yes" "$([ -f "$PHANTOM_RUN/state/zzp182/tick/impl9" ] && echo yes || echo no)"
@@ -2166,7 +2172,7 @@ assert_contains "no marker + phantom ambient: alarms that the swarm looks live e
 # No marker, ambient set, but NO other profile is live either (cold start) —
 # must NOT alarm: a role legitimately first-up in a fresh profile is healthy.
 COLD_RUN="$TK/run-cold"
-COLD_OUT="$(cd "$UNMARKED" && FWF_PROFILE=zzp182 FWF_RUN_DIR="$COLD_RUN" "$ROOT/fwf" tick impl9 2>"$COLD_RUN.stderr")"
+COLD_OUT="$(cd "$UNMARKED" && FWF_PROFILE=zzp182 FWF_RUN_DIR="$COLD_RUN" "$ROOT/fwf-legacy" tick impl9 2>"$COLD_RUN.stderr")"
 assert_eq "cold start: tick succeeds" "1" "$COLD_OUT"
 case "$(cat "$COLD_RUN.stderr" 2>/dev/null)" in
   *"#182"*) bad "cold start (no sibling profile live) must NOT alarm";;
@@ -2580,19 +2586,30 @@ assert_eq "empty interval -> rc 1, not a crash" "1" "$IVS_EMPTY_RC"
 
 # --------------------------------------------------------------------------
 section "dispatcher: read-only commands"
-assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" version)"
-assert_eq "-v alias"       "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" -v)"
-assert_eq "--version alias" "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf" --version)"
-assert_contains "help mentions start" "$("$ROOT/fwf" help)" "start <url|path>"
+assert_eq "version"        "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf-legacy" version)"
+assert_eq "-v alias"       "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf-legacy" -v)"
+assert_eq "--version alias" "$(cat "$ROOT/VERSION")" "$("$ROOT/fwf-legacy" --version)"
+assert_contains "help mentions start" "$("$ROOT/fwf-legacy" help)" "start <url|path>"
+
+# #583: the rename's deprecation notice — stderr only, once per machine, and
+# never a word of it on the stdout any script (this suite included) parses.
+DEPR_HOME="$TMP/legacy-notice"; mkdir -p "$DEPR_HOME"
+DEPR1_ERR="$(FWF_NO_LEGACY_NOTICE= HOME="$DEPR_HOME" "$ROOT/fwf-legacy" version 2>&1 >/dev/null)"
+DEPR1_OUT="$(FWF_NO_LEGACY_NOTICE= HOME="$DEPR_HOME" "$ROOT/fwf-legacy" version 2>/dev/null)"
+assert_contains "deprecation notice goes to stderr on first run" "$DEPR1_ERR" "fwf-legacy: deprecated"
+assert_contains "deprecation notice names the 1.0 readme" "$DEPR1_ERR" "one/README.md"
+assert_eq "deprecation notice never touches stdout" "$(cat "$ROOT/VERSION")" "$DEPR1_OUT"
+DEPR2_ERR="$(FWF_NO_LEGACY_NOTICE= HOME="$DEPR_HOME" "$ROOT/fwf-legacy" version 2>&1 >/dev/null)"
+assert_eq "deprecation notice prints once, not every run" "" "$DEPR2_ERR"
 # doctor reports tool status and exits non-zero if any are missing (correct on a
 # bare runner with no tmux/gh/claude) — assert it RAN, not that it returned 0.
-DOC="$("$ROOT/fwf" doctor 2>&1 || true)"
+DOC="$("$ROOT/fwf-legacy" doctor 2>&1 || true)"
 assert_contains "doctor runs" "$DOC" "workspace :"
 
 section "fwf doctor: usage-schema smoke-test (#95) — catches Claude Code transcript drift before it silently under-reports"
 DT="$TMP/doctor-usage"; mkdir -p "$DT/pwd" "$DT/claude-projects"
 DSLUG_DIR="$(cd "$DT/pwd" && pwd)"; DSLUG="${DSLUG_DIR//\//-}"; DSLUG="${DSLUG//./-}"
-doctor_usage() { ( cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf" doctor 2>&1 || true ) | grep "usage schema"; }
+doctor_usage() { ( cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf-legacy" doctor 2>&1 || true ) | grep "usage schema"; }
 assert_contains "no transcript dir yet -> skip, not a false pass/fail" "$(doctor_usage)" "skip (no Claude Code transcript dir"
 mkdir -p "$DT/claude-projects/$DSLUG"
 printf '{"type":"user","message":{}}\n' > "$DT/claude-projects/$DSLUG/s.jsonl"
@@ -2607,13 +2624,13 @@ assert_contains "drift warning names the fields fwf usage reads" "$DRIFT" "messa
 # (tmux/git/gh/claude presence) that vary by environment, so compare the SAME
 # environment with vs. without the drifted transcript rather than asserting
 # a specific exit code.
-EXIT_NO_TRANSCRIPT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects-none" "$ROOT/fwf" doctor >/dev/null 2>&1; echo $?)"
-EXIT_WITH_DRIFT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf" doctor >/dev/null 2>&1; echo $?)"
+EXIT_NO_TRANSCRIPT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects-none" "$ROOT/fwf-legacy" doctor >/dev/null 2>&1; echo $?)"
+EXIT_WITH_DRIFT="$(cd "$DT/pwd" && FWF_CLAUDE_PROJECTS_DIR="$DT/claude-projects" "$ROOT/fwf-legacy" doctor >/dev/null 2>&1; echo $?)"
 assert_eq "schema drift is informational only — doesn't change doctor's exit code" "$EXIT_NO_TRANSCRIPT" "$EXIT_WITH_DRIFT"
 # profiles lists at least the example template shipped in the repo
-assert_contains "profiles lists shipped profile" "$("$ROOT/fwf" profiles)" "example"
+assert_contains "profiles lists shipped profile" "$("$ROOT/fwf-legacy" profiles)" "example"
 # captain --print renders the CAPTAIN prompt with placeholders resolved
-CAPTAIN="$("$ROOT/fwf" --profile example captain --print 2>&1)"
+CAPTAIN="$("$ROOT/fwf-legacy" --profile example captain --print 2>&1)"
 assert_contains "captain --print renders prompt" "$CAPTAIN" "CAPTAIN"
 assert_contains "captain resolves placeholders"  "$CAPTAIN" "staging"
 
@@ -2635,35 +2652,35 @@ GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
 FWF_ISSUES=local
 EOF
 # with multiple profiles present, no --profile anywhere is genuinely ambiguous
-AMBIG="$("$ROOT/fwf" captain --print 2>&1)"
+AMBIG="$("$ROOT/fwf-legacy" captain --print 2>&1)"
 case "$AMBIG" in *"multiple profiles exist"*) ok "ambiguous profile rejected";; *) bad "ambiguous profile rejected" "$AMBIG";; esac
 assert_contains "ambiguity error names both positions" "$AMBIG" "before OR after the command"
 assert_contains "ambiguity error names FWF_PROFILE"    "$AMBIG" "FWF_PROFILE=NAME"
 # pre-subcommand --profile still works (regression, #7-style)
-PRE="$("$ROOT/fwf" --profile zzflagtest-b captain --print 2>&1)"
+PRE="$("$ROOT/fwf-legacy" --profile zzflagtest-b captain --print 2>&1)"
 assert_contains "pre-subcommand --profile resolves" "$PRE" "CAPTAIN"
 # post-subcommand --profile on a parse_runtime_flags command (captain)
-POST_RTF="$("$ROOT/fwf" captain --profile zzflagtest-b --print 2>&1)"
+POST_RTF="$("$ROOT/fwf-legacy" captain --profile zzflagtest-b --print 2>&1)"
 assert_contains "post-subcommand --profile (runtime-flags cmd)" "$POST_RTF" "CAPTAIN"
 # post-subcommand --profile=NAME spelling
-POST_EQ="$("$ROOT/fwf" captain --profile=zzflagtest-b --print 2>&1)"
+POST_EQ="$("$ROOT/fwf-legacy" captain --profile=zzflagtest-b --print 2>&1)"
 assert_contains "post-subcommand --profile=NAME" "$POST_EQ" "CAPTAIN"
 # post-subcommand --profile on a bare `engine()` command NOT in the
 # runtime-flags list (issues/dash/pr-review-state/stop) — the exact repro
 # from #69 (`fwf dash --profile NAME`); `issues list` needs no gh/tmux.
-DASHLIKE="$("$ROOT/fwf" issues --profile zzflagtest-b list 2>&1)"
+DASHLIKE="$("$ROOT/fwf-legacy" issues --profile zzflagtest-b list 2>&1)"
 case "$DASHLIKE" in *"multiple profiles exist"*) bad "post-subcommand --profile on bare engine cmd" "$DASHLIKE";; *) ok "post-subcommand --profile on bare engine cmd";; esac
 # last --profile wins when given in both positions with different values
-FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf" --profile zzflagtest-a issues --profile zzflagtest-b create --title probe >/dev/null 2>&1
-LASTWINS="$(FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf" --profile zzflagtest-b issues list 2>&1)"
+FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf-legacy" --profile zzflagtest-a issues --profile zzflagtest-b create --title probe >/dev/null 2>&1
+LASTWINS="$(FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf-legacy" --profile zzflagtest-b issues list 2>&1)"
 assert_contains "last --profile (post) wins over pre" "$LASTWINS" "probe"
-NOTINA="$(FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf" --profile zzflagtest-a issues list 2>&1)"
+NOTINA="$(FWF_RUN_DIR="$TMP/lastwins" "$ROOT/fwf-legacy" --profile zzflagtest-a issues list 2>&1)"
 case "$NOTINA" in *probe*) bad "last-wins: earlier profile untouched" "$NOTINA";; *) ok "last-wins: earlier profile untouched";; esac
 rm -f "$ROOT/profiles/zzflagtest-a.sh" "$ROOT/profiles/zzflagtest-b.sh"
 
 section "dispatcher: resume --clear-only clears the sentinel"
 RUNDIR="$TMP/run"; mkdir -p "$RUNDIR"; : > "$RUNDIR/STOP"
-RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf" --profile example resume --clear-only 2>&1)"
+RES="$(FWF_RUN_DIR="$RUNDIR" "$ROOT/fwf-legacy" --profile example resume --clear-only 2>&1)"
 [ -e "$RUNDIR/STOP" ] && bad "resume --clear-only removes sentinel" || ok "resume --clear-only removes sentinel"
 assert_contains "resume --clear-only message" "$RES" "cleared STOP sentinel"
 
@@ -2688,7 +2705,7 @@ done
 # (down-with-nothing-up now also runs the #105 deadlock guards, which shell
 # out to gh/git — see the dedicated hermetic section below for those)
 # help advertises the per-plane flags
-HELP_OUT="$("$ROOT/fwf" help)"
+HELP_OUT="$("$ROOT/fwf-legacy" help)"
 assert_contains "help mentions --floor-only" "$HELP_OUT" "--floor-only"
 assert_contains "help mentions --build-only" "$HELP_OUT" "--build-only"
 assert_contains "help mentions --pm-only"    "$HELP_OUT" "--pm-only"
@@ -4183,10 +4200,10 @@ EOF
   section "fwf scale --pairs N (issue #210): reconcile pairs on a LIVE floor without disturbing in-flight work"
 
   # --- CLI-level errors, no floor needed -------------------------------------
-  assert_eq "fwf scale with no --pairs is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf" scale >/dev/null 2>&1; echo $?)"
-  assert_eq "fwf scale --pairs 0 refuses" "1" "$(FWF_PROFILE=example "$ROOT/fwf" scale --pairs 0 >/dev/null 2>&1; echo $?)"
-  assert_eq "fwf scale --pairs abc is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf" scale --pairs abc >/dev/null 2>&1; echo $?)"
-  assert_contains "fwf: 'fwf scale' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "scale)     engine fwf-scale.sh"
+  assert_eq "fwf scale with no --pairs is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" scale >/dev/null 2>&1; echo $?)"
+  assert_eq "fwf scale --pairs 0 refuses" "1" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" scale --pairs 0 >/dev/null 2>&1; echo $?)"
+  assert_eq "fwf scale --pairs abc is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" scale --pairs abc >/dev/null 2>&1; echo $?)"
+  assert_contains "fwf: 'fwf scale' is wired into the dispatch table" "$(cat "$ROOT/fwf-legacy")" "scale)     engine fwf-scale.sh"
 
   # AC(i): the sanity bound is NOT a restatement of the old "hardcoded 3"
   # ceiling -- issue #221 already made the captain's roster dynamic. Assert
@@ -4990,16 +5007,16 @@ assert_eq "palette cycles (7 wraps to 1)" "$C1" "$C7"
 RSP="$(FWF_PAIRS=2 FWF_PROFILE=example "$ROOT/fwf-respawn.sh" impl3 2>&1)" && bad "respawn beyond floor rejected" || ok "respawn beyond floor rejected"
 assert_contains "respawn names the bound" "$RSP" "FWF_PAIRS=2"
 # dispatcher accepts the flags after the subcommand and validates them
-UPFLAG="$(FWF_PROFILE=example "$ROOT/fwf" up --pairs banana 2>&1)" && bad "fwf up --pairs banana rejected" || ok "fwf up --pairs banana rejected"
+UPFLAG="$(FWF_PROFILE=example "$ROOT/fwf-legacy" up --pairs banana 2>&1)" && bad "fwf up --pairs banana rejected" || ok "fwf up --pairs banana rejected"
 assert_contains "rejection is the lib.sh guard" "$UPFLAG" "positive integer"
-assert_contains "help mentions --pairs"      "$("$ROOT/fwf" help)" "--pairs N"
-assert_contains "help mentions --impl-model" "$("$ROOT/fwf" help)" "--impl-model"
+assert_contains "help mentions --pairs"      "$("$ROOT/fwf-legacy" help)" "--pairs N"
+assert_contains "help mentions --impl-model" "$("$ROOT/fwf-legacy" help)" "--impl-model"
 
 section "factory templates (issue #10)"
-TLIST="$("$ROOT/fwf" templates)"
+TLIST="$("$ROOT/fwf-legacy" templates)"
 assert_contains "templates lists dev"      "$TLIST" "dev"
 assert_contains "templates lists refactor" "$TLIST" "refactor"
-assert_contains "help mentions --template" "$("$ROOT/fwf" help)" "--template NAME"
+assert_contains "help mentions --template" "$("$ROOT/fwf-legacy" help)" "--template NAME"
 # unknown template rejected at source time
 FWF_TEMPLATE=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "unknown template rejected" || ok "unknown template rejected"
 # an incomplete template (missing role tmpls) is rejected with the role named
@@ -5018,11 +5035,11 @@ assert_contains "verifier checks behavior contract" "$RQA" "BEHAVIOR-CONTRACT CH
 assert_eq "refactor defaults to 2 pairs" "8"  "$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
 assert_eq "env FWF_PAIRS beats template" "10" "$(FWF_PAIRS=3 FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
 # captain --print honors --template
-RCAP="$("$ROOT/fwf" --profile example captain --print --template refactor 2>&1)"
+RCAP="$("$ROOT/fwf-legacy" --profile example captain --print --template refactor 2>&1)"
 assert_contains "captain --print honors --template" "$RCAP" "REFACTORING FACTORY"
 
 section "ideation template (issue #9)"
-assert_contains "templates lists ideation" "$("$ROOT/fwf" templates)" "ideation"
+assert_contains "templates lists ideation" "$("$ROOT/fwf-legacy" templates)" "ideation"
 IGEN="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 2")"
 assert_contains "generator has a stance"          "$IGEN" "ANALOGY TRANSFER"
 assert_contains "generator diverges before reading" "$IGEN" "DIVERGE FIRST, READ THE PORTFOLIO SECOND"
@@ -5036,7 +5053,7 @@ assert_contains "synthesizer ranks pairwise"     "$ISYN" "PAIRWISE"
 assert_eq "ideation keeps 3 pairs" "10" "$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
 
 section "extra roles + template inheritance (issue #17)"
-assert_contains "templates lists dev-sre" "$("$ROOT/fwf" templates)" "dev-sre"
+assert_contains "templates lists dev-sre" "$("$ROOT/fwf-legacy" templates)" "dev-sre"
 # dev-sre adds the sre role to the roster (11 = 10 stock + sre)
 SRE_ROLES="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles")"
 assert_eq "dev-sre roster is 11 roles" "11" "$(printf '%s\n' "$SRE_ROLES" | grep -c .)"
@@ -5089,7 +5106,7 @@ for d in "$ROOT"/eval/scenarios/*/*/*/; do
   [ -f "$d/scenario.md" ] && [ -f "$d/rubric.md" ] || { SCEN_OK=0; bad "scenario complete: $d"; }
 done
 [ "$SCEN_OK" = 1 ] && ok "all shipped scenarios complete"
-assert_contains "help mentions eval" "$("$ROOT/fwf" help)" "eval --role"
+assert_contains "help mentions eval" "$("$ROOT/fwf-legacy" help)" "eval --role"
 
 section "fwf suggest (issue #23) — hermetic, stubbed advisor"
 SGSTUB="$TMP/suggest-stub.sh"
@@ -5099,7 +5116,7 @@ cat > "$TMP/suggest-prompt.txt"
 echo "STUB-ADVICE: prebuilt: refactor"
 EOS
 chmod +x "$SGSTUB"
-SOUT="$(FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf" suggest "make my legacy python monolith maintainable without changing behavior" 2>/dev/null)" \
+SOUT="$(FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf-legacy" suggest "make my legacy python monolith maintainable without changing behavior" 2>/dev/null)" \
   && ok "suggest exits 0" || bad "suggest exits 0"
 assert_contains "advisor response passed through" "$SOUT" "STUB-ADVICE"
 SPROMPT="$(cat "$TMP/suggest-prompt.txt")"
@@ -5118,14 +5135,14 @@ assert_contains "canonical launch shape taught"   "$SPROMPT" "fwf up --template 
 SREMODEL="$(FWF_MODEL_SRE=opus-test FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd sre")"
 assert_contains "FWF_MODEL_SRE honored" "$SREMODEL" "--model opus-test"
 # advisor --model is NOT swallowed by the dispatcher's runtime-flag parser
-FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf" suggest --model test-model "any goal" >/dev/null 2>&1 \
+FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf-legacy" suggest --model test-model "any goal" >/dev/null 2>&1 \
   && ok "suggest --model accepted" || bad "suggest --model accepted"
 [ -z "${FWF_MODEL:-}" ] && ok "suggest --model not exported as FWF_MODEL" || bad "suggest --model leaked"
 # stdin path and the empty-goal guard
-printf 'ship a v1 quickly' | FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf" suggest >/dev/null 2>&1
+printf 'ship a v1 quickly' | FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf-legacy" suggest >/dev/null 2>&1
 assert_contains "stdin goal works" "$(cat "$TMP/suggest-prompt.txt")" "ship a v1 quickly"
-"$ROOT/fwf" suggest </dev/null >/dev/null 2>&1 && bad "empty goal rejected" || ok "empty goal rejected"
-assert_contains "help mentions suggest" "$("$ROOT/fwf" help)" "suggest <description>"
+"$ROOT/fwf-legacy" suggest </dev/null >/dev/null 2>&1 && bad "empty goal rejected" || ok "empty goal rejected"
+assert_contains "help mentions suggest" "$("$ROOT/fwf-legacy" help)" "suggest <description>"
 
 section "fwf upgrade — hermetic, stubbed gh"
 GHSTUB="$TMP/ghstub"; mkdir -p "$GHSTUB"
@@ -5142,20 +5159,21 @@ esac
 EOS
 chmod +x "$GHSTUB/gh"
 REALV="$(cat "$ROOT/VERSION")"
-assert_contains "help mentions upgrade" "$("$ROOT/fwf" help)" "upgrade [--check]"
-"$ROOT/fwf" upgrade --bogus >/dev/null 2>&1 && bad "upgrade rejects unknown flag" || ok "upgrade rejects unknown flag"
-UPC="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$ROOT/fwf" upgrade --check 2>&1)" && ok "--check up-to-date exits 0" || bad "--check up-to-date exits 0"
+assert_contains "help mentions upgrade" "$("$ROOT/fwf-legacy" help)" "upgrade [--check]"
+"$ROOT/fwf-legacy" upgrade --bogus >/dev/null 2>&1 && bad "upgrade rejects unknown flag" || ok "upgrade rejects unknown flag"
+UPC="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v$REALV" "$ROOT/fwf-legacy" upgrade --check 2>&1)" && ok "--check up-to-date exits 0" || bad "--check up-to-date exits 0"
 assert_contains "up-to-date reported" "$UPC" "up to date"
-UPA="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$ROOT/fwf" upgrade --check 2>&1)"
+UPA="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$ROOT/fwf-legacy" upgrade --check 2>&1)"
 assert_contains "upgrade-available reported" "$UPA" "upgrade available"
-UPF="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$ROOT/fwf" upgrade --check 2>&1)" && bad "gh failure exits nonzero" || ok "gh failure exits nonzero"
+UPF="$(PATH="$GHSTUB:$PATH" FAKE_GH_FAIL=1 "$ROOT/fwf-legacy" upgrade --check 2>&1)" && bad "gh failure exits nonzero" || ok "gh failure exits nonzero"
 assert_contains "gh failure hints at clone fetch+merge" "$UPF" "fetch --tags"
 
 # regression (issue #71): a git *worktree* has .git as a FILE (gitdir: …), not
 # a dir — and every fwf-self swarm role runs from a worktree.  Build a
 # standalone install whose .git is a file.
 WT71="$TMP/wt71"; mkdir -p "$WT71/lib"
-cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WT71/"
+cp "$ROOT/fwf-legacy" "$WT71/fwf"
+cp "$ROOT/config.sh" "$ROOT/VERSION" "$WT71/"
 cp "$ROOT/lib"/*.sh "$WT71/lib/"
 printf 'gitdir: /some/repo/.git/worktrees/wt71\n' > "$WT71/.git"
 
@@ -5182,7 +5200,8 @@ assert_contains "online worktree refusal names fwf upgrade"           "$UPWTONLI
 # gitdir shape): refuse — never silently fall through to the tarball path,
 # which would extract a release right on top of an existing git checkout.
 WTDANGLE="$TMP/wtdangle"; mkdir -p "$WTDANGLE/lib"
-cp "$ROOT/fwf" "$ROOT/config.sh" "$ROOT/VERSION" "$WTDANGLE/"
+cp "$ROOT/fwf-legacy" "$WTDANGLE/fwf"
+cp "$ROOT/config.sh" "$ROOT/VERSION" "$WTDANGLE/"
 cp "$ROOT/lib"/*.sh "$WTDANGLE/lib/"
 printf 'not a gitdir line\n' > "$WTDANGLE/.git"
 DANGLE="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$WTDANGLE/fwf" upgrade 2>&1)" \
@@ -5411,8 +5430,8 @@ assert_contains "gh mode untouched: gh issue" "$GHIMPL" "gh issue list"
 assert_contains "gh mode untouched: Closes #" "$GHIMPL" "Closes #<num>"
 case "$GHIMPL" in *"LOCAL ISSUES MODE"*) bad "gh mode has no addendum";; *) ok "gh mode has no addendum";; esac
 FWF_ISSUES=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "bogus backend rejected" || ok "bogus backend rejected"
-case "$("$ROOT/fwf" templates)" in *_local-issues*) bad "_local-issues hidden from templates";; *) ok "_local-issues hidden from templates";; esac
-assert_contains "help mentions --issues" "$("$ROOT/fwf" help)" "--issues gh|local"
+case "$("$ROOT/fwf-legacy" templates)" in *_local-issues*) bad "_local-issues hidden from templates";; *) ok "_local-issues hidden from templates";; esac
+assert_contains "help mentions --issues" "$("$ROOT/fwf-legacy" help)" "--issues gh|local"
 
 section "no-push guard in local mode (issue #28) — real git fixture"
 PUSHD="$TMP/push"; mkdir -p "$PUSHD"
@@ -6254,8 +6273,8 @@ assert_not_contains "an unarmed role is never falsely reported as CONFIG_DRIFT" 
 case "$SV_OUT_STALE" in *"fwf install itself"*) bad "the install-freshness line must not fire when FWF_SKIP_VERSION_CHECK=1";; *) ok "install-freshness line correctly silent when the check is skipped";; esac
 
 section "dispatcher: bad input is rejected"
-"$ROOT/fwf" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
-"$ROOT/fwf" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
+"$ROOT/fwf-legacy" bogus-cmd >/dev/null 2>&1 && bad "unknown command rejected" || ok "unknown command rejected"
+"$ROOT/fwf-legacy" init >/dev/null 2>&1 && bad "init without arg rejected" || ok "init without arg rejected"
 
 # --------------------------------------------------------------------------
 # fwf dash action layer (#40 milestone 2): assert the EXACT constructed command
@@ -7528,8 +7547,8 @@ else
 fi
 
 section "fwf claim-liveness (#377): CLI wiring"
-assert_contains "'fwf claim-liveness' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "claim-liveness) engine fwf-claim-liveness.sh"
-assert_contains "help mentions claim-liveness" "$("$ROOT/fwf" help)" "claim-liveness <issue>"
+assert_contains "'fwf claim-liveness' is wired into the dispatch table" "$(cat "$ROOT/fwf-legacy")" "claim-liveness) engine fwf-claim-liveness.sh"
+assert_contains "help mentions claim-liveness" "$("$ROOT/fwf-legacy" help)" "claim-liveness <issue>"
 
 section "fwf claim-liveness (#377 AC 5): docs/templates no longer teach the bare age-only rule"
 assert_not_contains "README.md no longer says claims 'expire after 15 minutes' unconditionally" \
@@ -7645,7 +7664,7 @@ assert_contains "the marker test accepts both verbs" "$CL515SRC" 'test("^(CLAIM|
 assert_contains "a CLAIM is only taken when nothing is held" "$CL515SRC" 'if .holder == null then {holder:$p[1]'
 assert_contains "a RELEASE only applies to the role that holds it" "$CL515SRC" 'if .holder == $p[1] then {holder:null'
 assert_contains "'fwf help' documents the RELEASE marker so a seat knows the exit exists" \
-  "$("$ROOT/fwf" help)" "RELEASE <role>"
+  "$("$ROOT/fwf-legacy" help)" "RELEASE <role>"
 
 # --------------------------------------------------------------------------
 # fwf claim-liveness (issue #502): a multi-line CLAIM matches on its FIRST
@@ -8548,7 +8567,7 @@ HELAPSED=$(( HEND - HSTART ))
   || bad "AC(d): fetch should not block past its timeout" "took ${HELAPSED}s"
 
 section "fwf dash --remote (#206 AC g): documented"
-assert_contains "fwf --help mentions --remote" "$("$ROOT/fwf" help)" "dash [--remote"
+assert_contains "fwf --help mentions --remote" "$("$ROOT/fwf-legacy" help)" "dash [--remote"
 assert_contains "docs/dash.md documents --remote" "$(cat "$ROOT/docs/dash.md")" "fwf dash --remote"
 assert_contains "docs/dash.md documents the scrubbing guarantee" "$(cat "$ROOT/docs/dash.md")" "no process environment, no tokens"
 assert_contains "README.md mentions --remote" "$(cat "$ROOT/README.md")" "--remote"
@@ -8653,7 +8672,7 @@ fi
 # --------------------------------------------------------------------------
 section "user-testing template (issue #42) — roster + source-blind personas"
 UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
-assert_contains "templates lists user-testing" "$("$ROOT/fwf" templates)" "user-testing"
+assert_contains "templates lists user-testing" "$("$ROOT/fwf-legacy" templates)" "user-testing"
 # roster: exactly 3 personas + researcher + captain (qa/conductor/gv suppressed)
 UT_ROLES="$(UT 'fwf_all_roles')"
 assert_eq "roster is 5 roles" "5" "$(printf '%s\n' "$UT_ROLES" | grep -c .)"
@@ -10555,7 +10574,7 @@ assert_eq "a PR that could not be read at all -> UNKNOWN, NEVER collapsed into N
 assert_eq "non-numeric PR arg -> UNKNOWN" "UNKNOWN" "$(FWF_PROFILE=example bash -c "source '$PRV'; main abc")"
 
 section "pr-reviewer (#194): CLI wiring -- 'fwf pr-reviewer' dispatches to fwf-pr-reviewer.sh"
-assert_contains "help mentions pr-reviewer" "$("$ROOT/fwf" help)" "pr-reviewer <pr>"
+assert_contains "help mentions pr-reviewer" "$("$ROOT/fwf-legacy" help)" "pr-reviewer <pr>"
 
 # --------------------------------------------------------------------------
 # fwf pr-assign-reviewer (issue #194): decide who a NEW PR's reviewer should
@@ -10613,7 +10632,7 @@ assert_eq "a failed gh query falls back to the SAME deterministic tie-break an a
   "qa1" "$FAILOUT"
 
 section "pr-assign-reviewer (#194): CLI wiring"
-assert_contains "help mentions pr-assign-reviewer" "$("$ROOT/fwf" help)" "pr-assign-reviewer <head-branch>"
+assert_contains "help mentions pr-assign-reviewer" "$("$ROOT/fwf-legacy" help)" "pr-assign-reviewer <head-branch>"
 
 # --------------------------------------------------------------------------
 # fwf-Reviewer: marker wiring into the dev profile's PR-creation and QA-survey
@@ -11059,8 +11078,8 @@ assert_eq "committed policy file parses as JSON" "0" \
   "$(jq empty "$ROOT/.github/branch-policy.json" >/dev/null 2>&1; echo $?)"
 
 section "branch-policy (#220): CLI wiring"
-assert_contains "help mentions branch-policy check" "$("$ROOT/fwf" help)" "branch-policy check"
-assert_contains "help mentions branch-policy producible" "$("$ROOT/fwf" help)" "branch-policy producible"
+assert_contains "help mentions branch-policy check" "$("$ROOT/fwf-legacy" help)" "branch-policy check"
+assert_contains "help mentions branch-policy producible" "$("$ROOT/fwf-legacy" help)" "branch-policy producible"
 
 # --------------------------------------------------------------------------
 section "branch-policy (issue #303): cmd_producible expands the REAL os matrix, not a hardcoded pair"
@@ -11401,7 +11420,7 @@ UNREADABLE_RC="$(FWF_PROFILE=example bash -c "
 assert_eq "a checks-read failure exits 2 (UNKNOWN), never 0 (honored)" "2" "$UNREADABLE_RC"
 
 section "pr-checks-honored (#220): CLI wiring"
-assert_contains "help mentions pr-checks-honored" "$("$ROOT/fwf" help)" "pr-checks-honored <n>"
+assert_contains "help mentions pr-checks-honored" "$("$ROOT/fwf-legacy" help)" "pr-checks-honored <n>"
 
 # --------------------------------------------------------------------------
 # fwf flag-captain (#113): a persisted, tracker-native "needs-captain" flag
@@ -11805,7 +11824,7 @@ assert_not_contains "AC(3) behavioral: a run that resolves NO_MARKER never emits
   "$CALLS501" "fwf-Reviewer:"
 
 section "fwf pr-route-check (#385): CLI wiring"
-assert_contains "help mentions pr-route-check sweep" "$("$ROOT/fwf" help)" "pr-route-check sweep"
+assert_contains "help mentions pr-route-check sweep" "$("$ROOT/fwf-legacy" help)" "pr-route-check sweep"
 
 # --------------------------------------------------------------------------
 # fwf operator-decision (#192): the operator->captain channel, artifact-
@@ -11821,8 +11840,8 @@ ODL()   { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example FWF_ISSUES=local "$OD" "$@"; 
 ODAZ()  { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example FWF_ISSUES=local "$ROOT/fwf-authz.sh" "$@"; }
 
 section "fwf operator-decision (#192 AC a): fwf --help lists the verb"
-assert_contains "help lists operator-decision" "$("$ROOT/fwf" help)" "operator-decision <n> <text>"
-assert_contains "help states what it is FOR, not just what it does" "$("$ROOT/fwf" help)" "board keypress isn't available"
+assert_contains "help lists operator-decision" "$("$ROOT/fwf-legacy" help)" "operator-decision <n> <text>"
+assert_contains "help states what it is FOR, not just what it does" "$("$ROOT/fwf-legacy" help)" "board keypress isn't available"
 
 section "fwf operator-decision (#192 AC b): the artifact is retrievable without a pane capture"
 ODISS create --title "Floor deadlock, needs a call" >/dev/null
@@ -12092,7 +12111,7 @@ assert_eq "#506: a stale seat is still NAMED in stale_priced_seats" "true" \
 # every assertion above silently starts reading the real table again.
 assert_eq "#506: FWF_PRICE_TABLE_JSON actually overrides the built-in table" "true" \
   "$(printf '%s' "$U506_FRESHDATA" | jq -r '[.roles[] | select(.model=="claude-opus-4-8")] | length == 0')"
-CLIOUT289="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
+CLIOUT289="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run2" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=2 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "CLI: TOTAL line carries a visible PARTIAL marker" "$CLIOUT289" "PARTIAL"
 assert_contains "CLI: the excluded seat is named on the display path too" "$CLIOUT289" "impl2 (claude-totally-unknown)"
 
@@ -12126,7 +12145,7 @@ assert_contains "(e1) the DECLARED-side instance (sonnet-4-6, the menu) is named
 DRIFT_ASYMMETRIC="$(_fwf_usage_load_for_test fwf_usage_model_drift 'claude-sonnet-5' 'claude-fable-5')"; DRIFT_ASYMMETRIC_RC=$?
 assert_eq "(e2) priced-but-not-declared/reported (claude-fable-5) is FINE, not a defect -- asymmetric by design" "0" "$DRIFT_ASYMMETRIC_RC"
 assert_eq "(e2) and produces no output" "" "$DRIFT_ASYMMETRIC"
-CLI_DRIFT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+CLI_DRIFT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "the drift check is wired into the live 'fwf usage' display, not just testable in isolation" "$CLI_DRIFT" "price-table drift check (issue #289)"
 
 section "fwf-budget-check.sh (issue #289 d): the fail-closed pause names the MODEL, not just the seat"
@@ -12159,20 +12178,20 @@ assert_eq "dir removed -> state stale (not unknown — we HAD a good read)" "sta
 assert_eq "stale keeps the last-good totals" "317" "$(printf '%s' "$R4" | jq -r '.tokens.input')"
 
 section "fwf usage (#95): CLI wiring — 'fwf usage' dispatches to fwf-usage.sh and renders the report"
-CLIOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
-assert_contains "help mentions the usage command" "$("$ROOT/fwf" help)" "Per-role token usage"
+CLIOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
+assert_contains "help mentions the usage command" "$("$ROOT/fwf-legacy" help)" "Per-role token usage"
 assert_contains "prints the profile"      "$CLIOUT" "profile .__usage"
 assert_contains "prints the impl1 row"    "$CLIOUT" "impl1"
 assert_contains "prints a TOTAL row"      "$CLIOUT" "TOTAL"
 assert_contains "prints the proxy caveat" "$CLIOUT" "not your account's actual rolling-window usage"
 assert_contains "STALE role renders the warning treatment, not a bare number" "$CLIOUT" "STALE"
 case "$CLIOUT" in *'$0.0000'*) bad "no role should render a false \$0.0000";; *) ok "no false \$0.0000 anywhere in the report";; esac
-STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
+STRAY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" "$ROOT/fwf-legacy" usage bogus 2>&1)" && bad "usage rejects a stray argument" || ok "usage rejects a stray argument"
 assert_contains "stray-argument error is clear" "$STRAY" "unknown argument"
 
 section "fwf usage — collapsing-read diagnostics (#211 AC f): live probe + recent unknowns"
 URUN="$TMP/usage-unknown-reads"
-CLEAN="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+CLEAN="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "clean run: section header always present" "$CLEAN" "collapsing-read diagnostics"
 assert_contains "clean run: live probe reports all-trustworthy" "$CLEAN" "all roles' tick reads are trustworthy right now"
 assert_contains "clean run: recent unknowns reports none" "$CLEAN" "recent unknowns: none logged"
@@ -12184,13 +12203,13 @@ assert_contains "clean run: recent unknowns reports none" "$CLEAN" "recent unkno
 mkdir -p "$URUN/run/state/.__usage/tick"
 printf garbage > "$URUN/run/state/.__usage/tick/impl1"
 FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" bash -c "source '$ROOT/lib.sh'; fwf_tick_read impl1 >/dev/null"
-DIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+DIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "live probe names the untrustworthy role" "$DIRTY" "tick read is UNTRUSTED right now for: impl1"
 assert_contains "recent-unknowns section shows the logged entry" "$DIRTY" "fwf_tick_read"
 assert_contains "  ...naming the reason"                          "$DIRTY" "role=impl1 malformed content"
 assert_contains "tells the operator how to clear it"               "$DIRTY" "fwf usage --clear-unknown-log"
 
-FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" "$ROOT/fwf" usage --clear-unknown-log >/dev/null
+FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" "$ROOT/fwf-legacy" usage --clear-unknown-log >/dev/null
 [ -f "$URUN/run/state/.__usage/unknown-reads.log" ] && bad "--clear-unknown-log actually removes the log file" || ok "--clear-unknown-log actually removes the log file"
 
 # Repair impl1 BEFORE re-checking "none logged": `fwf usage`'s own live
@@ -12200,7 +12219,7 @@ FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/clau
 # genuinely failed again), not a bug, but it means this specific assertion
 # needs a clean role to observe a clean log.
 echo 5 > "$URUN/run/state/.__usage/tick/impl1"
-AFTERCLEAR="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+AFTERCLEAR="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "after clearing AND repairing, recent unknowns reports none again" "$AFTERCLEAR" "recent unknowns: none logged"
 assert_contains "  ...and the live probe agrees (impl1 is healthy again)" "$AFTERCLEAR" "all roles' tick reads are trustworthy right now"
 
@@ -12210,25 +12229,25 @@ assert_contains "  ...and the live probe agrees (impl1 is healthy again)" "$AFTE
 # doesn't fight the "clean after repair" assertion just above.
 mkdir -p "$URUN/run/state/.__usage/tick"
 printf garbage > "$URUN/run/state/.__usage/tick/impl2"
-STILLDIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=2 "$ROOT/fwf" usage 2>&1)"
+STILLDIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=2 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "clearing the log does NOT silence the live probe for a still-broken role" "$STILLDIRTY" "tick read is UNTRUSTED right now for: impl2"
 
 section "fwf usage (#96/#108): budget-enforcement ARMED/NOT ARMED surface (GV-signoff residual-risk fix) + this-run-vs-cumulative"
-NOBUDGET="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage 2>&1)"
+NOBUDGET="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "no budget configured -> NOT ARMED" "$NOBUDGET" "budget enforcement: NOT ARMED"
 assert_contains "no budget -> hold state none" "$NOBUDGET" "hold state: none"
 
-UNARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
+UNARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "budget set but writer not running -> NOT ARMED (visibly, not silently, off)" "$UNARMED" "budget enforcement: NOT ARMED"
 assert_contains "unarmed message tells the operator how to fix it" "$UNARMED" "fwf up"
 
-UNARMEDUSD="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$ROOT/fwf" usage 2>&1)"
+UNARMEDUSD="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=5 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "--budget-usd set but writer not running -> NOT ARMED" "$UNARMEDUSD" "budget enforcement: NOT ARMED"
 assert_contains "unarmed \$ message names FWF_BUDGET_USD" "$UNARMEDUSD" "FWF_BUDGET_USD=5"
 
 env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
   bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
-ARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
+ARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "writer running for this profile -> ARMED (unchanged wording, back-compat)" "$ARMED" "budget enforcement: ARMED (ceiling 1000 tokens)"
 assert_contains "this-run-vs-cumulative line appears once a baseline exists" "$ARMED" "this run:"
 assert_contains "this-run line names cumulative too" "$ARMED" "cumulative:"
@@ -12239,10 +12258,10 @@ assert_contains "this-run line names cumulative too" "$ARMED" "cumulative:"
 env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 \
   bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
 printf 'HOLD — 1200 tokens spent this run (of 1200 cumulative; includes cache-read), budget is 1000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold\n' > "$UT/run/BUDGET_HOLD"
-HELDOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf" usage 2>&1)"
+HELDOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "usage report surfaces the current hold state verbatim" "$HELDOUT" "hold state: HOLD — 1200 tokens spent this run"
 
-CLEAROUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" usage --clear-hold 2>&1)"
+CLEAROUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage --clear-hold 2>&1)"
 assert_contains "--clear-hold confirms" "$CLEAROUT" "cleared"
 [ -f "$UT/run/BUDGET_HOLD" ] && bad "--clear-hold removes the hold file" || ok "--clear-hold removes the hold file"
 
@@ -12257,7 +12276,7 @@ env FWF_TOKEN_BUDGET=1000 FWF_BUDGET_USD=5 FWF_PROFILE=example bash -c "source '
   && bad "FWF_TOKEN_BUDGET + FWF_BUDGET_USD both set rejected" || ok "FWF_TOKEN_BUDGET + FWF_BUDGET_USD both set rejected"
 
 section "fwf --help / help (#108 AC10): documents --budget-usd, the poll-interval guarantee, and the price-table coupling"
-HELPTXT="$("$ROOT/fwf" help)"
+HELPTXT="$("$ROOT/fwf-legacy" help)"
 assert_contains "--help documents --budget-usd" "$HELPTXT" "budget-usd"
 assert_contains "--help states raw --token-budget counts cache-read" "$HELPTXT" "cache-read tokens"
 assert_contains "--help states the poll-interval (not instant) guarantee" "$HELPTXT" "FWF_BUDGET_CHECK_INTERVAL"
@@ -12355,7 +12374,7 @@ case "$FAILCLOSED" in UNKNOWN\ *) ok "AC9: first-line token is byte-identical 'U
 
 section "fwf-budget-check.sh: dispatches via the fwf CLI"
 CLIRC=0
-FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run6" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf" budget-check >/dev/null 2>&1 || CLIRC=$?
+FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run6" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" budget-check >/dev/null 2>&1 || CLIRC=$?
 [ "$CLIRC" = 0 ] && ok "'fwf budget-check' dispatches and exits 0 with no budget configured" \
   || bad "'fwf budget-check' dispatches and exits 0" "exit $CLIRC"
 
@@ -12612,7 +12631,7 @@ env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub15" FWF_CLAUDE_PROJECTS_DIR="$BT/c
   bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
 
 section "fwf CLI (#149): --session-pct/--weekly-pct PARK[/RESUME] parsing"
-PCTFN="$(awk '/^_fwf_parse_pct_flag\(\)/,/^}/' "$ROOT/fwf")"
+PCTFN="$(awk '/^_fwf_parse_pct_flag\(\)/,/^}/' "$ROOT/fwf-legacy")"
 pct_test() { # $1=kind $2=input-value -> "$FWF_<KIND>_PCT_PARK $FWF_<KIND>_PCT_RESUME"
   local varprefix="$3"
   bash -c "
@@ -12638,7 +12657,7 @@ bash -c "
 [ "$PCTRC" -ne 0 ] && ok "an empty PARK value ('/70') is rejected, not silently treated as 0" || bad "empty PARK rejected" "exit 0"
 
 section "fwf --help (#149): documents --session-pct/--weekly-pct and the never-OCR contract"
-HELPTXT="$("$ROOT/fwf" help)"
+HELPTXT="$("$ROOT/fwf-legacy" help)"
 assert_contains "--help documents --session-pct"                  "$HELPTXT" "session-pct"
 assert_contains "--help documents --weekly-pct"                   "$HELPTXT" "weekly-pct"
 assert_contains "--help names the staleness fail-closed guarantee" "$HELPTXT" "fails CLOSED"
@@ -13542,8 +13561,8 @@ assert_contains "...names (A) FAIL" "$SHP_SQ3_OUT" "(A) FAIL"
 assert_contains "...names the actual (absent) merge commit" "$SHP_SQ3_OUT" "$SQ3_MERGESHA"
 
 # --- CLI wiring
-assert_contains "'fwf shipped' is wired into the dispatch table" "$(cat "$ROOT/fwf")" "shipped)   engine fwf-shipped.sh"
-assert_contains "help mentions fwf shipped" "$("$ROOT/fwf" help)" "shipped <issue>"
+assert_contains "'fwf shipped' is wired into the dispatch table" "$(cat "$ROOT/fwf-legacy")" "shipped)   engine fwf-shipped.sh"
+assert_contains "help mentions fwf shipped" "$("$ROOT/fwf-legacy" help)" "shipped <issue>"
 
 # --- AC(3): a CLOSE step exists in templates/dev/captain.tmpl (there was no
 # such step before this ticket -- the promote-to-DEFAULT release step never
@@ -13866,7 +13885,7 @@ assert_nonzero_rc "timeout: a hung profile is a hard failure, not a silent hang"
   || bad "timeout: took ${H_ELAPSED}s -- the bound did not hold"
 
 # --- AC(h): fwf doctor reports the resolved path/mode + dropped names -------
-H2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/good.sh" ./fwf doctor 2>&1)"
+H2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/good.sh" ./fwf-legacy doctor 2>&1)"
 assert_contains "AC(h): fwf doctor reports the resolution mode" "$H2_OUT" "(explicit) -> $P188/good.sh"
 assert_contains "AC(h): fwf doctor names a dropped (non-allowlisted) name" "$H2_OUT" "ignored: FOO_UNKNOWN"
 
@@ -14260,7 +14279,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     # separate, nameable outcome instead of an all-or-nothing gate.
     # Re-measured on this tree (issue #480 AC 1): peak 3212 MB, rc 0, 224s.
     shellcheck -s bash -S warning \
-      "$ROOT/fwf" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
+      "$ROOT/fwf-legacy" "$ROOT"/*.sh "$ROOT"/lib/*.sh "$ROOT/profiles/example.sh" \
       "$ROOT"/templates/*/template.sh "$ROOT/eval/run.sh"
     _SC480_SHIPPED_RC=$?
 
@@ -14489,7 +14508,7 @@ REL_YML="$(cat "$ROOT/.github/workflows/release.yml")"
 # `on: push: tags`, so an untagged hotfix push never ran it at all.
 assert_contains "AC1: ci.yml fires on push to main" "$CI_YML" "branches: [main]"
 assert_contains "AC1: ci.yml has a reconcile job" "$CI_YML" "reconcile:"
-assert_contains "AC1: the reconcile job actually invokes reconcile" "$CI_YML" "./fwf reconcile-guard"
+assert_contains "AC1: the reconcile job actually invokes reconcile" "$CI_YML" "./fwf-legacy reconcile-guard"
 assert_contains "AC1: reconcile job is scoped to push-to-main only" "$CI_YML" \
   "if: github.event_name == 'push' && github.ref == 'refs/heads/main'"
 assert_contains "AC1: reconcile job fetches full ancestry (a shallow tip misclassifies)" "$CI_YML" "fetch-depth: 0"
@@ -14499,12 +14518,12 @@ assert_contains "AC1: reconcile job fetches full ancestry (a shallow tip misclas
 # that warning and calls it the bug.
 CI_CODE="$(grep -v '^[[:space:]]*#' "$ROOT/.github/workflows/ci.yml")"
 assert_not_contains "AC1: ci.yml does NOT swallow the verdict into a warning (Hole 2 on the new path)" \
-  "$CI_CODE" './fwf reconcile || echo "::warning'
+  "$CI_CODE" './fwf-legacy reconcile || echo "::warning'
 
 # --- AC2: tagged release + genuine divergence -> publish PREVENTED --------
 # Wiring: every publishing job hangs off the pre-publish check.
 assert_contains "AC2: release.yml has a pre-publish preflight job" "$REL_YML" "preflight:"
-assert_contains "AC2: preflight runs the non-mutating check" "$REL_YML" "./fwf reconcile --check"
+assert_contains "AC2: preflight runs the non-mutating check" "$REL_YML" "./fwf-legacy reconcile --check"
 # issue #303: load-targets/release now ALSO gate on the new ci-verdict job
 # (release.yml consults ci.yml's own verdict rather than a hand-rolled
 # subset) -- updated from the bare "needs: preflight" / "needs: [preflight,
@@ -14693,9 +14712,9 @@ assert_contains "AC(c): the runbook states the bump rides staging -> integration
 # Parsed positionally (line numbers), not just "both strings appear somewhere
 # in the file" -- the ordering is the point: a check nobody is obliged to
 # consult before tagging is decoration, not a guard.
-RELEASING_CHECK_LINE="$(grep -n '\./fwf reconcile --check' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
+RELEASING_CHECK_LINE="$(grep -n '\./fwf-legacy reconcile --check' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
 RELEASING_TAG_LINE="$(grep -n '^   git tag vX\.Y\.Z' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
-assert_contains "AC(a2): the runbook contains a pre-tag './fwf reconcile --check' step" "$RELEASING_MD" './fwf reconcile --check'
+assert_contains "AC(a2): the runbook contains a pre-tag './fwf-legacy reconcile --check' step" "$RELEASING_MD" './fwf-legacy reconcile --check'
 { [ -n "$RELEASING_CHECK_LINE" ] && [ -n "$RELEASING_TAG_LINE" ] && [ "$RELEASING_CHECK_LINE" -lt "$RELEASING_TAG_LINE" ]; } \
   && ok "AC(a2): the check step PRECEDES the tag step (positionally, in the runbook)" \
   || bad "AC(a2): the check step PRECEDES the tag step" "check line=$RELEASING_CHECK_LINE tag line=$RELEASING_TAG_LINE"
@@ -15037,7 +15056,7 @@ section "reconcile-guard: CI-durable indeterminate streak (#258)"
 # #238 AC7 ("an indeterminate that never resolves must not silently re-check
 # forever") is satisfied by fwf_reconcile_indeterminate_streak (lib.sh) only
 # for a caller with a PERSISTENT $FWF_RUN -- a captain's local tick. CI has
-# no such disk: ci.yml runs ./fwf reconcile-guard on a fresh runner every
+# no such disk: ci.yml runs ./fwf-legacy reconcile-guard on a fresh runner every
 # push, so that counter resets to 0/1 every time and the threshold (3) is
 # never reached. These tests drive the REAL, unmodified fwf-reconcile-guard.sh
 # across SEPARATE invocations (never sharing a process, exactly like separate
@@ -16142,7 +16161,7 @@ FWF_REPO="$D457_REPO"; WT_PREFIX="d457"; WT_BASE="$TMP"
 STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
 GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
 EOF
-d457_doctor() { ( cd "$ROOT" && env -u FWF_PROFILE FWF_PROFILE_PATH="$D457_PROF" FWF_RUN_DIR="$D457RUN" bash "$ROOT/fwf" doctor 2>&1 ); }
+d457_doctor() { ( cd "$ROOT" && env -u FWF_PROFILE FWF_PROFILE_PATH="$D457_PROF" FWF_RUN_DIR="$D457RUN" bash "$ROOT/fwf-legacy" doctor 2>&1 ); }
 
 # (a) not blocked at all (no verdict file for this tip) -> no line
 assert_not_contains "AC(2a): nothing recorded for the tip -> silent, no false alarm" "$(d457_doctor)" "local-ci"
@@ -17123,10 +17142,10 @@ assert_eq "AC: a second headroom call inside the TTL window is served from cache
 
 # --------------------------------------------------------------------------
 section "fwf doctor: API budget is reported, degrades to UNKNOWN, never fails doctor (issue #239)"
-G239_DOCTOR_OUT="$(FWF_REAL_GH="$G239_OKGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok "$ROOT/fwf" doctor 2>&1)"
+G239_DOCTOR_OUT="$(FWF_REAL_GH="$G239_OKGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok "$ROOT/fwf-legacy" doctor 2>&1)"
 assert_contains "fwf doctor reports the api budget line" "$G239_DOCTOR_OUT" "api budget"
 assert_contains "fwf doctor's api budget line names remaining/limit" "$G239_DOCTOR_OUT" "42/5000 remaining"
-G239_DOCTOR_UNKNOWN_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail "$ROOT/fwf" doctor 2>&1)"
+G239_DOCTOR_UNKNOWN_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail "$ROOT/fwf-legacy" doctor 2>&1)"
 assert_contains "fwf doctor's api budget degrades to UNKNOWN under a forced failure" "$G239_DOCTOR_UNKNOWN_OUT" "api budget : UNKNOWN"
 
 # --------------------------------------------------------------------------
@@ -17630,8 +17649,8 @@ assert_contains "reports the missing-record case in its own output too" "$OUT469
 # --------------------------------------------------------------------------
 section "fwf gate-verdict-watchdog (#469 AC 2/AC 8): the obliged call site -- wired into the captain's own per-tick sweep"
 
-assert_contains "CLI help documents the subcommand" "$("$ROOT/fwf" help)" "gate-verdict-watchdog sweep"
-assert_contains "fwf dispatches gate-verdict-watchdog to its own script" "$(grep -c 'gate-verdict-watchdog) engine fwf-gate-verdict-watchdog.sh' "$ROOT/fwf")" "1"
+assert_contains "CLI help documents the subcommand" "$("$ROOT/fwf-legacy" help)" "gate-verdict-watchdog sweep"
+assert_contains "fwf dispatches gate-verdict-watchdog to its own script" "$(grep -c 'gate-verdict-watchdog) engine fwf-gate-verdict-watchdog.sh' "$ROOT/fwf-legacy")" "1"
 assert_contains "AC(2)/AC(8): the dev captain template runs the sweep every tick, named alongside pr-route-check/flag-captain (its own already-obliged call site)" \
   "$(cat "$ROOT/templates/dev/captain.tmpl")" "fwf gate-verdict-watchdog sweep"
 assert_eq "AC(8): the watchdog rides the SAME line as the other two mandatory sweeps -- not a second, independently-schedulable step" \
