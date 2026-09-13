@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 930 252" width="930" height="252" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">The supervisor cycle</title>
+  <desc id="d">poll the tracker, plan what happens next, wake one seat with one job, receive one JSON verdict, perform every GitHub write and append it to the run record — then poll again. Poll, plan and write are the supervisor; wake and verdict are the seat's one job.</desc>
+
+  <defs>
+    <marker id="a" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 4 L0 8 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="929" height="251" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+
+  <!-- supervisor: poll -->
+  <rect x="35" y="55" width="140" height="86" rx="7" fill="#eef1fd" stroke="#4a56c4" stroke-width="1.5"/>
+  <text x="105" y="86" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">poll</text>
+  <text x="105" y="107" text-anchor="middle" font-size="11.5" fill="#57606a">the tracker,</text>
+  <text x="105" y="122" text-anchor="middle" font-size="11.5" fill="#57606a">ETag-cached</text>
+
+  <!-- supervisor: plan -->
+  <rect x="215" y="55" width="140" height="86" rx="7" fill="#eef1fd" stroke="#4a56c4" stroke-width="1.5"/>
+  <text x="285" y="86" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">plan</text>
+  <text x="285" y="107" text-anchor="middle" font-size="11.5" fill="#57606a">what happens</text>
+  <text x="285" y="122" text-anchor="middle" font-size="11.5" fill="#57606a">next, and on what</text>
+
+  <!-- seat: wake -->
+  <rect x="395" y="55" width="140" height="86" rx="7" fill="#fdf3e7" stroke="#bc6b11" stroke-width="1.5"/>
+  <text x="465" y="86" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">wake</text>
+  <text x="465" y="107" text-anchor="middle" font-size="11.5" fill="#57606a">one seat, one job,</text>
+  <text x="465" y="122" text-anchor="middle" font-size="11.5" fill="#57606a">one rendered prompt</text>
+
+  <!-- seat: verdict -->
+  <rect x="575" y="55" width="140" height="86" rx="7" fill="#fdf3e7" stroke="#bc6b11" stroke-width="1.5"/>
+  <text x="645" y="86" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">verdict</text>
+  <text x="645" y="107" text-anchor="middle" font-size="11.5" fill="#57606a">one JSON object,</text>
+  <text x="645" y="122" text-anchor="middle" font-size="11.5" fill="#57606a">then the seat idles</text>
+
+  <!-- supervisor: write -->
+  <rect x="755" y="55" width="140" height="86" rx="7" fill="#eef1fd" stroke="#4a56c4" stroke-width="1.5"/>
+  <text x="825" y="86" text-anchor="middle" font-size="16" font-weight="600" fill="#1f2328">write</text>
+  <text x="825" y="107" text-anchor="middle" font-size="11.5" fill="#57606a">PR, review, merge —</text>
+  <text x="825" y="122" text-anchor="middle" font-size="11.5" fill="#57606a">and <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">run.jsonl</tspan></text>
+
+  <!-- forward arrows -->
+  <line x1="177" y1="98" x2="207" y2="98" stroke="#57606a" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="357" y1="98" x2="387" y2="98" stroke="#57606a" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="537" y1="98" x2="567" y2="98" stroke="#57606a" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="717" y1="98" x2="747" y2="98" stroke="#57606a" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- return arrow -->
+  <path d="M825 141 L825 186 L105 186 L105 149" fill="none" stroke="#57606a" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <rect x="404" y="176" width="122" height="20" rx="3" fill="#ffffff"/>
+  <text x="465" y="191" text-anchor="middle" font-size="11.5" fill="#57606a">forever, or <tspan font-family="ui-monospace, SFMono-Regular, Menlo, monospace">--once</tspan></text>
+
+  <!-- legend -->
+  <rect x="35" y="215" width="13" height="13" rx="3" fill="#eef1fd" stroke="#4a56c4" stroke-width="1.5"/>
+  <text x="56" y="226" font-size="12" fill="#57606a">supervisor — one Rust process, every GitHub write, refuses when a precondition fails</text>
+  <rect x="560" y="215" width="13" height="13" rx="3" fill="#fdf3e7" stroke="#bc6b11" stroke-width="1.5"/>
+  <text x="581" y="226" font-size="12" fill="#57606a">seat — a Claude Code pane, judgment only, no token</text>
+</svg>

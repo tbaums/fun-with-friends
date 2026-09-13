@@ -125,6 +125,16 @@ fwf --profile your-repo provision --build      # create worktrees + warm builds
 fwf --profile your-repo up                      # launch
 ```
 
+## Design
+
+fwf runs a software factory on a GitHub repository. The factory has two kinds of parts. There is one **supervisor** (`fwf run`), a small Rust program that reads the tracker, decides what should happen next, and performs every write to GitHub. And there are **seats**: Claude Code sessions sitting in tmux panes, each of which is idle until the supervisor wakes it with exactly one job, and idle again the moment it has answered.
+
+That split is the whole design. Everything else follows from asking two questions about each responsibility: *does this need judgment, or does it need to be right every time?* Judgment goes to a seat. Being right every time goes to the supervisor.
+
+Deciding whether an issue is well-grounded, whether a spec is complete, how to implement a change, whether a diff is correct: judgment, so a seat does it. Which issue is next, which branch a change must be built on, whether a review counts, whether a merge is allowed, whether a gate passed, what the meter says: those must be right every time, so the supervisor does them in code, with tests, and refuses loudly when a precondition fails.
+
+— [`docs/design.md`](docs/design.md), the rest of the argument: why seats are woken and never left running, why the prompts are the product, the three narrow identities, fences and typed merges, the run record, and the meter.
+
 ## The pipeline
 
 Every looped role is armed the same way: its full role prompt is delivered
