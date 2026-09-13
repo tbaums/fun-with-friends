@@ -370,7 +370,13 @@ pub fn run_with(
         .replace("{{TITLE}}", &title)
         .replace("{{BODY}}", &body)
         .replace("{{CHECK}}", &cfg.check_cmd)
-        .replace("{{BRANCH}}", &branch);
+        .replace("{{BRANCH}}", &branch)
+        // The seat is told when its cycle ends, so a long proof can be cut
+        // short with a real verdict instead of parking on it (#589).
+        .replace(
+            "{{DEADLINE}}",
+            &seat::local_hhmm(now() + cfg.timeout.as_secs()),
+        );
     let pane = Pane {
         target: cfg.seat_target.clone(),
         role: Role::Impl,

@@ -140,6 +140,11 @@ pub fn render(template: &str, cfg: &ReworkConfig, j: &ReworkJob) -> String {
         .replace("{{REVIEW}}", &j.review)
         .replace("{{BASE}}", &cfg.base_branch)
         .replace("{{CHECK}}", &cfg.check_cmd)
+        // When this cycle ends, so a long proof can be cut short (#589).
+        .replace(
+            "{{DEADLINE}}",
+            &seat::local_hhmm(now() + cfg.timeout.as_secs()),
+        )
 }
 
 /// `app` (impl) reads the PR and its reviews; `ops` (contents:write) pushes the

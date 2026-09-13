@@ -20,6 +20,9 @@ pub const PLACEHOLDERS: &[&str] = &[
     "{{BASE}}",
     "{{CHECK}}",
     "{{REVIEW}}",
+    // Local HH:MM when this cycle's deadline falls, so a seat can cut a long
+    // proof short instead of parking on it (#589).
+    "{{DEADLINE}}",
 ];
 pub const ROLES: &[&str] = &["impl", "qa", "gv", "pm"];
 
@@ -114,6 +117,16 @@ mod tests {
                     "{}: no blocked verdict",
                     p.display()
                 );
+                // #589: a seat that does not know when its cycle ends parks on
+                // a long proof instead of cutting it short. Every job says so,
+                // in the same words.
+                assert!(
+                    text.contains(
+                        "Your job deadline is {{DEADLINE}}; push before it — a partial result beats a stall."
+                    ),
+                    "{}: no deadline line",
+                    p.display()
+                );
                 assert_eq!(
                     unknown_placeholders(&text),
                     Vec::<String>::new(),
@@ -121,6 +134,22 @@ mod tests {
                     p.display()
                 );
             }
+        }
+    }
+
+    /// #589: every module that renders a job template substitutes the deadline.
+    /// Those renders sit inside GitHub-dependent cycles, so the guard is on the
+    /// source itself: a caller that forgot it would paste the literal
+    /// placeholder into a seat, which is what this placeholder must never be.
+    #[test]
+    fn every_job_renderer_fills_the_deadline() {
+        for m in ["slice", "qa", "spec", "triage", "rework"] {
+            let src = std::fs::read_to_string(format!("{}/src/{m}.rs", env!("CARGO_MANIFEST_DIR")))
+                .unwrap();
+            assert!(
+                src.contains("\"{{DEADLINE}}\""),
+                "{m}.rs renders a job without filling the deadline placeholder"
+            );
         }
     }
 

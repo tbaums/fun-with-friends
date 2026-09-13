@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Every seat is told when its cycle ends (#589).** A flake-fix spec asking for
+  "run the suite 20× back-to-back" had seats starting a 50-minute loop against a
+  40-minute `job_timeout_secs` and then idling on the shell — three human
+  interrupts on transom in one night. Job prompts now carry one line, the same in
+  all 21 of them: "Your job deadline is {{DEADLINE}}; push before it — a partial
+  result beats a stall." `slice`, `qa`, `spec`, `triage` and `rework` fill it from
+  `seat::now() + timeout` as local `HH:MM` via `seat::local_hhmm`. Information,
+  not enforcement: the sharper backstops (a PM rule on repeat-run criteria, a
+  finalize nudge from the loop) are still open.
+
 - **`fwfd status` knows who holds what (#588).** "claimed" came from
   `IssueView.claim`, which the poller fills only for issues carrying a `claimed`
   GitHub label — and nothing applies that label, so transom's #1268 read as

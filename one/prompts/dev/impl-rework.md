@@ -16,6 +16,8 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 - Push the branch to `origin` (the mirror), force-with-lease because you may have rebased: `git push --force-with-lease -u origin {{BRANCH}}`.
 - Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop. Nothing else. The supervisor pushes the branch to GitHub and lets QA look again.
 
+Your job deadline is {{DEADLINE}}; push before it — a partial result beats a stall.
+
 Verdict format (exactly one of these, valid JSON, no prose around it):
 {"verdict":"implemented","branch":"{{BRANCH}}","head":"<the 40-char sha of your final commit>","summary":"<one sentence on what you changed>"}
 {"verdict":"blocked","reason":"<why you could not address the review>"}

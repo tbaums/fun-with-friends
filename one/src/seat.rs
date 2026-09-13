@@ -130,6 +130,35 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// `epoch` as local `HH:MM` — the clock the operator and the seat both read.
+///
+/// Via the system `date`, like the meter brake's stamp parsing: GNU (`-d @N`)
+/// first, then BSD (`-r N`, macOS). GNU leads here because BSD rejects `-d`
+/// outright while GNU's `-r` takes a *filename*, so asking GNU for an epoch by
+/// filename is the one combination that could answer something wrong.
+///
+/// A `date` that answers neither way returns the epoch itself: a seat prompt is
+/// worth rendering with an awkward deadline, never worth not waking over (#589).
+pub fn local_hhmm(epoch: u64) -> String {
+    hhmm_via("date", epoch)
+}
+
+fn hhmm_via(date_bin: &str, epoch: u64) -> String {
+    let secs = epoch.to_string();
+    let at = format!("@{secs}");
+    for args in [["-d", &at, "+%H:%M"], ["-r", &secs, "+%H:%M"]] {
+        if let Ok(out) = Command::new(date_bin).args(args).output() {
+            if out.status.success() {
+                let hhmm = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !hhmm.is_empty() {
+                    return hhmm;
+                }
+            }
+        }
+    }
+    secs
+}
+
 /// A name no other wake will use: the seat, this process, a counter within it,
 /// and a nanosecond stamp.
 ///
@@ -552,6 +581,26 @@ mod tests {
         assert_eq!(reason(v1), "seat 1 did its own job");
         assert_eq!(reason(v2), "seat 2 did its own job");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #589: the seat is told when its cycle ends, so a `date` that will not
+    /// answer must degrade to something printable rather than block the wake.
+    #[test]
+    fn a_deadline_reads_as_a_local_clock_and_never_blocks_the_wake() {
+        let hhmm = local_hhmm(1_789_005_170);
+        assert_eq!(hhmm.len(), 5, "{hhmm}");
+        let (h, m) = hhmm.split_once(':').expect(&hhmm);
+        assert!(
+            h.parse::<u8>().is_ok_and(|h| h < 24) && m.parse::<u8>().is_ok_and(|m| m < 60),
+            "{hhmm} is not a clock"
+        );
+        // one hour later is a different reading, whatever the zone
+        assert_ne!(hhmm, local_hhmm(1_789_005_170 + 3600));
+        // no usable `date`: the epoch itself, no panic
+        assert_eq!(
+            hhmm_via("fwfd-no-such-date-binary", 1_789_005_170),
+            "1789005170"
+        );
     }
 
     #[test]
