@@ -156,6 +156,45 @@ mod tests {
         }
     }
 
+    /// #612: the guide beside the prompts documents every role and every
+    /// placeholder, and nothing that does not exist. The old README listed 9
+    /// placeholders while the code had 12, and a GV pass caught it describing a
+    /// role and a `{{FENCE}}` token that were never real — a guide drifts
+    /// silently because nothing reads it. This reads it.
+    #[test]
+    fn guide_covers_every_role_and_placeholder() {
+        let p = Path::new(ROOT).join("README.md");
+        let text = std::fs::read_to_string(&p).unwrap();
+        for r in ROLES {
+            assert!(
+                text.contains(&format!("### {r}")),
+                "{}: no section for the `{r}` role",
+                p.display()
+            );
+        }
+        for ph in PLACEHOLDERS {
+            assert!(
+                text.contains(ph),
+                "{}: placeholder {ph} is not documented",
+                p.display()
+            );
+        }
+        // The other direction: a token the supervisor does not fill must not be
+        // described as one it does.
+        assert_eq!(
+            unknown_placeholders(&text),
+            Vec::<String>::new(),
+            "{}: documents a placeholder that does not exist",
+            p.display()
+        );
+        // The rework job is impl's second job shape (#576), not a fifth role.
+        assert!(
+            text.contains(REWORK),
+            "{}: the rework job is not documented",
+            p.display()
+        );
+    }
+
     /// #589: every module that renders a job template substitutes the deadline.
     /// Those renders sit inside GitHub-dependent cycles, so the guard is on the
     /// source itself: a caller that forgot it would paste the literal
