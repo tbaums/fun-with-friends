@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **GV triage honours `skip_labels` (#585).** `triage_candidates` read the gate
+  label but not the manifest's skip list, and it runs before the tick's own
+  skip-label filter, so on a `triage_new` floor every parked `idea` / `tracking`
+  / `needs-human` ticket was offered to the GV seat — which then labels and
+  comments on it (transom's #374). The skip labels are now part of the same
+  eligibility predicate, where the gate label already was.
+
 - **Per-cycle tokens are a window, and now there are tests that say so (#581).**
   Transom's impl seat recorded 7M → 22M → 58M → 95M tokens in over four cycles,
   which reads like a cumulative counter. It was not: `cost`'s time window was

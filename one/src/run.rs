@@ -84,11 +84,17 @@ pub fn triaged_issues(events: &[crate::log::Event]) -> std::collections::BTreeSe
     out
 }
 
-/// Open, un-gated, never-triaged, and not already carrying work (a claim or
-/// an assignee means a human or a seat is past the question). Oldest first.
+/// Open, un-gated, not parked by a `skip_labels` tag, never-triaged, and not
+/// already carrying work (a claim or an assignee means a human or a seat is
+/// past the question). Oldest first.
+///
+/// The skip labels matter here as much as they do to the scheduler: an `idea`
+/// or `tracking` ticket is parked on purpose, and GV labels and comments on
+/// whatever it is offered (#585 — transom's #374, an `idea`).
 pub fn triage_candidates(
     snap: &crate::poll::Snapshot,
     gate_label: &str,
+    skip_labels: &[String],
     seen: &std::collections::BTreeSet<u64>,
 ) -> Vec<u64> {
     let mut v: Vec<u64> = snap
@@ -97,6 +103,7 @@ pub fn triage_candidates(
         .filter(|i| {
             i.state == "open"
                 && !i.labels.iter().any(|l| l == gate_label)
+                && !i.labels.iter().any(|l| skip_labels.contains(l))
                 && i.assignees.is_empty()
                 && i.claim.is_none()
                 && !seen.contains(&i.number)
@@ -232,10 +239,11 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         }
         // GV triage (T-23 inside the loop): before the allow-list narrows the
         // snapshot, judge every open un-gated issue the record has never seen.
+        // The skip labels apply here too — this runs before the retain below.
         if cfg.triage_new {
             if let Some(gv) = &cfg.gv_seat {
                 let seen = triaged_issues(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
-                for n in triage_candidates(&snap, &cfg.gate_label, &seen) {
+                for n in triage_candidates(&snap, &cfg.gate_label, &cfg.skip_labels, &seen) {
                     let Some(ops) = ops_app else { break };
                     let tcfg = crate::triage::TriageConfig {
                         owner: cfg.owner.clone(),
@@ -754,7 +762,9 @@ mod tests {
     }
 
     #[test]
-    fn triage_candidates_skip_gated_claimed_and_already_judged() {
+    fn triage_candidates_skip_gated_claimed_parked_and_already_judged() {
+        // #374 is the shape that started #585: parked as an `idea`, and offered
+        // to GV anyway because this filter never read the skip labels.
         let snap = Snapshot {
             issues: vec![
                 issue(5, &[], false),
@@ -762,11 +772,18 @@ mod tests {
                 issue(4, &[], true),
                 issue(2, &[], false),
                 issue(9, &[], false),
+                issue(374, &["idea"], false),
+                issue(375, &["tracking", "product-wip"], false),
+                issue(376, &["needs-human"], false),
             ],
             prs: vec![],
             fetched_at: 0,
             known: true,
         };
+        let skip: Vec<String> = ["idea", "release-hold", "tracking", "needs-human"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let evs = vec![
             Event {
                 ts: 1,
@@ -787,6 +804,21 @@ mod tests {
         let seen = triaged_issues(&evs);
         assert_eq!(seen.into_iter().collect::<Vec<_>>(), vec![2, 9]);
         let seen = triaged_issues(&evs);
-        assert_eq!(triage_candidates(&snap, "product-wip", &seen), vec![5]);
+        assert_eq!(
+            triage_candidates(&snap, "product-wip", &skip, &seen),
+            vec![5],
+            "a parked ticket is not GV's to judge"
+        );
+        // #5 is only in because it carries no skip label: take the list away
+        // and the parked ones come back (the default-off behaviour, unchanged).
+        assert_eq!(
+            triage_candidates(&snap, "product-wip", &[], &seen),
+            vec![5, 374, 376]
+        );
+        // a skip label alone is enough, with or without the gate label
+        assert_eq!(
+            triage_candidates(&snap, "no-such-gate", &skip, &seen),
+            vec![3, 5]
+        );
     }
 }
