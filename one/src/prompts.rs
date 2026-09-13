@@ -127,6 +127,21 @@ mod tests {
                     "{}: no deadline line",
                     p.display()
                 );
+                // #590: the worktree's commit identity is the supervisor's to
+                // set, so no job may tell a seat to set its own.
+                assert!(
+                    text.contains(
+                        "Your worktree already commits as this seat (`git config user.*` is set for you; do not change it)."
+                    ),
+                    "{}: no commit-identity line",
+                    p.display()
+                );
+                assert!(
+                    !text.contains("git config user.name")
+                        && !text.contains("git config user.email"),
+                    "{}: tells the seat to set its own identity",
+                    p.display()
+                );
                 assert_eq!(
                     unknown_placeholders(&text),
                     Vec::<String>::new(),

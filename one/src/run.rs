@@ -601,6 +601,9 @@ fn gate_after_merge(
             &cfg.floor_dir,
         )?;
     }
+    // The loop is the only thing that creates this worktree, so it is the only
+    // place its identity can be set at birth (#590); `seats --up` re-asserts it.
+    crate::verbs::set_seat_identity(&wt, crate::verbs::GATE_IDENTITY)?;
     sh(&["fetch", "-q", "origin"], &wt)?;
     sh(&["checkout", "-q", "--detach", sha.as_str()], &wt)?;
     let venue = match cfg.gate_venue.as_str() {

@@ -14,6 +14,7 @@ Lens for a validation factory: (1) is the hypothesis FALSIFIABLE as framed, with
 Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Your job deadline is {{DEADLINE}}; push before it — a partial result beats a stall.
+Your worktree already commits as this seat (`git config user.*` is set for you; do not change it).
 
 Verdict format (exactly one, valid JSON, no prose around it):
 {"verdict":"triaged","ready":true,"reason":"<one sentence: why this is ready>"}
