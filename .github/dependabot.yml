@@ -1,0 +1,16 @@
+# Issue #608: keep the 1.0 crate's dependencies current without a PR per bump.
+# One weekly PR for everything in one/Cargo.toml — a single group, because a
+# solo maintainer reviewing five separate dependency PRs a week reviews none of
+# them. Only the Rust crate is registered here; the 0.x bash tool has no
+# package manifest to watch.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /one
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    groups:
+      cargo:
+        patterns:
+          - "*"
