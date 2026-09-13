@@ -194,6 +194,45 @@ fn recheck(snap: &Snapshot, cfg: &SliceConfig, now: u64) -> Result<u8, String> {
     })
 }
 
+/// Record the seat's terminal state for this cycle with what the cycle cost.
+///
+/// The window is this cycle's own: `deadline` came from the `seat::wake` that
+/// started it (`deadline = wake + timeout`, one call), so `deadline - timeout`
+/// is that wake instant. A warm seat keeps one transcript across every cycle
+/// and it only grows, so the window is the whole of the arithmetic that keeps
+/// cycle N from being charged for cycles 1..N (#581). Within the window the
+/// numbers still grow cycle over cycle — every request re-reads the
+/// conversation the seat has grown — which is real cost, not double counting.
+fn record_cycle(
+    log: &mut Log,
+    repo: &str,
+    cfg: &SliceConfig,
+    seat_no: u8,
+    st: &SeatState,
+    deadline: u64,
+) -> Result<(), SliceError> {
+    let usage = crate::cost::cycle_usage(
+        &cfg.floor_dir.join("home"),
+        &cfg.floor_dir.join(format!("wt-impl{seat_no}")),
+        deadline.saturating_sub(cfg.timeout.as_secs()),
+    );
+    let (tokens_in, tokens_out) = usage
+        .as_ref()
+        .map(|u| (Some(u.tokens_in()), Some(u.tokens_out())))
+        .unwrap_or((None, None));
+    record(
+        log,
+        repo,
+        Kind::Seat {
+            seat: seat_no,
+            role: Role::Impl,
+            to: st.clone(),
+            tokens_in,
+            tokens_out,
+        },
+    )
+}
+
 pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
     run_with(cfg, app, None)
 }
@@ -386,27 +425,7 @@ pub fn run_with(
     // 6. Wait for the verdict; never kill.
     let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
     // Measured cost of this cycle: the seat's own transcript since the wake.
-    let seat_home = cfg.floor_dir.join("home");
-    let usage = crate::cost::cycle_usage(
-        &seat_home,
-        &seat_wt,
-        deadline.saturating_sub(cfg.timeout.as_secs()),
-    );
-    let (tokens_in, tokens_out) = usage
-        .as_ref()
-        .map(|u| (Some(u.tokens_in()), Some(u.tokens_out())))
-        .unwrap_or((None, None));
-    record(
-        &mut log,
-        &repo,
-        Kind::Seat {
-            seat: seat_no,
-            role: Role::Impl,
-            to: st.clone(),
-            tokens_in,
-            tokens_out,
-        },
-    )?;
+    record_cycle(&mut log, &repo, cfg, seat_no, &st, deadline)?;
     let (v_branch, v_head, summary) = match verdict {
         Some(Verdict::Implemented {
             branch,
@@ -807,6 +826,98 @@ mod tests {
         // the floor's own PR on that seat still holds it
         snap.prs[0].author = "fwf-impl[bot]".into();
         assert!(recheck(&snap, &cfg_for(issue, 1), 1).is_err());
+    }
+
+    /// #581 — two cycles of the same warm seat, one growing transcript, the
+    /// shape transom reported (7M → 22M → 58M → 95M tokens in and a dash that
+    /// read like a cumulative counter). What the run record stores for cycle 2
+    /// must be cycle 2's own requests, measured from its own wake.
+    #[test]
+    fn a_seats_second_cycle_is_not_charged_for_its_first() {
+        let floor = std::env::temp_dir().join(format!(
+            "fwfd-slice-cost-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&floor);
+        std::fs::create_dir_all(&floor).unwrap();
+        let mut cfg = cfg_for(574, 1);
+        cfg.floor_dir = floor.clone();
+        cfg.run_log = floor.join("run.jsonl");
+        cfg.timeout = Duration::from_secs(1800);
+        // the transcript `cost` will read: one session file for the seat's
+        // whole life, as `seats --up` leaves it
+        let proj = crate::cost::project_dir(&floor.join("home"), &floor.join("wt-impl1"));
+        std::fs::create_dir_all(&proj).unwrap();
+        let transcript = proj.join("session.jsonl");
+        let turn = |ts: &str, cache_read: u64, output: u64| {
+            format!("{{\"type\":\"assistant\",\"timestamp\":\"{ts}\",\"message\":{{\"usage\":{{\"input_tokens\":3,\"cache_read_input_tokens\":{cache_read},\"cache_creation_input_tokens\":0,\"output_tokens\":{output}}}}}}}\n")
+        };
+        let iso = |s: &str| crate::cost::iso_to_epoch(s).unwrap();
+        let job = JobRef {
+            role: Role::Impl,
+            issue: Some(574),
+            pr: None,
+        };
+        let reported = SeatState::Reported { job: job.clone() };
+
+        // cycle 1: woken 01:00:00, two turns, verdict in
+        let mut text = turn("2026-09-12T01:10:00Z", 1_000_000, 40);
+        text.push_str(&turn("2026-09-12T01:20:00Z", 2_000_000, 60));
+        std::fs::write(&transcript, &text).unwrap();
+        let mut log = Log::open(&cfg.run_log).unwrap();
+        let wake1 = iso("2026-09-12T01:00:00Z");
+        record_cycle(&mut log, "o/r", &cfg, 1, &reported, wake1 + 1800).unwrap();
+
+        // cycle 2: the same seat, the same file, a bigger context per request
+        text.push_str(&turn("2026-09-12T02:00:00Z", 5_000_000, 100));
+        text.push_str(&turn("2026-09-12T02:20:00Z", 7_000_000, 150));
+        std::fs::write(&transcript, &text).unwrap();
+        let wake2 = iso("2026-09-12T02:00:00Z");
+        record_cycle(&mut log, "o/r", &cfg, 1, &reported, wake2 + 1800).unwrap();
+
+        let logged: Vec<(Option<u64>, Option<u64>)> = crate::log::read_all(&cfg.run_log)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                Kind::Seat {
+                    tokens_in,
+                    tokens_out,
+                    ..
+                } => Some((tokens_in, tokens_out)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            logged,
+            vec![(Some(3_000_006), Some(100)), (Some(12_000_006), Some(250))],
+            "cycle 2 must not carry cycle 1's 3M in / 100 out"
+        );
+        // the growth between them is real (each request re-reads more), but it
+        // is not the sum: that would be 15M in / 350 out
+        assert_ne!(logged[1], (Some(15_000_012), Some(350)));
+        // a seat that never answered records the zero it measured, not the
+        // transcript it was left beside
+        record_cycle(
+            &mut log,
+            "o/r",
+            &cfg,
+            1,
+            &SeatState::Stalled { job },
+            iso("2026-09-12T03:00:00Z") + 1800,
+        )
+        .unwrap();
+        let last = crate::log::read_all(&cfg.run_log).unwrap().pop().unwrap();
+        assert!(matches!(
+            last.kind,
+            Kind::Seat {
+                tokens_in: Some(0),
+                tokens_out: Some(0),
+                to: SeatState::Stalled { .. },
+                ..
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&floor);
     }
 
     #[test]

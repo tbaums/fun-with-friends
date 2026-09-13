@@ -80,7 +80,11 @@ pub(super) fn seats_tab(b: &Board, f: &Floor, v: &View, now: u64) -> TabBody {
                 k(r.tokens_out)
             ));
             if r.cycles > 0 {
-                d.push(format!("per cycle {} in", k(r.tokens_in / r.cycles as u64)));
+                // An upper bound, not a per-task price: see the Usage tab.
+                d.push(format!(
+                    "per cycle {} in — upper bound (see Usage)",
+                    k(r.tokens_in / r.cycles as u64)
+                ));
             }
             d.extend(trail_lines(r.trail, now));
             (format!("Detail · seat {}", r.label), d)
@@ -401,6 +405,15 @@ pub fn usage(b: &Board, f: &Floor) -> Vec<String> {
             }
         ));
     }
+    // #581: these are each seat's own request-level tokens, measured from its
+    // transcript in the window of the cycle. A warm seat's conversation keeps
+    // growing and every request re-reads it, so in/cycle rises over a seat's
+    // life: read it as an upper bound on what the work cost, not as a price.
+    out.push("             in/cycle is an upper bound, not a per-task price: these are a".into());
+    out.push("             seat's own requests, and its conversation grows — every".into());
+    out.push(
+        "             request re-reads it, so a later cycle costs more to do the same.".into(),
+    );
     out.push(String::new());
     out.push(match &f.meter {
         Some(m) => format!(
@@ -438,6 +451,40 @@ mod tests {
         assert!(f.contains("pane fwf-one:impl1"));
         assert!(f.contains("tmux live, 2.1.266"));
         assert!(f.contains("deadline"));
+    }
+
+    /// #581: a seat that has finished a cycle shows what it cost per cycle,
+    /// and says in the same breath that the figure is an upper bound.
+    #[test]
+    fn a_finished_seats_per_cycle_line_carries_the_caveat() {
+        let job = crate::types::JobRef {
+            role: crate::types::Role::Impl,
+            issue: Some(574),
+            pr: None,
+        };
+        let b = fold(&[crate::log::Event {
+            ts: 1_000_000,
+            repo: "o/r".into(),
+            kind: Kind::Seat {
+                seat: 1,
+                role: crate::types::Role::Impl,
+                to: crate::types::SeatState::Reported { job },
+                tokens_in: Some(94_550_809),
+                tokens_out: Some(40_000),
+            },
+        }]);
+        let v = View {
+            tab: Tab::Seats,
+            width: 110,
+            height: 26,
+            ..Default::default()
+        };
+        let (_, _, (_, detail)) = seats_tab(&b, &floor(), &v, 1_000_100);
+        let line = detail
+            .iter()
+            .find(|l| l.starts_with("per cycle"))
+            .unwrap_or_else(|| panic!("no per-cycle line in {detail:?}"));
+        assert_eq!(line, "per cycle 94.6M in — upper bound (see Usage)");
     }
 
     #[test]
@@ -517,6 +564,13 @@ mod tests {
         assert!(f.contains("throughput   merges 0"), "{f}");
         assert!(f.contains("per hour     hour   merges opened cycles"));
         assert!(f.contains("cost         role   cycles stalled"));
+        // #581: the per-cycle figure says what to make of itself
+        assert!(
+            f.contains("in/cycle is an upper bound, not a per-task price"),
+            "{f}"
+        );
+        assert!(f.contains("seat's own requests"), "{f}");
+        assert!(f.contains("request re-reads it"), "{f}");
         assert!(f.contains("meter        weekly 62%"));
         assert!(f.contains("parks the floor at 85%"));
     }

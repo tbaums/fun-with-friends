@@ -54,7 +54,9 @@ pub fn newest_transcript(project_dir: &Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-fn iso_to_epoch(s: &str) -> Option<u64> {
+/// `2026-09-10T01:52:50.945Z` → unix seconds (UTC). Public inside the crate so
+/// a test can state a transcript's times and the cycle's `since` in one breath.
+pub(crate) fn iso_to_epoch(s: &str) -> Option<u64> {
     // "2026-09-10T01:52:50.945Z" → seconds since epoch (UTC), no external crate.
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-').map(|x| x.parse::<i64>().ok());
@@ -118,6 +120,90 @@ mod tests {
     fn iso_parses_to_the_right_epoch() {
         assert_eq!(iso_to_epoch("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(iso_to_epoch("2026-09-10T01:52:50.945Z"), Some(1789005170));
+    }
+
+    /// One assistant turn, as Claude Code writes it.
+    fn turn(ts: &str, input: u64, cache_read: u64, output: u64) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"{ts}\",\"message\":{{\"usage\":{{\"input_tokens\":{input},\"cache_read_input_tokens\":{cache_read},\"cache_creation_input_tokens\":0,\"output_tokens\":{output}}}}}}}\n"
+        )
+    }
+
+    /// #581 — a warm seat keeps ONE transcript across every cycle it is woken
+    /// for, and it only grows. The per-cycle number the run record stores must
+    /// therefore be the window's sum, never the file's: transom's impl seat
+    /// read 7M → 22M → 58M → 95M tokens in over four cycles, which looks like a
+    /// cumulative counter. It is not — each request re-reads the whole
+    /// conversation it has grown, so a later cycle's own requests really are
+    /// bigger (the cache_read numbers below say so) — but the window has to
+    /// hold, and nothing proved it did.
+    #[test]
+    fn a_second_cycle_in_one_growing_transcript_sums_only_its_own_turns() {
+        let dir = std::env::temp_dir().join(format!("fwfd-cost-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wt = Path::new("/x/wt-impl1");
+        let proj = project_dir(&dir, wt);
+        std::fs::create_dir_all(&proj).unwrap();
+        let p = proj.join("session.jsonl");
+        let wake2 = iso_to_epoch("2026-09-12T02:00:00Z").unwrap();
+
+        // cycle 1: woken at 01:00:00, two turns on a small context
+        let mut text = String::new();
+        text.push_str(
+            "{\"type\":\"user\",\"timestamp\":\"2026-09-12T01:00:00Z\",\"message\":{}}\n",
+        );
+        text.push_str(&turn("2026-09-12T01:00:10Z", 5, 1_000_000, 40));
+        text.push_str(&turn("2026-09-12T01:05:00Z", 1, 2_000_000, 60));
+        std::fs::write(&p, &text).unwrap();
+        let one = cycle_usage(&dir, wt, iso_to_epoch("2026-09-12T01:00:00Z").unwrap()).unwrap();
+        assert_eq!(
+            one,
+            Usage {
+                messages: 2,
+                input: 6,
+                cache_read: 3_000_000,
+                cache_create: 0,
+                output: 100
+            }
+        );
+
+        // cycle 2: same file, woken at 02:00:00. The first turn is stamped
+        // exactly at the wake and belongs to this cycle (`>= since`).
+        text.push_str(
+            "{\"type\":\"user\",\"timestamp\":\"2026-09-12T02:00:00Z\",\"message\":{}}\n",
+        );
+        text.push_str(&turn("2026-09-12T02:00:00Z", 2, 5_000_000, 100));
+        text.push_str(&turn("2026-09-12T02:10:00Z", 0, 7_000_000, 150));
+        std::fs::write(&p, &text).unwrap();
+        let two = cycle_usage(&dir, wt, wake2).unwrap();
+        assert_eq!(
+            two,
+            Usage {
+                messages: 2,
+                input: 2,
+                cache_read: 12_000_000,
+                cache_create: 0,
+                output: 250
+            }
+        );
+        assert_eq!(two.tokens_in(), 12_000_002);
+        assert_eq!(two.tokens_out(), 250);
+        // not the whole file, and not cycle 1 + cycle 2
+        let whole = cycle_usage(&dir, wt, 0).unwrap();
+        assert_eq!(whole.tokens_in(), 15_000_008);
+        assert_eq!(whole.messages, 4);
+        assert_eq!(two.tokens_in() + one.tokens_in(), whole.tokens_in());
+        // cycle 1 re-read after the file grew is still cycle 1 + 2 from its own
+        // wake; measured from the boundary, the earlier turns are gone for good
+        assert_eq!(
+            cycle_usage(&dir, wt, wake2 - 1).unwrap().tokens_in(),
+            12_000_002
+        );
+        // a seat that stalls without answering costs zero, not an error
+        let quiet = cycle_usage(&dir, wt, iso_to_epoch("2026-09-12T03:00:00Z").unwrap()).unwrap();
+        assert_eq!(quiet, Usage::default());
+        assert_eq!((quiet.tokens_in(), quiet.tokens_out()), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
