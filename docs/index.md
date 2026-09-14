@@ -31,6 +31,7 @@ Start at [`getting-started.md`](getting-started.md); the rest is reference.
 ## Legacy
 
 - [`legacy/README.md`](legacy/README.md) — fwf 0.x, the bash factory: archived, still indexed.
+- [`legacy/parity.md`](legacy/parity.md) — every 0.x script against its 1.0 answer: the gate before the bash tool is deleted (#623).
 
 ## See also
 
