@@ -311,8 +311,22 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
             _ => {}
         }
         // A red or killed gate on the merge sha is a human's problem whether
-        // or not the sha was already promoted.
-        if let Some(g @ (GateState::Red { .. } | GateState::Killed { .. })) = p.gates.last() {
+        // or not the sha was already promoted — until something greener has
+        // happened since. The board is one pipeline: a Green on any later sha
+        // is the branch saying it builds, and that includes the code the Red
+        // was about (#625). Without this, #1267, #1270, #1357 and #1273 kept
+        // alerting for days after the greens that had already answered them,
+        // which is how an operator learns to ignore the banner.
+        let superseded = match (p.last_gate_ts, b.last_green_gate_ts) {
+            (Some(gate), Some(green)) => gate <= green,
+            // Nothing green yet: every red still stands.
+            (_, None) => false,
+            // A gate with no recorded time cannot claim to be the newer one.
+            (None, Some(_)) => true,
+        };
+        if let Some(g @ (GateState::Red { .. } | GateState::Killed { .. })) =
+            p.gates.last().filter(|_| !superseded)
+        {
             v.push(match &p.promoted {
                 Some((branch, _)) => format!(
                     "PR #{} was promoted to {branch} but its last gate is {}",
@@ -372,7 +386,7 @@ mod tests {
     use crate::dash::fixture::test_record;
     use crate::dash::{fold, Sha};
     use crate::log::{Event, Kind};
-    use crate::types::{Fence, PrState};
+    use crate::types::{Fence, GateState, PrState};
 
     fn sha() -> Sha {
         Sha::parse(&"a".repeat(40)).unwrap()
@@ -383,6 +397,107 @@ mod tests {
             repo: "o/r".into(),
             kind,
         }
+    }
+
+    /// #625, the transom floor on 2026-09-14: Decisions showed 7, four of them
+    /// red gates from days earlier that dozens of later greens had already
+    /// answered. The board is one linear pipeline, so a Green anywhere later
+    /// is the branch saying it builds — including the code the Red was about.
+    /// Only Green supersedes, and only forwards.
+    #[test]
+    fn a_red_gate_clears_once_anything_greener_lands_after_it() {
+        let merged = |pr: u64, ts: u64, sha: &Sha| {
+            vec![
+                ev(
+                    ts,
+                    Kind::Pr {
+                        pr,
+                        issue: Some(pr - 1),
+                        to: PrState::Open { head: sha.clone() },
+                    },
+                ),
+                ev(
+                    ts + 1,
+                    Kind::Pr {
+                        pr,
+                        issue: Some(pr - 1),
+                        to: PrState::Merged { sha: sha.clone() },
+                    },
+                ),
+            ]
+        };
+        let gate = |ts: u64, to: GateState| ev(ts, Kind::Gate { to });
+        let red = |sha: &Sha| GateState::Red {
+            sha: sha.clone(),
+            suite: "e2e".into(),
+            failed: 2,
+        };
+        let green = |sha: &Sha| GateState::Green {
+            sha: sha.clone(),
+            suite: "e2e".into(),
+            secs: 90,
+        };
+        let a = sha();
+        let b_sha = Sha::parse(&"b".repeat(40)).unwrap();
+        let f = Floor::default();
+        let alerts = |evs: &[Event]| -> Vec<String> {
+            needs_you(&fold(evs), &f, 9000)
+                .into_iter()
+                .filter(|l| l.contains("gate"))
+                .collect()
+        };
+
+        // red, and nothing since: the operator still has to look
+        let mut evs = merged(1267, 10, &a);
+        evs.push(gate(30, red(&a)));
+        let only_red = alerts(&evs);
+        assert_eq!(only_red.len(), 1, "{only_red:?}");
+        assert!(only_red[0].contains("PR #1267 merged but its gate is"), "{only_red:?}");
+
+        // the same sha goes green later: answered
+        let mut same = evs.clone();
+        same.push(gate(40, green(&a)));
+        assert!(alerts(&same).is_empty(), "{:?}", alerts(&same));
+
+        // a *different* PR's sha goes green later: also answered, because one
+        // board is one branch and that green built #1267's code too
+        let mut board_wide = evs.clone();
+        board_wide.extend(merged(1270, 50, &b_sha));
+        board_wide.push(gate(60, green(&b_sha)));
+        assert!(alerts(&board_wide).is_empty(), "{:?}", alerts(&board_wide));
+
+        // a promoted PR reads the same way
+        let mut promoted = evs.clone();
+        promoted.push(ev(
+            35,
+            Kind::Promote {
+                branch: "main".into(),
+                from: String::new(),
+                to: a.to_string(),
+            },
+        ));
+        let still = alerts(&promoted);
+        assert_eq!(still.len(), 1, "{still:?}");
+        assert!(still[0].contains("was promoted to main"), "{still:?}");
+        promoted.push(gate(70, green(&b_sha)));
+        assert!(alerts(&promoted).is_empty(), "{:?}", alerts(&promoted));
+
+        // one-directional: a red after the last green is new news
+        let mut reopened = same.clone();
+        reopened.push(gate(80, red(&a)));
+        assert_eq!(alerts(&reopened).len(), 1, "{:?}", alerts(&reopened));
+
+        // and only Green supersedes — a Killed does not answer a Red, nor
+        // another Killed answer it
+        let mut killed = evs.clone();
+        killed.push(gate(90, GateState::Killed {
+            sha: a.clone(),
+            suite: "e2e".into(),
+            reason: "the venue ran out of memory".into(),
+        }));
+        let k = alerts(&killed);
+        assert_eq!(k.len(), 1, "{k:?}");
+        assert!(k[0].contains("KILLED"), "{k:?}");
     }
 
     /// #576: changes requested is the loop's work until the rounds run out.
