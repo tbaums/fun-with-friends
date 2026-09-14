@@ -80,6 +80,9 @@ pub struct PrLive {
     pub qa: Option<(u8, u64)>,
     /// Gate verdicts recorded for the merge sha, oldest first.
     pub gates: Vec<GateState>,
+    /// When the last of those verdicts was recorded. A red gate is only a
+    /// human's problem while nothing greener has happened since (#625).
+    pub last_gate_ts: Option<u64>,
     /// The branch its merge sha was promoted to, and when.
     pub promoted: Option<(String, u64)>,
 }
@@ -169,6 +172,12 @@ pub struct Board {
     pub open_prs: Vec<u64>,
     pub gated_issues: Vec<u64>,
     pub last_gate: Option<GateState>,
+    /// When the most recent Green landed, for any PR and any sha (#625). One
+    /// board is one linear pipeline — PRs merge onto the same integration
+    /// branch, and `GateState` carries no branch — so a later Green proves
+    /// the branch, including whatever an earlier Red was about, builds now.
+    /// Only Green supersedes: another Red or a Killed says nothing.
+    pub last_green_gate_ts: Option<u64>,
     pub refusals: Vec<(u64, String, String)>,
     pub humans: Vec<(u64, String, String, String)>,
     /// Rework rounds per PR (#576): one per impl wake whose job names the PR.
@@ -257,6 +266,7 @@ pub fn fold(events: &[Event]) -> Board {
                     merge_sha: None,
                     qa: None,
                     gates: Vec::new(),
+                    last_gate_ts: None,
                     promoted: None,
                 });
                 if issue.is_some() {
@@ -364,6 +374,9 @@ pub fn fold(events: &[Event]) -> Board {
                     GateState::Killed { .. } => h.gate_killed += 1,
                     _ => {}
                 }
+                if matches!(to, GateState::Green { .. }) {
+                    b.last_green_gate_ts = Some(e.ts);
+                }
                 b.last_gate = Some(to.clone());
                 gates.push((e.ts, to.clone()));
             }
@@ -431,6 +444,7 @@ pub fn fold(events: &[Event]) -> Board {
         let Some(sha) = gate_sha(&g) else { continue };
         if let Some(p) = by_sha.get(sha.as_str()).and_then(|n| b.prs.get_mut(n)) {
             p.gates.push(g.clone());
+            p.last_gate_ts = Some(ts);
             let what = log::describe(&Kind::Gate { to: g });
             let pr = p.pr;
             b.trail(format!("pr:{pr}"), ts, &what);
