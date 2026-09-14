@@ -248,7 +248,34 @@ fn draw(text: &str, interactive: bool) {
 /// One frame, printed plainly: what `fwf dash` without `--watch` does, and
 /// what a pipe or a CI log gets.
 pub fn once(b: &Board, f: &Floor, v: &View) -> String {
-    render(b, f, v, now())
+    let now = now();
+    format!(
+        "{}-- snapshot @ {}, not live --\n",
+        render(b, f, v, now),
+        crate::dash::hhmm(now)
+    )
+}
+
+/// Seconds between redraws, when nobody said (#626).
+pub const WATCH_SECS: u64 = 5;
+
+/// What `fwf dash` should do when it was not told: watch on a terminal, one
+/// frame into a pipe. `Some(secs)` is watch, `None` is the single frame.
+///
+/// A bare `fwf dash` in a tmux pane drew one frame and exited, and the dead
+/// pane went on looking current — a board frozen at 09:42 still read
+/// `impl1 REPORTED PR #1364` while impl1 had moved on at 09:44 (#626). The
+/// two explicit flags still win: `--once` is always one frame, `--watch N`
+/// is never downgraded because stdout is not a terminal.
+pub fn mode(args: &[String], is_tty: bool) -> Option<u64> {
+    if args.iter().any(|a| a == "--once") {
+        return None;
+    }
+    args.iter()
+        .position(|a| a == "--watch")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<u64>().ok())
+        .or(is_tty.then_some(WATCH_SECS))
 }
 
 /// `--watch N`: redraw every N seconds, and — on a real terminal — take
@@ -362,4 +389,41 @@ mod tests {
         let (w, h) = size();
         assert!(w >= 1 && h >= 1);
     }
+
+    /// #626: a bare `fwf dash` on a terminal watches; the two explicit flags
+    /// still decide for themselves, and a pipe gets one frame as before.
+    #[test]
+    fn the_watch_default_is_the_terminal_and_the_flags_still_win() {
+        let args = |s: &str| -> Vec<String> { s.split_whitespace().map(String::from).collect() };
+        // nothing said: the terminal decides
+        assert_eq!(mode(&args("dash"), true), Some(WATCH_SECS));
+        assert_eq!(mode(&args("dash"), false), None);
+        // --once is one frame wherever it runs
+        assert_eq!(mode(&args("dash --once"), true), None);
+        assert_eq!(mode(&args("dash --once"), false), None);
+        // --watch N is never downgraded by a pipe, and --once beats it
+        assert_eq!(mode(&args("dash --watch 30"), false), Some(30));
+        assert_eq!(mode(&args("dash --watch 30"), true), Some(30));
+        assert_eq!(mode(&args("dash --once --watch 30"), true), None);
+        // an unreadable interval falls back to the default question
+        assert_eq!(mode(&args("dash --watch soon"), true), Some(WATCH_SECS));
+        assert_eq!(mode(&args("dash --watch soon"), false), None);
+    }
+
+    /// The one-shot frame says what it is, outside the frame itself.
+    #[test]
+    fn a_single_frame_is_labelled_a_snapshot() {
+        let v = View {
+            width: 100,
+            height: 20,
+            ..Default::default()
+        };
+        let text = once(&crate::dash::fold(&[]), &Floor::default(), &v);
+        let last = text.lines().last().unwrap();
+        assert!(last.contains("snapshot"), "{last:?}");
+        assert!(last.contains("not live"), "{last:?}");
+        assert!(last.contains(':'), "no clock time in {last:?}");
+        assert!(!last.contains('└'), "the label is not part of the frame");
+    }
+
 }

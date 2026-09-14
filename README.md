@@ -61,7 +61,9 @@ Then bring up the floor and run the loop:
 fwf seats --up               # mirror, one worktree per seat, a warm pane each
 fwf run --once               # one tick: poll → plan → act
 fwf run                      # the loop
-fwf dash --watch 30          # the board: seats · issues · PRs · decisions · usage
+fwf dash                     # the board: seats · issues · PRs · decisions · usage
+                             # (watches on a terminal; --watch SECS to change
+                             #  the interval, --once for one labelled snapshot)
 ```
 
 `fwf dash` has five tabs (`1`-`5`, or `--tab issues`), `j`/`k` to move the
