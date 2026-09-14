@@ -199,8 +199,7 @@ pub fn pending_pushes(events: &[Event]) -> std::collections::BTreeMap<u64, Pendi
                 }
             }
             Kind::Pr {
-                issue: Some(issue),
-                ..
+                issue: Some(issue), ..
             } => {
                 out.remove(issue);
             }
