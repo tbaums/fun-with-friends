@@ -425,5 +425,4 @@ mod tests {
         assert!(last.contains(':'), "no clock time in {last:?}");
         assert!(!last.contains('└'), "the label is not part of the frame");
     }
-
 }
