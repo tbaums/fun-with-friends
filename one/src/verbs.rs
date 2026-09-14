@@ -512,6 +512,21 @@ pub fn doctor(args: &[String]) -> ExitCode {
                 println!("  {name:<10} NOT USABLE — {e}");
             }
         }
+        // A ticket may touch `.github/workflows/`, and GitHub refuses that
+        // push from an App without `workflows: write` — after the seat has
+        // spent a whole cycle on it (#602). Probe it: minting a token that
+        // asks for a permission the installation does not have is refused,
+        // so this answers the question without writing anything. A warning,
+        // not a failure: a floor whose repo has no workflows is fine.
+        if name == "impl" || name == "ops" {
+            let wf =
+                std::collections::BTreeMap::from([("workflows", "write"), ("metadata", "read")]);
+            if let Err(e) = github::mint(entry, Some(&wf)) {
+                println!(
+                    "  {name:<10} WARNING no `workflows: write` — a branch touching .github/workflows/ cannot be pushed ({e}); add the permission in the App's settings and re-accept it on the installation"
+                );
+            }
+        }
     }
     if bad == 0 {
         ExitCode::SUCCESS
