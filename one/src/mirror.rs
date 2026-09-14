@@ -40,6 +40,11 @@ pub enum MirrorError {
     },
     /// `refs/claims/<n>` already existed upstream.
     ClaimTaken(u64),
+    /// Upstream refused the write itself. Nothing moved under us (that is
+    /// `LeaseLost`) and the mirror is fine: the remote said no — a branch
+    /// protection rule, a hook, or an App token without the permission the
+    /// push needs (`workflows: write` for `.github/workflows/`, #602).
+    PushRefused { dst: String, why: String },
     /// git's result could not be parsed. Treated as failure, never success.
     Unknown(String),
 }
@@ -60,12 +65,38 @@ impl fmt::Display for MirrorError {
                 "lease lost on {branch}: expected {expected}, upstream is {actual}"
             ),
             MirrorError::ClaimTaken(n) => write!(f, "refs/claims/{n} already exists upstream"),
+            MirrorError::PushRefused { dst, why } => {
+                write!(f, "upstream refused the push of {dst}: {why}")
+            }
             MirrorError::Unknown(s) => write!(f, "unparseable git result (failing closed): {s}"),
         }
     }
 }
 
 impl std::error::Error for MirrorError {}
+
+impl MirrorError {
+    /// The remote's own words when it refused the push, if it did.
+    pub fn refusal(&self) -> Option<&str> {
+        match self {
+            MirrorError::PushRefused { why, .. } => Some(why),
+            _ => None,
+        }
+    }
+}
+
+/// GitHub refuses a push that touches `.github/workflows/` from an App
+/// installation token without `workflows: write`:
+///
+/// > refusing to allow a GitHub App to create or update workflow
+/// > `.github/workflows/ci.yml` without `workflows` permission
+///
+/// It is a permission to grant, not a verdict on the code, so the slice keeps
+/// the claim and `doctor` says so out loud (#602).
+pub fn is_workflows_permission_refusal(why: &str) -> bool {
+    let w = why.to_ascii_lowercase();
+    w.contains("workflow") && w.contains("permission")
+}
 
 #[derive(Clone, Debug)]
 pub struct Mirror {
@@ -170,6 +201,25 @@ pub(crate) fn git_in(dir: &Path, args: &[&str]) -> Result<String, MirrorError> {
             dir.display(),
             out.summary()
         )))
+    }
+}
+
+/// Everything the remote said about a refusal. GitHub puts its whole reason
+/// in the porcelain summary; a receive hook puts it on stderr as `remote: …`
+/// and leaves the summary generic. The operator needs the words either way —
+/// they are what `needs_you` shows and what tells a missing App permission
+/// (#602) from a branch protection rule.
+fn remote_said(summary: &str, stderr: &str) -> String {
+    let said: Vec<&str> = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix("remote:"))
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !summary.contains(l))
+        .collect();
+    if said.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary}: {}", said.join(" "))
     }
 }
 
@@ -332,7 +382,7 @@ impl Mirror {
                 expected: expect.unwrap_or_else(|| "<absent>".into()),
                 actual: self.remote_ref(token, &dst),
             }),
-            Err(PushFail::Rejected(why)) => Err(MirrorError::Git(format!("push {dst}: {why}"))),
+            Err(PushFail::Rejected(why)) => Err(MirrorError::PushRefused { dst, why }),
             Err(PushFail::Unparseable(raw)) => Err(MirrorError::Unknown(raw)),
         }
     }
@@ -379,6 +429,26 @@ impl Mirror {
             }),
             Err(PushFail::Rejected(why)) => Err(MirrorError::Git(format!("delete {dst}: {why}"))),
             Err(PushFail::Unparseable(raw)) => Err(MirrorError::Unknown(raw)),
+        }
+    }
+
+    /// What `refs/claims/<issue>` holds upstream right now, read live (the
+    /// mirror does not track claim refs). `None` = absent, `Err` = unreadable
+    /// — never guessed. The claim-reuse path (#602) needs to tell "this
+    /// floor's own claim, still at the fence it recorded" from "someone
+    /// else's claim", and only upstream knows.
+    pub fn upstream_claim_ref(&self, issue: u64, token: &str) -> Result<Option<Sha>, MirrorError> {
+        match self
+            .remote_ref(token, &format!("refs/claims/{issue}"))
+            .as_str()
+        {
+            "<absent>" => Ok(None),
+            "<unknown>" => Err(MirrorError::Unknown(format!(
+                "refs/claims/{issue} could not be read upstream"
+            ))),
+            sha => Sha::parse(sha)
+                .map(Some)
+                .map_err(|e| MirrorError::Unknown(format!("refs/claims/{issue}: {e}"))),
         }
     }
 
@@ -469,7 +539,7 @@ impl Mirror {
         }
         match line_for_ref {
             Some(("!", summary)) if summary.contains("stale info") => Err(PushFail::Stale),
-            Some(("!", summary)) => Err(PushFail::Rejected(summary.to_string())),
+            Some(("!", summary)) => Err(PushFail::Rejected(remote_said(summary, &out.stderr))),
             // `=` means the ref already sits at `src`; git skips the lease
             // then, so it only counts as success when that is what the
             // caller expected (a retry). Expect-empty on an existing ref is a
@@ -644,6 +714,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #602: upstream itself says no — GitHub's own words when an App token
+    /// without `workflows: write` pushes a branch touching
+    /// `.github/workflows/`. A `pre-receive` hook is the local stand-in.
+    #[test]
+    fn a_remote_that_rejects_the_push_is_a_refusal_not_a_lost_lease() {
+        let (root, up, _work, _base) = upstream();
+        let url = format!("file://{}", up.display());
+        let m = Mirror::init(&root, &url).unwrap();
+        let seat = root.join("seat");
+        git(&root, &["clone", "-q", &m.seat_remote_url(), "seat"]);
+        git(&seat, &["checkout", "-q", "-b", "impl1/issue-602"]);
+        let head = commit(&seat, "ci.yml");
+        git(&seat, &["push", "-q", "origin", "impl1/issue-602"]);
+        let hook = up.join("hooks/pre-receive");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho 'refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without `workflows` permission' >&2\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let e = m.sync_branch("impl1/issue-602", None, "").unwrap_err();
+        let why = e.refusal().unwrap_or_else(|| panic!("not a refusal: {e}"));
+        assert!(is_workflows_permission_refusal(why), "{why}");
+        // nothing landed, and the branch is still whole in the mirror: the
+        // work is finished, only the write is owed.
+        assert_eq!(up_ref(&up, "refs/heads/impl1/issue-602"), None);
+        assert_eq!(
+            m.branch_head("impl1/issue-602").unwrap(),
+            Some(head.clone())
+        );
+        // once the permission is granted the same push lands, unchanged
+        std::fs::remove_file(&hook).unwrap();
+        assert_eq!(m.sync_branch("impl1/issue-602", None, "").unwrap(), head);
+        assert_eq!(
+            up_ref(&up, "refs/heads/impl1/issue-602"),
+            Some(head.as_str().to_string())
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn seat_pushes_to_mirror_and_supervisor_syncs_upstream() {
         let (root, up, _work, base) = upstream();
@@ -773,8 +887,12 @@ mod tests {
         let (root, up, work, base) = upstream();
         let url = format!("file://{}", up.display());
         let m = Mirror::init(&root, &url).unwrap();
+        // absent until it is taken, and readable afterwards: a cycle that
+        // meets a claim has to tell its own from someone else's (#602)
+        assert_eq!(m.upstream_claim_ref(41, "").unwrap(), None);
         let fence = m.create_claim_ref(41, &base, "").unwrap();
         assert_eq!(fence, Fence(base.as_str().to_string()));
+        assert_eq!(m.upstream_claim_ref(41, "").unwrap(), Some(base.clone()));
         assert_eq!(
             up_ref(&up, "refs/claims/41"),
             Some(base.as_str().to_string())

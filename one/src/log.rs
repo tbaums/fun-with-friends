@@ -135,6 +135,93 @@ pub fn claimed_issues(
     out
 }
 
+/// A cycle that ended with a valid `implemented` verdict whose branch is
+/// still only in the mirror: the supervisor's push upstream was refused
+/// (#602). The implementation is not failed work — it is finished work
+/// waiting on a push — so the claim, the branch and this record entry all
+/// stay, the loop retries the push every tick, and the issue is never
+/// re-sliced while one of these stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingPush {
+    pub issue: u64,
+    pub seat: u8,
+    pub branch: String,
+    /// The verdict's head, as 40 hex chars.
+    pub head: String,
+    /// What upstream said when it refused.
+    pub why: String,
+}
+
+const PENDING_PUSH: &str = "pending-push #";
+
+impl PendingPush {
+    /// The note text this becomes in the record. One line, parseable back:
+    /// `pending-push #602 impl1 impl1/issue-602-thin-slice <sha>: <why>`.
+    pub fn note(&self) -> String {
+        format!(
+            "{PENDING_PUSH}{} impl{} {} {}: {}",
+            self.issue,
+            self.seat,
+            self.branch,
+            self.head,
+            self.why.replace('\n', " ")
+        )
+    }
+
+    pub fn parse(text: &str) -> Option<PendingPush> {
+        let rest = text.strip_prefix(PENDING_PUSH)?;
+        let (head_part, why) = rest.split_once(": ")?;
+        let mut f = head_part.split_whitespace();
+        let issue = f.next()?.parse().ok()?;
+        let seat = f.next()?.strip_prefix("impl")?.parse().ok()?;
+        let branch = f.next()?.to_string();
+        let head = f.next()?.to_string();
+        Some(PendingPush {
+            issue,
+            seat,
+            branch,
+            head,
+            why: why.to_string(),
+        })
+    }
+}
+
+/// Pushes still owed, replayed in record order: a pending-push note opens one,
+/// and the PR event that the successful push produces (or the issue leaving
+/// the floor's hands — shipped, closed, re-gated, claim released) clears it.
+pub fn pending_pushes(events: &[Event]) -> std::collections::BTreeMap<u64, PendingPush> {
+    let mut out: std::collections::BTreeMap<u64, PendingPush> = Default::default();
+    for e in events {
+        match &e.kind {
+            Kind::Note { text } => {
+                if let Some(p) = PendingPush::parse(text) {
+                    out.insert(p.issue, p);
+                }
+            }
+            Kind::Pr {
+                issue: Some(issue), ..
+            } => {
+                out.remove(issue);
+            }
+            // The push landed after all (the retry, or an operator's own).
+            Kind::Promote { branch, .. } => {
+                out.retain(|_, p| p.branch != *branch);
+            }
+            Kind::Issue { issue, to } => match to {
+                IssueState::Shipped { .. } | IssueState::Gated | IssueState::Closed => {
+                    out.remove(issue);
+                }
+                // Ready is recorded at the top of every slice, before the push
+                // this note is about; only an explicit release clears a claim,
+                // and `claimed_issues` is where that is read.
+                IssueState::Ready | IssueState::Claimed { .. } | IssueState::Unknown => {}
+            },
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The timeline of one PR: every event that names it, or names the issue it
 /// closes, or is a gate/promote event for its merge sha.
 /// Seats whose LAST recorded state is Working with a deadline already past:
@@ -372,6 +459,54 @@ mod tests {
 
     fn sha(c: char) -> Sha {
         Sha::parse(&std::iter::repeat_n(c, 40).collect::<String>()).unwrap()
+    }
+
+    /// #602: a push upstream refused after a valid `implemented` verdict is
+    /// finished work waiting on a write. It stays owed across the ticks that
+    /// follow — the `Ready` every slice records at its start does not clear
+    /// it — and only the PR the successful push produces does.
+    #[test]
+    fn a_refused_push_stays_owed_until_the_branch_is_actually_upstream() {
+        let note = |text: &str| Event {
+            ts: 1,
+            repo: "o/r".into(),
+            kind: Kind::Note { text: text.into() },
+        };
+        let p = PendingPush {
+            issue: 602,
+            seat: 1,
+            branch: "impl1/issue-602-thin-slice".into(),
+            head: sha('a').as_str().to_string(),
+            why: "[remote rejected] (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without `workflows` permission)".into(),
+        };
+        assert_eq!(PendingPush::parse(&p.note()), Some(p.clone()));
+        assert_eq!(PendingPush::parse("thin slice done: http://x"), None);
+        let mut evs = vec![note(&p.note())];
+        assert_eq!(pending_pushes(&evs).get(&602), Some(&p));
+        // the loop keeps ticking: neither a later Ready nor another issue's
+        // work clears what is still owed
+        evs.push(Event {
+            ts: 2,
+            repo: "o/r".into(),
+            kind: Kind::Issue {
+                issue: 602,
+                to: IssueState::Ready,
+            },
+        });
+        evs.push(note("thin slice start: issue #7"));
+        assert_eq!(pending_pushes(&evs).get(&602), Some(&p));
+        // the retry lands: the push is recorded, then the PR
+        evs.push(Event {
+            ts: 3,
+            repo: "o/r".into(),
+            kind: Kind::Promote {
+                branch: p.branch.clone(),
+                from: String::new(),
+                to: p.head.clone(),
+            },
+        });
+        assert!(pending_pushes(&evs).is_empty());
+        assert!(crate::run::unpushed_issues(&evs).is_empty());
     }
 
     fn fixture(dir: &Path) -> std::path::PathBuf {

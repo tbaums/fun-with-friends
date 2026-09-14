@@ -230,6 +230,23 @@ pub fn render(inp: &StatusInput) -> String {
         }
     }
 
+    // Work that is finished and unpushed (#602): the loop retries the write
+    // every tick, but a push GitHub refuses on principle — an App without
+    // `workflows: write` and a branch that touches `.github/workflows/` —
+    // only a human can clear.
+    for (issue, p) in log::pending_pushes(&evs) {
+        let fix = if crate::mirror::is_workflows_permission_refusal(&p.why) {
+            "grant the impl App `workflows: write` and re-accept the installation, or push it by hand"
+        } else {
+            "push it by hand or fix the App"
+        };
+        needs_you.push(format!(
+            "#{issue} is implemented on {} but the push was refused: {} — {fix}",
+            p.branch,
+            p.why.chars().take(120).collect::<String>()
+        ));
+    }
+
     // A refusal the loop repeats every tick used to scroll out of "recent" and
     // leave nothing behind (#579): the floor looked busy while an issue was
     // claimed, refused and released forever. Surface the live ones.
@@ -458,6 +475,55 @@ mod tests {
             repo: "o/r".into(),
             kind: Kind::Issue { issue, to },
         }
+    }
+
+    /// #602: work that is finished and unpushed is the operator's to clear.
+    /// It is not a refusal and not a stall — the seat did its job — so it
+    /// gets its own line, naming the branch and what would unblock it.
+    #[test]
+    fn a_refused_push_is_a_needs_you_line_naming_the_branch_and_the_permission() {
+        let s = Snapshot {
+            issues: vec![open_issue(583)],
+            prs: vec![],
+            fetched_at: 1,
+            known: true,
+        };
+        let dir = std::env::temp_dir().join(format!("fwfd-status-push-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_log = dir.join("run.jsonl");
+        let mut l = log::Log::open(&run_log).unwrap();
+        let pending = log::PendingPush {
+            issue: 583,
+            seat: 1,
+            branch: "impl1/issue-583-thin-slice".into(),
+            head: "a".repeat(40),
+            why: "[remote rejected] (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without `workflows` permission)".into(),
+        };
+        l.append(&log::Event {
+            ts: 2,
+            repo: "o/r".into(),
+            kind: Kind::Note {
+                text: pending.note(),
+            },
+        })
+        .unwrap();
+        let r = render(&StatusInput {
+            snapshot: &s,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: vec![],
+            run_log: &run_log,
+            now: 5,
+            rework_cap: 2,
+        });
+        assert!(
+            r.contains("#583 is implemented on impl1/issue-583-thin-slice"),
+            "{r}"
+        );
+        assert!(r.contains("the push was refused"), "{r}");
+        assert!(r.contains("`workflows: write`"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #579: a refusal the loop repeats every tick has to stay visible — it

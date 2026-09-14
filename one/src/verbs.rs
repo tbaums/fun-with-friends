@@ -513,6 +513,16 @@ pub fn doctor(args: &[String]) -> ExitCode {
                 println!("  {name:<10} NOT USABLE — {e}");
             }
         }
+        // A token minted for a permission the installation lacks is refused, so
+        // this asks without writing (#602); a repo with no workflows can ignore it.
+        if name == "impl" || name == "ops" {
+            let wf = [("workflows", "write"), ("metadata", "read")];
+            if let Err(e) = github::mint(entry, Some(&wf.into_iter().collect())) {
+                println!(
+                    "  {name:<10} WARNING no `workflows: write` — a branch touching .github/workflows/ cannot be pushed ({e}); add the permission in the App's settings and re-accept it on the installation"
+                );
+            }
+        }
     }
     if bad == 0 {
         ExitCode::SUCCESS

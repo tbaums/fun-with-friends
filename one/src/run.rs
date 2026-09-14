@@ -114,6 +114,39 @@ pub fn triage_candidates(
     v
 }
 
+/// One impl cycle's config, for the seat the plan picked. Shared by the wake
+/// and by the pending-push retry, which is the same cycle minus the seat.
+fn slice_config(cfg: &RunConfig, issue: u64, seat: u8, target: &str) -> SliceConfig {
+    SliceConfig {
+        owner: cfg.owner.clone(),
+        repo: cfg.repo.clone(),
+        issue,
+        base_branch: cfg.base_branch.clone(),
+        gate_label: cfg.gate_label.clone(),
+        // The seat this plan picked, so the slice's own recheck asks about
+        // the same seat the loop dispatched (#579).
+        seat,
+        seat_target: target.to_string(),
+        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
+        floor_dir: cfg.floor_dir.clone(),
+        mirror_dir: cfg.mirror_dir.clone(),
+        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "impl"),
+        run_log: cfg.run_log.clone(),
+        timeout: cfg.job_timeout,
+        dry_run: false,
+        check_cmd: cfg.gate_cmd.clone(),
+    }
+}
+
+/// Issues the loop must not plan: the record says a seat already implemented
+/// them and only the push upstream is owed (#602). Re-slicing one of these
+/// throws away a finished cycle — #583 was a 29-minute Opus cycle about to be
+/// repeated because a push was refused — and re-claims a claim ref this floor
+/// still holds, which then fails every tick.
+pub fn unpushed_issues(events: &[crate::log::Event]) -> std::collections::BTreeSet<u64> {
+    crate::log::pending_pushes(events).into_keys().collect()
+}
+
 fn ready_or_gated_in_record(run_log: &std::path::Path, issue: u64) -> bool {
     crate::log::read_all(run_log)
         .map(|evs| triaged_issues(&evs).contains(&issue))
@@ -237,6 +270,31 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 .collect();
             snap.issues.retain(|i| !shipped.contains(&i.number));
         }
+        // A cycle whose push upstream was refused after a valid `implemented`
+        // verdict owes a push, not a re-run (#602). Retry the write here —
+        // no seat, no claim, no 29-minute cycle — and keep the issue out of
+        // the plan either way: its verdict is already in the seat's worktree.
+        for (issue, p) in
+            crate::log::pending_pushes(&crate::log::read_all(&cfg.run_log).unwrap_or_default())
+        {
+            let target = cfg
+                .impl_seats
+                .iter()
+                .find(|(n, _)| *n == p.seat)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_default();
+            let sc = slice_config(cfg, issue, p.seat, &target);
+            match slice::retry_pending_push(&sc, impl_app, ops_app) {
+                Ok(Some(url)) => println!("fwf run: push for #{issue} landed → {url}"),
+                Ok(None) => eprintln!(
+                    "fwf run: #{issue} is implemented on {} but upstream still refuses the push: {}",
+                    p.branch, p.why
+                ),
+                Err(e) => eprintln!("fwf run: push retry for #{issue} failed: {}", e.0),
+            }
+        }
+        let owed = unpushed_issues(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
+        snap.issues.retain(|i| !owed.contains(&i.number));
         // GV triage (T-23 inside the loop): before the allow-list narrows the
         // snapshot, judge every open un-gated issue the record has never seen.
         // The skip labels apply here too — this runs before the retain below.
@@ -312,25 +370,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     let Some((_, target)) = cfg.impl_seats.iter().find(|(n, _)| n == seat) else {
                         continue;
                     };
-                    let sc = SliceConfig {
-                        owner: cfg.owner.clone(),
-                        repo: cfg.repo.clone(),
-                        issue: *issue,
-                        base_branch: cfg.base_branch.clone(),
-                        gate_label: cfg.gate_label.clone(),
-                        // The seat this plan picked, so the slice's own recheck
-                        // asks about the same seat the loop dispatched (#579).
-                        seat: *seat,
-                        seat_target: target.clone(),
-                        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
-                        floor_dir: cfg.floor_dir.clone(),
-                        mirror_dir: cfg.mirror_dir.clone(),
-                        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "impl"),
-                        run_log: cfg.run_log.clone(),
-                        timeout: cfg.job_timeout,
-                        dry_run: false,
-                        check_cmd: cfg.gate_cmd.clone(),
-                    };
+                    let sc = slice_config(cfg, *issue, *seat, target);
                     match slice::run_with(&sc, impl_app, ops_app) {
                         Ok(url) => println!("fwf run: impl seat {seat} → {url}"),
                         Err(e) => eprintln!("fwf run: impl cycle for #{issue} failed: {}", e.0),
@@ -733,6 +773,65 @@ mod tests {
                 None
             },
         }
+    }
+
+    /// #602, fwf floor 2026-09-12: impl1 finished #583, its verdict was
+    /// valid, and the push upstream was rejected. The cycle was logged as a
+    /// failure, the issue went back to `ready`, and the next tick re-sliced
+    /// it — a 29-minute Opus cycle about to be run twice. The record is what
+    /// stops it: the work exists, only the write is owed.
+    #[test]
+    fn an_implemented_but_unpushed_issue_is_never_woken_a_second_time() {
+        let pending = crate::log::PendingPush {
+            issue: 583,
+            seat: 1,
+            branch: "impl1/issue-583-thin-slice".into(),
+            head: "a".repeat(40),
+            why: "[remote rejected] (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without `workflows` permission)".into(),
+        };
+        let evs = vec![Event {
+            ts: 1,
+            repo: "o/r".into(),
+            kind: Kind::Note {
+                text: pending.note(),
+            },
+        }];
+        let mut snap = Snapshot {
+            issues: vec![issue(583, &[], false), issue(584, &[], false)],
+            prs: vec![],
+            fetched_at: 1,
+            known: true,
+        };
+        let seats = vec![SeatSlot {
+            seat: 1,
+            role: Role::Impl,
+            state: SeatState::Idle,
+        }];
+        // the snapshot alone still offers the finished issue — GitHub has no
+        // idea the verdict exists
+        assert_eq!(
+            plan(&snap, &seats, "product-wip", true, 10).actions.first(),
+            Some(&Action::WakeImpl {
+                seat: 1,
+                issue: 583
+            })
+        );
+        let owed = unpushed_issues(&evs);
+        assert!(owed.contains(&583));
+        snap.issues.retain(|i| !owed.contains(&i.number));
+        let actions = plan(&snap, &seats, "product-wip", true, 10).actions;
+        assert!(
+            !actions.iter().any(|a| a.issue() == Some(583)),
+            "#583 was planned again: {actions:?}"
+        );
+        // and the floor is not parked by it: the next issue takes the seat
+        assert_eq!(
+            actions.first(),
+            Some(&Action::WakeImpl {
+                seat: 1,
+                issue: 584
+            })
+        );
     }
 
     #[test]

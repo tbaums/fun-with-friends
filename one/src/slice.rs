@@ -15,7 +15,7 @@ use crate::mirror::{self, Mirror};
 use crate::poll::{Poller, Snapshot};
 use crate::sched::{plan, Action, SeatSlot};
 use crate::seat::{self, Pane, Verdict};
-use crate::types::{IssueState, JobRef, PrState, Role, SeatState, Sha};
+use crate::types::{IssueState, JobRef, Role, SeatState, Sha};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -237,6 +237,15 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
     run_with(cfg, app, None)
 }
 
+mod deliver;
+
+pub use deliver::retry_pending_push;
+use deliver::{claim, push_and_open_pr};
+
+/// Read the run record, or an empty record if it cannot be read.
+pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
+    crate::log::read_all(&cfg.run_log).unwrap_or_default()
+}
 /// `ops` (contents:write) pushes the seat's branch and holds the claim ref;
 /// `app` (the impl App, pull_requests:write + contents:read) authors the PR.
 /// With no ops App the impl App does both (requires contents:write on it).
@@ -246,6 +255,15 @@ pub fn run_with(
     ops: Option<&AppEntry>,
 ) -> Result<String, SliceError> {
     let repo = format!("{}/{}", cfg.owner, cfg.repo);
+    // An issue whose seat worktree already holds an unpushed `implemented`
+    // verdict is never re-sliced (#602): a 29-minute cycle is not repeated
+    // because a push was refused. `retry_pending_push` owes it the write.
+    if let Some(p) = crate::log::pending_pushes(&events(cfg)).get(&cfg.issue) {
+        return Err(SliceError(format!(
+            "#{} is implemented on {} but unpushed ({}); retrying the push, not re-slicing",
+            cfg.issue, p.branch, p.why
+        )));
+    }
     let mut log = Log::open(&cfg.run_log)?;
     record(
         &mut log,
@@ -327,7 +345,7 @@ pub fn run_with(
     let base = mirror
         .upstream_head(&cfg.base_branch)?
         .ok_or_else(|| SliceError(format!("no upstream {}", cfg.base_branch)))?;
-    let fence = mirror.create_claim_ref(cfg.issue, &base, &push_tok.token)?;
+    let fence = claim(&mut log, &repo, cfg, &mirror, &base, &push_tok.token)?;
     record(
         &mut log,
         &repo,
@@ -474,57 +492,35 @@ pub fn run_with(
     }
     let head = Sha::parse(&v_head)?;
 
-    // 7. The seat pushed to the mirror; the supervisor syncs it upstream.
-    let mirror_head = mirror
-        .branch_head(&branch)?
-        .ok_or_else(|| SliceError(format!("mirror has no {branch}")))?;
-    if mirror_head != head {
-        return Err(SliceError(format!(
-            "mirror {} != verdict head {}",
-            mirror_head.short(),
-            head.short()
-        )));
-    }
-    let pushed = mirror.sync_branch(&branch, None, &push_tok.token)?;
-    record(
+    // 7 + 8. Sync the branch upstream and open the draft PR. A refused push
+    // leaves the claim, the branch and a `pending-push` note behind and the
+    // loop retries the write every tick — the cycle is not re-run (#602).
+    let url = match push_and_open_pr(
         &mut log,
         &repo,
-        Kind::Promote {
-            branch: branch.clone(),
-            from: "".into(),
-            to: pushed.to_string(),
-        },
-    )?;
-
-    // 8. Draft PR under the supervisor's App.
-    let pr_body = format!("Closes #{}\n\nfwf-Provenance: fwf thin slice\nfwf-Seat: impl{seat_no}\nfwf-Fence: {}\n\n{summary}", cfg.issue, fence.0);
-    let payload = serde_json::json!({ "title": format!("{title} (#{})", cfg.issue), "head": branch, "base": cfg.base_branch, "draft": true, "body": pr_body });
-    let (code, body) = github::send_json(
-        "POST",
+        cfg,
+        &mirror,
         &tok.token,
-        &format!("/repos/{repo}/pulls"),
-        &payload,
-    )?;
-    if code != 201 {
-        return Err(SliceError(format!(
-            "PR create refused ({code}): {}",
-            body.chars().take(200).collect::<String>()
-        )));
-    }
-    let pr_json: serde_json::Value = serde_json::from_str(&body)?;
-    let pr_num = pr_json["number"].as_u64().unwrap_or(0);
-    let url = pr_json["html_url"].as_str().unwrap_or("").to_string();
-    record(
-        &mut log,
-        &repo,
-        Kind::Pr {
-            pr: pr_num,
-            issue: Some(cfg.issue),
-            to: PrState::Draft {
-                head: pushed.clone(),
-            },
-        },
-    )?;
+        &push_tok.token,
+        seat_no,
+        &branch,
+        &head,
+        &fence,
+        &title,
+        &summary,
+    )? {
+        Some(url) => url,
+        None => {
+            let p = crate::log::pending_pushes(&events(cfg))
+                .get(&cfg.issue)
+                .map(|p| p.why.clone())
+                .unwrap_or_default();
+            return Ok(format!(
+                "#{} is implemented on {branch}; upstream refused the push ({p}) — claim and branch kept, retrying each tick",
+                cfg.issue
+            ));
+        }
+    };
     record(
         &mut log,
         &repo,
