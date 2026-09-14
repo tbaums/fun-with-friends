@@ -201,8 +201,15 @@ pub fn retry_pending_push(
         ("metadata", "read"),
     ]);
     let tok = github::mint(app, Some(&perms))?;
-    let push_perms = BTreeMap::from([("contents", "write"), ("metadata", "read")]);
-    let push_tok = github::mint(ops.unwrap_or(app), Some(&push_perms))?;
+    // Push under the impl App (not ops): a branch touching `.github/workflows/`
+    // needs `workflows: write`, which fwf-impl has and fwf-ops does not. (#636)
+    let _ = &ops;
+    let push_perms = BTreeMap::from([
+        ("contents", "write"),
+        ("workflows", "write"),
+        ("metadata", "read"),
+    ]);
+    let push_tok = github::mint(app, Some(&push_perms))?;
     let mirror = Mirror::init_with(
         &cfg.mirror_dir,
         &format!("https://github.com/{repo}.git"),
