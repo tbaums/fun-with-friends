@@ -13,6 +13,7 @@ use super::panes::{decisions_tab, issues_tab, prs_tab, seats_tab, usage};
 use crate::dash::{
     fmt_secs, hhmm, issue_rows, needs_you, pr_rows, seat_rows, Board, Floor, LoopState,
 };
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -117,7 +118,11 @@ pub(super) fn paint(s: &str, code: &str, on: bool) -> String {
     }
 }
 
-/// Visible columns: escape sequences occupy none.
+/// Visible columns: escape sequences occupy none, and a glyph occupies what
+/// the terminal actually gives it — ⛔ is two columns, not one (#624). Counting
+/// `chars()` made every frame carrying the banner one column wider than it
+/// measured, so it wrapped even at the width it was built for. Control and
+/// zero-width characters count as nothing.
 pub fn vis_len(s: &str) -> usize {
     let mut n = 0;
     let mut esc = false;
@@ -129,7 +134,7 @@ pub fn vis_len(s: &str) -> usize {
         } else if c == '\x1b' {
             esc = true;
         } else {
-            n += 1;
+            n += UnicodeWidthChar::width(c).unwrap_or(0);
         }
     }
     n
@@ -159,7 +164,10 @@ pub(super) fn clip(s: &str, w: usize) -> String {
             painted = true;
             continue;
         }
-        if n + 1 > w.saturating_sub(1) {
+        // Columns, not characters: a two-column glyph with one column left
+        // is dropped whole and the ellipsis takes its place (#624).
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if n + cw > w.saturating_sub(1) {
             out.push('…');
             if painted {
                 out.push_str(RESET);
@@ -167,7 +175,7 @@ pub(super) fn clip(s: &str, w: usize) -> String {
             return out;
         }
         out.push(c);
-        n += 1;
+        n += cw;
     }
     out
 }
@@ -205,7 +213,11 @@ pub(super) fn beside(left: Vec<String>, right: Vec<String>) -> Vec<String> {
 /// The whole screen. `now` is the operator's clock, passed in so the render
 /// is a function of its arguments alone.
 pub fn render(b: &Board, f: &Floor, v: &View, now: u64) -> String {
-    let w = v.width.max(60);
+    // 20, not 60: the floor is there to keep the layout from degenerating,
+    // not to declare a minimum terminal. A 60-column floor meant a 50-column
+    // terminal (an iPad) got 60-column lines and tmux wrapped every one of
+    // them — header off the top, footer split in two (#624).
+    let w = v.width.max(20);
     let h = v.height.max(14);
     let mut lines: Vec<String> = Vec::new();
     lines.extend(header(b, f, v, now, w));
@@ -343,8 +355,16 @@ fn body(b: &Board, f: &Floor, v: &View, now: u64, w: usize, h: usize) -> Vec<Str
     if v.tab == Tab::Usage {
         return boxed("Usage — throughput and measured cost", &usage(b, f), w, h);
     }
-    let lw = (w * 45 / 100).max(34);
-    let rw = w - lw;
+    // Under 60 columns there is no room for two boxes side by side: stack
+    // them, both the full width (#624). At 60 and above nothing changes.
+    let narrow = w < 60;
+    let lw = if narrow { w } else { (w * 45 / 100).max(34) };
+    let rw = if narrow { w } else { w - lw };
+    let (lh, rh) = if narrow {
+        (h.div_ceil(2), h / 2)
+    } else {
+        (h, h)
+    };
     let (title, rows, detail) = match v.tab {
         Tab::Seats => seats_tab(b, f, v, now),
         Tab::Issues => issues_tab(b, f, v, now),
@@ -352,7 +372,7 @@ fn body(b: &Board, f: &Floor, v: &View, now: u64, w: usize, h: usize) -> Vec<Str
         Tab::Decisions => decisions_tab(b, f, v, now),
         Tab::Usage => unreachable!(),
     };
-    let inner = h.saturating_sub(2);
+    let inner = lh.saturating_sub(2);
     let sel = v.selected().min(rows.len().saturating_sub(1));
     let first = sel.saturating_sub(inner.saturating_sub(1));
     let shown: Vec<String> = rows
@@ -368,10 +388,16 @@ fn body(b: &Board, f: &Floor, v: &View, now: u64, w: usize, h: usize) -> Vec<Str
             }
         })
         .collect();
-    beside(
-        boxed(&title, &shown, lw, h),
-        boxed(&detail.0, &detail.1, rw, h),
-    )
+    if narrow {
+        let mut out = boxed(&title, &shown, lw, lh);
+        out.extend(boxed(&detail.0, &detail.1, rw, rh));
+        out
+    } else {
+        beside(
+            boxed(&title, &shown, lw, h),
+            boxed(&detail.0, &detail.1, rw, h),
+        )
+    }
 }
 
 /// How many rows the current tab has — `tty` needs it to clamp j/k.
@@ -619,9 +645,41 @@ mod tests {
         assert!(u.contains("run record is empty"));
     }
 
+    /// The width of a rendered line, measured without going through
+    /// `vis_len` — the bug was *in* `vis_len`, so a test that trusts it
+    /// cannot see the bug (#624). Escapes are stripped here; every remaining
+    /// character is asked how wide it is.
+    fn columns(s: &str) -> usize {
+        let mut n = 0;
+        let mut esc = false;
+        for c in s.chars() {
+            match c {
+                _ if esc => esc = c != 'm',
+                '\x1b' => esc = true,
+                _ => n += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0),
+            }
+        }
+        n
+    }
+
+    /// ⛔ is two columns wide. Counting it as one is what made a frame built
+    /// for the terminal's width overflow it by one whenever something needed
+    /// a human (#624) — painted or not.
+    #[test]
+    fn vis_len_counts_columns_not_characters() {
+        assert_eq!("⛔".chars().count(), 1);
+        assert_eq!(vis_len("⛔"), 2);
+        assert_eq!(vis_len(" ⛔ NEEDS YOU"), 13);
+        assert_eq!(vis_len(&paint("⛔", "1;31", true)), 2);
+        assert_eq!(vis_len(&paint("⛔", "1;31", true)), vis_len("⛔"));
+        // and clip drops a wide glyph whole rather than halving it
+        assert_eq!(clip("a⛔b", 3), "a…");
+        assert_eq!(vis_len(&clip("⛔⛔⛔", 5)), 5);
+    }
+
     #[test]
     fn every_line_fits_the_terminal_with_colour_on_or_off() {
-        for w in [60usize, 72, 100, 140] {
+        for w in [40usize, 50, 60, 72, 100, 140] {
             for color in [false, true] {
                 for tab in Tab::ALL {
                     let v = View {
@@ -634,10 +692,10 @@ mod tests {
                     let f = render(&fold(&record()), &floor(), &v, 1_000_100);
                     for l in f.lines() {
                         assert!(
-                            vis_len(l) <= w,
+                            columns(l) <= w,
                             "w={w} color={color} tab={:?} len={} line={l:?}",
                             tab,
-                            vis_len(l)
+                            columns(l)
                         );
                     }
                     assert_eq!(f.lines().count(), 24, "w={w} tab={:?}", tab);
