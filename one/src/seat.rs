@@ -798,7 +798,10 @@ mod tests {
         let src =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/seat-up.sh"))
                 .unwrap();
-        assert!(src.contains("seat-push-guard.sh"), "the guard is not installed");
+        assert!(
+            src.contains("seat-push-guard.sh"),
+            "the guard is not installed"
+        );
         // and the settings the pane actually reads: the heredoc as written,
         // with the one variable it interpolates resolved.
         let body: String = src
