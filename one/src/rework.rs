@@ -210,22 +210,17 @@ pub fn run(
         review,
     };
 
-    let push_tok = match ops {
-        Some(o) => github::mint(
-            o,
-            Some(&BTreeMap::from([
-                ("contents", "write"),
-                ("metadata", "read"),
-            ])),
-        )?,
-        None => github::mint(
-            app,
-            Some(&BTreeMap::from([
-                ("contents", "write"),
-                ("metadata", "read"),
-            ])),
-        )?,
-    };
+    // Push under the impl App: `.github/workflows/` changes need
+    // `workflows: write`, granted to fwf-impl but not fwf-ops.
+    let _ = &ops;
+    let push_tok = github::mint(
+        app,
+        Some(&BTreeMap::from([
+            ("contents", "write"),
+            ("workflows", "write"),
+            ("metadata", "read"),
+        ])),
+    )?;
     let mirror = Mirror::init_with(
         &cfg.mirror_dir,
         &format!("https://github.com/{repo}.git"),

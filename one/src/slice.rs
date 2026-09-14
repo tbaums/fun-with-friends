@@ -263,11 +263,17 @@ pub fn run_with(
         ("metadata", "read"),
     ]);
     let tok = github::mint(app, Some(&perms))?;
-    let push_perms = BTreeMap::from([("contents", "write"), ("metadata", "read")]);
-    let push_tok = match ops {
-        Some(o) => github::mint(o, Some(&push_perms))?,
-        None => github::mint(app, Some(&push_perms))?,
-    };
+    let push_perms = BTreeMap::from([
+        ("contents", "write"),
+        ("workflows", "write"),
+        ("metadata", "read"),
+    ]);
+    // The branch push must use the impl App, not ops: pushing a change under
+    // `.github/workflows/` needs `workflows: write`, which is granted to
+    // fwf-impl (alongside contents: write) but not to fwf-ops. (ops was only
+    // preferred here back when impl lacked contents: write.)
+    let _ = &ops;
+    let push_tok = github::mint(app, Some(&push_perms))?;
 
     // 2. Poll → plan, over this cycle's own seat.
     let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
