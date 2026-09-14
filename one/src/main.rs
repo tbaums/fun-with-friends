@@ -50,7 +50,7 @@ pub const USAGE: &str = "usage:
   fwf triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
   fwf ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
   fwf release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
-  fwf dash [--manifest PATH] [--log PATH] [--watch SECS] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; --watch takes 1-5/j/k/g/G/r/q on a terminal (T-27, #574)
+  fwf dash [--manifest PATH] [--log PATH] [--watch SECS] [--once] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; on a terminal it watches (default every 5s, taking 1-5/j/k/g/G/r/q), --watch SECS sets the interval, --once prints a single frame labelled as a snapshot, and a pipe gets that single frame without asking (T-27, #574, #626)
   fwf doctor [--manifest PATH]   what the floor can do: each App's token minted narrow, and what every seat worktree commits as
   fwf probe <role> <api-path> GET an API path with that App's token; prints the status
   fwf mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL

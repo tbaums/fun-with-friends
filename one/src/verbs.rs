@@ -402,7 +402,8 @@ pub fn dash(args: &[String]) -> ExitCode {
         color: !args.iter().any(|a| a == "--no-color") && dash::tty::wants_color(),
         ..Default::default()
     };
-    match get(args, "--watch").and_then(|s| s.parse::<u64>().ok()) {
+    // Watch by default on a terminal; one labelled frame into a pipe (#626).
+    match dash::tty::mode(args, dash::tty::is_tty()) {
         Some(secs) => {
             dash::tty::watch(secs, view, move || {
                 // A record that cannot be re-read (mid-append, or gone) must
