@@ -360,7 +360,11 @@ fn body(b: &Board, f: &Floor, v: &View, now: u64, w: usize, h: usize) -> Vec<Str
     let narrow = w < 60;
     let lw = if narrow { w } else { (w * 45 / 100).max(34) };
     let rw = if narrow { w } else { w - lw };
-    let (lh, rh) = if narrow { ((h + 1) / 2, h / 2) } else { (h, h) };
+    let (lh, rh) = if narrow {
+        (h.div_ceil(2), h / 2)
+    } else {
+        (h, h)
+    };
     let (title, rows, detail) = match v.tab {
         Tab::Seats => seats_tab(b, f, v, now),
         Tab::Issues => issues_tab(b, f, v, now),
