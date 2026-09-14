@@ -517,7 +517,10 @@ mod tests {
             now: 5,
             rework_cap: 2,
         });
-        assert!(r.contains("#583 is implemented on impl1/issue-583-thin-slice"), "{r}");
+        assert!(
+            r.contains("#583 is implemented on impl1/issue-583-thin-slice"),
+            "{r}"
+        );
         assert!(r.contains("the push was refused"), "{r}");
         assert!(r.contains("`workflows: write`"), "{r}");
         let _ = std::fs::remove_dir_all(&dir);

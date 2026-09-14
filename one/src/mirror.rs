@@ -437,11 +437,7 @@ impl Mirror {
     /// — never guessed. The claim-reuse path (#602) needs to tell "this
     /// floor's own claim, still at the fence it recorded" from "someone
     /// else's claim", and only upstream knows.
-    pub fn upstream_claim_ref(
-        &self,
-        issue: u64,
-        token: &str,
-    ) -> Result<Option<Sha>, MirrorError> {
+    pub fn upstream_claim_ref(&self, issue: u64, token: &str) -> Result<Option<Sha>, MirrorError> {
         match self
             .remote_ref(token, &format!("refs/claims/{issue}"))
             .as_str()
@@ -748,7 +744,10 @@ mod tests {
         // nothing landed, and the branch is still whole in the mirror: the
         // work is finished, only the write is owed.
         assert_eq!(up_ref(&up, "refs/heads/impl1/issue-602"), None);
-        assert_eq!(m.branch_head("impl1/issue-602").unwrap(), Some(head.clone()));
+        assert_eq!(
+            m.branch_head("impl1/issue-602").unwrap(),
+            Some(head.clone())
+        );
         // once the permission is granted the same push lands, unchanged
         std::fs::remove_file(&hook).unwrap();
         assert_eq!(m.sync_branch("impl1/issue-602", None, "").unwrap(), head);

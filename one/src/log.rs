@@ -198,7 +198,10 @@ pub fn pending_pushes(events: &[Event]) -> std::collections::BTreeMap<u64, Pendi
                     out.insert(p.issue, p);
                 }
             }
-            Kind::Pr { issue: Some(issue), .. } => {
+            Kind::Pr {
+                issue: Some(issue),
+                ..
+            } => {
                 out.remove(issue);
             }
             // The push landed after all (the retry, or an operator's own).
