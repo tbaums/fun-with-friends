@@ -6,8 +6,9 @@ One command cuts a release. Everything that could be a habit is a refusal in it.
 one/scripts/release-publish.sh notes.md
 ```
 
-It refuses a dirty tree, refuses a version already tagged here or on the remote,
-runs the gate (`cargo fmt --check`, `clippy -D warnings`, `cargo test`,
+It refuses a dirty tree, refuses a `Cargo.lock` that does not already record the
+version being cut, refuses a version already tagged here or on the remote, runs
+the gate (`cargo fmt --check`, `clippy -D warnings`, `cargo test`,
 `scripts/size-check.sh`), builds release, stages `<bin>-<version>-macos-arm64/`
 — the binary named by `Cargo.toml`'s first `[[bin]]`, plus `README.md`,
 `RELEASING.md`, `CHANGELOG.md` — tars it with a `.sha256`, and publishes with
@@ -33,9 +34,22 @@ under-counts, which is the honest reading, not a bug.
    `fwf promote --from staging --to main --suite e2e` refuses without a recorded
    Green for the exact SHA. The script does not promote: that stays a separate,
    deliberate act.
-2. **Bump `one/Cargo.toml` `version` and `CHANGELOG.md` in one commit**, and let
-   the script tag it — never `git tag` by hand, or the tag and the release can
-   disagree about what shipped.
+2. **Bump the version in one commit: `one/Cargo.toml`, `one/Cargo.lock` and
+   `CHANGELOG.md`.** The lock records the crate's own version too, so bumping
+   `Cargo.toml` alone leaves it stale:
+
+   ```bash
+   # in one/, after editing Cargo.toml's version
+   cargo update -w            # rewrites Cargo.lock's fwfd entry, nothing else
+   git add Cargo.toml Cargo.lock ../CHANGELOG.md && git commit
+   ```
+
+   Then let the script tag it — never `git tag` by hand, or the tag and the
+   release can disagree about what shipped. A stale lock is how one-v1.0.2
+   shipped with two assets instead of four (#604): the local gate rewrote the
+   lock after the clean-tree check, the tag was cut at the commit without it,
+   and the runner's `cargo build --locked` refused. The script now refuses
+   first — before the gate, and again before it tags.
 3. **A tag is not a release.** `release-check` is the proof, the script runs it,
    and `--expect 4` after the workflow lands is the number you quote when you
    tell anyone.
@@ -52,6 +66,12 @@ After it, the release is live — so a re-run refuses and points at it, which is
 right: finish it by uploading what is missing (`gh release upload`, or re-run
 `one-release.yml` from the Actions tab with the tag) rather than cutting the
 version twice.
+
+If the tagged commit itself cannot build — one-v1.0.2's stale lock — re-run
+`one-release.yml` with the tag **and** a `ref` (the fixed commit, e.g. the
+branch that repaired the lock). It builds from that ref and uploads onto the
+existing tag's release; the tag itself never moves, and the job still refuses
+unless that ref's `one/Cargo.toml` version matches the tag.
 
 ## Asset names
 
