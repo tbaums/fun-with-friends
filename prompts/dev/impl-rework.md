@@ -13,7 +13,7 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 - Address the review. Make only the changes it asks for, plus whatever is needed to keep the repository's own check green. If the review asks for something you believe is wrong, say so in your summary and do the smallest honest thing.
 - If your branch no longer sits on current `{{BASE}}`, rebase it: `git fetch origin && git rebase origin/{{BASE}}`. Resolve conflicts in favour of both changes; never drop someone else's merged work.
 - Before you push, the repository's own check must pass in your worktree: `{{CHECK}}`. Keep the commit message trailer `Closes #{{ISSUE}}` on the branch.
-- Push the branch to `origin` (the mirror), force-with-lease because you may have rebased: `git push --force-with-lease -u origin {{BRANCH}}`.
+- Push the branch to `origin` (the mirror). A rebase rewrites history, so name the head you expect to replace — the one QA reviewed — and the lease does the rest: `git push --force-with-lease=refs/heads/{{BRANCH}}:{{HEAD}} -u origin {{BRANCH}}`. A bare `--force`, an unqualified `--force-with-lease` and a `+refspec` are all refused by the seat's own hook, and rightly.
 - Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop. Nothing else. The supervisor pushes the branch to GitHub and lets QA look again.
 
 Your job deadline is {{DEADLINE}}; push before it — a partial result beats a stall.
