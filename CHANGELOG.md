@@ -1,5 +1,18 @@
 # Changelog — fwf 1.0 (`one/`)
 
+
+## 1.0.3 — 2026-09-13
+
+The docs release. Nothing in the supervisor's behavior changes; the repo now reads as fwf 1.0's front door instead of 0.x's, and the prompts are where a reader lands first.
+
+- **Prompts front and center (#605, PR #614).** `one/prompts/` moved to repo-root `prompts/` with history intact, a tracked `one/prompts -> ../prompts` compatibility symlink for one release, `prompts.rs::ROOT` repointed past the symlink, and a Prompts section at the top of the README. The one-ci path filters and size-check follow the move.
+- **`docs/design.md` (#606, PR #615).** Why the harness is built this way — one supervisor, many stateless seats; one job, one verdict; refusals in code, not habits — landed as written, with the opening quoted in the README.
+- **Repo hygiene (#608, PR #616).** `SECURITY.md` (what the three App identities can and cannot do, seats hold no token, how to report), issue-template config, dependabot for `one/Cargo.toml`, and the 0.x workflows renamed `legacy CI` / `legacy release` so the badge row cannot be mistaken.
+- **1.0-first docs tree (#609, PR #618).** Every 0.x page and proposal moved unchanged to `docs/legacy/` behind a deprecation banner and index; `one/docs/github-apps.md` and `one/RELEASING.md` promoted to `docs/`; the 1.0 changelog is now the root `CHANGELOG.md` (0.x's is `docs/legacy/CHANGELOG-0.x.md`); `docs/index.md` links the tree with stubs for pages not yet written; `scripts/link-check.sh` runs in one-ci over `docs/**`.
+- **README rewrite (#610, PR #619).** Text lockup, badges (one CI, latest one-v* release, crate version, license, prompts · 4 roles · 7 families), what it does, a ten-minute start run verbatim, the prompts, "enforced, not asked", the 1.0 verbs, the design opening, and a legacy pointer. No contributor docs by design.
+- **`prompts/README.md` guide (#612, PR #620).** One section per real role (`impl`, `qa`, `gv`, `pm`), the placeholders each receives, the verdict JSON contract the supervisor parses, one paragraph per family, the ground rules every prompt inherits, and why one job / one verdict — with a test that fails if a role or placeholder goes undocumented.
+- **Operator notes.** `one/Cargo.lock` is bumped with the version this time (#604: 1.0.2's Linux job refused a stale lock). Hand-merged and loop-merged PRs diverged main/staging mid-batch; reconciled in e09ae71. Three slices touched `.github/workflows/` and needed a hand push (#602). Rework's `--force-with-lease` is blocked by the seat deny hook (#621).
+
 ## 1.0.2 — 2026-09-12
 
 - **A release is one command (#584).** Both 1.0 cuts were hand-made, macOS-only,
