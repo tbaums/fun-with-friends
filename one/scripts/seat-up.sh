@@ -11,7 +11,8 @@
 # The pane runs `claude --permission-mode dontAsk --setting-sources user`.
 # Deny hooks in <floor-dir>/.claude/settings.json refuse `git push` to
 # protected branches and every `gh` write; the seat holds no GitHub write
-# token anyway (proven: contents:read token → 403 on label/push).
+# token anyway (proven: contents:read token → 403 on label/push). The push
+# policy itself is `seat-push-guard.sh`, installed beside those settings.
 set -euo pipefail
 floor="$1"; wt="$2"; session="${3:-fwf-one}"; pane="${4:-impl1}"; model="${5:-opus}"
 mkdir -p "$floor/.claude"
@@ -22,16 +23,25 @@ ver="$(jq -r '.lastOnboardingVersion // "2.1.0"' ~/.claude.json 2>/dev/null)"
 # Merge (never overwrite): every seat's worktree must stay trusted.
 existing="$floor/.claude.json"; [ -s "$existing" ] || echo '{}' > "$existing"
 jq --arg wt "$wt" --arg ver "$ver" '. + {hasCompletedOnboarding:true, lastOnboardingVersion:$ver, theme:"dark", autoUpdates:false} | .projects = ((.projects // {}) + {($wt):{allowedTools:[], hasTrustDialogAccepted:true, hasClaudeMdExternalIncludesApproved:true}})' "$existing" > "$existing.tmp" && mv "$existing.tmp" "$existing"
-cat > "$floor/.claude/settings.json" <<'JSON'
+# The whole push policy is one program (#621): `permissions.deny` globs match
+# by prefix, so a glob for a bare force also refused
+# `--force-with-lease=<ref>:<sha>` — the compare-and-swap the rework prompt
+# instructs — and every rework that rebased ended in a refusal. The guard
+# below judges whole arguments, so the qualified lease passes and a bare
+# force, an unqualified lease and a +refspec do not. The floor gets its own
+# copy so the pane does not depend on this checkout staying where it is.
+guard="$floor/.claude/push-guard.sh"
+install -m 0755 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/seat-push-guard.sh" "$guard"
+cat > "$floor/.claude/settings.json" <<JSON
 {
   "permissions": {
     "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Bash(*)"],
-    "_note": "M0: Bash(*) because dontAsk refuses any compound command an allow rule does not match; the seat holds no GitHub token, its only remote is the local mirror, and the denies + PreToolUse hook below stop pushes to protected branches, gh, curl and rm -rf.",
-    "deny": ["Bash(gh:*)", "Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(curl:*)", "Bash(rm -rf:*)", "WebFetch", "WebSearch"]
+    "_note": "M0: Bash(*) because dontAsk refuses any compound command an allow rule does not match; the seat holds no GitHub token, its only remote is the local mirror, and the denies + PreToolUse hook below stop pushes to protected branches, force-pushes without a qualified lease, gh, curl and rm -rf.",
+    "deny": ["Bash(gh:*)", "Bash(curl:*)", "Bash(rm -rf:*)", "WebFetch", "WebSearch"]
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "read -r inp; cmd=$(printf '%s' \"$inp\" | jq -r '.tool_input.command // \"\"'); case \"$cmd\" in *'push'*'staging'*|*'push'*'main'*|*'push'*'--force'*|*'push -f'*) echo 'fwf: pushes to staging/main and force-pushes are denied for seats' >&2; exit 2;; esac; exit 0" } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "$guard" } ] }
     ]
   }
 }
