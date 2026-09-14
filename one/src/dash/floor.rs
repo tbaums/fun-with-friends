@@ -452,7 +452,10 @@ mod tests {
         evs.push(gate(30, red(&a)));
         let only_red = alerts(&evs);
         assert_eq!(only_red.len(), 1, "{only_red:?}");
-        assert!(only_red[0].contains("PR #1267 merged but its gate is"), "{only_red:?}");
+        assert!(
+            only_red[0].contains("PR #1267 merged but its gate is"),
+            "{only_red:?}"
+        );
 
         // the same sha goes green later: answered
         let mut same = evs.clone();
@@ -490,11 +493,14 @@ mod tests {
         // and only Green supersedes — a Killed does not answer a Red, nor
         // another Killed answer it
         let mut killed = evs.clone();
-        killed.push(gate(90, GateState::Killed {
-            sha: a.clone(),
-            suite: "e2e".into(),
-            reason: "the venue ran out of memory".into(),
-        }));
+        killed.push(gate(
+            90,
+            GateState::Killed {
+                sha: a.clone(),
+                suite: "e2e".into(),
+                reason: "the venue ran out of memory".into(),
+            },
+        ));
         let k = alerts(&killed);
         assert_eq!(k.len(), 1, "{k:?}");
         assert!(k[0].contains("KILLED"), "{k:?}");
