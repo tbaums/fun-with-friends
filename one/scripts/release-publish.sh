@@ -34,7 +34,7 @@ VERSION="$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' Cargo.to
 BIN="$(awk '/^\[\[bin\]\]/{inbin=1; next} inbin && /^name *=/{gsub(/.*= *"|"/,""); print; exit}' Cargo.toml)"
 [ -n "$VERSION" ] || die "no version in $ONE/Cargo.toml"
 [ -n "$BIN" ] || die "no [[bin]] name in $ONE/Cargo.toml"
-TAG="one-v$VERSION"
+TAG="v$VERSION"
 echo "release-publish: $BIN $VERSION → $TAG in $REPO_SLUG"
 
 step "refusals"
