@@ -707,4 +707,206 @@ mod tests {
             "a bare session target passes through"
         );
     }
+    fn guard() -> &'static str {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/seat-push-guard.sh")
+    }
+
+    /// `(allowed, what the seat is told)` for one command line, judged by the
+    /// very script `seat-up.sh` installs as the pane's PreToolUse hook.
+    fn judge(cmd: &str) -> (bool, String) {
+        let out = Command::new("bash").arg(guard()).arg(cmd).output().unwrap();
+        let code = out.status.code().unwrap_or(-1);
+        assert!(
+            code == 0 || code == 2,
+            "{cmd:?} exited {code} (the hook contract is 0 or 2)"
+        );
+        (
+            code == 0,
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    }
+
+    /// #621, PR #620: the rework prompt instructs
+    /// `--force-with-lease=<ref>:<sha>` — the mirror's compare-and-swap is the
+    /// real safety — and the seat's own hook refused it, because `--force` was
+    /// matched as a substring. Every rework that had to rebase ended in a
+    /// refusal and the operator delivered by hand. A token is the boundary.
+    #[test]
+    fn the_push_guard_allows_a_qualified_lease_and_refuses_every_bare_force() {
+        // the five the ticket names
+        for cmd in [
+            "git push --force origin x",
+            "git push -f origin x",
+            "git push origin +x:x",
+            "git push --force-with-lease origin x",
+        ] {
+            let (allowed, why) = judge(cmd);
+            assert!(!allowed, "{cmd:?} was allowed");
+            assert!(!why.is_empty(), "{cmd:?} was denied without saying why");
+            assert!(why.contains("--force-with-lease=<ref>:<sha>"), "{why}");
+        }
+        let lease = "git push --force-with-lease=impl1/x:a4086eaf origin impl1/x";
+        assert_eq!(judge(lease), (true, String::new()), "the lease must pass");
+
+        // a lease missing either half of the expectation is unqualified, which
+        // is force with extra steps
+        for cmd in [
+            "git push --force-with-lease=:a4086eaf origin impl1/x",
+            "git push --force-with-lease=impl1/x: origin impl1/x",
+            "git push --force= origin impl1/x",
+        ] {
+            assert!(!judge(cmd).0, "{cmd:?} was allowed");
+        }
+        // ...and one bare force poisons a command that also carries a good one
+        assert!(!judge("git push --force-with-lease=impl1/x:a4086eaf --force origin impl1/x").0);
+
+        // `--force` inside a word is not the flag
+        assert!(judge("git push origin my--force-branch").0);
+        assert!(judge("git push -u origin impl1/issue-621-thin-slice").0);
+
+        // protected branches stay denied whatever the flags say (no regression)
+        for cmd in [
+            "git push origin staging",
+            "git push --force-with-lease=refs/heads/main:a4086eaf origin main",
+        ] {
+            let (allowed, why) = judge(cmd);
+            assert!(!allowed, "{cmd:?} was allowed");
+            assert!(why.contains("staging/main"), "{why}");
+        }
+
+        // and the hook's own shape: the PreToolUse payload on stdin
+        let payload = format!("{{\"tool_input\":{{\"command\":\"{lease}\"}}}}");
+        let mut child = Command::new("bash")
+            .arg(guard())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(payload.as_bytes()).unwrap();
+        drop(stdin);
+        assert!(
+            child.wait().unwrap().success(),
+            "the hook refused {payload}"
+        );
+    }
+
+    /// The deny list cannot express "lease, not bare force" — a glob matches by
+    /// prefix — so it must not try: the policy is the guard, in one place.
+    #[test]
+    fn seat_up_leaves_the_whole_push_policy_to_the_guard() {
+        let src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/seat-up.sh"))
+                .unwrap();
+        assert!(
+            src.contains("seat-push-guard.sh"),
+            "the guard is not installed"
+        );
+        // and the settings the pane actually reads: the heredoc as written,
+        // with the one variable it interpolates resolved.
+        let body: String = src
+            .lines()
+            .skip_while(|l| !l.contains("settings.json\" <<JSON"))
+            .skip(1)
+            .take_while(|l| *l != "JSON")
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("$guard", "/floor/.claude/push-guard.sh");
+        let cfg: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("settings.json is not JSON: {e}\n{body}"));
+        assert_eq!(
+            cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            serde_json::json!("/floor/.claude/push-guard.sh"),
+            "the PreToolUse hook does not run the guard"
+        );
+        let deny = cfg["permissions"]["deny"].to_string();
+        assert!(
+            !deny.contains("--force"),
+            "the deny list still globs force: {deny}"
+        );
+        assert!(
+            deny.contains("Bash(gh:*)"),
+            "the other denies went missing: {deny}"
+        );
+    }
+
+    /// The cycle that could not deliver, over a real repository: the base
+    /// moves, the seat rebases, an ordinary send is rejected non-fast-forward,
+    /// and the qualified lease lands it. Every command is judged by the guard
+    /// first — exactly what the pane's hook does — and then actually run.
+    #[test]
+    fn a_rebased_rework_delivers_through_the_guard() {
+        let root = std::env::temp_dir().join(format!("fwfd-guard-rework-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // `trunk`, not `staging`: this fixture's base branch must not be one
+        // of the protected names, which are refused here whatever else is true.
+        let sh = |dir: &Path, cmd: &str| -> std::process::Output {
+            let (allowed, why) = judge(cmd);
+            assert!(allowed, "the guard refused {cmd:?}: {why}");
+            Command::new("bash")
+                .arg("-c")
+                .arg(cmd)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "impl1")
+                .env("GIT_AUTHOR_EMAIL", "impl1@fwf.local")
+                .env("GIT_COMMITTER_NAME", "impl1")
+                .env("GIT_COMMITTER_EMAIL", "impl1@fwf.local")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .unwrap()
+        };
+        let ok = |dir: &Path, cmd: &str| {
+            let o = sh(dir, cmd);
+            assert!(
+                o.status.success(),
+                "{cmd}: {}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        ok(&root, "git init -q --bare mirror.git");
+        ok(&root, "git init -q -b trunk work");
+        let work = root.join("work");
+        std::fs::write(work.join("README"), "base\n").unwrap();
+        ok(&work, "git add -A && git commit -qm base");
+        ok(
+            &work,
+            "git remote add origin ../mirror.git && git push -q origin trunk",
+        );
+        // the seat's worktree, branched at the base it was given
+        ok(&root, "git clone -q mirror.git seat");
+        let seat = root.join("seat");
+        ok(&seat, "git checkout -q -b impl1/issue-621");
+        std::fs::write(seat.join("fix.txt"), "first\n").unwrap();
+        ok(&seat, "git add -A && git commit -qm fix");
+        ok(&seat, "git push -q origin impl1/issue-621");
+        let old_head = ok(&seat, "git rev-parse HEAD");
+        // the base moves under it (a merge landed), and QA asks for changes
+        std::fs::write(work.join("other.txt"), "meanwhile\n").unwrap();
+        ok(
+            &work,
+            "git add -A && git commit -qm other && git push -q origin trunk",
+        );
+        // the rework: rebase onto the moved base, then deliver
+        ok(&seat, "git fetch -q origin && git rebase -q origin/trunk");
+        let rebased = ok(&seat, "git rev-parse HEAD");
+        assert_ne!(rebased, old_head, "the rebase rewrote history");
+        let plain = sh(&seat, "git push -q origin impl1/issue-621");
+        assert!(
+            !plain.status.success(),
+            "a rewritten branch should be refused as non-fast-forward"
+        );
+        let lease = format!(
+            "git push --force-with-lease=refs/heads/impl1/issue-621:{old_head} origin impl1/issue-621"
+        );
+        ok(&seat, &lease);
+        let landed = ok(
+            &root,
+            "git --git-dir=mirror.git rev-parse refs/heads/impl1/issue-621",
+        );
+        assert_eq!(landed, rebased, "the rework never reached the mirror");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
