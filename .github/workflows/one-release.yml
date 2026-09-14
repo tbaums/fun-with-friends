@@ -17,6 +17,13 @@ on:
       tag:
         description: the one-v* tag to upload onto
         required: true
+      ref:
+        description: >-
+          commit or branch to build from (default: the tag). For re-running a
+          cut whose tagged commit cannot build — one-v1.0.2's stale Cargo.lock
+          (#604). The tag never moves; only the asset is rebuilt, and the
+          version check below still has to agree with it.
+        required: false
 
 permissions:
   contents: write
@@ -36,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ github.event.inputs.ref || env.TAG }}
 
       # The binary's name and the version both come from Cargo.toml; the tag has
       # to agree with the version, or the asset would be named for a release it

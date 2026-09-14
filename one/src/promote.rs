@@ -560,4 +560,83 @@ mod tests {
             "transport failure is false"
         );
     }
+    /// #604, one-v1.0.2: `one/Cargo.toml` was bumped to 1.0.2 and
+    /// `one/Cargo.lock` still said 1.0.1. The local gate (`clippy`, `test`)
+    /// quietly rewrote the lock *after* the clean-tree check, so the tag was
+    /// cut at a commit whose lock was stale, and the tag push's
+    /// `cargo build --locked` refused on the runner — after the release
+    /// existed. The publisher now asks before it does anything expensive.
+    #[test]
+    fn the_publisher_refuses_a_stale_lock_before_it_tags_anything() {
+        let root = std::env::temp_dir().join(format!("fwfd-relpub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let one = root.join("one");
+        std::fs::create_dir_all(one.join("src")).unwrap();
+        std::fs::create_dir_all(one.join("scripts")).unwrap();
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/release-publish.sh"),
+            one.join("scripts/release-publish.sh"),
+        )
+        .unwrap();
+        std::fs::write(
+            one.join("Cargo.toml"),
+            "[package]\nname = \"fwfd\"\nversion = \"1.0.2\"\nedition = \"2021\"\n\n[[bin]]\nname = \"fwf\"\npath = \"src/main.rs\"\n",
+        )
+        .unwrap();
+        std::fs::write(one.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let lock =
+            |v: &str| format!("version = 4\n\n[[package]]\nname = \"fwfd\"\nversion = \"{v}\"\n");
+        std::fs::write(one.join("Cargo.lock"), lock("1.0.1")).unwrap();
+        std::fs::write(root.join("notes.md"), "notes\n").unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "init.defaultBranch=trunk",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "release 1.0.2 (lock left behind)"]);
+        let cut = || {
+            let out = std::process::Command::new("bash")
+                .arg(one.join("scripts/release-publish.sh"))
+                .arg(root.join("notes.md"))
+                .output()
+                .unwrap();
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            )
+        };
+        let (ok, err) = cut();
+        assert!(!ok, "a stale lock was released: {err}");
+        assert!(err.contains("Cargo.lock is stale"), "{err}");
+        assert!(err.contains("cargo update -w"), "{err}");
+        // nothing was cut: the refusal lands before the gate, the build and
+        // `gh release create`, so there is no tag to clean up
+        assert_eq!(git(&["tag", "--list"]), "");
+        // with the lock committed alongside the version the refusal is gone,
+        // and the run stops later on something about this machine rather than
+        // about this commit (the macos-arm64 host, or gh)
+        std::fs::write(one.join("Cargo.lock"), lock("1.0.2")).unwrap();
+        git(&["commit", "-qam", "commit the lock with the bump"]);
+        let (_, err) = cut();
+        assert!(!err.contains("Cargo.lock is stale"), "{err}");
+        assert_eq!(git(&["tag", "--list"]), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
