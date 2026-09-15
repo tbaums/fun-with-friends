@@ -30,7 +30,7 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '         %s\n' "$2"; }
 
 # shellcheck source=../lib.sh
-source "$ROOT/lib.sh"
+source "$ROOT/bin/lib.sh"
 
 echo "== fwf_free_ram_gb =="
 FREE="$(fwf_free_ram_gb)"
@@ -120,7 +120,7 @@ esac
 # Restore the real platform probe for every test below.
 unset -f fwf_free_ram_gb
 # shellcheck source=../lib.sh
-source "$ROOT/lib.sh"
+source "$ROOT/bin/lib.sh"
 
 echo "== admission: grant, reserve-sum, release =="
 # Floor 0 and a tiny reserve so admission always succeeds regardless of the box.
@@ -221,7 +221,7 @@ _fwf_mem_admit_kill_group "$(hostname)" 1 notanint 2>/dev/null; ok "kill_group r
 echo "== fwf-gate.sh: it becomes a process-group leader (pgid == pid) =="
 # Wrap a command that records the GATE's own pid and pgid, then exits fast.
 PGF="$TMP/gate-pgid.txt"
-FWF_GATE_PGLEADER_ENABLE=1 "$ROOT/fwf-gate.sh" pgcheck -- \
+FWF_GATE_PGLEADER_ENABLE=1 "$ROOT/bin/fwf-gate.sh" pgcheck -- \
   bash -c 'echo "$PPID $(ps -o pgid= -p $PPID | tr -d " ")" > "'"$PGF"'"' >/dev/null 2>&1
 if [ -f "$PGF" ]; then
   GATEPID="$(cut -d' ' -f1 "$PGF")"; GATEPGID="$(cut -d' ' -f2 "$PGF")"
@@ -238,7 +238,7 @@ echo "== fwf-gate.sh: hole #1 — a trappable kill takes the wrapped child down 
 # without bash deferring it behind the foreground `wait`; the trap must release
 # and reap the group so the sleep dies too — never orphaned.
 SLEEPPIDF="$TMP/gate-sleep.pid"
-FWF_GATE_PGLEADER_ENABLE=1 "$ROOT/fwf-gate.sh" pgkill -- \
+FWF_GATE_PGLEADER_ENABLE=1 "$ROOT/bin/fwf-gate.sh" pgkill -- \
   bash -c 'sleep 120 & echo $! > "'"$SLEEPPIDF"'"; wait' >/dev/null 2>&1 &
 GATE_BG_PID=$!
 STRAYS+=("$GATE_BG_PID")
@@ -347,7 +347,7 @@ AWLOG="$TMP/admitwait.log"
 FWF_MEM_ADMIT_ENABLE=1 FWF_GATE_PGLEADER_ENABLE=1 \
 FWF_MEM_ADMIT_FLOOR_GB=0 FWF_MEM_RESERVE_BUILD_GB=999999 \
 FWF_MEM_ADMIT_TIMEOUT=30 FWF_MEM_ADMIT_POLL=1 FWF_MEM_ADMIT_REPORT_SECS=1 \
-  "$ROOT/fwf-gate.sh" admitwait --cargo-build -- true >/dev/null 2>"$AWLOG" &
+  "$ROOT/bin/fwf-gate.sh" admitwait --cargo-build -- true >/dev/null 2>"$AWLOG" &
 GATE_WAIT_PID=$!
 STRAYS+=("$GATE_WAIT_PID")
 # Wait until the gate has ENTERED the blocking admission wait (logged "RAM
@@ -393,7 +393,7 @@ DLOCKDIR="$(fwf_gate_lock_dir defaultwait)"
 DLOG="$TMP/defaultwait.log"
 FWF_MEM_ADMIT_ENABLE=0 FWF_GATE_PGLEADER_ENABLE=1 \
 FWF_CARGO_BUILD_CONCURRENCY=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=30 FWF_CARGO_BUILD_LOCK_POLL=1 \
-  "$ROOT/fwf-gate.sh" defaultwait --cargo-build -- true >/dev/null 2>"$DLOG" &
+  "$ROOT/bin/fwf-gate.sh" defaultwait --cargo-build -- true >/dev/null 2>"$DLOG" &
 GATE_DEF_PID=$!
 STRAYS+=("$GATE_DEF_PID")
 # Same present->absent discipline as the admission check: poll #1 fires during the

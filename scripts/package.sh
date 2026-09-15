@@ -15,14 +15,15 @@ trap 'rm -rf "$STAGE"' EXIT
 
 # NOTE: docs/ and templates/ are cp -R'd whole below — pre-creating their
 # destinations would nest them (cp -R src dest/src when dest exists).
-mkdir -p "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "$DEST/containers"
+mkdir -p "$DEST/bin" "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "$DEST/containers"
 # The 0.x tarball's entrypoint stays named `fwf`: `fwf upgrade` extracts one of
 # these over an older install and re-points the `bin/fwf` symlink at it, so the
 # name inside the tarball is that mechanism's contract (#583 renamed the file in
 # the repo, not the release layout).
 cp fwf-legacy "$DEST/fwf"
-cp config.sh lib.sh install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
-cp fwf-*.sh "$DEST/"   # ALL engine scripts — a glob so a new fwf-*.sh can't be forgotten
+cp install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
+cp bin/config.sh bin/lib.sh "$DEST/bin/"
+cp bin/fwf-*.sh "$DEST/bin/"   # ALL engine scripts — a glob so a new bin/fwf-*.sh can't be forgotten
 cp lib/*.sh "$DEST/lib/"   # ALL lib scripts — a glob so a new lib/*.sh can't be forgotten (issue #94 lesson)
 cp profiles/example.sh "$DEST/profiles/"        # generic template only
 cp prompts/*.txt "$DEST/prompts/"               # shared assets (role prompts live in templates/)
@@ -30,7 +31,7 @@ cp -R templates "$DEST/templates"               # factory design templates (all 
 cp -R docs "$DEST/docs"
 cp containers/Dockerfile "$DEST/containers/"
 cp -R eval/run.sh eval/scenarios "$DEST/eval/"  # harness + shipped scenarios (not results/)
-chmod +x "$DEST/fwf" "$DEST"/*.sh "$DEST/install.sh" "$DEST/eval/run.sh"
+chmod +x "$DEST/fwf" "$DEST"/bin/*.sh "$DEST/install.sh" "$DEST/eval/run.sh"
 
 mkdir -p "$ROOT/dist"
 tar -C "$STAGE" -czf "$ROOT/dist/$NAME.tar.gz" "$NAME"

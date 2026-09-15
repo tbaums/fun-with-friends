@@ -40,7 +40,7 @@ _fwf_legacy_notice
 
 # Base config (workspace paths, run dir) + detection, without requiring a
 # profile to exist yet — `fwf init` runs before any profile is written.
-source "$FWF_DIR/config.sh"
+source "$FWF_DIR/bin/config.sh"
 source "$FWF_DIR/lib/detect.sh"
 source "$FWF_DIR/lib/profile.sh"
 source "$FWF_DIR/lib/version_check.sh"
@@ -771,7 +771,7 @@ engine() { # $1 = script basename, rest = args
       *) args+=("$1"); shift;;
     esac
   done
-  FWF_PROFILE="$(resolve_profile)" exec "$FWF_DIR/$script" ${args[@]+"${args[@]}"}
+  FWF_PROFILE="$(resolve_profile)" exec "$FWF_DIR/bin/$script" ${args[@]+"${args[@]}"}
 }
 
 # Pull the runtime sizing/model flags out of an arg list, exporting the
@@ -830,7 +830,7 @@ parse_runtime_flags() {
 _doctor_profile_resolution() {
   local out
   if ! out="$(FWF_PROFILE="${FWF_PROFILE:-$(resolve_profile 2>/dev/null || true)}" bash -c '
-    source "'"$FWF_DIR"'/lib.sh" 2>&1
+    source "'"$FWF_DIR"'/bin/lib.sh" 2>&1
     printf "%s\t%s\t%s\t%s\n" "$PROFILE" "$FWF_PROFILE_RESOLUTION_MODE" "$PROFILE_FILE" "${FWF_PROFILE_DROPPED_NAMES:-}"
   ' 2>&1)"; then
     echo "  profile   : could not resolve — $out"
@@ -886,7 +886,7 @@ doctor() {
 _doctor_api_budget_check() {
   command -v gh >/dev/null 2>&1 || { echo "  api budget : skip (gh not installed)"; return 0; }
   local hr remaining limit reset now reset_in mret charged eta
-  hr="$("$FWF_DIR/fwf-ghcache.sh" headroom 2>/dev/null)" || true   # exit 1 on UNKNOWN is intentional -- inspect $hr, don't let set -e treat it as doctor failing
+  hr="$("$FWF_DIR/bin/fwf-ghcache.sh" headroom 2>/dev/null)" || true   # exit 1 on UNKNOWN is intentional -- inspect $hr, don't let set -e treat it as doctor failing
   if [ "$hr" = "UNKNOWN" ] || [ -z "$hr" ]; then
     echo "  api budget : UNKNOWN — could not read gh api rate_limit (network/auth/rate-limited)"
     return 0
@@ -899,7 +899,7 @@ _doctor_api_budget_check() {
     return 0
   fi
   now="$(date +%s)"; reset_in=$(( reset - now )); [ "$reset_in" -lt 0 ] && reset_in=0
-  mret="$("$FWF_DIR/fwf-ghcache.sh" metrics 3600 2>/dev/null)"
+  mret="$("$FWF_DIR/bin/fwf-ghcache.sh" metrics 3600 2>/dev/null)"
   charged="$(printf '%s' "$mret" | grep -oE 'charged=[0-9]+' | cut -d= -f2)"
   charged="${charged:-0}"
   if [ "$charged" -gt 0 ] 2>/dev/null && [ "$remaining" -gt 0 ] 2>/dev/null; then
@@ -1181,7 +1181,7 @@ case "$cmd" in
       printf '%-12s %s\n' "$name" "$desc"
     done;;
   init)      do_init "$@";;
-  suggest)   exec "$FWF_DIR/fwf-suggest.sh" "$@";;
+  suggest)   exec "$FWF_DIR/bin/fwf-suggest.sh" "$@";;
   eval)      exec "$FWF_DIR/eval/run.sh" "$@";;
   start)
     # peel off init-only vs run flags: --build belongs to provision
@@ -1193,9 +1193,9 @@ case "$cmd" in
     do_init ${init_args[@]+"${init_args[@]}"}
     echo
     echo "fwf: provisioning worktrees for '$PROFILE_NAME' ..."
-    FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-provision.sh" $build_flag
+    FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/bin/fwf-provision.sh" $build_flag
     echo "fwf: launching the grid ..."
-    FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/fwf-up.sh"
+    FWF_PROFILE="$PROFILE_NAME" "$FWF_DIR/bin/fwf-up.sh"
     ;;
   issues)    engine fwf-issues.sh "$@";;
   dash)      engine fwf-dash.sh "$@";;
@@ -1283,27 +1283,27 @@ case "$cmd" in
     # can misroute the heartbeat and make a live role look dead to
     # health-gate/respawn.
     FWF_PROFILE="$(resolve_profile_liveness)"
-    source "$FWF_DIR/lib.sh"
+    source "$FWF_DIR/bin/lib.sh"
     role="${1:-}"; [ -n "$role" ] || die "tick: usage: fwf tick <role>"
     fwf_tick_bump "$role";;
   stub-sweep)
     # issue #133: auto-close claim-only draft PRs (zero changed files) that a
     # dead loop opened and abandoned. Idempotent; safe to run from a caretaker.
     FWF_PROFILE="$(resolve_profile)"
-    source "$FWF_DIR/lib.sh"
+    source "$FWF_DIR/bin/lib.sh"
     fwf_stub_sweep "$@";;
   e2e-lock-status)
     # issue #499 AC4/AC5/AC9: lane occupancy + effective FWF_E2E_MAX_LANES,
     # read-only (A5 -- no reaping, no kill; see lib.sh's fwf_e2e_lock_status).
     FWF_PROFILE="$(resolve_profile)"
-    source "$FWF_DIR/lib.sh"
+    source "$FWF_DIR/bin/lib.sh"
     fwf_e2e_lock_status;;
   stop)      engine fwf-stop.sh "$@";;
   resume)    engine fwf-resume.sh "$@";;
   down)      engine fwf-down.sh "$@";;
   attach)
     FWF_PROFILE="$(resolve_profile)"
-    source "$FWF_DIR/lib.sh"
+    source "$FWF_DIR/bin/lib.sh"
     case "${1:-coord}" in
       coord|coordination) target="$COORD_SESSION";;
       build|impl|implementation) target="$BUILD_SESSION";;
@@ -1316,7 +1316,7 @@ case "$cmd" in
       case "$a" in --print) print_only=1;; *) die "captain: unknown flag '$a'";; esac
     done
     FWF_PROFILE="$(resolve_profile)"
-    source "$FWF_DIR/lib.sh"
+    source "$FWF_DIR/bin/lib.sh"
     rendered="$(fwf_render "$(fwf_tmpl_path captain)" "")"
     if [ "$print_only" = 1 ]; then
       printf '%s\n' "$rendered"

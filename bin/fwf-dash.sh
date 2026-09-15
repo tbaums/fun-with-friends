@@ -56,8 +56,8 @@ if [ "${1:-}" = "--remote" ]; then
   [ -n "$REMOTE_HOST" ] || _dash_die "--remote host must not be empty"
 fi
 
-CRATE="${FWF_DASH_CRATE:-$DIR/dash}"   # FWF_DASH_CRATE is a test seam
-VERSION="$(cat "$DIR/VERSION" 2>/dev/null || echo unknown)"
+CRATE="${FWF_DASH_CRATE:-$DIR/../dash}"   # FWF_DASH_CRATE is a test seam
+VERSION="$(cat "$DIR/../VERSION" 2>/dev/null || echo unknown)"
 # Same repo the upgrade path uses, so download + upgrade stay in lockstep.
 RELEASE_REPO="${FWF_UPGRADE_REPO:-tbaums/fun-with-friends}"
 RELEASE_BASE="${FWF_DASH_RELEASE_BASE:-https://github.com/$RELEASE_REPO/releases/download}"

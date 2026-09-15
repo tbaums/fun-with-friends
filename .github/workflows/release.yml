@@ -126,10 +126,10 @@ jobs:
             # on our single local-devbox runner it blocks the whole release for
             # twenty minutes. Keep the diagnostic, drop the pointless wait.
             FWF_RELEASE_CI_TIMEOUT_SECS=30 \
-              ./fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log || true
+              ./bin/fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log || true
             exit 0
           fi
-          if ! ./fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log; then
+          if ! ./bin/fwf-release-ci-gate.sh "${{ github.sha }}" 2>&1 | tee /tmp/ci-verdict.log; then
             {
               echo "## Release blocked: required CI checks are not green for this SHA"
               echo

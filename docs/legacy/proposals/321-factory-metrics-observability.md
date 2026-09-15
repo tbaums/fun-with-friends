@@ -14,10 +14,10 @@ Two working instruments already answer part of this, and nobody had run
 them:
 
 ```
-$ ./fwf-ghcache.sh metrics
+$ ./bin/fwf-ghcache.sh metrics
 hit=211 revalidated=0 charged=51 window=3600s
 
-$ ./fwf-ghcache.sh headroom
+$ ./bin/fwf-ghcache.sh headroom
 remaining=5000 limit=5000 reset=1788048322
 ```
 

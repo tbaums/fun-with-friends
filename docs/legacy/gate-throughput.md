@@ -139,7 +139,7 @@ GATE_CMD='cd dash
 ## Verifying
 
 ```sh
-source lib.sh
+source bin/lib.sh
 fwf_gate_rust_scope_decide staging 'docs/*' '*.md'
 ```
 
@@ -320,7 +320,7 @@ on *every* diff today, identically for a doc-only PR and one touching
 existing wiring):
 
 ```sh
-bash fwf-gate-rust-scope.sh --against origin/staging --log .gate-bash-suite-shadow.log \
+bash bin/fwf-gate-rust-scope.sh --against origin/staging --log .gate-bash-suite-shadow.log \
   --full-suite-secs "$secs" --suite-name "bash test/run.sh" \
   --safe 'docs/*' --safe '*.md'
 ```

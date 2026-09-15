@@ -13,13 +13,15 @@ if [ "${BASH_VERSINFO[0]}" -lt 3 ] || { [ "${BASH_VERSINFO[0]}" -eq 3 ] && [ "${
   echo "fwf: bash >= 3.2 required (found $BASH_VERSION). On macOS the stock 3.2 is fine; otherwise upgrade bash." >&2; exit 1
 fi
 
+# Where these scripts live (bin/, #622): sibling fwf-*.sh and config.sh are
+# reached through this, the repo root through $FWF_HOME (set by config.sh).
 FWF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$FWF_LIB_DIR/config.sh"
 
 PROFILE="${FWF_PROFILE:-example}"
 # shellcheck source=lib/profile-sandbox.sh
-source "$FWF_LIB_DIR/lib/profile-sandbox.sh"
-fwf_profile_resolve "$FWF_LIB_DIR" "$PROFILE"
+source "$FWF_HOME/lib/profile-sandbox.sh"
+fwf_profile_resolve "$FWF_HOME" "$PROFILE"
 # In-tree profiles/*.sh share the fwf install's trust domain and are sourced
 # directly, unchanged. An explicit or auto-detected profile is out-of-tree --
 # arbitrary repo bash must never execute in this process (every fwf-*.sh
@@ -52,7 +54,7 @@ FWF_TEMPLATE="${FWF_TEMPLATE:-dev}"
 # may also set FWF_TEMPLATE_BASE (inherit prompt files from another template,
 # overriding only some) and FWF_EXTRA_ROLES (additional panes — see below), so
 # it loads BEFORE the role-prompt validation.
-FWF_TEMPLATE_DIR="$FWF_LIB_DIR/templates/$FWF_TEMPLATE"
+FWF_TEMPLATE_DIR="$FWF_HOME/templates/$FWF_TEMPLATE"
 if [ ! -d "$FWF_TEMPLATE_DIR" ]; then
   echo "fwf: unknown template '$FWF_TEMPLATE' (missing $FWF_TEMPLATE_DIR) — see 'fwf templates'" >&2; exit 1
 fi
@@ -104,8 +106,8 @@ fwf_role_no_worktree() { _fwf_role_in_list "$1" "$FWF_NO_WORKTREE_ROLES"; }
 # neither has it.
 fwf_tmpl_path() { # $1=role file base name (implementer / qa / sre / …)
   if [ -f "$FWF_TEMPLATE_DIR/$1.tmpl" ]; then echo "$FWF_TEMPLATE_DIR/$1.tmpl"; return 0; fi
-  if [ -n "$FWF_TEMPLATE_BASE" ] && [ -f "$FWF_LIB_DIR/templates/$FWF_TEMPLATE_BASE/$1.tmpl" ]; then
-    echo "$FWF_LIB_DIR/templates/$FWF_TEMPLATE_BASE/$1.tmpl"; return 0
+  if [ -n "$FWF_TEMPLATE_BASE" ] && [ -f "$FWF_HOME/templates/$FWF_TEMPLATE_BASE/$1.tmpl" ]; then
+    echo "$FWF_HOME/templates/$FWF_TEMPLATE_BASE/$1.tmpl"; return 0
   fi
   echo "fwf: template '$FWF_TEMPLATE' has no $1.tmpl (base: ${FWF_TEMPLATE_BASE:-none})" >&2; return 1
 }
@@ -162,7 +164,7 @@ fwf_install_ghguard() {
   mkdir -p "$FWF_GHGUARD_DIR"
   # The link keeps the name 0.x panes and prompts call (`fwf`); its target is
   # the renamed dispatcher (#583).
-  ln -sf "$FWF_LIB_DIR/fwf-legacy" "$FWF_GHGUARD_DIR/fwf"
+  ln -sf "$FWF_HOME/fwf-legacy" "$FWF_GHGUARD_DIR/fwf"
   # Part (a): a `gh` shim that routes the hot, high-frequency reads through the
   # shared cache in EVERY mode. Baked install-time values (real gh path, repo,
   # cache dir) keep it self-contained in non-login panes.
@@ -603,8 +605,8 @@ fwf_claude_cmd() { # $1=role
 # identity + seats, no client/repo specifics.
 fwf_provenance_block() {
   local ver sha role m seats=""
-  ver="$(cat "$FWF_LIB_DIR/VERSION" 2>/dev/null)"; : "${ver:=unknown}"
-  sha="$(git -C "$FWF_LIB_DIR" rev-parse --short HEAD 2>/dev/null)"; : "${sha:=unknown}"
+  ver="$(cat "$FWF_HOME/VERSION" 2>/dev/null)"; : "${ver:=unknown}"
+  sha="$(git -C "$FWF_HOME" rev-parse --short HEAD 2>/dev/null)"; : "${sha:=unknown}"
   while IFS=$'\t' read -r role m; do
     [ -n "$m" ] || m="cli-default"
     seats="${seats:+$seats }$role=$m"
@@ -867,12 +869,12 @@ fwf_ut_browser_preflight() {
 # `fwf doctor` needs them without a profile resolved). Sourced here so
 # fwf-up.sh's call site keeps working unchanged.
 # shellcheck source=lib/version_check.sh
-source "$FWF_LIB_DIR/lib/version_check.sh"
+source "$FWF_HOME/lib/version_check.sh"
 
 # PR body context-fold + built-with credit (issue #106): fwf_context_block,
 # fwf_credit_block, fwf_sanitize_pr_text, fwf_pr_body_guard.
 # shellcheck source=lib/pr_context.sh
-source "$FWF_LIB_DIR/lib/pr_context.sh"
+source "$FWF_HOME/lib/pr_context.sh"
 
 # Prod-target refusal for the user-testing factory (issue #42): a trial must run
 # only against an isolated scratch/UAT instance, never production. Fail-closed
@@ -1084,7 +1086,7 @@ fwf_render() { # $1=template-file  $2=id (may be empty for pm/conductor)
   role_tag="$(fwf_role_tag_for_tmpl "$tmpl" "$id")"
   text="$(cat "$tmpl")"
   if [ "$FWF_ISSUES" = "local" ]; then
-    addendum="$FWF_LIB_DIR/templates/_local-issues/$(basename "$tmpl")"
+    addendum="$FWF_HOME/templates/_local-issues/$(basename "$tmpl")"
     if [ -f "$addendum" ]; then
       text="$text
 $(cat "$addendum")"
@@ -3356,7 +3358,7 @@ fwf_gate_verdict_read() {
 # from the version + command line alone.
 _fwf_gate_fingerprint() { # $@ = the wrapped command's own argv
   local ver="unknown" blobs="" a bh
-  [ -f "$FWF_LIB_DIR/VERSION" ] && ver="$(cat "$FWF_LIB_DIR/VERSION" 2>/dev/null)"
+  [ -f "$FWF_HOME/VERSION" ] && ver="$(cat "$FWF_HOME/VERSION" 2>/dev/null)"
   for a in "$@"; do
     [ -f "$a" ] || continue
     bh="$(git hash-object "$a" 2>/dev/null)" || continue
@@ -4136,7 +4138,7 @@ fwf_send_prompt() { # $1=pane  $2=text
 # reason: a fresh checkout stamps every file with the checkout time, not its
 # last real change.
 fwf_prompt_commit_stamp() {
-  git -C "$FWF_LIB_DIR" rev-parse HEAD 2>/dev/null || echo UNKNOWN
+  git -C "$FWF_HOME" rev-parse HEAD 2>/dev/null || echo UNKNOWN
 }
 
 # Render a role's prompt and persist it for post-compaction re-hydration

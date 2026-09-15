@@ -20,7 +20,7 @@ park_at_weekly_pct = 85
 issues = [568]
 
 [suites]
-fast = "bash -n fwf lib.sh fwf-*.sh && echo SYNTAX-OK"
+fast = "bash -n fwf-legacy bin/lib.sh bin/fwf-*.sh && echo SYNTAX-OK"
 e2e = "cd one && cargo test --quiet"
 
 [models]

@@ -53,7 +53,7 @@ case "$TRIALS" in ''|*[!0-9]*|0) die "--trials must be a positive integer";; esa
 # names/branches to the placeholders; example is deterministic for that).
 PROFILE="${FWF_PROFILE:-example}"
 RENDERED="$(FWF_TEMPLATE="$TEMPLATE" FWF_PROFILE="$PROFILE" bash -c \
-  "source '$DIR/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/$ROLE.tmpl\" 1")" \
+  "source '$DIR/bin/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/$ROLE.tmpl\" 1")" \
   || die "could not render $TEMPLATE/$ROLE.tmpl"
 
 SCEN_BASE="$EVAL_DIR/scenarios/$TEMPLATE/$ROLE"
