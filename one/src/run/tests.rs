@@ -7,6 +7,40 @@ use crate::log::{Event, Kind};
 use crate::poll::{IssueView, Snapshot};
 use crate::types::IssueState;
 
+/// #630: what makes an issue claimable is the `Ready` event `fwf ungate`
+/// writes — the same pair the delegated un-gate writes — and the fast-track
+/// bypass is said in the record once, not once per tick.
+#[test]
+fn the_record_is_what_makes_an_issue_claimable() {
+    let mut evs = vec![Event {
+        ts: 1,
+        repo: "o/r".into(),
+        kind: Kind::Issue {
+            issue: 10,
+            to: IssueState::Gated,
+        },
+    }];
+    assert!(reviewed_issues(&evs).is_empty(), "a gate is not a sign-off");
+    evs.extend(crate::triage::ungate_events("o/r", 10, "tbaums", 5));
+    assert_eq!(
+        reviewed_issues(&evs).into_iter().collect::<Vec<_>>(),
+        vec![10]
+    );
+    assert!(fast_track_noted(&evs).is_empty());
+    evs.push(Event {
+        ts: 6,
+        repo: "o/r".into(),
+        kind: Kind::Note {
+            text: crate::sched::fast_track_note(11),
+        },
+    });
+    assert_eq!(
+        fast_track_noted(&evs).into_iter().collect::<Vec<_>>(),
+        vec![11]
+    );
+    assert!(!reviewed_issues(&evs).contains(&11));
+}
+
 fn issue(n: u64, labels: &[&str], claimed: bool) -> IssueView {
     IssueView {
         number: n,
@@ -59,7 +93,9 @@ fn an_implemented_but_unpushed_issue_is_never_woken_a_second_time() {
     // the snapshot alone still offers the finished issue — GitHub has no
     // idea the verdict exists
     assert_eq!(
-        plan(&snap, &seats, "product-wip", true, 10).actions.first(),
+        plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 10)
+            .actions
+            .first(),
         Some(&Action::WakeImpl {
             seat: 1,
             issue: 583
@@ -68,7 +104,7 @@ fn an_implemented_but_unpushed_issue_is_never_woken_a_second_time() {
     let owed = unpushed_issues(&evs);
     assert!(owed.contains(&583));
     snap.issues.retain(|i| !owed.contains(&i.number));
-    let actions = plan(&snap, &seats, "product-wip", true, 10).actions;
+    let actions = plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 10).actions;
     assert!(
         !actions.iter().any(|a| a.issue() == Some(583)),
         "#583 was planned again: {actions:?}"

@@ -111,12 +111,48 @@ fn live_jobs(seats: &[SeatSlot], now: u64) -> (BTreeSet<u64>, BTreeSet<u64>) {
     (issues, prs)
 }
 
-fn issue_eligible(i: &IssueView, gate_label: &str, owner_only: bool) -> bool {
+/// The one per-issue opt-out (#630): a human applies it by hand to say "build
+/// this without the review path". Never a default, never implied by a missing
+/// label — the bypass has to be somebody's deliberate act, and the loop says
+/// so in the record the first time it serves one.
+pub const FAST_TRACK_LABEL: &str = "fast-track";
+
+pub fn is_fast_track(i: &IssueView) -> bool {
+    i.labels.iter().any(|l| l == FAST_TRACK_LABEL)
+}
+
+/// What the record says when the loop served a fast-tracked issue. Written by
+/// `run`, read back by `run` so it is written once, not once per tick.
+pub fn fast_track_note(issue: u64) -> String {
+    format!("fast-track: #{issue} bypassed review")
+}
+
+/// Eligible for an impl seat. The review half is the point of #630: an issue
+/// becomes claimable because the RECORD says a human signed it off (an
+/// `IssueState::Ready` event, which `fwf ungate` and the delegated un-gate
+/// both write), or because someone applied `fast-track` on purpose. Before
+/// this, the absence of the gate label was enough — so a ticket filed without
+/// it went straight to impl, unspecced and unreviewed, which is how transom
+/// #1313 was built and rolled back.
+///
+/// The gate label is no longer consulted here: unreviewed issues are already
+/// ineligible whether or not they carry it, and a sign-off is final in v1
+/// (re-review after a re-gate is a follow-up).
+fn issue_eligible(i: &IssueView, owner_only: bool, reviewed: &BTreeSet<u64>) -> bool {
     i.state == "open"
-        && !i.labels.iter().any(|l| l == gate_label || l == CLAIM_LABEL)
+        && !i.labels.iter().any(|l| l == CLAIM_LABEL)
         && (!owner_only || i.author_association == "OWNER")
         && i.assignees.is_empty()
         && i.claim.is_none()
+        && (is_fast_track(i) || reviewed.contains(&i.number))
+}
+
+/// Every issue in a snapshot, as a reviewed set. Tests written before #630
+/// were about seats, claims and PR flow; this says "all of these were signed
+/// off" so they keep testing what they were testing.
+#[cfg(test)]
+pub fn all_reviewed(s: &Snapshot) -> BTreeSet<u64> {
+    s.issues.iter().map(|i| i.number).collect()
 }
 
 /// Approved at the current head by someone other than the PR's own App.
@@ -184,8 +220,9 @@ fn pr_qa_eligible(p: &PrView) -> bool {
 pub fn plan(
     snapshot: &Snapshot,
     seats: &[SeatSlot],
-    gate_label: &str,
     owner_only: bool,
+    // Issues the run record says were signed off (#630).
+    reviewed: &BTreeSet<u64>,
     now: u64,
 ) -> Plan {
     if !snapshot.known {
@@ -239,7 +276,7 @@ pub fn plan(
     let mut issues: Vec<&IssueView> = snapshot
         .issues
         .iter()
-        .filter(|i| issue_eligible(i, gate_label, owner_only))
+        .filter(|i| issue_eligible(i, owner_only, reviewed))
         .filter(|i| !closed_by_open_pr.contains(&i.number))
         .filter(|i| !busy_issues.contains(&i.number))
         .collect();

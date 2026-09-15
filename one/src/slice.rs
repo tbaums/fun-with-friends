@@ -164,13 +164,18 @@ pub(crate) fn align_seat_worktree(
 /// The seat matters: planning over a hardcoded seat 1 made the slice refuse
 /// every issue whenever seat 1 was held by an open PR, even though `run` had
 /// planned the wake for a free seat (#579) — claim, refuse, release, repeat.
-fn recheck(snap: &Snapshot, cfg: &SliceConfig, now: u64) -> Result<u8, String> {
+fn recheck(
+    snap: &Snapshot,
+    cfg: &SliceConfig,
+    reviewed: &std::collections::BTreeSet<u64>,
+    now: u64,
+) -> Result<u8, String> {
     let seats = [SeatSlot {
         seat: cfg.seat,
         role: Role::Impl,
         state: SeatState::Idle,
     }];
-    let p = plan(snap, &seats, &cfg.gate_label, true, now);
+    let p = plan(snap, &seats, true, reviewed, now);
     let wake = p.actions.iter().find_map(|a| match a {
         Action::WakeImpl { seat, issue } if *issue == cfg.issue => Some(*seat),
         _ => None,
@@ -306,7 +311,12 @@ pub fn run_with(
     if !snap.known {
         return Err(SliceError("snapshot Unknown; refusing to plan".into()));
     }
-    let seat_no = match recheck(&snap, cfg, now()) {
+    // The same policy the loop plans by (#630): the record decides, so a
+    // slice dispatched before a sign-off landed refuses here rather than
+    // claiming an unreviewed issue.
+    let reviewed =
+        crate::run::reviewed_issues(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
+    let seat_no = match recheck(&snap, cfg, &reviewed, now()) {
         Ok(seat) => seat,
         Err(why) => {
             record(
@@ -727,6 +737,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #630: the record is what makes an issue claimable, so the recheck is
+    /// handed the sign-off these fixtures are about.
+    fn signed_off(n: u64) -> std::collections::BTreeSet<u64> {
+        std::collections::BTreeSet::from([n])
+    }
+
     fn cfg_for(issue: u64, seat: u8) -> SliceConfig {
         SliceConfig {
             owner: "tbaums".into(),
@@ -780,13 +796,16 @@ mod tests {
             fetched_at: 1,
             known: true,
         };
-        assert_eq!(recheck(&snap, &cfg_for(574, 2), 100), Ok(2));
-        let e = recheck(&snap, &cfg_for(574, 1), 100).unwrap_err();
+        assert_eq!(
+            recheck(&snap, &cfg_for(574, 2), &signed_off(574), 100),
+            Ok(2)
+        );
+        let e = recheck(&snap, &cfg_for(574, 1), &signed_off(574), 100).unwrap_err();
         assert!(e.contains("seat 1 cannot take #574"), "{e}");
         // the refusal still names what the scheduler saw, for the record
         assert!(e.contains("labels=[]") && e.contains("Nothing"), "{e}");
         // an issue the snapshot does not carry is refused, not woken
-        let e = recheck(&snap, &cfg_for(999, 2), 100).unwrap_err();
+        let e = recheck(&snap, &cfg_for(999, 2), &signed_off(999), 100).unwrap_err();
         assert!(e.contains("issue not in the open set"), "{e}");
     }
 
@@ -826,18 +845,21 @@ mod tests {
         }];
         // what `run` plans…
         assert!(
-            plan(&snap, &seats, "product-wip", true, 1)
+            plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 1)
                 .actions
                 .contains(&Action::WakeImpl { seat: 1, issue }),
             "{:?}",
-            plan(&snap, &seats, "product-wip", true, 1).actions
+            plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 1).actions
         );
         // …and what the slice makes of it, over the one issue it was given
         snap.issues.retain(|i| i.number == issue);
-        assert_eq!(recheck(&snap, &cfg_for(issue, 1), 1), Ok(1));
+        assert_eq!(
+            recheck(&snap, &cfg_for(issue, 1), &signed_off(issue), 1),
+            Ok(1)
+        );
         // the floor's own PR on that seat still holds it
         snap.prs[0].author = "fwf-impl[bot]".into();
-        assert!(recheck(&snap, &cfg_for(issue, 1), 1).is_err());
+        assert!(recheck(&snap, &cfg_for(issue, 1), &signed_off(issue), 1).is_err());
     }
 
     /// #581 — two cycles of the same warm seat, one growing transcript, the
