@@ -10,7 +10,7 @@ Do this three times, at https://github.com/settings/apps/new
 
 | App name | Purpose | Repository permissions |
 |---|---|---|
-| `fwf-impl` | opens draft PRs, pushes `impl/*` branches (via the supervisor) | Contents: Read · Pull requests: Read & write · Issues: Read · Metadata: Read · Workflows: Read & write (see below) |
+| `fwf-impl` | opens draft PRs, pushes `impl/*` branches (via the supervisor) | Contents: Read & write · Pull requests: Read & write · Issues: Read · Metadata: Read · Workflows: Read & write |
 | `fwf-qa` | posts the PR review anchored to `commit_id` | Contents: Read · Pull requests: Read & write · Issues: Read · Metadata: Read |
 | `fwf-ops` | labels (un-gate), check-runs (gate verdicts), fast-forward pushes to `staging`/`main`, releases | Contents: Read & write · Issues: Read & write · Pull requests: Read & write · Checks: Read & write · Commit statuses: Read & write · Metadata: Read · Workflows: Read & write (see below) |
 
@@ -48,7 +48,7 @@ key = "~/.fwf/keys/fwf-ops.pem"
 ```
 
 Notes
-- **Workflows: Read & write** belongs on whichever App writes the seat's branch upstream — `ops` when it exists, `impl` otherwise — for any repo whose tickets may touch `.github/workflows/`. Without it GitHub refuses the write itself, after the seat has already done the work:
+- **Workflows: Read & write** belongs on `impl`, which writes every seat branch upstream (the slice and the rework both mint that push token from `impl`, never from `ops` — #636), and on `ops`, which fast-forwards `staging`/`main`. Grant it on any repo whose tickets may touch `.github/workflows/`; without it GitHub refuses the write itself, after the seat has already done the work:
   ```
   ! [remote rejected] impl1/issue-583-thin-slice -> impl1/issue-583-thin-slice
     (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without `workflows` permission)

@@ -147,8 +147,29 @@ pub fn render(template: &str, cfg: &ReworkConfig, j: &ReworkJob) -> String {
         )
 }
 
-/// `app` (impl) reads the PR and its reviews; `ops` (contents:write) pushes the
-/// reworked branch upstream. With no ops App the impl App does both.
+/// The App and the scope for the branch-push token: always the impl App,
+/// always including `workflows:write`. GitHub refuses any push that creates or
+/// updates a file under `.github/workflows/` unless the pushing token carries
+/// that scope, and `ops` is not granted `workflows` at all — so `ops` never
+/// mints this token (#636). It stays a parameter because it is still the App
+/// behind merges, labels and check-runs.
+fn push_token_mint<'a>(
+    app: &'a AppEntry,
+    _ops: Option<&AppEntry>,
+) -> (&'a AppEntry, BTreeMap<&'static str, &'static str>) {
+    (
+        app,
+        BTreeMap::from([
+            ("contents", "write"),
+            ("workflows", "write"),
+            ("metadata", "read"),
+        ]),
+    )
+}
+
+/// `app` (impl) reads the PR and its reviews, and pushes the reworked branch
+/// upstream — it is the only App granted `workflows:write`, see
+/// [`push_token_mint`]. `ops` is accepted but no longer mints anything here.
 pub fn run(
     cfg: &ReworkConfig,
     app: &AppEntry,
@@ -210,22 +231,8 @@ pub fn run(
         review,
     };
 
-    let push_tok = match ops {
-        Some(o) => github::mint(
-            o,
-            Some(&BTreeMap::from([
-                ("contents", "write"),
-                ("metadata", "read"),
-            ])),
-        )?,
-        None => github::mint(
-            app,
-            Some(&BTreeMap::from([
-                ("contents", "write"),
-                ("metadata", "read"),
-            ])),
-        )?,
-    };
+    let (push_app, push_perms) = push_token_mint(app, ops);
+    let push_tok = github::mint(push_app, Some(&push_perms))?;
     let mirror = Mirror::init_with(
         &cfg.mirror_dir,
         &format!("https://github.com/{repo}.git"),
@@ -530,6 +537,41 @@ mod tests {
         assert!(run(&c, &app, None).is_err());
         assert!(!floor.join("verdict-rework-pr-1270.json").exists());
         let _ = std::fs::remove_dir_all(floor);
+    }
+
+    #[test]
+    fn the_push_token_is_minted_from_the_impl_app_and_asks_for_workflows_write() {
+        let app = AppEntry {
+            app_id: 1,
+            installation_id: 11,
+            key: "impl.pem".into(),
+        };
+        let ops = AppEntry {
+            app_id: 2,
+            installation_id: 22,
+            key: "ops.pem".into(),
+        };
+        // A rework that pushes a workflow-file change takes the same path as
+        // the slice: the impl App, with `workflows:write` (#636).
+        for o in [Some(&ops), None] {
+            let (entry, perms) = push_token_mint(&app, o);
+            assert_eq!(entry.installation_id, app.installation_id);
+            assert_eq!(perms.get("contents"), Some(&"write"));
+            assert_eq!(perms.get("workflows"), Some(&"write"));
+            assert_eq!(perms.get("metadata"), Some(&"read"));
+        }
+
+        let fake = crate::fake_github::FakeGitHub::start();
+        fake.add_installation(app.installation_id, "fwf-impl[bot]");
+        fake.add_installation(ops.installation_id, "fwf-ops[bot]");
+        let (entry, perms) = push_token_mint(&app, Some(&ops));
+        let (code, body) = fake.mint_request(entry.installation_id, &perms);
+        assert_eq!(code, 201, "{body}");
+        assert_eq!(body["permissions"]["workflows"], "write");
+        let w = fake.writes();
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].actor, "fwf-impl[bot]", "never fwf-ops[bot]");
+        assert_eq!(w[0].body["permissions"]["workflows"], "write");
     }
 
     #[test]

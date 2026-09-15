@@ -246,9 +246,30 @@ use deliver::{claim, push_and_open_pr};
 pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
     crate::log::read_all(&cfg.run_log).unwrap_or_default()
 }
-/// `ops` (contents:write) pushes the seat's branch and holds the claim ref;
-/// `app` (the impl App, pull_requests:write + contents:read) authors the PR.
-/// With no ops App the impl App does both (requires contents:write on it).
+
+/// The App and the scope for the branch-push token: always the impl App,
+/// always including `workflows:write`. GitHub refuses any push that creates or
+/// updates a file under `.github/workflows/` unless the pushing token carries
+/// that scope, and `ops` is not granted `workflows` at all — so `ops` never
+/// mints this token (#636). It stays a parameter because it is still the App
+/// behind merges, labels and check-runs.
+fn push_token_mint<'a>(
+    app: &'a AppEntry,
+    _ops: Option<&AppEntry>,
+) -> (&'a AppEntry, BTreeMap<&'static str, &'static str>) {
+    (
+        app,
+        BTreeMap::from([
+            ("contents", "write"),
+            ("workflows", "write"),
+            ("metadata", "read"),
+        ]),
+    )
+}
+
+/// `app` (the impl App) both pushes the seat's branch — it is the only App
+/// granted `workflows:write`, see [`push_token_mint`] — and authors the PR.
+/// `ops` is accepted but no longer mints anything here.
 pub fn run_with(
     cfg: &SliceConfig,
     app: &AppEntry,
@@ -281,11 +302,8 @@ pub fn run_with(
         ("metadata", "read"),
     ]);
     let tok = github::mint(app, Some(&perms))?;
-    let push_perms = BTreeMap::from([("contents", "write"), ("metadata", "read")]);
-    let push_tok = match ops {
-        Some(o) => github::mint(o, Some(&push_perms))?,
-        None => github::mint(app, Some(&push_perms))?,
-    };
+    let (push_app, push_perms) = push_token_mint(app, ops);
+    let push_tok = github::mint(push_app, Some(&push_perms))?;
 
     // 2. Poll → plan, over this cycle's own seat.
     let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
@@ -936,6 +954,42 @@ mod tests {
     fn from_error_carries_the_message() {
         let e: SliceError = std::io::Error::other("boom").into();
         assert!(e.0.contains("boom"));
+    }
+
+    #[test]
+    fn the_push_token_is_minted_from_the_impl_app_and_asks_for_workflows_write() {
+        let app = AppEntry {
+            app_id: 1,
+            installation_id: 11,
+            key: "impl.pem".into(),
+        };
+        let ops = AppEntry {
+            app_id: 2,
+            installation_id: 22,
+            key: "ops.pem".into(),
+        };
+        // With an ops App configured or without it, the impl App mints it: ops
+        // has no `workflows` permission to request (#636).
+        for o in [Some(&ops), None] {
+            let (entry, perms) = push_token_mint(&app, o);
+            assert_eq!(entry.installation_id, app.installation_id);
+            assert_eq!(perms.get("contents"), Some(&"write"));
+            assert_eq!(perms.get("workflows"), Some(&"write"));
+            assert_eq!(perms.get("metadata"), Some(&"read"));
+        }
+
+        // And that is the scope GitHub is actually asked for.
+        let fake = crate::fake_github::FakeGitHub::start();
+        fake.add_installation(app.installation_id, "fwf-impl[bot]");
+        fake.add_installation(ops.installation_id, "fwf-ops[bot]");
+        let (entry, perms) = push_token_mint(&app, Some(&ops));
+        let (code, body) = fake.mint_request(entry.installation_id, &perms);
+        assert_eq!(code, 201, "{body}");
+        assert_eq!(body["permissions"]["workflows"], "write");
+        let w = fake.writes();
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].actor, "fwf-impl[bot]", "never fwf-ops[bot]");
+        assert_eq!(w[0].body["permissions"]["workflows"], "write");
     }
 
     #[test]
