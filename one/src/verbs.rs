@@ -366,24 +366,25 @@ fn dash_floor(m: Option<&manifest::Manifest>, repo_in_record: &str) -> dash::Flo
 }
 
 pub fn dash(args: &[String]) -> ExitCode {
-    let m = manifest::Manifest::load(
-        &get(args, "--manifest")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| manifest::Manifest::default_path(Path::new("."))),
-    )
-    .ok();
-    let path = get(args, "--log").map(PathBuf::from).unwrap_or_else(|| {
-        m.as_ref()
-            .map(|m| slice::defaults(&m.floor()).0)
-            .filter(|p| p.exists())
-            .unwrap_or_else(default_log)
-    });
-    if let Some(t) = get(args, "--tab") {
-        if dash::view::Tab::parse(&t).is_none() {
+    // Answered before any manifest or record is touched: `--help` drew a
+    // board for whatever floor `default_log()` pointed at, and so did a typo.
+    match dash::args::parse(args) {
+        dash::args::Dash::Help(usage) => {
+            println!("{usage}");
+            return ExitCode::SUCCESS;
+        }
+        dash::args::Dash::Unknown(flag) => {
+            eprintln!("fwf dash: unknown flag {flag}");
+            return ExitCode::from(2);
+        }
+        dash::args::Dash::BadTab(t) => {
             eprintln!("fwf dash: --tab {t:?} is not 1-5 or seats|issues|prs|decisions|usage");
             return ExitCode::from(2);
         }
+        dash::args::Dash::Run => {}
     }
+    let (m, path, note) = dash::args::sources(args);
+    note.inspect(|n| eprintln!("{n}"));
     let mut events = match log::read_all(&path) {
         Ok(e) => e,
         Err(e) => {
@@ -394,9 +395,7 @@ pub fn dash(args: &[String]) -> ExitCode {
     let record_repo = events.first().map(|e| e.repo.clone()).unwrap_or_default();
     let (w, h) = dash::tty::size();
     let view = dash::view::View {
-        tab: get(args, "--tab")
-            .and_then(|t| dash::view::Tab::parse(&t))
-            .unwrap_or(dash::view::Tab::Seats),
+        tab: dash::args::tab(args),
         width: w,
         height: h,
         color: !args.iter().any(|a| a == "--no-color") && dash::tty::wants_color(),

@@ -69,9 +69,19 @@ pub fn default_log() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("run.jsonl"))
 }
 
+/// The verb a top-level argument names. `--version` is an alias for the
+/// `version` verb (#628): it used to fall through to the usage dump, which
+/// reads as an error for a question every CLI answers.
+pub fn verb(arg: Option<&str>) -> Option<&str> {
+    match arg {
+        Some("--version") => Some("version"),
+        other => other,
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
+    match verb(args.first().map(String::as_str)) {
         Some("version") => {
             println!("fwf {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -877,5 +887,21 @@ fn main() -> ExitCode {
             eprintln!("{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verb;
+
+    /// #628: `fwf --version` used to print the usage dump. It now resolves to
+    /// the `version` verb itself — one arm, so the string and the exit code
+    /// cannot drift from `fwf version`'s.
+    #[test]
+    fn the_version_flag_is_the_version_verb() {
+        assert_eq!(verb(Some("--version")), Some("version"));
+        assert_eq!(verb(Some("version")), Some("version"));
+        assert_eq!(verb(Some("dash")), Some("dash"));
+        assert_eq!(verb(None), None);
     }
 }
