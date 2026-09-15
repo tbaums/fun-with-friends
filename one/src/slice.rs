@@ -246,13 +246,7 @@ use deliver::{claim, push_and_open_pr};
 pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
     crate::log::read_all(&cfg.run_log).unwrap_or_default()
 }
-
-/// The App and the scope for the branch-push token: always the impl App,
-/// always including `workflows:write`. GitHub refuses any push that creates or
-/// updates a file under `.github/workflows/` unless the pushing token carries
-/// that scope, and `ops` is not granted `workflows` at all — so `ops` never
-/// mints this token (#636). It stays a parameter because it is still the App
-/// behind merges, labels and check-runs.
+/// Branch-push token: always the impl App with `contents`+`workflows` write — a push under `.github/workflows/` needs `workflows`, which `ops` is not granted (#636). `ops` stays a param (it still backs merges/labels/check-runs).
 fn push_token_mint<'a>(
     app: &'a AppEntry,
     _ops: Option<&AppEntry>,
@@ -267,9 +261,7 @@ fn push_token_mint<'a>(
     )
 }
 
-/// `app` (the impl App) both pushes the seat's branch — it is the only App
-/// granted `workflows:write`, see [`push_token_mint`] — and authors the PR.
-/// `ops` is accepted but no longer mints anything here.
+/// `app` (impl App) pushes the branch (see [`push_token_mint`]) and authors the PR; `ops` is accepted but mints nothing here.
 pub fn run_with(
     cfg: &SliceConfig,
     app: &AppEntry,
