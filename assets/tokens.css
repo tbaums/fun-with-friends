@@ -1,0 +1,12 @@
+/* fun-with-friends brand tokens. Never recolour the mark; Ember is the one accent. */
+:root {
+  --fwf-ink:   #131417; /* near-black: text on light, ground on dark */
+  --fwf-slate: #2b2f3a; /* the three non-accent mark squares */
+  --fwf-ember: #e8a33d; /* the one accent — used once, never doubled */
+  --fwf-paper: #f6f5f1; /* light ground */
+  --fwf-muted: #6b6f7c; /* secondary text, footnotes */
+
+  --fwf-font-display: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --fwf-font-body:    "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  --fwf-font-mono:    "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+}

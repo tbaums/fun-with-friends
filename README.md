@@ -1,14 +1,22 @@
-# fwf
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/lockup.svg">
+    <img alt="fun-with-friends" src="assets/logo/lockup-light.svg" width="360">
+  </picture>
+</p>
 
+<p align="center">
 A software factory for a GitHub repository, run by one supervisor: seats are
 woken with one job and answer with one verdict.
+</p>
 
-[![one CI](https://github.com/tbaums/fun-with-friends/actions/workflows/one-ci.yml/badge.svg)](https://github.com/tbaums/fun-with-friends/actions/workflows/one-ci.yml)
-[![one release (linux asset)](https://github.com/tbaums/fun-with-friends/actions/workflows/one-release.yml/badge.svg)](https://github.com/tbaums/fun-with-friends/actions/workflows/one-release.yml)
-[![release](https://img.shields.io/github/v/release/tbaums/fun-with-friends?filter=one-v*&label=release&color=0b7285)](https://github.com/tbaums/fun-with-friends/releases)
-[![crate](https://img.shields.io/badge/crate-1.0.2-0b7285)](one/Cargo.toml)
-[![license](https://img.shields.io/badge/license-MIT-0b7285)](LICENSE)
-[![prompts](https://img.shields.io/badge/prompts-4%20roles%20%C2%B7%207%20families-0b7285)](#the-prompts-are-the-product)
+<p align="center">
+<a href="https://github.com/tbaums/fun-with-friends/actions/workflows/one-ci.yml"><img alt="one CI" src="https://github.com/tbaums/fun-with-friends/actions/workflows/one-ci.yml/badge.svg"></a>
+<a href="https://github.com/tbaums/fun-with-friends/releases"><img alt="release" src="https://img.shields.io/github/v/release/tbaums/fun-with-friends?label=release&color=e8a33d"></a>
+<a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/tbaums/fun-with-friends?color=2b2f3a"></a>
+<a href="https://github.com/tbaums/fun-with-friends/search?l=rust"><img alt="top language" src="https://img.shields.io/github/languages/top/tbaums/fun-with-friends?color=2b2f3a"></a>
+<a href="https://github.com/tbaums/fun-with-friends/commits"><img alt="last commit" src="https://img.shields.io/github/last-commit/tbaums/fun-with-friends?color=6b6f7c"></a>
+</p>
 
 ## What it does
 
