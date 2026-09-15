@@ -1010,6 +1010,29 @@ impl FakeGitHub {
         self.lock().mint(login, perms)
     }
 
+    /// Send the request `github::mint` sends: POST the permission map to
+    /// `/app/installations/{id}/access_tokens` under an App JWT. Returns the
+    /// status and body; the request itself lands in [`writes`](Self::writes),
+    /// which is where a test asserts on the scope that was asked for.
+    pub fn mint_request(&self, installation_id: u64, perms: &BTreeMap<&str, &str>) -> (u16, Value) {
+        let url = format!(
+            "{}/app/installations/{installation_id}/access_tokens",
+            self.base
+        );
+        let res = ureq::post(&url)
+            .set("Authorization", "Bearer fake.app.jwt")
+            .set("Accept", "application/vnd.github+json")
+            .send_string(&json!({ "permissions": perms }).to_string());
+        let r = match res {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => panic!("transport: {e}"),
+        };
+        let status = r.status();
+        let text = r.into_string().unwrap_or_default();
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
     /// Create (or no-op) a repo.
     pub fn add_repo(&self, owner: &str, repo: &str) {
         self.lock().repo_mut(owner, repo);
