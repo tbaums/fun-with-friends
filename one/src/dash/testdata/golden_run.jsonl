@@ -1,0 +1,400 @@
+{"ts":1789394664,"repo":"tbaums/transom","kind":"issue","issue":1327,"to":{"state":"gated"}}
+{"ts":1789394667,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1327,"pr":null},"deadline":1789395567},"tokens_in":null,"tokens_out":null}
+{"ts":1789394733,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1327,"pr":null}},"tokens_in":4406885,"tokens_out":11049}
+{"ts":1789394736,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1327 (3178 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789394737,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1325,"pr":null},"deadline":1789395337},"tokens_in":null,"tokens_out":null}
+{"ts":1789394793,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1325,"pr":null}},"tokens_in":3271548,"tokens_out":7688}
+{"ts":1789394793,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1325 judged ready — awaiting the human un-gate"}
+{"ts":1789394796,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1325,"pr":null},"deadline":1789395696},"tokens_in":null,"tokens_out":null}
+{"ts":1789394882,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1325,"pr":null}},"tokens_in":5884754,"tokens_out":14894}
+{"ts":1789394885,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1325 (3296 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789394886,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1324,"pr":null},"deadline":1789395486},"tokens_in":null,"tokens_out":null}
+{"ts":1789394944,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1324,"pr":null}},"tokens_in":2530920,"tokens_out":8417}
+{"ts":1789394947,"repo":"tbaums/transom","kind":"issue","issue":1324,"to":{"state":"gated"}}
+{"ts":1789394949,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1324,"pr":null},"deadline":1789395849},"tokens_in":null,"tokens_out":null}
+{"ts":1789395005,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1324,"pr":null}},"tokens_in":2784451,"tokens_out":10396}
+{"ts":1789395008,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1324 (3748 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789395090,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1360"}
+{"ts":1789395090,"repo":"tbaums/transom","kind":"issue","issue":1360,"to":{"state":"ready"}}
+{"ts":1789395092,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1327"}
+{"ts":1789395092,"repo":"tbaums/transom","kind":"issue","issue":1327,"to":{"state":"ready"}}
+{"ts":1789395095,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1325"}
+{"ts":1789395095,"repo":"tbaums/transom","kind":"issue","issue":1325,"to":{"state":"ready"}}
+{"ts":1789395098,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1324"}
+{"ts":1789395098,"repo":"tbaums/transom","kind":"issue","issue":1324,"to":{"state":"ready"}}
+{"ts":1789395119,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1324"}
+{"ts":1789395122,"repo":"tbaums/transom","kind":"issue","issue":1324,"to":{"state":"ready"}}
+{"ts":1789395126,"repo":"tbaums/transom","kind":"issue","issue":1324,"to":{"state":"claimed","seat":1,"fence":"92bcad1812a01471a0818923ecaa2e6a376445ec"}}
+{"ts":1789395126,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) 92bcad18"}
+{"ts":1789395127,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1324,"pr":null},"deadline":1789397527},"tokens_in":null,"tokens_out":null}
+{"ts":1789395912,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1324,"pr":null}},"tokens_in":31660188,"tokens_out":43365}
+{"ts":1789395915,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1324-thin-slice","from":"","to":"a33a3e8a3f40751c5cf8182027e017a178bf59ad"}
+{"ts":1789395916,"repo":"tbaums/transom","kind":"pr","pr":1363,"issue":1324,"to":{"state":"draft","head":"a33a3e8a3f40751c5cf8182027e017a178bf59ad"}}
+{"ts":1789395916,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1363"}
+{"ts":1789395983,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1324,"pr":1363},"deadline":1789398383},"tokens_in":null,"tokens_out":null}
+{"ts":1789396383,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1324,"pr":1363}},"tokens_in":14322014,"tokens_out":17441}
+{"ts":1789396385,"repo":"tbaums/transom","kind":"pr","pr":1363,"issue":1324,"to":{"state":"changes_requested","head":"a33a3e8a3f40751c5cf8182027e017a178bf59ad"}}
+{"ts":1789396453,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1324-thin-slice a33a3e8a"}
+{"ts":1789396453,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1324,"pr":1363},"deadline":1789398853},"tokens_in":null,"tokens_out":null}
+{"ts":1789396873,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1324,"pr":1363}},"tokens_in":12961183,"tokens_out":13997}
+{"ts":1789396875,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1324-thin-slice","from":"a33a3e8a3f40751c5cf8182027e017a178bf59ad","to":"a2fec5566b69cf4d7c406adac45355a93715f01c"}
+{"ts":1789396875,"repo":"tbaums/transom","kind":"pr","pr":1363,"issue":1324,"to":{"state":"open","head":"a2fec5566b69cf4d7c406adac45355a93715f01c"}}
+{"ts":1789396942,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1324,"pr":1363},"deadline":1789399342},"tokens_in":null,"tokens_out":null}
+{"ts":1789397281,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1324,"pr":1363}},"tokens_in":15409077,"tokens_out":11687}
+{"ts":1789397284,"repo":"tbaums/transom","kind":"pr","pr":1363,"issue":1324,"to":{"state":"approved","head":"a2fec5566b69cf4d7c406adac45355a93715f01c","reviewer":"qa"}}
+{"ts":1789397290,"repo":"tbaums/transom","kind":"note","text":"merge #1363: no check-runs on head a2fec556; allowed in M1"}
+{"ts":1789397294,"repo":"tbaums/transom","kind":"pr","pr":1363,"issue":1324,"to":{"state":"merged","sha":"cad882bed88ea5a087137fae8d262db8d59d30da"}}
+{"ts":1789397294,"repo":"tbaums/transom","kind":"issue","issue":1324,"to":{"state":"shipped","pr":1363,"sha":"cad882bed88ea5a087137fae8d262db8d59d30da"}}
+{"ts":1789397605,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"cad882bed88ea5a087137fae8d262db8d59d30da","suite":"fast","secs":308}}
+{"ts":1789397669,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1325"}
+{"ts":1789397672,"repo":"tbaums/transom","kind":"issue","issue":1325,"to":{"state":"ready"}}
+{"ts":1789397676,"repo":"tbaums/transom","kind":"issue","issue":1325,"to":{"state":"claimed","seat":1,"fence":"cad882bed88ea5a087137fae8d262db8d59d30da"}}
+{"ts":1789397676,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) cad882be"}
+{"ts":1789397677,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1325,"pr":null},"deadline":1789400077},"tokens_in":null,"tokens_out":null}
+{"ts":1789398317,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1325,"pr":null}},"tokens_in":31161901,"tokens_out":26227}
+{"ts":1789398319,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1325-thin-slice","from":"","to":"8ff4d1001355940dc83cc1295bb61e317696804e"}
+{"ts":1789398321,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"draft","head":"8ff4d1001355940dc83cc1295bb61e317696804e"}}
+{"ts":1789398321,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1364"}
+{"ts":1789398388,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1325,"pr":1364},"deadline":1789400788},"tokens_in":null,"tokens_out":null}
+{"ts":1789398765,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1325,"pr":1364}},"tokens_in":16567225,"tokens_out":12180}
+{"ts":1789398768,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"changes_requested","head":"8ff4d1001355940dc83cc1295bb61e317696804e"}}
+{"ts":1789398835,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1325-thin-slice 8ff4d100"}
+{"ts":1789398835,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1325,"pr":1364},"deadline":1789401235},"tokens_in":null,"tokens_out":null}
+{"ts":1789400567,"repo":"tbaums/transom","kind":"refused","what":"#1364","why":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 is dirty; left untouched for the operator: M frontend/index.html M frontend/src/api.rs M frontend/src/views/workday.rs"}
+{"ts":1789400636,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1325-thin-slice 8ff4d100"}
+{"ts":1789400703,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1325-thin-slice 8ff4d100"}
+{"ts":1789400777,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1325-thin-slice 8ff4d100"}
+{"ts":1789400777,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1325,"pr":1364},"deadline":1789403177},"tokens_in":null,"tokens_out":null}
+{"ts":1789401814,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1325,"pr":1364}},"tokens_in":5360496,"tokens_out":39318}
+{"ts":1789401816,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1325-thin-slice","from":"8ff4d1001355940dc83cc1295bb61e317696804e","to":"10ef462bcc4e9ffb1f7c22444ece1cdf7d323691"}
+{"ts":1789401816,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"open","head":"10ef462bcc4e9ffb1f7c22444ece1cdf7d323691"}}
+{"ts":1789401884,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1325,"pr":1364},"deadline":1789404284},"tokens_in":null,"tokens_out":null}
+{"ts":1789402331,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1325,"pr":1364}},"tokens_in":4437632,"tokens_out":29367}
+{"ts":1789402334,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"changes_requested","head":"10ef462bcc4e9ffb1f7c22444ece1cdf7d323691"}}
+{"ts":1789403572,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1325,"pr":1364},"deadline":1789404472},"tokens_in":null,"tokens_out":null}
+{"ts":1789403626,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1325,"pr":1364},"deadline":1789406026},"tokens_in":null,"tokens_out":null}
+{"ts":1789403850,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1325,"pr":1364}},"tokens_in":479286,"tokens_out":3439}
+{"ts":1789403851,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1325,"pr":1364}},"tokens_in":1612008,"tokens_out":10033}
+{"ts":1789403853,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"approved","head":"bb9578e4e21a1fd7afcd9094ea1997e09c701c54","reviewer":"qa"}}
+{"ts":1789403853,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"approved","head":"bb9578e4e21a1fd7afcd9094ea1997e09c701c54","reviewer":"qa"}}
+{"ts":1789403859,"repo":"tbaums/transom","kind":"note","text":"merge #1364: no check-runs on head bb9578e4; allowed in M1"}
+{"ts":1789403862,"repo":"tbaums/transom","kind":"pr","pr":1364,"issue":1325,"to":{"state":"merged","sha":"c6a94246a7f68e92be16dfe8630d28e3624d1e3a"}}
+{"ts":1789403862,"repo":"tbaums/transom","kind":"issue","issue":1325,"to":{"state":"shipped","pr":1364,"sha":"c6a94246a7f68e92be16dfe8630d28e3624d1e3a"}}
+{"ts":1789404174,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"c6a94246a7f68e92be16dfe8630d28e3624d1e3a","suite":"fast","secs":310}}
+{"ts":1789404238,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1327"}
+{"ts":1789404241,"repo":"tbaums/transom","kind":"issue","issue":1327,"to":{"state":"ready"}}
+{"ts":1789404245,"repo":"tbaums/transom","kind":"issue","issue":1327,"to":{"state":"claimed","seat":1,"fence":"c6a94246a7f68e92be16dfe8630d28e3624d1e3a"}}
+{"ts":1789404245,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) c6a94246"}
+{"ts":1789404246,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1327,"pr":null},"deadline":1789406646},"tokens_in":null,"tokens_out":null}
+{"ts":1789404861,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1327,"pr":null}},"tokens_in":9543156,"tokens_out":49293}
+{"ts":1789404863,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1327-thin-slice","from":"","to":"e2aba13bbd0604091b963aac54437498f2777aac"}
+{"ts":1789404865,"repo":"tbaums/transom","kind":"pr","pr":1365,"issue":1327,"to":{"state":"draft","head":"e2aba13bbd0604091b963aac54437498f2777aac"}}
+{"ts":1789404865,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1365"}
+{"ts":1789404933,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1327,"pr":1365},"deadline":1789407333},"tokens_in":null,"tokens_out":null}
+{"ts":1789405244,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1327,"pr":1365}},"tokens_in":3430545,"tokens_out":21000}
+{"ts":1789405246,"repo":"tbaums/transom","kind":"pr","pr":1365,"issue":1327,"to":{"state":"changes_requested","head":"e2aba13bbd0604091b963aac54437498f2777aac"}}
+{"ts":1789405315,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1327-thin-slice e2aba13b"}
+{"ts":1789405315,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1327,"pr":1365},"deadline":1789407715},"tokens_in":null,"tokens_out":null}
+{"ts":1789405732,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1327,"pr":1365}},"tokens_in":5254980,"tokens_out":18443}
+{"ts":1789405735,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1327-thin-slice","from":"e2aba13bbd0604091b963aac54437498f2777aac","to":"9b7c2d62ba8cc5e29193dc3a4c2f64e3023b3d30"}
+{"ts":1789405735,"repo":"tbaums/transom","kind":"pr","pr":1365,"issue":1327,"to":{"state":"open","head":"9b7c2d62ba8cc5e29193dc3a4c2f64e3023b3d30"}}
+{"ts":1789405802,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1327,"pr":1365},"deadline":1789408202},"tokens_in":null,"tokens_out":null}
+{"ts":1789406079,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1327,"pr":1365}},"tokens_in":1425396,"tokens_out":6242}
+{"ts":1789406081,"repo":"tbaums/transom","kind":"pr","pr":1365,"issue":1327,"to":{"state":"approved","head":"9b7c2d62ba8cc5e29193dc3a4c2f64e3023b3d30","reviewer":"qa"}}
+{"ts":1789406087,"repo":"tbaums/transom","kind":"note","text":"merge #1365: no check-runs on head 9b7c2d62; allowed in M1"}
+{"ts":1789406090,"repo":"tbaums/transom","kind":"pr","pr":1365,"issue":1327,"to":{"state":"merged","sha":"d93d96edb837bde0db8d2cfa6ee3776216286cf9"}}
+{"ts":1789406090,"repo":"tbaums/transom","kind":"issue","issue":1327,"to":{"state":"shipped","pr":1365,"sha":"d93d96edb837bde0db8d2cfa6ee3776216286cf9"}}
+{"ts":1789406340,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"d93d96edb837bde0db8d2cfa6ee3776216286cf9","suite":"fast","secs":247}}
+{"ts":1789406404,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1360"}
+{"ts":1789406407,"repo":"tbaums/transom","kind":"issue","issue":1360,"to":{"state":"ready"}}
+{"ts":1789406411,"repo":"tbaums/transom","kind":"issue","issue":1360,"to":{"state":"claimed","seat":1,"fence":"d93d96edb837bde0db8d2cfa6ee3776216286cf9"}}
+{"ts":1789406411,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) d93d96ed"}
+{"ts":1789406412,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1360,"pr":null},"deadline":1789408812},"tokens_in":null,"tokens_out":null}
+{"ts":1789406847,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1360,"pr":null}},"tokens_in":6414154,"tokens_out":27952}
+{"ts":1789406850,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1360-thin-slice","from":"","to":"0e9d6afe0a4186a931790fae3c7ffeed57d74cec"}
+{"ts":1789406851,"repo":"tbaums/transom","kind":"pr","pr":1367,"issue":1360,"to":{"state":"draft","head":"0e9d6afe0a4186a931790fae3c7ffeed57d74cec"}}
+{"ts":1789406851,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1367"}
+{"ts":1789406921,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1360,"pr":1367},"deadline":1789409321},"tokens_in":null,"tokens_out":null}
+{"ts":1789407202,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1360,"pr":1367}},"tokens_in":3852652,"tokens_out":15698}
+{"ts":1789407204,"repo":"tbaums/transom","kind":"pr","pr":1367,"issue":1360,"to":{"state":"approved","head":"0e9d6afe0a4186a931790fae3c7ffeed57d74cec","reviewer":"qa"}}
+{"ts":1789407209,"repo":"tbaums/transom","kind":"note","text":"merge #1367: no check-runs on head 0e9d6afe; allowed in M1"}
+{"ts":1789407213,"repo":"tbaums/transom","kind":"pr","pr":1367,"issue":1360,"to":{"state":"merged","sha":"2a2cbd1f3056b4e347b243eb1850c7ba51a620a5"}}
+{"ts":1789407213,"repo":"tbaums/transom","kind":"issue","issue":1360,"to":{"state":"shipped","pr":1367,"sha":"2a2cbd1f3056b4e347b243eb1850c7ba51a620a5"}}
+{"ts":1789407443,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"2a2cbd1f3056b4e347b243eb1850c7ba51a620a5","suite":"fast","secs":227}}
+{"ts":1789408540,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"d6a91ff4ae79496b35981eed885934210e24e071","suite":"fast","secs":305}}
+{"ts":1789408571,"repo":"tbaums/transom","kind":"promote","branch":"main","from":"92bcad1812a01471a0818923ecaa2e6a376445ec","to":"d6a91ff4ae79496b35981eed885934210e24e071"}
+{"ts":1789411967,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1370,"pr":null},"deadline":1789413067},"tokens_in":null,"tokens_out":null}
+{"ts":1789412095,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1370,"pr":null}},"tokens_in":1385001,"tokens_out":23464}
+{"ts":1789412095,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1370 judged ready — awaiting the human un-gate"}
+{"ts":1789412096,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1370,"pr":null},"deadline":1789413196},"tokens_in":null,"tokens_out":null}
+{"ts":1789412254,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1370,"pr":null}},"tokens_in":1299129,"tokens_out":25981}
+{"ts":1789412257,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1370 (3340 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789412259,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1369,"pr":null},"deadline":1789413359},"tokens_in":null,"tokens_out":null}
+{"ts":1789412339,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1369,"pr":null}},"tokens_in":1899613,"tokens_out":17841}
+{"ts":1789412341,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"gated"}}
+{"ts":1789412343,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1369,"pr":null},"deadline":1789413443},"tokens_in":null,"tokens_out":null}
+{"ts":1789412371,"repo":"tbaums/transom","kind":"human","actor":"concierge","action":"ungate","target":"#1370"}
+{"ts":1789412371,"repo":"tbaums/transom","kind":"issue","issue":1370,"to":{"state":"ready"}}
+{"ts":1789412414,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1370"}
+{"ts":1789412417,"repo":"tbaums/transom","kind":"issue","issue":1370,"to":{"state":"ready"}}
+{"ts":1789412421,"repo":"tbaums/transom","kind":"issue","issue":1370,"to":{"state":"claimed","seat":1,"fence":"d6a91ff4ae79496b35981eed885934210e24e071"}}
+{"ts":1789412422,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) d6a91ff4"}
+{"ts":1789412423,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1370,"pr":null},"deadline":1789414823},"tokens_in":null,"tokens_out":null}
+{"ts":1789412457,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1369,"pr":null}},"tokens_in":1456062,"tokens_out":19147}
+{"ts":1789412459,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1369 (3323 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789412460,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1368,"pr":null},"deadline":1789413560},"tokens_in":null,"tokens_out":null}
+{"ts":1789412501,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1368,"pr":null}},"tokens_in":843917,"tokens_out":7412}
+{"ts":1789412503,"repo":"tbaums/transom","kind":"issue","issue":1368,"to":{"state":"gated"}}
+{"ts":1789412505,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1368,"pr":null},"deadline":1789413605},"tokens_in":null,"tokens_out":null}
+{"ts":1789412599,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1368,"pr":null}},"tokens_in":1224099,"tokens_out":14157}
+{"ts":1789412602,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1368 (3355 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789412626,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1372,"pr":null},"deadline":1789413726},"tokens_in":null,"tokens_out":null}
+{"ts":1789412663,"repo":"tbaums/transom","kind":"human","actor":"concierge","action":"ungate","target":"#1369"}
+{"ts":1789412663,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789412676,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1372,"pr":null}},"tokens_in":1272808,"tokens_out":10304}
+{"ts":1789412678,"repo":"tbaums/transom","kind":"issue","issue":1372,"to":{"state":"gated"}}
+{"ts":1789412680,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1372,"pr":null},"deadline":1789413780},"tokens_in":null,"tokens_out":null}
+{"ts":1789412766,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1372,"pr":null}},"tokens_in":978974,"tokens_out":12801}
+{"ts":1789412768,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1372 (3157 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789412791,"repo":"tbaums/transom","kind":"human","actor":"concierge","action":"ungate","target":"#1372"}
+{"ts":1789412791,"repo":"tbaums/transom","kind":"issue","issue":1372,"to":{"state":"ready"}}
+{"ts":1789412814,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1368,"pr":null},"deadline":1789413414},"tokens_in":null,"tokens_out":null}
+{"ts":1789412862,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1368,"pr":null}},"tokens_in":929900,"tokens_out":8673}
+{"ts":1789412862,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1368 judged ready — awaiting the human un-gate"}
+{"ts":1789412863,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1368,"pr":null},"deadline":1789413763},"tokens_in":null,"tokens_out":null}
+{"ts":1789412881,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1368,"pr":null}},"tokens_in":596322,"tokens_out":2150}
+{"ts":1789412884,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1368 (3355 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789412885,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1369,"pr":null},"deadline":1789413485},"tokens_in":null,"tokens_out":null}
+{"ts":1789412955,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1369,"pr":null}},"tokens_in":1562203,"tokens_out":11483}
+{"ts":1789412955,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1369 judged ready — awaiting the human un-gate"}
+{"ts":1789413391,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1368,"pr":null},"deadline":1789413991},"tokens_in":null,"tokens_out":null}
+{"ts":1789413421,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1368,"pr":null}},"tokens_in":995425,"tokens_out":5907}
+{"ts":1789413421,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1368 judged ready — awaiting the human un-gate"}
+{"ts":1789413423,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1369,"pr":null},"deadline":1789414023},"tokens_in":null,"tokens_out":null}
+{"ts":1789413451,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1369,"pr":null}},"tokens_in":1190921,"tokens_out":5537}
+{"ts":1789413451,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1369 judged ready — awaiting the human un-gate"}
+{"ts":1789413464,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1368"}
+{"ts":1789413464,"repo":"tbaums/transom","kind":"issue","issue":1368,"to":{"state":"ready"}}
+{"ts":1789413465,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1369"}
+{"ts":1789413465,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789413468,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789413471,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789413474,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"claimed","seat":1,"fence":"d6a91ff4ae79496b35981eed885934210e24e071"}}
+{"ts":1789413474,"repo":"tbaums/transom","kind":"refused","what":"#1369","why":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 is dirty; left untouched for the operator: M README.md M docs/ARCHITECTURE.md M docs/TUTORIAL.md M docs/transom-data-writers.md M frontend/index.html M frontend/src/api.rs M frontend/src/app.rs M frontend/src/command.rs M frontend/src/components/chrome.rs M frontend/src/components/icons.rs M frontend/src/route.rs M frontend/src/state.rs M frontend/src/views/mod.rs D frontend/src/views/workday.rs M server/src/api/handlers.rs M server/src/api/mod.rs M server/src/course.rs M server/src/graph.rs M server/src/lib.rs M server/src/log.rs M server/src/main.rs M server/src/week_review.rs D server/src/workday.rs D server/src/workday_fixture.rs D server/src/workday_report.rs M server/tests/api.rs M shared/src/lib.rs M shared/src/markdown.rs M shared/src/paths.rs D shared/src/workday.rs M tests/e2e/tests/helpers/fixtures.ts D tests/e2e/tests/helpers/workday-fixture.ts D tests/e2e/tests/mobile-workday-nav.spec.ts D tests/e2e/tests/workday-fixture.spec.ts D tests/e2e/tests/workday-nav.spec.ts M worker/src/pipeline.rs M worker/src/stall_notify.rs ?? server/src/retired_cleanup.rs"}
+{"ts":1789413536,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789413539,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789414531,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1370,"pr":null},"deadline":1789415131},"tokens_in":null,"tokens_out":null}
+{"ts":1789414607,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1370,"pr":null}},"tokens_in":1586257,"tokens_out":15792}
+{"ts":1789414607,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1370 judged ready — awaiting the human un-gate"}
+{"ts":1789414611,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1370,"pr":1373},"deadline":1789415511},"tokens_in":null,"tokens_out":null}
+{"ts":1789414951,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1370,"pr":1373}},"tokens_in":6707496,"tokens_out":23992}
+{"ts":1789414954,"repo":"tbaums/transom","kind":"pr","pr":1373,"issue":1370,"to":{"state":"approved","head":"78c8b358b6d82ab45dfe0f663389d7a206ea3f2c","reviewer":"qa"}}
+{"ts":1789415316,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"b9c3c2fcda5232eceff1e07c9c6b75051d120e2b","suite":"fast","secs":282}}
+{"ts":1789415334,"repo":"tbaums/transom","kind":"promote","branch":"main","from":"d6a91ff4ae79496b35981eed885934210e24e071","to":"b9c3c2fcda5232eceff1e07c9c6b75051d120e2b"}
+{"ts":1789417628,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1374,"pr":null},"deadline":1789418228},"tokens_in":null,"tokens_out":null}
+{"ts":1789417690,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1374,"pr":null}},"tokens_in":1514830,"tokens_out":11222}
+{"ts":1789417690,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1374 judged ready — awaiting the human un-gate"}
+{"ts":1789417692,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1374,"pr":null},"deadline":1789418592},"tokens_in":null,"tokens_out":null}
+{"ts":1789417768,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1374,"pr":null}},"tokens_in":1004685,"tokens_out":9825}
+{"ts":1789417770,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1374 (3139 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789417772,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1374,"pr":null},"deadline":1789418372},"tokens_in":null,"tokens_out":null}
+{"ts":1789417814,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1374,"pr":null}},"tokens_in":1607701,"tokens_out":6508}
+{"ts":1789417814,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1374 judged ready — awaiting the human un-gate"}
+{"ts":1789417815,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1369,"pr":null},"deadline":1789418415},"tokens_in":null,"tokens_out":null}
+{"ts":1789417845,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1369,"pr":null}},"tokens_in":1488262,"tokens_out":5411}
+{"ts":1789417845,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1369 judged ready — awaiting the human un-gate"}
+{"ts":1789417847,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1369,"pr":null},"deadline":1789418747},"tokens_in":null,"tokens_out":null}
+{"ts":1789417931,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1369,"pr":null}},"tokens_in":1675241,"tokens_out":13181}
+{"ts":1789417933,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1369 (3475 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789417935,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1369,"pr":null},"deadline":1789418535},"tokens_in":null,"tokens_out":null}
+{"ts":1789417975,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1369,"pr":null}},"tokens_in":1368077,"tokens_out":7951}
+{"ts":1789417975,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1369 judged ready — awaiting the human un-gate"}
+{"ts":1789417976,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1372,"pr":null},"deadline":1789418576},"tokens_in":null,"tokens_out":null}
+{"ts":1789418021,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1372,"pr":null}},"tokens_in":1623525,"tokens_out":7679}
+{"ts":1789418021,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1372 judged ready — awaiting the human un-gate"}
+{"ts":1789418022,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1372,"pr":null},"deadline":1789418922},"tokens_in":null,"tokens_out":null}
+{"ts":1789418034,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1372,"pr":null}},"tokens_in":606656,"tokens_out":1840}
+{"ts":1789418037,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1372 (3157 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789418039,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1372,"pr":null},"deadline":1789418639},"tokens_in":null,"tokens_out":null}
+{"ts":1789418067,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1372,"pr":null}},"tokens_in":1488917,"tokens_out":5577}
+{"ts":1789418067,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1372 judged ready — awaiting the human un-gate"}
+{"ts":1789418225,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1374"}
+{"ts":1789418225,"repo":"tbaums/transom","kind":"issue","issue":1374,"to":{"state":"ready"}}
+{"ts":1789418227,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1369"}
+{"ts":1789418227,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418229,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1372"}
+{"ts":1789418229,"repo":"tbaums/transom","kind":"issue","issue":1372,"to":{"state":"ready"}}
+{"ts":1789418230,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"stalled","job":{"role":"impl","issue":1370,"pr":null}},"tokens_in":null,"tokens_out":null}
+{"ts":1789418230,"repo":"tbaums/transom","kind":"note","text":"seat 1 Impl was left Working past its deadline (supervisor interrupted); marked Stalled at startup"}
+{"ts":1789418232,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418236,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418299,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418302,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418368,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418371,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418437,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418439,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418504,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418507,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418573,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418576,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418640,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418643,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418707,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418710,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418774,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418777,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418841,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418844,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418910,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418913,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789418977,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789418980,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419045,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419048,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419113,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419116,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419179,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419182,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419248,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419250,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419314,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419317,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419383,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419386,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419451,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419453,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419519,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419522,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419587,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419590,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789419594,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"claimed","seat":1,"fence":"b9c3c2fcda5232eceff1e07c9c6b75051d120e2b"}}
+{"ts":1789419594,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) b9c3c2fc"}
+{"ts":1789419595,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1369,"pr":null},"deadline":1789421995},"tokens_in":null,"tokens_out":null}
+{"ts":1789419743,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789419765,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1372"}
+{"ts":1789419769,"repo":"tbaums/transom","kind":"issue","issue":1372,"to":{"state":"ready"}}
+{"ts":1789419772,"repo":"tbaums/transom","kind":"issue","issue":1372,"to":{"state":"claimed","seat":1,"fence":"b9c3c2fcda5232eceff1e07c9c6b75051d120e2b"}}
+{"ts":1789419773,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) b9c3c2fc"}
+{"ts":1789419775,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1372,"pr":null},"deadline":1789422175},"tokens_in":null,"tokens_out":null}
+{"ts":1789420252,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1372,"pr":null}},"tokens_in":14161836,"tokens_out":29251}
+{"ts":1789420254,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1372-thin-slice","from":"","to":"fa832bc8d4b85c7104d170cf5c65c31ff6a45273"}
+{"ts":1789420255,"repo":"tbaums/transom","kind":"pr","pr":1375,"issue":1372,"to":{"state":"draft","head":"fa832bc8d4b85c7104d170cf5c65c31ff6a45273"}}
+{"ts":1789420255,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1375"}
+{"ts":1789420322,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1372,"pr":1375},"deadline":1789422722},"tokens_in":null,"tokens_out":null}
+{"ts":1789420629,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1372,"pr":1375}},"tokens_in":3455041,"tokens_out":15000}
+{"ts":1789420632,"repo":"tbaums/transom","kind":"pr","pr":1375,"issue":1372,"to":{"state":"changes_requested","head":"fa832bc8d4b85c7104d170cf5c65c31ff6a45273"}}
+{"ts":1789420699,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1372-thin-slice fa832bc8"}
+{"ts":1789420699,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1372,"pr":1375},"deadline":1789423099},"tokens_in":null,"tokens_out":null}
+{"ts":1789421088,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1372,"pr":1375}},"tokens_in":10204163,"tokens_out":16985}
+{"ts":1789421090,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1372-thin-slice","from":"fa832bc8d4b85c7104d170cf5c65c31ff6a45273","to":"414118035dfffdebffefefeb03d9b4fc141d0497"}
+{"ts":1789421090,"repo":"tbaums/transom","kind":"pr","pr":1375,"issue":1372,"to":{"state":"open","head":"414118035dfffdebffefefeb03d9b4fc141d0497"}}
+{"ts":1789421157,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1372,"pr":1375},"deadline":1789423557},"tokens_in":null,"tokens_out":null}
+{"ts":1789421452,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1372,"pr":1375}},"tokens_in":3247270,"tokens_out":10187}
+{"ts":1789421454,"repo":"tbaums/transom","kind":"pr","pr":1375,"issue":1372,"to":{"state":"approved","head":"414118035dfffdebffefefeb03d9b4fc141d0497","reviewer":"qa"}}
+{"ts":1789421459,"repo":"tbaums/transom","kind":"note","text":"merge #1375: no check-runs on head 41411803; allowed in M1"}
+{"ts":1789421463,"repo":"tbaums/transom","kind":"pr","pr":1375,"issue":1372,"to":{"state":"merged","sha":"ca7774dbc9080b1992715e73947ec419407ae583"}}
+{"ts":1789421463,"repo":"tbaums/transom","kind":"issue","issue":1372,"to":{"state":"shipped","pr":1375,"sha":"ca7774dbc9080b1992715e73947ec419407ae583"}}
+{"ts":1789421733,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"ca7774dbc9080b1992715e73947ec419407ae583","suite":"fast","secs":268}}
+{"ts":1789421797,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1374"}
+{"ts":1789421800,"repo":"tbaums/transom","kind":"issue","issue":1374,"to":{"state":"ready"}}
+{"ts":1789421804,"repo":"tbaums/transom","kind":"issue","issue":1374,"to":{"state":"claimed","seat":1,"fence":"ca7774dbc9080b1992715e73947ec419407ae583"}}
+{"ts":1789421804,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) ca7774db"}
+{"ts":1789421805,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1374,"pr":null},"deadline":1789424205},"tokens_in":null,"tokens_out":null}
+{"ts":1789422274,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1374,"pr":null}},"tokens_in":15114567,"tokens_out":21951}
+{"ts":1789422276,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1374-thin-slice","from":"","to":"381682af9b262cd86202e09f91c30c1f6deb7799"}
+{"ts":1789422278,"repo":"tbaums/transom","kind":"pr","pr":1376,"issue":1374,"to":{"state":"draft","head":"381682af9b262cd86202e09f91c30c1f6deb7799"}}
+{"ts":1789422278,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1376"}
+{"ts":1789422345,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1374,"pr":1376},"deadline":1789424745},"tokens_in":null,"tokens_out":null}
+{"ts":1789422638,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1374,"pr":1376}},"tokens_in":7045610,"tokens_out":15682}
+{"ts":1789422641,"repo":"tbaums/transom","kind":"pr","pr":1376,"issue":1374,"to":{"state":"approved","head":"381682af9b262cd86202e09f91c30c1f6deb7799","reviewer":"qa"}}
+{"ts":1789422646,"repo":"tbaums/transom","kind":"note","text":"merge #1376: no check-runs on head 381682af; allowed in M1"}
+{"ts":1789422650,"repo":"tbaums/transom","kind":"pr","pr":1376,"issue":1374,"to":{"state":"merged","sha":"96bb4ee7b95798ed28c85ce624121b992d535b6d"}}
+{"ts":1789422650,"repo":"tbaums/transom","kind":"issue","issue":1374,"to":{"state":"shipped","pr":1376,"sha":"96bb4ee7b95798ed28c85ce624121b992d535b6d"}}
+{"ts":1789422664,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1369"}
+{"ts":1789422667,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"ready"}}
+{"ts":1789422670,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"claimed","seat":1,"fence":"96bb4ee7b95798ed28c85ce624121b992d535b6d"}}
+{"ts":1789422671,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) 96bb4ee7"}
+{"ts":1789422672,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1369,"pr":null},"deadline":1789425072},"tokens_in":null,"tokens_out":null}
+{"ts":1789423203,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1369,"pr":null}},"tokens_in":18912917,"tokens_out":25611}
+{"ts":1789423205,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1369-thin-slice","from":"","to":"2998b93eaee9d78ce4406a111b46668f6fb5ad30"}
+{"ts":1789423207,"repo":"tbaums/transom","kind":"pr","pr":1377,"issue":1369,"to":{"state":"draft","head":"2998b93eaee9d78ce4406a111b46668f6fb5ad30"}}
+{"ts":1789423207,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1377"}
+{"ts":1789423274,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1369,"pr":1377},"deadline":1789425674},"tokens_in":null,"tokens_out":null}
+{"ts":1789423620,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1369,"pr":1377}},"tokens_in":5577140,"tokens_out":14290}
+{"ts":1789423622,"repo":"tbaums/transom","kind":"pr","pr":1377,"issue":1369,"to":{"state":"approved","head":"2998b93eaee9d78ce4406a111b46668f6fb5ad30","reviewer":"qa"}}
+{"ts":1789423627,"repo":"tbaums/transom","kind":"note","text":"merge #1377: no check-runs on head 2998b93e; allowed in M1"}
+{"ts":1789423631,"repo":"tbaums/transom","kind":"pr","pr":1377,"issue":1369,"to":{"state":"merged","sha":"42ed9c7308ff407306990d20eb6daf07a71a47c3"}}
+{"ts":1789423631,"repo":"tbaums/transom","kind":"issue","issue":1369,"to":{"state":"shipped","pr":1377,"sha":"42ed9c7308ff407306990d20eb6daf07a71a47c3"}}
+{"ts":1789424009,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"42ed9c7308ff407306990d20eb6daf07a71a47c3","suite":"fast","secs":376}}
+{"ts":1789424062,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"4718c4d83e812df47e4de730f88efa9ebae8e195","suite":"fast","secs":380}}
+{"ts":1789424070,"repo":"tbaums/transom","kind":"promote","branch":"main","from":"b9c3c2fcda5232eceff1e07c9c6b75051d120e2b","to":"4718c4d83e812df47e4de730f88efa9ebae8e195"}
+{"ts":1789440580,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1278,"pr":null},"deadline":1789441180},"tokens_in":null,"tokens_out":null}
+{"ts":1789440630,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1278,"pr":null}},"tokens_in":1537356,"tokens_out":8500}
+{"ts":1789440632,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"gated"}}
+{"ts":1789441011,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1278,"pr":null},"deadline":1789441611},"tokens_in":null,"tokens_out":null}
+{"ts":1789441041,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1278,"pr":null}},"tokens_in":1365433,"tokens_out":4621}
+{"ts":1789441044,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"gated"}}
+{"ts":1789442005,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1278,"pr":null},"deadline":1789442605},"tokens_in":null,"tokens_out":null}
+{"ts":1789442081,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1278,"pr":null}},"tokens_in":1649265,"tokens_out":16077}
+{"ts":1789442081,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1278 judged ready — awaiting the human un-gate"}
+{"ts":1789442445,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1278"}
+{"ts":1789442445,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"ready"}}
+{"ts":1789442960,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1278"}
+{"ts":1789442963,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"ready"}}
+{"ts":1789442967,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"claimed","seat":1,"fence":"4718c4d83e812df47e4de730f88efa9ebae8e195"}}
+{"ts":1789442967,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) 4718c4d8"}
+{"ts":1789442968,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1278,"pr":null},"deadline":1789445368},"tokens_in":null,"tokens_out":null}
+{"ts":1789443586,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1278,"pr":null}},"tokens_in":19608765,"tokens_out":30811}
+{"ts":1789443588,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"ready"}}
+{"ts":1789443650,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1278"}
+{"ts":1789443653,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"ready"}}
+{"ts":1789443657,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"claimed","seat":1,"fence":"4718c4d83e812df47e4de730f88efa9ebae8e195"}}
+{"ts":1789443657,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) 4718c4d8"}
+{"ts":1789443658,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1278,"pr":null},"deadline":1789446058},"tokens_in":null,"tokens_out":null}
+{"ts":1789444179,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1278,"pr":null}},"tokens_in":16676630,"tokens_out":21524}
+{"ts":1789444181,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1278-thin-slice","from":"","to":"6fd3945387fc6a96eea9b573689cf56b99a80a0d"}
+{"ts":1789444183,"repo":"tbaums/transom","kind":"pr","pr":1378,"issue":1278,"to":{"state":"draft","head":"6fd3945387fc6a96eea9b573689cf56b99a80a0d"}}
+{"ts":1789444183,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1378"}
+{"ts":1789444249,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1278,"pr":1378},"deadline":1789446649},"tokens_in":null,"tokens_out":null}
+{"ts":1789444619,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1278,"pr":1378}},"tokens_in":9664439,"tokens_out":25796}
+{"ts":1789444621,"repo":"tbaums/transom","kind":"pr","pr":1378,"issue":1278,"to":{"state":"changes_requested","head":"6fd3945387fc6a96eea9b573689cf56b99a80a0d"}}
+{"ts":1789444688,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to impl1/issue-1278-thin-slice 6fd39453"}
+{"ts":1789444689,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1278,"pr":1378},"deadline":1789447089},"tokens_in":null,"tokens_out":null}
+{"ts":1789445215,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1278,"pr":1378}},"tokens_in":14183895,"tokens_out":27061}
+{"ts":1789445217,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1278-thin-slice","from":"6fd3945387fc6a96eea9b573689cf56b99a80a0d","to":"4f4a503f0f3f20874168a6f2beaaa2c21f69c8dd"}
+{"ts":1789445217,"repo":"tbaums/transom","kind":"pr","pr":1378,"issue":1278,"to":{"state":"open","head":"4f4a503f0f3f20874168a6f2beaaa2c21f69c8dd"}}
+{"ts":1789445284,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1278,"pr":1378},"deadline":1789447684},"tokens_in":null,"tokens_out":null}
+{"ts":1789445631,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1278,"pr":1378}},"tokens_in":4544365,"tokens_out":10870}
+{"ts":1789445633,"repo":"tbaums/transom","kind":"pr","pr":1378,"issue":1278,"to":{"state":"approved","head":"4f4a503f0f3f20874168a6f2beaaa2c21f69c8dd","reviewer":"qa"}}
+{"ts":1789445640,"repo":"tbaums/transom","kind":"note","text":"merge #1378: no check-runs on head 4f4a503f; allowed in M1"}
+{"ts":1789445643,"repo":"tbaums/transom","kind":"pr","pr":1378,"issue":1278,"to":{"state":"merged","sha":"993bf91e7754853e1b68e54127a1b7cd20220f6e"}}
+{"ts":1789445643,"repo":"tbaums/transom","kind":"issue","issue":1278,"to":{"state":"shipped","pr":1378,"sha":"993bf91e7754853e1b68e54127a1b7cd20220f6e"}}
+{"ts":1789445958,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"993bf91e7754853e1b68e54127a1b7cd20220f6e","suite":"fast","secs":313}}
+{"ts":1789490812,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1379,"pr":null},"deadline":1789491412},"tokens_in":null,"tokens_out":null}
+{"ts":1789490885,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1379,"pr":null}},"tokens_in":936199,"tokens_out":12200}
+{"ts":1789490887,"repo":"tbaums/transom","kind":"issue","issue":1379,"to":{"state":"gated"}}
+{"ts":1789490930,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"working","job":{"role":"pm","issue":1379,"pr":null},"deadline":1789491830},"tokens_in":null,"tokens_out":null}
+{"ts":1789491177,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"pm","to":{"state":"reported","job":{"role":"pm","issue":1379,"pr":null}},"tokens_in":2270205,"tokens_out":34144}
+{"ts":1789491179,"repo":"tbaums/transom","kind":"note","text":"PM spec written into #1379 (3709 chars, discovery=false, 0 question(s)); gate untouched"}
+{"ts":1789491200,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":1379,"pr":null},"deadline":1789491800},"tokens_in":null,"tokens_out":null}
+{"ts":1789491250,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"gv","to":{"state":"reported","job":{"role":"gv","issue":1379,"pr":null}},"tokens_in":937413,"tokens_out":9874}
+{"ts":1789491250,"repo":"tbaums/transom","kind":"note","text":"GV triage: #1379 judged ready — awaiting the human un-gate"}
+{"ts":1789491278,"repo":"tbaums/transom","kind":"human","actor":"jamie-proxy","action":"ungate","target":"#1379"}
+{"ts":1789491278,"repo":"tbaums/transom","kind":"issue","issue":1379,"to":{"state":"ready"}}
+{"ts":1789491281,"repo":"tbaums/transom","kind":"note","text":"thin slice start: issue #1379"}
+{"ts":1789491284,"repo":"tbaums/transom","kind":"issue","issue":1379,"to":{"state":"ready"}}
+{"ts":1789491288,"repo":"tbaums/transom","kind":"issue","issue":1379,"to":{"state":"claimed","seat":1,"fence":"1a771a73fcda9de7d29301a3116c895af580f5fb"}}
+{"ts":1789491288,"repo":"tbaums/transom","kind":"note","text":"seat worktree /Users/mt/.fwf/floors/transom/wt-impl1 realigned to (detached) 1a771a73"}
+{"ts":1789491289,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"working","job":{"role":"impl","issue":1379,"pr":null},"deadline":1789493689},"tokens_in":null,"tokens_out":null}
+{"ts":1789492751,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"impl","to":{"state":"reported","job":{"role":"impl","issue":1379,"pr":null}},"tokens_in":12079021,"tokens_out":72851}
+{"ts":1789492754,"repo":"tbaums/transom","kind":"promote","branch":"impl1/issue-1379-thin-slice","from":"","to":"bd8bba453d791035285ad4ce35eeaa38fd37d433"}
+{"ts":1789492755,"repo":"tbaums/transom","kind":"pr","pr":1380,"issue":1379,"to":{"state":"draft","head":"bd8bba453d791035285ad4ce35eeaa38fd37d433"}}
+{"ts":1789492755,"repo":"tbaums/transom","kind":"note","text":"thin slice done: https://github.com/tbaums/transom/pull/1380"}
+{"ts":1789492822,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"working","job":{"role":"qa","issue":1379,"pr":1380},"deadline":1789495222},"tokens_in":null,"tokens_out":null}
+{"ts":1789493189,"repo":"tbaums/transom","kind":"seat","seat":1,"role":"qa","to":{"state":"reported","job":{"role":"qa","issue":1379,"pr":1380}},"tokens_in":3948788,"tokens_out":8331}
+{"ts":1789493192,"repo":"tbaums/transom","kind":"pr","pr":1380,"issue":1379,"to":{"state":"approved","head":"bd8bba453d791035285ad4ce35eeaa38fd37d433","reviewer":"qa"}}
+{"ts":1789493198,"repo":"tbaums/transom","kind":"note","text":"merge #1380: no check-runs on head bd8bba45; allowed in M1"}
+{"ts":1789493201,"repo":"tbaums/transom","kind":"pr","pr":1380,"issue":1379,"to":{"state":"merged","sha":"3842db80b3da1991b03044e96d036a7bb329fea4"}}
+{"ts":1789493201,"repo":"tbaums/transom","kind":"issue","issue":1379,"to":{"state":"shipped","pr":1380,"sha":"3842db80b3da1991b03044e96d036a7bb329fea4"}}
+{"ts":1789493550,"repo":"tbaums/transom","kind":"gate","to":{"state":"green","sha":"3842db80b3da1991b03044e96d036a7bb329fea4","suite":"fast","secs":346}}
