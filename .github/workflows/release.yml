@@ -5,7 +5,13 @@ name: legacy release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    # `v*.*.*` minus `v1.*` (#641). Tags moved from `one-v*` to `v*` in v1.0.4,
+    # so 1.x cuts started matching this workflow too: it fired on the shared
+    # local-devbox runner, read the repo-root VERSION (0.x, the bash tool's),
+    # saw it disagree with the tag and failed loudly. The major version is the
+    # boundary between the two products, so exclude 1.x here and match it in
+    # one-release.yml; `v0.*.*` still lands here as before.
+    tags: ["v*.*.*", "!v1.*"]
 
 permissions:
   contents: write   # needed to create the GitHub Release and upload assets
