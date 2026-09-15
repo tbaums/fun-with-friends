@@ -183,7 +183,7 @@ fwf_doctor_lapsed_check_line() {
   command -v resolve_profile >/dev/null 2>&1 || return 0
   local out repo branch sha vfile content mt now age
   out="$(FWF_PROFILE="${FWF_PROFILE:-$(resolve_profile 2>/dev/null || true)}" bash -c '
-    source "'"$FWF_DIR"'/lib.sh" 2>/dev/null
+    source "'"$FWF_DIR"'/bin/lib.sh" 2>/dev/null
     printf "%s\t%s\n" "$FWF_REPO" "$STAGING_BRANCH"
   ' 2>/dev/null)" || return 0
   IFS=$'\t' read -r repo branch <<<"$out"

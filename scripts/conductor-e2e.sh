@@ -63,7 +63,7 @@ FWF_CONDUCTOR_E2E_MAX_ATTEMPTS="${FWF_CONDUCTOR_E2E_MAX_ATTEMPTS:-3}"
 # STARTED on the staging tip when this was written. Not a self-hosted Actions
 # runner: this repo is PUBLIC, and a registered runner would execute fork-PR
 # code on a box holding the factory OAuth token, tailnet and SSH keys.
-LOCAL="$DIR/fwf-local-ci.sh"
+LOCAL="$DIR/bin/fwf-local-ci.sh"
 
 if [ -z "$SHA" ] || [ ! -x "$LOCAL" ]; then
   exec bash test/run.sh

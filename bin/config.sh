@@ -4,7 +4,8 @@
 # Generic defaults only. Repo-specific commands live in profiles/<name>.sh.
 # Every value is overridable by the matching FWF_* env var.
 
-FWF_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The install root — one level up, now that this file lives in bin/ (#622).
+FWF_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Which factory template the agents run — a directory under templates/ holding
 # the six role prompts (and an optional template.sh of config defaults).

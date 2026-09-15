@@ -309,7 +309,7 @@ skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
 issues = [564]
 
 [suites]
-fast = "bash -n fwf lib.sh fwf-*.sh && echo SYNTAX-OK"
+fast = "bash -n fwf-legacy bin/lib.sh bin/fwf-*.sh && echo SYNTAX-OK"
 e2e = "cd one && cargo test --quiet"
 
 [models]

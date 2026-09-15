@@ -339,13 +339,13 @@ is_url /tmp/local                 && bad "path not url"  || ok "path not url"
 # --------------------------------------------------------------------------
 section "fwf_repo_slug: gh -R scope resolves the factory repo, not CWD (#145)"
 assert_eq "env FWF_GHCACHE_REPO wins" "foo/bar" \
-  "$(FWF_GHCACHE_REPO=foo/bar bash -c "source '$ROOT/lib.sh'; fwf_repo_slug")"
+  "$(FWF_GHCACHE_REPO=foo/bar bash -c "source '$ROOT/bin/lib.sh'; fwf_repo_slug")"
 mkfix slug-ssh; ( cd "$FIX" && git remote add origin git@github.com:foo/baz.git )
 assert_eq "derive from ssh remote"    "foo/baz" \
-  "$(FWF_REPO="$FIX" bash -c "unset FWF_GHCACHE_REPO; source '$ROOT/lib.sh'; fwf_repo_slug")"
+  "$(FWF_REPO="$FIX" bash -c "unset FWF_GHCACHE_REPO; source '$ROOT/bin/lib.sh'; fwf_repo_slug")"
 mkfix slug-https; ( cd "$FIX" && git remote add origin https://github.com/foo/qux.git )
 assert_eq "derive from https remote"  "foo/qux" \
-  "$(FWF_REPO="$FIX" bash -c "unset FWF_GHCACHE_REPO; source '$ROOT/lib.sh'; fwf_repo_slug")"
+  "$(FWF_REPO="$FIX" bash -c "unset FWF_GHCACHE_REPO; source '$ROOT/bin/lib.sh'; fwf_repo_slug")"
 
 # --------------------------------------------------------------------------
 section "detection: rust workspace"
@@ -425,13 +425,13 @@ RUN="$(FWF_PROFILE="" bash -c '
   set -e
   cp "'"$OUT"'" "'"$ROOT"'/profiles/.__test_genblank.sh"
   trap "rm -f '"$ROOT"'/profiles/.__test_genblank.sh" EXIT
-  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/templates/dev/qa.tmpl 1)\""
+  FWF_PROFILE=.__test_genblank bash -c "source '"$ROOT"'/bin/lib.sh; printf \"%s|%s\" \"\$DEFAULT_BRANCH\" \"\$(fwf_render '"$ROOT"'/templates/dev/qa.tmpl 1)\""
 ')"
 assert_eq "lib.sh sees baked default branch" "master" "${RUN%%|*}"
 assert_contains "qa prompt renders" "${RUN#*|}" "You are qa1"
 
 section "implementer prompt carries the atomic-claim protocol"
-IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
+IMPL_RUN="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 2")"
 assert_contains "claim comment is the mutex"   "$IMPL_RUN" "CLAIM impl2"
 assert_contains "claim race adjudication is code, not a prose re-check (issue #462)" "$IMPL_RUN" "posting a STAND-DOWN comment naming the winner"
 assert_contains "captain assignment honored"   "$IMPL_RUN" "ASSIGNED impl2"
@@ -442,7 +442,7 @@ assert_contains "dev: checks out own branch before resuming"   "$IMPL_RUN" "star
 assert_contains "dev: bounded escalation on a stalled draft"   "$IMPL_RUN" "2+ consecutive cycles"
 assert_contains "dev: escalation posts the @captain BLOCKED comment" "$IMPL_RUN" "stalled with no progress"
 for t in refactor ideation validate; do
-  TR="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/implementer.tmpl' 2")"
+  TR="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/$t/implementer.tmpl' 2")"
   assert_contains "$t: claim-only draft is a resume target"   "$TR" "RESUME it"
   assert_contains "$t: checks out own branch before resuming" "$TR" "starts on the wrong branch with no memory of the claim"
   assert_contains "$t: bounded escalation on a stalled draft" "$TR" "2+ consecutive cycles"
@@ -451,7 +451,7 @@ done
 # actually inherits dev's, so the Fix 1 language reaches it too.
 assert_eq "dev-sre has no own implementer.tmpl (inherits dev's)" "" \
   "$([ -f "$ROOT/templates/dev-sre/implementer.tmpl" ] && echo present)"
-DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
+DEVSRE_RUN="$(FWF_PROFILE=example FWF_TEMPLATE=dev-sre bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 2")"
 assert_contains "dev-sre inherits the resume-own-draft language from dev" "$DEVSRE_RUN" "RESUME it"
 
 # issue #247 AC (a3): an empty `find` yields an empty accumulator, and an
@@ -493,12 +493,12 @@ tmpl_filter_nonempty "$ROOT/templates" 'gh pr (create|merge)' ! -path "*_local-i
 assert_eq "AC(#247 a4): ...and stays GREEN against the real corpus" "0" "$?"
 
 section "step-0 tick: a monotonic loop-tick bump, never the pane glyph (#99 Fix 2 / #133)"
-assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
-assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
-assert_eq "pm (no id) -> pm"       "pm"        "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/pm.tmpl' ''")"
-assert_eq "captain (no id) -> captain" "captain" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/captain.tmpl' ''")"
-assert_eq "extra role (sre) -> its own basename" "sre" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev-sre/sre.tmpl' ''")"
-HB_QA3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_eq "impl+id -> impl<id>"    "impl3"     "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/implementer.tmpl' 3")"
+assert_eq "qa+id -> qa<id>"        "qa3"       "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/qa.tmpl' 3")"
+assert_eq "pm (no id) -> pm"       "pm"        "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/pm.tmpl' ''")"
+assert_eq "captain (no id) -> captain" "captain" "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev/captain.tmpl' ''")"
+assert_eq "extra role (sre) -> its own basename" "sre" "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_tag_for_tmpl '$ROOT/templates/dev-sre/sre.tmpl' ''")"
+HB_QA3="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 3")"
 assert_contains "rendered step-0 bumps the per-role tick counter (#133)" "$HB_QA3" "fwf tick qa3"
 assert_contains "tick write is framed as durable, NOT the pane glyph" "$HB_QA3" "never the pane glyph"
 # every base role template (every factory design, excluding _local-issues
@@ -523,13 +523,13 @@ assert_eq "_local-issues overlays are excluded (no loop of their own)" "0" \
 
 # --------------------------------------------------------------------------
 section "build-provenance stamp: role->model map recorded on every PR"
-prov_env() { FWF_PROFILE=example FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 FWF_MODEL_GV=claude-opus-4-8 FWF_MODEL_CAPTAIN=claude-opus-4-8 bash -c "source '$ROOT/lib.sh'; $1"; }
+prov_env() { FWF_PROFILE=example FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 FWF_MODEL_GV=claude-opus-4-8 FWF_MODEL_CAPTAIN=claude-opus-4-8 bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 # fwf_model_for: per-role override -> floor default -> "" (CLI default).
 assert_eq "fwf_model_for pm -> override"          "claude-opus-4-8" "$(prov_env 'fwf_model_for pm')"
 assert_eq "fwf_model_for impl2 -> floor default"  "claude-sonnet-5" "$(prov_env 'fwf_model_for impl2')"
 assert_eq "fwf_model_for qa1 -> floor default"    "claude-sonnet-5" "$(prov_env 'fwf_model_for qa1')"
 assert_eq "fwf_model_for gv -> override"          "claude-opus-4-8" "$(prov_env 'fwf_model_for gv')"
-assert_eq "fwf_model_for unset role -> empty (CLI default)" "" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_model_for impl2")"
+assert_eq "fwf_model_for unset role -> empty (CLI default)" "" "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_model_for impl2")"
 # fwf_seat_model_pairs: the single roster both fwf_provenance_block AND
 # fwf_credit_block (lib/pr_context.sh, #134) consume, so they can't drift
 # apart the way credit did (hardcoded "impl qa" while provenance already
@@ -548,7 +548,7 @@ assert_contains "provenance carries the impl seat model"               "$PROV" "
 assert_contains "provenance carries the conductor seat"                "$PROV" "conductor="
 assert_eq "provenance has no embedded newlines (single line)" "0" "$(printf '%s' "$PROV" | tr -cd '\n' | wc -c | tr -d ' ')"
 # A seat with no override AND no floor default records cli-default, never blank.
-PROV_BLANK="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_provenance_block")"
+PROV_BLANK="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_provenance_block")"
 assert_contains "unset seat -> cli-default (never blank)" "$PROV_BLANK" "impl=cli-default"
 # __PROVENANCE__ substitutes into both the merge body and the PR-create body.
 assert_contains "qa merge body carries the provenance trailer" \
@@ -580,7 +580,7 @@ assert_eq "no stray __PROVENANCE__ after render" "" \
 
 # --------------------------------------------------------------------------
 section "PR body context-fold + built-with credit (issue #106)"
-pctx_env() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+pctx_env() { FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 # fwf_sanitize_pr_text: the denylist + pattern sweep, portable across BSD sed
 # (macOS, no \b support in -E) and GNU sed. This is a regression guard for a
 # real bug: the first cut of this sanitizer used \b, which silently NEVER
@@ -698,7 +698,7 @@ esac
 # fwf_credit_block: on (default) / minimal / off, model-family-agnostic via
 # fwf_model_for, reading the SAME six-seat roster as fwf_provenance_block
 # (#134 — credit used to hardcode "impl qa" and drop every other seat).
-cred_env() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+cred_env() { FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 # Mixed-model profile (pm on opus, everyone else on the sonnet floor default):
 # credit must list BOTH models, not just the ones "impl qa" used to loop.
 CRED_ON="$(FWF_MODEL=claude-sonnet-5 FWF_MODEL_PM=claude-opus-4-8 cred_env "fwf_credit_block")"
@@ -737,12 +737,12 @@ case "$CRED_MIN" in
   *"multi-agent Claude Code dev factory"*) bad "credit (minimal) drops the descriptive aside" "$CRED_MIN";;
   *) ok "credit (minimal) drops the descriptive aside";;
 esac
-CRED_OFF="$(FWF_PROFILE=example FWF_CREDIT=off bash -c "source '$ROOT/lib.sh'; fwf_credit_block")"
+CRED_OFF="$(FWF_PROFILE=example FWF_CREDIT=off bash -c "source '$ROOT/bin/lib.sh'; fwf_credit_block")"
 assert_eq "credit (off) prints nothing" "" "$CRED_OFF"
 # --issues local defaults FWF_CREDIT to off (constraint 4/5: not our repo until configured).
-CRED_LOCAL_DEFAULT="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$FWF_CREDIT\"")"
+CRED_LOCAL_DEFAULT="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; printf '%s' \"\$FWF_CREDIT\"")"
 assert_eq "--issues local defaults FWF_CREDIT to off" "off" "$CRED_LOCAL_DEFAULT"
-CRED_REMOTE_DEFAULT="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$FWF_CREDIT\"")"
+CRED_REMOTE_DEFAULT="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; printf '%s' \"\$FWF_CREDIT\"")"
 assert_eq "remote (gh) mode defaults FWF_CREDIT to on" "on" "$CRED_REMOTE_DEFAULT"
 
 # fwf_pr_body_guard: fail-closed backstop (PM item 2) — re-scans the ACTUAL
@@ -810,7 +810,7 @@ assert_eq "#512 AC(new): a refused body is not echoed to stdout" \
 # the sanitizer never touches cannot indicate the sanitizer gap this guard
 # exists to catch, so its only possible effect is a false positive.
 F512_REPORT="$(FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   csb=0; csr=0; cib=0; bad=""
   while IFS="%" read -r m rx spec; do
     [ -n "$m" ] || continue
@@ -836,7 +836,7 @@ done
 # REFUSE, never pass an unchecked body. (This is the shape that keeps biting
 # fwf -- the unrecognised case falling into the permissive branch.)
 F512_VAC="$(FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   _fwf_pr_ctx_guard_table() { printf "csb%%WIP%%WIP\n"; }
   printf "harmless prose\n" | fwf_pr_body_guard >/dev/null 2>&1
   echo "rc=$?"
@@ -862,7 +862,7 @@ assert_eq "#512: a genuine unsanitized marker still blocks (no stdout)" "" "$F51
 # so the correct behaviour is asserted rather than re-derived a third time --
 # it locks in what already works, and it does not claim to repair anything.
 F512_PROP="$(FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   set -euo pipefail
   ctx="$(printf "still mentions GV-SIGNOFF raw\n" | fwf_pr_body_guard)" || {
     echo "refused" >&2
@@ -879,7 +879,7 @@ assert_not_contains "#512 regression: ...and it never reaches the merge step" \
 # body sections + a linked docs/proposals/<n>-*.md, via the LOCAL issue store
 # (--issues local) so this test needs no network / no real gh issue.
 PCTXRUN="$TMP/pr-context-run"
-PISS() { FWF_RUN_DIR="$PCTXRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+PISS() { FWF_RUN_DIR="$PCTXRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 FIX1_BODY='## Problem / intent
 The thing is broken for real users in a real way.
 
@@ -898,7 +898,7 @@ PISS create --title "Fix the thing" --body "$FIX1_BODY" >/dev/null
 PISS comment 1 --body "CAPTAIN -> PM: ball is in your court, GV-SIGNOFF pending" >/dev/null
 PCTXREPO="$TMP/pr-context-repo"; mkdir -p "$PCTXREPO/docs/proposals"
 printf '# Proposal: fix the thing\n\nDo the fix this way.\n' > "$PCTXREPO/docs/proposals/1-fix-the-thing.md"
-CTX1="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block 1")"
+CTX1="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_context_block 1")"
 assert_contains "context fold has the heading"        "$CTX1" "## Context & rationale"
 assert_contains "context fold carries the ticket title" "$CTX1" "Fix the thing"
 assert_contains "context fold carries the intro"       "$CTX1" "broken for real users"
@@ -919,7 +919,7 @@ esac
 # (d) multi-ticket PRs: fold both, ordered by issue number regardless of call order.
 PISS create --title "Second ticket" --body "## Problem / intent
 A second, unrelated issue." >/dev/null
-CTX2="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block 2 1")"
+CTX2="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_context_block 2 1")"
 assert_contains "two-ticket fold carries ticket 1" "$CTX2" "Fix the thing"
 assert_contains "two-ticket fold carries ticket 2" "$CTX2" "Second ticket"
 BEFORE_TICKET2="${CTX2%%Second ticket*}"
@@ -955,7 +955,7 @@ printf 'Closes #501, Closes #504.\n\nMulti-issue PR.' > "$PCTX189/views/pr-603-b
 PCTX189GHBIN="$TMP/pr-context-189-ghbin"; mkdir -p "$PCTX189GHBIN"
 PCTX189REPO="$TMP/pr-context-189-repo"; mkdir -p "$PCTX189REPO"
 ( cd "$PCTX189REPO" && git init -q )
-PISS189() { FWF_RUN_DIR="$PCTX189RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+PISS189() { FWF_RUN_DIR="$PCTX189RUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 # issue #501/#504's real content comes through the SAME gh stub, keyed the
 # way fwf_pr_ctx_issue_json expects (`gh issue view <n> --json title,body`) --
 # FWF_ISSUES stays 'gh' for the CLI calls below so the real PR/issue
@@ -1059,9 +1059,9 @@ esac
 section "fwf_context_block fail-open (issue #135): non-canonical headings, new bucket schema, coverage/drift"
 
 PCTX135RUN="$TMP/pr-context-135-run"
-PISS135() { FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
-PCTX135_CTX() { FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block \"\$@\"" _ "$@"; }
-PCTX135_ONE() { FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_pr_ctx_one \"\$@\"" _ "$@"; }
+PISS135() { FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
+PCTX135_CTX() { FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_context_block \"\$@\"" _ "$@"; }
+PCTX135_ONE() { FWF_ISSUES=local FWF_RUN_DIR="$PCTX135RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_pr_ctx_one \"\$@\"" _ "$@"; }
 
 # --- fail-open: a ticket with NO canonical headings still folds real content --
 PISS135 create --title "Non-canonical ticket" --body "## Bug
@@ -1113,7 +1113,7 @@ assert_contains "acceptance criteria present in source always appear in the card
 # / Alternatives considered / Acceptance criteria / Testing) already asserts
 # every legacy bucket individually -- re-run here post-#135 to pin it did not
 # regress under the new fail-open routing.
-CANON_REGRESSION="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_context_block 1")"
+CANON_REGRESSION="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_context_block 1")"
 assert_contains "regression: canonical-heading fold (#128/#114-style) still carries decisions"    "$CANON_REGRESSION" "mechanical extraction over an LLM pass"
 assert_contains "regression: canonical-heading fold still carries acceptance criteria"            "$CANON_REGRESSION" "ships behind a flag"
 case "$CANON_REGRESSION" in *"**Other context:**"*) bad "regression: a fully-canonical ticket must never gain an Other-context bucket" "$CANON_REGRESSION";; *) ok "regression: a fully-canonical ticket gains no Other-context bucket";; esac
@@ -1155,7 +1155,7 @@ assert_contains "drift report gives the seen/mapped/denied counts" "$DRIFT_STDER
 DRIFT_STDOUT="$(PCTX135_ONE 2 2>/dev/null)"
 case "$DRIFT_STDOUT" in *"DRIFT"*) bad "drift report must stay on stderr, never leak into the card itself" "$DRIFT_STDOUT";; *) ok "drift report stays on stderr, never in the card";; esac
 # It stays QUIET -- a fixture where everything maps cleanly.
-QUIET_STDERR="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_pr_ctx_one 1" 2>&1 >/dev/null)"
+QUIET_STDERR="$(FWF_ISSUES=local FWF_RUN_DIR="$PCTXRUN" FWF_REPO="$PCTXREPO" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_pr_ctx_one 1" 2>&1 >/dev/null)"
 assert_eq "drift stays QUIET when every section maps cleanly (a reporter that always fires is one nobody reads)" "" "$QUIET_STDERR"
 
 # --- #189 VERBATIM AS THE FIXTURE (load-bearing): Root cause + Evidence ----
@@ -1272,9 +1272,9 @@ assert_contains "#195 verbatim fixture: the Mechanism/root-cause content is admi
 # no longer flags what #234 already decided is legitimate content, but still
 # catches a genuine unsanitized marker leak.
 GUARD_LEGIT_RC=0
-printf 'plain prose mentioning gv, pm, captain, conductor, worktree and floor by name, plus impl2 and qa1 as seat identifiers' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" >/dev/null 2>&1 || GUARD_LEGIT_RC=$?
+printf 'plain prose mentioning gv, pm, captain, conductor, worktree and floor by name, plus impl2 and qa1 as seat identifiers' | FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_pr_body_guard" >/dev/null 2>&1 || GUARD_LEGIT_RC=$?
 assert_eq "guard: bare role/jargon words #234 already decided are legitimate content pass clean" "0" "$GUARD_LEGIT_RC"
-GUARD_LEAK="$(printf 'this text still says GV-SIGNOFF verbatim' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" 2>&1 >/dev/null)"
+GUARD_LEAK="$(printf 'this text still says GV-SIGNOFF verbatim' | FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_pr_body_guard" 2>&1 >/dev/null)"
 assert_contains "guard: a genuine unsanitized PROTOCOL MARKER (GV-SIGNOFF) still trips the backstop" "$GUARD_LEAK" "GV-SIGNOFF"
 # Regression (found while landing this fix): a blanket case-insensitive
 # guard pass matches lowercase "wip" inside the legitimate label name
@@ -1282,7 +1282,7 @@ assert_contains "guard: a genuine unsanitized PROTOCOL MARKER (GV-SIGNOFF) still
 # rule is deliberately uppercase-only, so this is a guard/sanitizer
 # case-sensitivity mismatch, not a real leak.
 GUARD_LABEL_RC=0
-printf 'discussing the product-wip label and gate notes in prose' | FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_pr_body_guard" >/dev/null 2>&1 || GUARD_LABEL_RC=$?
+printf 'discussing the product-wip label and gate notes in prose' | FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_pr_body_guard" >/dev/null 2>&1 || GUARD_LABEL_RC=$?
 assert_eq "guard regression: 'product-wip' as a label name in prose does not false-positive against the case-sensitive-only WIP rule" "0" "$GUARD_LABEL_RC"
 
 # --- CLI end-to-end: the real #195 fixture through the guard doesn't refuse --
@@ -1293,12 +1293,12 @@ assert_eq "CLI: the real #195 fixture (containing legitimate 'GV'/'worktree'/'ca
 section "history-card guard (issue #136): the permanent squash-merge invariant"
 
 H136RUN="$TMP/h136-run"
-H136ISS() { FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+H136ISS() { FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 H136ISS create --title "Sparse issue" --body "" >/dev/null                                  # issue 1: genuinely empty body
 H136ISS create --title "Rich issue" --body "## Problem / intent
 Real substantive content that must not be dropped." >/dev/null                              # issue 2: extractable
 
-H136() { FWF_ISSUES=local FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1" _ "${@:2}"; }
+H136() { FWF_ISSUES=local FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1" _ "${@:2}"; }
 assert_eq "fwf_pr_ctx_has_extractable_content: a genuinely sparse issue reads FALSE" "1" "$(H136 'fwf_pr_ctx_has_extractable_content 1; echo $?')"
 assert_eq "fwf_pr_ctx_has_extractable_content: an issue with real content reads TRUE" "0" "$(H136 'fwf_pr_ctx_has_extractable_content 2; echo $?')"
 
@@ -1391,7 +1391,7 @@ HOLLOW_SHA="$(cd "$H136WT" && git log --format=%H --grep 'Hollow merge' -1)"
 SPARSE_SHA="$(cd "$H136WT" && git log --format=%H --grep 'Sparse merge' -1)"
 TIP_SHA="$(cd "$H136WT" && git rev-parse HEAD)"
 
-H136G() { FWF_ISSUES=local FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example bash -c "cd '$H136WT'; source '$ROOT/lib.sh'; $1" _ "${@:2}"; }
+H136G() { FWF_ISSUES=local FWF_RUN_DIR="$H136RUN" FWF_PROFILE=example bash -c "cd '$H136WT'; source '$ROOT/bin/lib.sh'; $1" _ "${@:2}"; }
 
 # --- per-commit verdicts ----------------------------------------------------
 assert_contains "verdict: a complete card PASSes" "$(H136G "fwf_history_card_verdict $GOOD_SHA")" "PASS"
@@ -1435,9 +1435,9 @@ assert_eq "a real 2-parent merge commit (and its non-first-parent's own sub-comm
 
 # --- fwf-gate-promote.sh wiring: a failing range refuses the promote -------
 assert_contains "fwf-gate-promote.sh sources the history guard (wired, not just written)" \
-  "$(cat "$ROOT/fwf-gate-promote.sh")" "fwf_history_guard_range"
+  "$(cat "$ROOT/bin/fwf-gate-promote.sh")" "fwf_history_guard_range"
 assert_contains "AC(i2): the wiring's own refusal message names issue #136" \
-  "$(cat "$ROOT/fwf-gate-promote.sh")" "issue #136"
+  "$(cat "$ROOT/bin/fwf-gate-promote.sh")" "issue #136"
 
 # --- fwf merge (prevention layer) -------------------------------------------
 assert_eq "fwf merge with no PR number is a usage error" "1" "$(FWF_PROFILE=example "$ROOT/fwf-legacy" merge >/dev/null 2>&1; echo $?)"
@@ -1525,7 +1525,7 @@ assert_eq "fwf merge: gh pr merge was never invoked on the refusal path" "" "$([
 section "backfill-context (issue #212): recover hollow history cards without rewriting"
 
 B212RUN="$TMP/b212-run"
-B212ISS() { FWF_RUN_DIR="$B212RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+B212ISS() { FWF_RUN_DIR="$B212RUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 B212ISS create --title "Rich issue" --body "## Problem / intent
 Real substantive content that must not be dropped." >/dev/null                              # issue 1
 B212ISS create --title "Sparse issue" --body "" >/dev/null                                   # issue 2
@@ -1550,7 +1550,7 @@ But the current check is not attributable. `fwf authz` is a plaintext `grep -qF`
 Deliverable is a written proposal (docs/proposals/) that states whether attributable operator authorization is achievable at all under #82'"'"'s shared-account constraint. Must never appear on a backfilled card.'
 B212ISS create --title "issue 152 verbatim (non-canonical headings)" --body "$ISSUE152_BODY" >/dev/null   # issue 3
 
-B212() { FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_PROFILE=example bash -c "cd '$B212WT'; source '$ROOT/lib.sh'; $1" _ "${@:2}"; }
+B212() { FWF_ISSUES=local FWF_RUN_DIR="$B212RUN" FWF_PROFILE=example bash -c "cd '$B212WT'; source '$ROOT/bin/lib.sh'; $1" _ "${@:2}"; }
 
 # --- a throwaway git repo with controlled commits -----------------------
 B212WT="$TMP/b212-wt"; mkdir -p "$B212WT"
@@ -1777,12 +1777,12 @@ assert_contains "AC(h): docs state the unlinked-PR scenario's status honestly" "
 # while waiting (this ticket's own AC(d), stated as a negative-space check:
 # fwf-gate.sh never references fwf-merge.sh or an authz call of its own).
 assert_not_contains "AC(d) regression: fwf-gate.sh does not call fwf-authz.sh (gate stays unaffected by this ticket)" \
-  "$(cat "$ROOT/fwf-gate.sh")" "fwf-authz.sh"
+  "$(cat "$ROOT/bin/fwf-gate.sh")" "fwf-authz.sh"
 
 # --- Wiring: every refusal branch raises a needs-captain flag (issue #113's
 # existing, already-tested mechanism) so it surfaces loud and human-addressed
 # on the captain's very next tick, not a silently-retried loop.
-FMRG_SRC="$(cat "$ROOT/fwf-merge.sh")"
+FMRG_SRC="$(cat "$ROOT/bin/fwf-merge.sh")"
 assert_contains "fwf-merge.sh raises needs-captain on an INDETERMINATE refusal" "$FMRG_SRC" 'fwf-flag-captain.sh" "$li" --role qa --reason "fwf merge #$num REFUSED: authz INDETERMINATE'
 assert_contains "fwf-merge.sh raises needs-captain on a HELD/INVALID refusal" "$FMRG_SRC" 'fwf-flag-captain.sh" "$li" --role qa --reason "fwf merge #$num REFUSED: authz $([ "$az_rc" = 10 ]'
 
@@ -1830,7 +1830,7 @@ assert_eq "exit-code classification: authz 2 (INDETERMINATE) -> merge refuses" "
 assert_eq "exit-code classification: authz 10 (HELD) -> merge refuses" "1" "$(FMRG_CLASS_RUN 10)"
 assert_eq "exit-code classification: authz 11 (INVALID) -> merge refuses" "1" "$(FMRG_CLASS_RUN 11)"
 assert_eq "exit-code classification: an unexpected authz exit code (99) fails CLOSED, never a pass" "1" "$(FMRG_CLASS_RUN 99)"
-assert_contains "fwf-merge.sh's authz-script override is documented as test-only" "$(cat "$ROOT/fwf-merge.sh")" "Overridable for tests only"
+assert_contains "fwf-merge.sh's authz-script override is documented as test-only" "$(cat "$ROOT/bin/fwf-merge.sh")" "Overridable for tests only"
 
 # COVERAGE (mirrors #80's provenance coverage above): every PR-producing
 # template (excluding _local-issues, which never opens an upstream PR — same
@@ -1979,7 +1979,7 @@ assert_not_contains "captain: no longer overclaims 'never by a role' (#213)" "$C
 
 section "fwf_wait_heartbeat: polls a plain file, no tmux needed (#99 Fix 2)"
 HBT="$TMP/heartbeat-test"; mkdir -p "$HBT"
-hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; $1"; }
+hb_test() { FWF_PROFILE=example FWF_RUN_DIR="$HBT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 hb_test 'mkdir -p "$(dirname "$(fwf_heartbeat_path impl9)")"'
 NOFILE_RC="$(hb_test 'fwf_wait_heartbeat impl9 $(date +%s) 2 >/dev/null 2>&1; echo $?')"
 assert_eq "missing heartbeat file -> times out (rc 1)" "1" "$NOFILE_RC"
@@ -1992,7 +1992,7 @@ FRESH_OUT="$(hb_test 'fwf_wait_heartbeat impl9 $(( $(date +%s) - 5 )) 2')"
 
 section "fwf_verify_respawn_tick: verified tick / bounded re-nudge / no false success (#99 Fix 2)"
 VT="$TMP/verify-tick-test"; mkdir -p "$VT"
-vt_run() { FWF_PROFILE=example FWF_RUN_DIR="$VT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl9)\")\"; $1"; }
+vt_run() { FWF_PROFILE=example FWF_RUN_DIR="$VT/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/bin/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl9)\")\"; $1"; }
 # already-ticking pane: verified on the FIRST wait, renudge never called.
 vt_run 'rm -f "$(fwf_heartbeat_path impl9)"; touch "$(fwf_heartbeat_path impl9)"
   _n() { echo NUDGE_FIRED; }
@@ -2015,7 +2015,7 @@ case "$(cat "$VT/out3.txt")" in *"respawn verified"*) bad "never-ticking pane mu
 
 section "fwf tick: monotonic per-role loop-tick counter — the reliable liveness signal (#133)"
 TK="$TMP/tick-test"; mkdir -p "$TK"
-tk() { FWF_PROFILE=example FWF_RUN_DIR="$TK/run" bash -c "source '$ROOT/lib.sh'; $1"; }
+tk() { FWF_PROFILE=example FWF_RUN_DIR="$TK/run" bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 assert_eq "unticked role reads 0 (never errors)"       "0" "$(tk 'fwf_tick_read impl9')"
 assert_eq "first bump returns 1"                        "1" "$(tk 'fwf_tick_bump impl9')"
 assert_eq "counter STRICTLY increases across bumps"     "3" "$(tk 'fwf_tick_bump impl9 >/dev/null; fwf_tick_bump impl9 >/dev/null; fwf_tick_read impl9')"
@@ -2066,7 +2066,7 @@ assert_eq "recovery: a later healthy bump after a refusal resumes from the REAL 
 
 section "fwf_log_unknown_read: the bounded diagnostic log for collapsing reads (#211 AC f/f0)"
 UL="$TMP/unknown-log"
-ul() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run" bash -c "source '$ROOT/lib.sh'; $1"; }
+ul() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run" bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 ULOG="$UL/run/state/example/unknown-reads.log"
 assert_eq "a healthy fwf_tick_read writes NOTHING to the log (success path costs nothing)" "no" \
   "$(ul 'fwf_tick_read healthyrole >/dev/null; [ -f "$(fwf_unknown_log_path)" ] && echo yes || echo no')"
@@ -2078,7 +2078,7 @@ LINES1="$(wc -l < "$ULOG" | tr -d ' ')"
 [ "$LINES1" -ge 1 ] && ok "log grew by at least one line" || bad "log grew by at least one line" "got $LINES1"
 
 # Bounded: repeated failures never grow the log past FWF_UNKNOWN_LOG_MAX_LINES.
-ul2() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run2" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/lib.sh'; $1"; }
+ul2() { FWF_PROFILE=example FWF_RUN_DIR="$UL/run2" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 ul2 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"
   for i in 1 2 3 4 5 6 7 8 9 10; do fwf_tick_read badrole >/dev/null; done'
 BOUNDED_LOG="$UL/run2/state/example/unknown-reads.log"
@@ -2094,7 +2094,7 @@ PADWC="$UL/padbin"; mkdir -p "$PADWC"
 REALWC="$(command -v wc)"
 printf '#!/bin/sh\nexec printf "%%10s\\n" "$(%s "$@" | tr -d "[:space:]")"\n' "$REALWC" > "$PADWC/wc"
 chmod +x "$PADWC/wc"
-ul3() { PATH="$PADWC:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$UL/runpad" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/lib.sh'; $1"; }
+ul3() { PATH="$PADWC:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$UL/runpad" FWF_UNKNOWN_LOG_MAX_LINES=5 bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 ul3 'mkdir -p "$(dirname "$(fwf_tick_path badrole)")"; printf garbage > "$(fwf_tick_path badrole)"
   for i in 1 2 3 4 5 6 7 8 9 10; do fwf_tick_read badrole >/dev/null; done'
 PAD_LOG="$UL/runpad/state/example/unknown-reads.log"
@@ -2109,9 +2109,9 @@ assert_eq "bound still fires when wc pads its count (BSD shape, #284)" \
 UL3="$UL/run3"; mkdir -p "$UL3/state/example/tick"
 printf garbage > "$UL3/state/example/tick/badrole3"
 chmod 555 "$UL3/state/example"
-UL3OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/lib.sh'; fwf_tick_read badrole3; echo RC=\$?" 2>&1)"
+UL3OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/bin/lib.sh'; fwf_tick_read badrole3; echo RC=\$?" 2>&1)"
 UL3LOGGERRC=0
-FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/lib.sh'; fwf_log_unknown_read x y" >/dev/null 2>&1 || UL3LOGGERRC=$?
+FWF_PROFILE=example FWF_RUN_DIR="$UL3" bash -c "source '$ROOT/bin/lib.sh'; fwf_log_unknown_read x y" >/dev/null 2>&1 || UL3LOGGERRC=$?
 chmod 755 "$UL3/state/example"
 assert_contains "reader behaves IDENTICALLY with an unwritable log path (still echoes the 0 fallback)" "$UL3OUT" "0"
 assert_contains "  ...and still reports its own failure status normally (RC=1)" "$UL3OUT" "RC=1"
@@ -2184,7 +2184,7 @@ section "fwf_wedge_verdict: steady-state wedge classifier — PURE (delta_tick, 
 # Pure predicate: sample tuples in -> asserted verdict out, exactly like
 # fwf_pr_is_stale_stub. FWF_WEDGE_MIN_SECS pinned so the flat-for threshold is
 # deterministic (600s here). No state, no tmux, no tokens sampled.
-wv() { FWF_PROFILE=example FWF_WEDGE_MIN_SECS=600 bash -c "source '$ROOT/lib.sh'; fwf_wedge_verdict $1"; }
+wv() { FWF_PROFILE=example FWF_WEDGE_MIN_SECS=600 bash -c "source '$ROOT/bin/lib.sh'; fwf_wedge_verdict $1"; }
 # HEALTHY: the tick advanced — alive regardless of tokens or elapsed.
 assert_eq "tick advanced -> HEALTHY"                         "HEALTHY" "$(wv '1 0 9999')"
 assert_eq "tick advanced even with tokens flowing -> HEALTHY" "HEALTHY" "$(wv '5 4000 30')"
@@ -2214,7 +2214,7 @@ section "fwf-pane-liveness.sh: shared point-in-time aliveness QUERY (issue #147,
 # single window to classify as WEDGED otherwise, no matter how many times
 # it's queried).
 PL_RUN="$TMP/pane-liveness"; mkdir -p "$PL_RUN"
-pl() { FWF_PROFILE=example FWF_RUN_DIR="$PL_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-pane-liveness.sh" "$1"; }
+pl() { FWF_PROFILE=example FWF_RUN_DIR="$PL_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/bin/fwf-pane-liveness.sh" "$1"; }
 assert_eq "no baseline at all yet -> UNKNOWN"        "UNKNOWN" "$(pl plrole1)"
 PL_SNAP="$PL_RUN/state/example/tick-watch/plrole1"
 [ -f "$PL_SNAP" ] && ok "a first baseline is stamped for a later query" || bad "a first baseline is stamped for a later query"
@@ -2326,7 +2326,7 @@ printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$SV_RUN/state/example/tick-wa
 mkdir -p "$SV_RUN/state/example/usage-cache"
 printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
   "$(( $(date -u +%s) - 3600 ))" > "$SV_RUN/state/example/usage-cache/svwedged.json"
-SVOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svwedged svfresh 2>&1)"
+SVOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/bin/fwf-supervise.sh" svwedged svfresh 2>&1)"
 assert_contains "supervise reports a confirmed-old-baseline role's real verdict" "$SVOUT" "svwedged   WEDGED"
 assert_contains "supervise reports UNKNOWN explicitly for a role with no old-enough baseline" "$SVOUT" "svfresh    UNKNOWN"
 assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORESPAWN=1" "$SVOUT" "respawning"
@@ -2342,11 +2342,11 @@ assert_not_contains "log-only WEDGED never respawns without FWF_SUPERVISE_AUTORE
 # into destroyed in-flight work, which is the worse failure.
 mkdir -p "$SV_RUN/state/example/tick"
 echo 5 > "$SV_RUN/state/example/tick/svunknown"
-PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
+PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 "$ROOT/bin/fwf-supervise.sh" svunknown >/dev/null   # stamp a baseline
 read -r SVU_T SVU_TOK SVU_EP < "$SV_RUN/state/example/tick-watch/svunknown"
 printf '%s %s %s\n' "$SVU_T" "$SVU_TOK" "$(( SVU_EP - 700 ))" > "$SV_RUN/state/example/tick-watch/svunknown"
 printf garbage > "$SV_RUN/state/example/tick/svunknown"   # simulate a tick READ failure
-SVUOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" svunknown 2>&1)"
+SVUOUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/bin/fwf-supervise.sh" svunknown 2>&1)"
 assert_contains "AC(h): a simulated tick-read failure classifies UNKNOWN, not WEDGED" "$SVUOUT" "svunknown  UNKNOWN"
 assert_not_contains "AC(h): supervise does NOT reap -- no respawn attempted even WITH autorespawn=1" "$SVUOUT" "respawning"
 assert_not_contains "AC(h): fwf-respawn.sh is never invoked at all for this role" "$SVUOUT" "respawn FAILED"
@@ -2360,9 +2360,9 @@ section "fwf_tick_read callers are enumerated, none silently collapse (issue #19
 # NEW call site that appears here without going through this list is exactly
 # the silent-collapse risk the ticket warns about, and this test goes RED
 # the moment one shows up unaudited.
-TICKREAD_MENTIONS="$(grep -rl 'fwf_tick_read' "$ROOT"/*.sh 2>/dev/null | sort)"
+TICKREAD_MENTIONS="$(grep -rl 'fwf_tick_read' "$ROOT"/bin/*.sh 2>/dev/null | sort)"
 TICKREAD_EXPECTED="$(printf '%s\n' \
-  "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-supervise.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh" | sort)"
+  "$ROOT/bin/fwf-pane-liveness.sh" "$ROOT/bin/fwf-supervise.sh" "$ROOT/bin/fwf-usage.sh" "$ROOT/bin/lib.sh" | sort)"
 assert_eq "AC(h1): fwf_tick_read has exactly the known, audited mentions" \
   "$TICKREAD_EXPECTED" "$TICKREAD_MENTIONS"
 # Each real CALLER checks the exit status explicitly (an `if`/`||` around the
@@ -2371,7 +2371,7 @@ assert_eq "AC(h1): fwf_tick_read has exactly the known, audited mentions" \
 # fwf-supervise.sh only NAMES fwf_tick_read in a comment (explaining why
 # issue #193's session guard exists) -- it never calls it directly, since it
 # gets tick/token state via fwf-pane-liveness.sh instead.
-for _tr_f in "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh"; do
+for _tr_f in "$ROOT/bin/fwf-pane-liveness.sh" "$ROOT/bin/fwf-usage.sh" "$ROOT/bin/lib.sh"; do
   case "$(grep -n 'fwf_tick_read' "$_tr_f")" in
     *'if cur_tick="$(fwf_tick_read'*|*'if ! fwf_tick_read'*|*'if ! cur="$(fwf_tick_read'*)
       ok "AC(h1): $(basename "$_tr_f") checks fwf_tick_read's exit status" ;;
@@ -2379,7 +2379,7 @@ for _tr_f in "$ROOT/fwf-pane-liveness.sh" "$ROOT/fwf-usage.sh" "$ROOT/lib.sh"; d
     *) bad "AC(h1): $(basename "$_tr_f") calls fwf_tick_read without an evident status check" ;;
   esac
 done
-case "$(grep -n 'fwf_tick_read' "$ROOT/fwf-supervise.sh")" in
+case "$(grep -n 'fwf_tick_read' "$ROOT/bin/fwf-supervise.sh")" in
   *'fwf_tick_read'*'if cur_tick'*|*'if ! cur='*) bad "AC(h1): fwf-supervise.sh now calls fwf_tick_read directly -- audit it and add it above" ;;
   *) ok "AC(h1): fwf-supervise.sh only names fwf_tick_read in a comment, never calls it" ;;
 esac
@@ -2401,7 +2401,7 @@ cat > "$SV_TMUX_DOWN/tmux" <<'EOF'
 exit 1
 EOF
 chmod +x "$SV_TMUX_DOWN/tmux"
-SV2OUT_NONE="$(PATH="$SV_TMUX_DOWN:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" pm 2>&1)"
+SV2OUT_NONE="$(PATH="$SV_TMUX_DOWN:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/bin/fwf-supervise.sh" pm 2>&1)"
 assert_contains "factory genuinely invisible -> SESSION_UNKNOWN names the whole-floor case" "$SV2OUT_NONE" \
   "SESSION_UNKNOWN no fwf session visible on the resolved tmux socket at all"
 assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (whole-floor case)" "$SV2OUT_NONE" "respawning"
@@ -2421,14 +2421,14 @@ done
 exit 1
 EOF
 chmod +x "$SV_TMUX_HALF/tmux"
-SV2OUT_HALF="$(PATH="$SV_TMUX_HALF:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/fwf-supervise.sh" pm 2>&1)"
+SV2OUT_HALF="$(PATH="$SV_TMUX_HALF:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" FWF_SUPERVISE_AUTORESPAWN=1 "$ROOT/bin/fwf-supervise.sh" pm 2>&1)"
 assert_contains "factory visible but THIS role's session isn't -> the narrower wording" "$SV2OUT_HALF" \
   "SESSION_UNKNOWN role session not visible on the resolved tmux socket though the factory itself is"
 assert_not_contains "SESSION_UNKNOWN never respawns even with autorespawn=1 (role-only case)" "$SV2OUT_HALF" "respawning"
 
 # A role whose session IS visible is unaffected by any of this -- proven by
 # reusing the permissive stub from the classifier tests above.
-SV2OUT_VISIBLE="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
+SV2OUT_VISIBLE="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$SV2_RUN" "$ROOT/bin/fwf-supervise.sh" pm 2>&1)"
 assert_not_contains "a visible session never gets the SESSION_UNKNOWN verdict" "$SV2OUT_VISIBLE" "SESSION_UNKNOWN"
 
 section "fwf supervise: AC(f2) — the mirror of (f)/(d), a genuinely WEDGED+readable role IS reaped"
@@ -2440,25 +2440,25 @@ section "fwf supervise: AC(f2) — the mirror of (f)/(d), a genuinely WEDGED+rea
 # respawned. Real fwf-pane-liveness.sh classifier (not stubbed) so the
 # WEDGED verdict is earned, not asserted by fiat; only fwf-respawn.sh itself
 # is stubbed, since actually hot-swapping a tmux pane is out of scope here.
-F2ISO="$TMP/f2iso"; mkdir -p "$F2ISO/lib" "$F2ISO/profiles"
-cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F2ISO/"
+F2ISO="$TMP/f2iso"; mkdir -p "$F2ISO/bin" "$F2ISO/lib" "$F2ISO/profiles"
+cp "$ROOT/bin/fwf-supervise.sh" "$ROOT/bin/config.sh" "$ROOT/bin/lib.sh" "$F2ISO/bin/"
 cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F2ISO/lib/"
 cp "$ROOT/profiles/example.sh" "$F2ISO/profiles/"
 ln -sf "$ROOT/templates" "$F2ISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
-ln -sf "$ROOT/fwf-pane-liveness.sh" "$F2ISO/fwf-pane-liveness.sh"
-ln -sf "$ROOT/fwf-usage-data.sh" "$F2ISO/fwf-usage-data.sh"
+ln -sf "$ROOT/bin/fwf-pane-liveness.sh" "$F2ISO/bin/fwf-pane-liveness.sh"
+ln -sf "$ROOT/bin/fwf-usage-data.sh" "$F2ISO/bin/fwf-usage-data.sh"
 F2RESPAWN_LOG="$TMP/f2iso-respawn.log"
-cat > "$F2ISO/fwf-respawn.sh" <<EOF
+cat > "$F2ISO/bin/fwf-respawn.sh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$1" >> "$F2RESPAWN_LOG"
 exit 0
 EOF
-chmod +x "$F2ISO/fwf-respawn.sh"
+chmod +x "$F2ISO/bin/fwf-respawn.sh"
 F2_RUN="$TMP/f2run"; mkdir -p "$F2_RUN/state/example/tick-watch" "$F2_RUN/state/example/usage-cache"
 printf '0 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F2_RUN/state/example/tick-watch/f2wedged"
 printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
   "$(( $(date -u +%s) - 3600 ))" > "$F2_RUN/state/example/usage-cache/f2wedged.json"
-F2OUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F2_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 bash "$F2ISO/fwf-supervise.sh" f2wedged 2>&1)"
+F2OUT="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F2_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 bash "$F2ISO/bin/fwf-supervise.sh" f2wedged 2>&1)"
 assert_contains "AC(f2): genuinely wedged (readable, static past the window) -> WEDGED" "$F2OUT" "$(printf '%-10s WEDGED' f2wedged)"
 assert_contains "AC(f2): ...and IS respawned (the discrimination this AC exists to prove)" "$F2OUT" "WEDGED -> respawning"
 assert_eq "AC(f2): fwf-respawn.sh was actually invoked, exactly once, for the right role" "f2wedged" \
@@ -2468,7 +2468,7 @@ section "fwf_lane_stale_verdict: idle-while-lane-has-open-work classifier — PU
 # Same style as fwf_wedge_verdict above: sample tuples in, asserted verdict
 # out. FWF_LANE_STALE_MULT pinned so the threshold is deterministic
 # (interval * mult); default interval used below is 60s.
-lsv() { FWF_PROFILE=example FWF_LANE_STALE_MULT=3 bash -c "source '$ROOT/lib.sh'; fwf_lane_stale_verdict $1"; }
+lsv() { FWF_PROFILE=example FWF_LANE_STALE_MULT=3 bash -c "source '$ROOT/bin/lib.sh'; fwf_lane_stale_verdict $1"; }
 assert_eq "no AWAITING_REVIEW PRs in lane -> LANE_HEALTHY regardless of age" \
   "LANE_HEALTHY" "$(lsv '0 99999 60')"
 assert_eq "one PR, well within the grace window -> LANE_HEALTHY" \
@@ -2523,7 +2523,7 @@ assert_contains "impl: unprogressed drafts escalate (bounded), never sit silentl
 
 section "fwf_verify_boot_ticks: boot health-gate — first-tick verify + re-arm + dead-role escalation (#133)"
 BG="$TMP/boot-gate"; mkdir -p "$BG"
-bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
+bg() { FWF_PROFILE=example FWF_RUN_DIR="$BG/run" FWF_HEARTBEAT_POLL_SECS=1 bash -c "source '$ROOT/bin/lib.sh'; mkdir -p \"\$(dirname \"\$(fwf_heartbeat_path impl1)\")\"; $1"; }
 # All-healthy floor: every role already ticking -> gate passes, no dead roles.
 bg 'now=$(date +%s); for r in impl1 impl2 conductor; do touch "$(fwf_heartbeat_path $r)"; done
   _n() { :; }
@@ -2549,28 +2549,28 @@ case "$(cat "$BG/out3.txt")" in *"first tick verified after re-arm — conductor
 # fwf up must actually WIRE the gate: run it after arming, and hard-respawn any
 # role it reports dead — so a wedged boot self-recovers with no manual respawn.
 assert_contains "fwf up runs the boot health-gate after arming" \
-  "$(cat "$ROOT/fwf-up.sh")" "fwf_verify_boot_ticks"
+  "$(cat "$ROOT/bin/fwf-up.sh")" "fwf_verify_boot_ticks"
 assert_contains "fwf up hard-respawns any role the gate reports dead" \
-  "$(cat "$ROOT/fwf-up.sh")" "hard-respawning wedged role"
+  "$(cat "$ROOT/bin/fwf-up.sh")" "hard-respawning wedged role"
 assert_contains "fwf up captures the boot epoch BEFORE arming (first tick counts)" \
-  "$(cat "$ROOT/fwf-up.sh")" "BOOT_EPOCH="
+  "$(cat "$ROOT/bin/fwf-up.sh")" "BOOT_EPOCH="
 
 section "fwf_pr_is_stale_stub: only auto-close empty, stale, DRAFT claim stubs (#133)"
-sp() { bash -c "source '$ROOT/lib.sh'; $1; echo \$?"; }
+sp() { bash -c "source '$ROOT/bin/lib.sh'; $1; echo \$?"; }
 assert_eq "empty draft older than grace -> close (0)"    "0" "$(sp 'fwf_pr_is_stale_stub true 0 1000 900')"
 assert_eq "draft WITH a real diff -> keep (1)"           "1" "$(sp 'fwf_pr_is_stale_stub true 3 1000 900')"
 assert_eq "empty draft younger than grace -> keep (1)"   "1" "$(sp 'fwf_pr_is_stale_stub true 0 100 900')"
 assert_eq "empty but NOT a draft (ready PR) -> keep (1)" "1" "$(sp 'fwf_pr_is_stale_stub false 0 1000 900')"
-assert_eq "iso8601 UTC parses to epoch"  "1786457002" "$(bash -c "source '$ROOT/lib.sh'; fwf_iso_to_epoch 2026-08-11T14:03:22Z")"
+assert_eq "iso8601 UTC parses to epoch"  "1786457002" "$(bash -c "source '$ROOT/bin/lib.sh'; fwf_iso_to_epoch 2026-08-11T14:03:22Z")"
 
 section "fwf-respawn.sh: hardens a silent no-op respawn with a kill+relaunch escalation (#133)"
 assert_contains "respawn escalates to a hard pane recycle when the soft re-nudge doesn't tick" \
-  "$(cat "$ROOT/fwf-respawn.sh")" "escalating to a hard kill+relaunch"
+  "$(cat "$ROOT/bin/fwf-respawn.sh")" "escalating to a hard kill+relaunch"
 assert_contains "respawn never reports success without a re-verified tick after escalation" \
-  "$(cat "$ROOT/fwf-respawn.sh")" "after a hard pane relaunch (escalated recovery)"
+  "$(cat "$ROOT/bin/fwf-respawn.sh")" "after a hard pane relaunch (escalated recovery)"
 
 section "fwf_interval_seconds: normalizes /loop-style intervals for arithmetic (issue #116)"
-ivs_test() { bash -c "source '$ROOT/lib.sh'; $1"; }
+ivs_test() { bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 assert_eq "3m -> 180"   "180"   "$(ivs_test 'fwf_interval_seconds 3m')"
 assert_eq "2m -> 120"   "120"   "$(ivs_test 'fwf_interval_seconds 2m')"
 assert_eq "2h -> 7200"  "7200"  "$(ivs_test 'fwf_interval_seconds 2h')"
@@ -2690,17 +2690,17 @@ section "floor lifecycle flags (issue #6, per-plane split by #105) — no live t
 # tests don't depend on the runner's free disk.
 FU_ENV="FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0"
 # up: unknown flag rejected before any tmux work
-env $FU_ENV "$ROOT/fwf-up.sh" --bogus >/dev/null 2>&1 && bad "up rejects unknown flag" || ok "up rejects unknown flag"
+env $FU_ENV "$ROOT/bin/fwf-up.sh" --bogus >/dev/null 2>&1 && bad "up rejects unknown flag" || ok "up rejects unknown flag"
 # up --floor-only / --build-only / --pm-only without a live coord session all
 # point at the full launch path (none of the partial modes can bootstrap).
 for FLAG in --floor-only --build-only --pm-only; do
-  UPOUT="$(env $FU_ENV "$ROOT/fwf-up.sh" "$FLAG" 2>&1)" && bad "$FLAG up needs coord session" || ok "$FLAG up needs coord session"
+  UPOUT="$(env $FU_ENV "$ROOT/bin/fwf-up.sh" "$FLAG" 2>&1)" && bad "$FLAG up needs coord session" || ok "$FLAG up needs coord session"
   assert_contains "$FLAG up suggests full up" "$UPOUT" "run a full 'fwf up' instead"
 done
 # down: --floor-only/--build-only/--pm-only + --purge don't combine (rejected
 # before the flags reach any cooldown/deadlock check, so no stub needed here)
 for FLAG in --floor-only --build-only --pm-only; do
-  env $FU_ENV "$ROOT/fwf-down.sh" "$FLAG" --purge >/dev/null 2>&1 && bad "down rejects $FLAG+purge" || ok "down rejects $FLAG+purge"
+  env $FU_ENV "$ROOT/bin/fwf-down.sh" "$FLAG" --purge >/dev/null 2>&1 && bad "down rejects $FLAG+purge" || ok "down rejects $FLAG+purge"
 done
 # (down-with-nothing-up now also runs the #105 deadlock guards, which shell
 # out to gh/git — see the dedicated hermetic section below for those)
@@ -2713,7 +2713,7 @@ assert_contains "help mentions --coord-only" "$HELP_OUT" "--coord-only"
 # up --coord-only is the ONE partial-up flag that must NOT require a live
 # coord session (issue #155 — it's the cold-bootstrap path for coordination,
 # the opposite precondition of --floor-only/--build-only/--pm-only above).
-UPCOOUT="$(env $FU_ENV "$ROOT/fwf-up.sh" --coord-only 2>&1)"
+UPCOOUT="$(env $FU_ENV "$ROOT/bin/fwf-up.sh" --coord-only 2>&1)"
 case "$UPCOOUT" in
   *"run a full 'fwf up' instead"*) bad "up --coord-only must not require an existing coord session" "$UPCOOUT";;
   *) ok "up --coord-only does not require an existing coord session";;
@@ -2724,9 +2724,9 @@ section "floor-lifecycle event log (issue #85, per-plane by #105): fwf_floor_eve
 F85RUN="$TMP/run85"; mkdir -p "$F85RUN"
 F85ENV="FWF_RUN_DIR=$F85RUN FWF_PROFILE=example"
 assert_eq "no log yet -> build plane idle inactive" "false" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 # (b) floor-down is appended with actor/reason/ts/epoch/plane and survives a re-read
-env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain 'queue empty; nothing in flight'"
+env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_floor_event floor-down captain 'queue empty; nothing in flight'"
 F85LOG="$F85RUN/state/example/floor-events.log"
 [ -f "$F85LOG" ] && ok "floor-events.log created" || bad "floor-events.log created"
 F85LAST="$(tail -n1 "$F85LOG")"
@@ -2739,41 +2739,41 @@ case "$F85EPOCH" in ''|*[!0-9]*) bad "epoch field is numeric" "$F85EPOCH";; *) o
 F85TS="$(printf '%s' "$F85LAST" | cut -f1)"
 case "$F85TS" in [0-9][0-9][0-9][0-9]-*T*Z) ok "ts field is ISO-8601 UTC";; *) bad "ts field is ISO-8601 UTC" "$F85TS";; esac
 # (a) fwf_plane_idle_state now reports active, carrying the same reason
-F85IDLE="$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build")"
+F85IDLE="$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build")"
 assert_eq "plane_idle_state active after floor-down" "true" "$(printf '%s' "$F85IDLE" | cut -f1)"
 assert_contains "plane_idle_state carries the reason" "$F85IDLE" "queue empty; nothing in flight"
 # a DIFFERENT plane (pm) is untouched by a build-plane event
 assert_eq "pm plane stays inactive while only build has a floor-down" "false" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
 # an explicit pm-plane event is tracked independently of build
-env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain 'pm reason' pm"
+env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_floor_event floor-down captain 'pm reason' pm"
 assert_eq "pm plane active after its own floor-down" "true" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
 assert_eq "build plane STILL active (independent of pm)" "true" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
-env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-up '' '' pm"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_floor_event floor-up '' '' pm"
 assert_eq "pm floor-up clears ONLY pm, not build" "true" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 assert_eq "pm plane cleared by its own floor-up" "false" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
 # (b-up-paths / idempotency) floor-up clears it; repeated transitions stay coherent
-env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-up '' ''"
+env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_floor_event floor-up '' ''"
 assert_eq "floor-up clears build plane idle" "false" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
-env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain r2; fwf_floor_event floor-up '' ''; fwf_floor_event floor-down captain r3"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_floor_event floor-down captain r2; fwf_floor_event floor-up '' ''; fwf_floor_event floor-down captain r3"
 assert_eq "repeated down/up/down stays coherent (last event wins)" "true" \
-  "$(env $F85ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+  "$(env $F85ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 # (bound) capped at the last 200 lines; the dash still reads the correct last event
 F85CAPRUN="$TMP/run85cap"; mkdir -p "$F85CAPRUN/state/example"
 F85CAPLOG="$F85CAPRUN/state/example/floor-events.log"
 i=1; while [ "$i" -le 205 ]; do printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$i" >> "$F85CAPLOG"; i=$((i+1)); done
-env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_floor_event floor-down captain capped"
+env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_floor_event floor-down captain capped"
 assert_eq "log capped at 200 lines" "200" "$(wc -l < "$F85CAPLOG" | tr -d ' ')"
 assert_eq "dash still reads the correct (capped) last event, legacy 5-column rows read as plane build" "true" \
-  "$(env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
+  "$(env FWF_RUN_DIR="$F85CAPRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state build" | cut -f1)"
 
 section "fwf dash data (issue #85): roles_json renders floor_idle, distinct from a crash"
-DD85="$ROOT/fwf-dash-data.sh"
+DD85="$ROOT/bin/fwf-dash-data.sh"
 FI_ON='{"active":true,"since":"2026-01-01T00:00:00Z","reason":"queue empty; nothing in flight","actor":"captain"}'
 FI_OFF='{"active":false,"since":"","reason":"","actor":""}'
 # no pane anywhere (stub tmux always "down") + floor_idle active -> every
@@ -2940,9 +2940,9 @@ assert_eq "AC(e2): factory_visible stays true (coord alone is enough) -- no whol
 # is also AC(g)'s cross-reader agreement, exercised on the coord-plane side.
 D193_E2_SVRUN="$TMP/d193-e2-sv"; mkdir -p "$D193_E2_SVRUN/state/example"
 echo default > "$D193_E2_SVRUN/state/example/tmux_socket"
-D193_E2_SVOUT="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/fwf-supervise.sh" pm 2>&1)"
+D193_E2_SVOUT="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/bin/fwf-supervise.sh" pm 2>&1)"
 assert_not_contains "AC(e2)/(g): supervise does not mute the visible coord role to SESSION_UNKNOWN" "$D193_E2_SVOUT" "$(printf '%-10s SESSION_UNKNOWN' pm)"
-D193_E2_SVOUT_BUILD="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/fwf-supervise.sh" impl1 2>&1)"
+D193_E2_SVOUT_BUILD="$(env FAKE_TMUX_DB="$D193_E2DB" PATH="$D193_TMUX:$PATH" FWF_PROFILE=example FWF_PAIRS=1 FWF_RUN_DIR="$D193_E2_SVRUN" "$ROOT/bin/fwf-supervise.sh" impl1 2>&1)"
 assert_contains "AC(g): the ABSENT build session DOES read SESSION_UNKNOWN on the supervise side (agrees with dash's 'unknown' for the same fixture)" \
   "$D193_E2_SVOUT_BUILD" "SESSION_UNKNOWN"
 
@@ -3052,7 +3052,7 @@ assert_eq "edge case: no heartbeat dir at all -> roster still non-empty (falls b
 # present (the same D402_RUN fixture as AC(1)/(2) above, which has 4 roles
 # ticking outside FWF_PAIRS=2) -- if provisioning ever started reading the
 # heartbeat dir too, this would silently start returning 12.
-D402_PAIRS_LEN="$(env FWF_PROFILE=example FWF_PAIRS=2 FWF_RUN_DIR="$D402_RUN" bash -c "source '$ROOT/lib.sh'; echo \"\${#PAIRS[@]}\"")"
+D402_PAIRS_LEN="$(env FWF_PROFILE=example FWF_PAIRS=2 FWF_RUN_DIR="$D402_RUN" bash -c "source '$ROOT/bin/lib.sh'; echo \"\${#PAIRS[@]}\"")"
 assert_eq "AC(6): PAIRS array size still tracks FWF_PAIRS alone, unaffected by extra heartbeat entries" "2" "$D402_PAIRS_LEN"
 
 section "fwf_write_pane_env: malformed FWF_PANE_ENV entries are skipped, not sourced (issue #181 review)"
@@ -3065,7 +3065,7 @@ rm -f "$PE_MARKER"
 GOOD_VAR=plain_value
 env GOOD_VAR="$GOOD_VAR" FWF_RUN_DIR="$PE_RUN" FWF_PROFILE=example \
   FWF_PANE_ENV="GOOD_VAR,FOO\$(touch $PE_MARKER)BAR,;rm -rf /tmp,9BADSTART" \
-  bash -c "source '$ROOT/lib.sh'; fwf_write_pane_env"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_write_pane_env"
 PE_FILE="$PE_RUN/state/example/pane-env.sh"
 [ -f "$PE_FILE" ] || bad "pane-env file written even with a mixed good/malformed list"
 assert_contains "well-formed var still written" "$(cat "$PE_FILE" 2>/dev/null)" "export GOOD_VAR=plain_value"
@@ -3115,7 +3115,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F85ARUN" FWF_SESSION="$F85ASESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F85AWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --floor-only >/dev/null 2>&1
+      "$ROOT/bin/fwf-up.sh" --floor-only >/dev/null 2>&1
   assert_contains "fwf-up.sh --floor-only appends floor-up" "$(tail -n1 "$F85ALOG")" "floor-up"
   tmux kill-session -t "${F85ASESS}-coord" 2>/dev/null
   tmux kill-session -t "${F85ASESS}-build" 2>/dev/null
@@ -3131,7 +3131,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F85BRUN" FWF_SESSION="$F85BSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F85BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+      "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
   # #185: the floor-up append lands asynchronously relative to fwf-up.sh
   # returning, so a single fixed-time tail -n1 right after can flake by
   # sampling before it lands. Bounded poll for presence instead.
@@ -3149,7 +3149,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F155ARUN" FWF_SESSION="$F155ASESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F155AWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --coord-only >/dev/null 2>&1
+      "$ROOT/bin/fwf-up.sh" --coord-only >/dev/null 2>&1
   assert_eq "--coord-only from cold: exits 0" "0" "$?"
   if tmux has-session -t "${F155ASESS}-coord" 2>/dev/null; then ok "--coord-only from cold: coord session created"; else bad "--coord-only from cold: coord session created"; fi
   if tmux has-session -t "${F155ASESS}-build" 2>/dev/null; then bad "--coord-only from cold: no build session created"; else ok "--coord-only from cold: no build session created"; fi
@@ -3169,7 +3169,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F155BRUN" FWF_SESSION="$F155BSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F155BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --coord-only >"$F155BOUT" 2>&1
+      "$ROOT/bin/fwf-up.sh" --coord-only >"$F155BOUT" 2>&1
   assert_eq "--coord-only on an already-up coord: exits 0 (no-op, not an error)" "0" "$?"
   assert_contains "--coord-only on an already-up coord: says nothing to do" "$(cat "$F155BOUT")" "already up"
   PANES155B_AFTER="$(tmux list-panes -t "${F155BSESS}-coord" | wc -l)"
@@ -3194,8 +3194,8 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F155DRUN" FWF_SESSION="$F155DSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F155DWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --coord-only >/dev/null 2>&1
-  F155DIDLE="$(env FWF_PROFILE=example FWF_RUN_DIR="$F155DRUN" bash -c "source '$ROOT/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
+      "$ROOT/bin/fwf-up.sh" --coord-only >/dev/null 2>&1
+  F155DIDLE="$(env FWF_PROFILE=example FWF_RUN_DIR="$F155DRUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_idle_state pm" | cut -f1)"
   assert_eq "--coord-only no-op on an already-up coord still clears a stale pm-plane IDLE (matches --build-only/--pm-only's no-op)" "false" "$F155DIDLE"
   tmux kill-session -t "${F155DSESS}-coord" 2>/dev/null
 
@@ -3212,7 +3212,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F155CRUN" FWF_SESSION="$F155CSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F155CWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --coord-only >"$F155COUT" 2>&1
+      "$ROOT/bin/fwf-up.sh" --coord-only >"$F155COUT" 2>&1
   assert_eq "--coord-only symmetric recovery (floor up, coord down): exits 0" "0" "$?"
   if tmux has-session -t "${F155CSESS}-coord" 2>/dev/null; then ok "--coord-only symmetric recovery: coord session created"; else bad "--coord-only symmetric recovery: coord session created"; fi
   BUILD155C_AFTER="$(tmux list-panes -t "${F155CSESS}-build" | wc -l)"
@@ -3236,7 +3236,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
       FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
       FWF_PM_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
-      "$ROOT/fwf-respawn.sh" pm >/dev/null 2>&1
+      "$ROOT/bin/fwf-respawn.sh" pm >/dev/null 2>&1
   assert_contains "fwf-respawn.sh of a floor role (pm) appends floor-up" "$(tail -n1 "$F85CLOG")" "floor-up"
   # respawning the CAPTAIN itself must NOT append floor-up — it was never the
   # thing --floor-only tore down, so its respawn says nothing about the floor.
@@ -3244,7 +3244,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F85CRUN" FWF_SESSION="$F85CSESS" \
       FWF_WT_BASE="$F85CWT" FWF_CLAUDE_CMD="$F85CLAUDE" \
       FWF_CAPTAIN_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
-      "$ROOT/fwf-respawn.sh" captain >/dev/null 2>&1
+      "$ROOT/bin/fwf-respawn.sh" captain >/dev/null 2>&1
   case "$(tail -n1 "$F85CLOG")" in
     *floor-up*) bad "respawning the captain must not clear floor_idle";;
     *) ok "respawning the captain must not clear floor_idle";;
@@ -3268,7 +3268,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F116RUN" FWF_SESSION="$F116SESS" \
       FWF_WT_BASE="$F116WT" FWF_CLAUDE_CMD="$F85CLAUDE" \
       FWF_PM_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
-      "$ROOT/fwf-respawn.sh" pm >"$F116OUT" 2>&1
+      "$ROOT/bin/fwf-respawn.sh" pm >"$F116OUT" 2>&1
   case "$(cat "$F116OUT")" in
     *"value too great for base"*) bad "#116: unit-suffixed interval must not crash the verify-window arithmetic";;
     *"unbound variable"*)         bad "#116: unit-suffixed interval must not leave \$window unbound";;
@@ -3291,7 +3291,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F142RUN" FWF_SESSION="$F142SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F142WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" >"$F142OUT" 2>&1
+      "$ROOT/bin/fwf-up.sh" >"$F142OUT" 2>&1
   F142RC=$?
   assert_eq "fwf up on an unprovisioned profile exits nonzero" "1" "$F142RC"
   assert_contains "error names the missing worktrees" "$(cat "$F142OUT")" "no worktrees for profile"
@@ -3313,7 +3313,7 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F142RUN" FWF_SESSION="$F142BSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F142BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --floor-only >"$F142BOUT" 2>&1
+      "$ROOT/bin/fwf-up.sh" --floor-only >"$F142BOUT" 2>&1
   assert_eq "--floor-only on missing impl/qa worktrees also fails loud" "1" "$?"
   assert_contains "--floor-only error names impl1" "$(cat "$F142BOUT")" "impl1"
   if tmux has-session -t "${F142BSESS}-build" 2>/dev/null; then bad "--floor-only: no build session created"; else ok "--floor-only: no build session created"; fi
@@ -3352,8 +3352,8 @@ EOS
   env FWF_PROFILE=example FWF_RUN_DIR="$F143RUN" FWF_SESSION="$F143SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F143WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F143_SECRET \
-      "$ROOT/fwf-up.sh" >/dev/null 2>&1
-  IMPL1_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+      "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
+  IMPL1_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F143SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
   # pane_pid is the pane's ORIGINAL shell — `ps eww` on macOS/Linux reflects
   # a process's environ as captured at ITS OWN exec() time, never live-updated
   # by that shell's own later `export`, so the sourced var only shows up on
@@ -3480,7 +3480,7 @@ _wait_pane_child() {
   env FWF_PROFILE=example FWF_RUN_DIR="$F143BRUN" FWF_SESSION="$F143BSESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F143BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+      "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
   if [ -e "$F143BRUN/state/example/pane-env.sh" ]; then bad "no pane-env file when FWF_PANE_ENV unset"; else ok "no pane-env file when FWF_PANE_ENV unset"; fi
 
   # issue #312: the case above only proves forwarding into a BRAND-NEW pane --
@@ -3509,7 +3509,7 @@ _wait_pane_child() {
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F143BWT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 FWF_PANE_ENV=F312_SECRET \
       FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
-      "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
+      "$ROOT/bin/fwf-respawn.sh" impl1 >/dev/null 2>&1
   # issue #460: retry the WHOLE chain (pane -> shell pid -> child pid), not
   # just the last pgrep step -- under a busy floor the pane/shell-pid reads
   # right after respawn returns can themselves be a beat behind, and a
@@ -3520,7 +3520,7 @@ _wait_pane_child() {
   IMPL1_PID_312=""
   # Re-resolves the WHOLE chain each try (#460's fix) on #505's budget.
   _f312_resolve() {
-    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
     [ -n "$SHELL_PID_312" ] && pgrep -P "$SHELL_PID_312" 2>/dev/null | head -1 || true
   }
@@ -3538,7 +3538,7 @@ _wait_pane_child() {
     # silently destroying #226 AC(b)'s whole point, which is naming WHICH of
     # the three steps came up empty. Re-resolve once, on the failure path
     # only, purely for the diagnostic.
-    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    IMPL1_PANE_312="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F143BSESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     SHELL_PID_312="$([ -n "$IMPL1_PANE_312" ] && tmux display -p -t "$IMPL1_PANE_312" '#{pane_pid}' 2>/dev/null || true)"
     if [ -z "$IMPL1_PANE_312" ]; then
       bad "issue #312: a FWF_PANE_ENV var set AFTER the floor is up reaches an EXISTING pane via respawn" "fwf_find_pane returned empty after respawn"
@@ -3576,7 +3576,7 @@ _wait_pane_child() {
   env FWF_PROFILE=example FWF_RUN_DIR="$F217E2E_RUN" FWF_SESSION="$F217E2E_SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 CLAUDE_CODE_OAUTH_TOKEN="$F217E2E_TOKEN" \
-      "$ROOT/fwf-up.sh" >/dev/null 2>&1
+      "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
   # Step 2: respawn impl1 from a DIFFERENT invocation with NO credential at
   # all in ITS environment -- the exact AC(1) scenario. Only the sink (from
   # step 1) can authenticate the new pane. issue #116-style interval/margin
@@ -3585,7 +3585,7 @@ _wait_pane_child() {
   env -u CLAUDE_CODE_OAUTH_TOKEN FWF_PROFILE=example FWF_RUN_DIR="$F217E2E_RUN" FWF_SESSION="$F217E2E_SESS" \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F217E2E_WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_IMPL_INTERVAL=1s FWF_RESPAWN_VERIFY_MARGIN=1 FWF_HEARTBEAT_POLL_SECS=1 \
-      "$ROOT/fwf-respawn.sh" impl1 >/dev/null 2>&1
+      "$ROOT/bin/fwf-respawn.sh" impl1 >/dev/null 2>&1
   # issue #460: a bounded retry on the WHOLE discovery chain (pane -> shell
   # pid -> child pid), matching the #312 case's own retry above -- this was
   # previously a single-shot lookup with no tolerance for scheduling delay
@@ -3595,7 +3595,7 @@ _wait_pane_child() {
   # the time THIS process gets scheduled to look for it.
   F217E2E_CHILD_PID=""
   _f217_resolve() {
-    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
     [ -n "$F217E2E_SHELL_PID" ] && pgrep -P "$F217E2E_SHELL_PID" 2>/dev/null | head -1 || true
   }
@@ -3618,7 +3618,7 @@ _wait_pane_child() {
     # "no child pid" whether the PANE was missing, the pane_pid was empty,
     # or the child genuinely never forked -- three very different bugs. That
     # ambiguity is currently blocking the diagnosis of this exact failure.
-    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
+    F217E2E_PANE="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F217E2E_SESS}-build' 'IMPL1 ·'" 2>/dev/null || true)"
     F217E2E_SHELL_PID="$([ -n "$F217E2E_PANE" ] && tmux display -p -t "$F217E2E_PANE" '#{pane_pid}' 2>/dev/null || true)"
     if [ -z "$F217E2E_PANE" ]; then
       bad "AC(1): respawn from a credential-less shell still produces an AUTHENTICATED pane" "fwf_find_pane returned empty after respawn -- the impl1 pane itself was never found (waited ${_PANE_CHILD_WAITED}s, budget 30s)"
@@ -3642,7 +3642,7 @@ _wait_pane_child() {
   # subshell were silently dropped in a later refactor).
   F217_ENV_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN FWF_RUN_DIR="$F217RUN/perm" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-test-217 bash -c "
     umask 000
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_resolve_claude_auth
   ")"
   assert_eq "AC 3: resolved source is 'env'" "env" "$F217_ENV_OUT"
@@ -3655,7 +3655,7 @@ _wait_pane_child() {
   # in fwf's own stdout/stderr, and never in any OTHER file under $FWF_RUN.
   F217_SECRET="sk-hygiene-probe-$$"
   F217_HYG_OUT="$(FWF_RUN_DIR="$F217RUN/hyg" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN="$F217_SECRET" bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_resolve_claude_auth
     fwf_claude_cmd impl1
     fwf_claude_cmd qa1
@@ -3677,7 +3677,7 @@ _wait_pane_child() {
   F217_CREDHOME="$TMP/f217-credhome"; mkdir -p "$F217_CREDHOME/.claude"
   echo '{"fake":"creds"}' > "$F217_CREDHOME/.claude/.credentials.json"
   F217_CRED_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F217_CREDHOME" FWF_RUN_DIR="$F217RUN/cred" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_resolve_claude_auth
   ")"
   assert_eq "AC 8: credentials_file source resolves when no env var is present" "credentials_file" "$F217_CRED_OUT"
@@ -3688,7 +3688,7 @@ _wait_pane_child() {
   F217_NONEHOME="$TMP/f217-nonehome"; mkdir -p "$F217_NONEHOME"
   F217_NONE_RC=0
   F217_NONE_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F217_NONEHOME" FWF_RUN_DIR="$F217RUN/none" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_resolve_claude_auth
   ")" || F217_NONE_RC=$?
   assert_eq "edge case: no source resolves -> exit 1" "1" "$F217_NONE_RC"
@@ -3699,22 +3699,22 @@ _wait_pane_child() {
   # removes the sink on a FULL teardown but NOT on a partial one (the other
   # plane may still need it).
   F217_CLEAR_RUN="$TMP/f217-clear"; mkdir -p "$F217_CLEAR_RUN"
-  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/lib.sh'; fwf_resolve_claude_auth" >/dev/null
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth" >/dev/null
   [ -f "$F217_CLEAR_RUN/auth.env" ] || bad "AC 9: sink exists before clear (setup)"
-  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_auth_clear"
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_auth_clear"
   if [ -e "$F217_CLEAR_RUN/auth.env" ]; then bad "AC 9: fwf_auth_clear removes the sink"; else ok "AC 9: fwf_auth_clear removes the sink"; fi
   F217_CLEAR_RC=0
-  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_auth_clear" || F217_CLEAR_RC=$?
+  FWF_RUN_DIR="$F217_CLEAR_RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_auth_clear" || F217_CLEAR_RC=$?
   assert_eq "AC 9: clearing an already-absent sink succeeds silently (idempotent)" "0" "$F217_CLEAR_RC"
 
   # fwf_claude_cmd wiring: sources the sink when present, no-ops cleanly when absent.
   F217_CMDRUN="$TMP/f217-cmdrun"; mkdir -p "$F217_CMDRUN"
   F217_CMD_WITH="$(FWF_RUN_DIR="$F217_CMDRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth >/dev/null; fwf_claude_cmd impl1
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth >/dev/null; fwf_claude_cmd impl1
   ")"
   assert_contains "fwf_claude_cmd sources the auth sink when it exists" "$F217_CMD_WITH" "auth.env"
   F217_NOSINKRUN="$TMP/f217-nosink"; mkdir -p "$F217_NOSINKRUN"
-  F217_CMD_WITHOUT="$(FWF_RUN_DIR="$F217_NOSINKRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+  F217_CMD_WITHOUT="$(FWF_RUN_DIR="$F217_NOSINKRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd impl1")"
   assert_not_contains "fwf_claude_cmd has no source prefix when no sink exists" "$F217_CMD_WITHOUT" "auth.env"
 
   # AC 9 continued: a FULL teardown (bare `fwf-down.sh`, no flags -- the
@@ -3723,10 +3723,10 @@ _wait_pane_child() {
   # sourcing succeeds, no tmux session needs to actually exist (its
   # kill-session calls degrade to "no tmux session '...'" and continue).
   F217_DOWNRUN="$TMP/f217-down"; mkdir -p "$F217_DOWNRUN"
-  FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/lib.sh'; fwf_resolve_claude_auth" >/dev/null
+  FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-t bash -c "source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth" >/dev/null
   [ -f "$F217_DOWNRUN/auth.env" ] || bad "AC 9: sink exists before a full fwf-down.sh (setup)"
   FWF_RUN_DIR="$F217_DOWNRUN" FWF_PROFILE=example FWF_SESSION="fwf-217-noexist-$$" FWF_MIN_FREE_GB=0 \
-    bash "$ROOT/fwf-down.sh" >/dev/null 2>&1
+    bash "$ROOT/bin/fwf-down.sh" >/dev/null 2>&1
   if [ -e "$F217_DOWNRUN/auth.env" ]; then bad "AC 9: a full 'fwf down' removes the auth sink"; else ok "AC 9: a full 'fwf down' removes the auth sink"; fi
 
   # --------------------------------------------------------------------------
@@ -3743,7 +3743,7 @@ _wait_pane_child() {
   chmod 600 "$F373_HOME1/.config/fwf/claude-oauth-token"
   F373_RUN1="$TMP/f373-run1"; mkdir -p "$F373_RUN1"
   F373_OUT1="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_HOME1" FWF_RUN_DIR="$F373_RUN1" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_resolve_claude_auth
   ")"
   assert_eq "AC(1)/AC(11): a host with only fwf's own default token file path resolves with NO configuration, non-interactively" \
@@ -3762,7 +3762,7 @@ _wait_pane_child() {
   chmod 600 "$F373_HOME1B/.config/fwf/claude-oauth-token"
   F373_RUN1B="$TMP/f373-run1b"; mkdir -p "$F373_RUN1B"
   env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_HOME1B" FWF_RUN_DIR="$F373_RUN1B" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   " >/dev/null
   assert_eq "edge case: an echo-written (trailing \\n) and a printf-written (no \\n) token file resolve to the SAME value" \
     "$(sed -n 's/^export CLAUDE_CODE_OAUTH_TOKEN=//p' "$F373_RUN1/auth.env")" \
@@ -3772,7 +3772,7 @@ _wait_pane_child() {
   # (a) env still outranks token_file -- the pre-existing interactive path is unchanged.
   F373_ENVWINS_RUN="$TMP/f373-envwins"; mkdir -p "$F373_ENVWINS_RUN"
   F373_ENVWINS_OUT="$(HOME="$F373_HOME1" FWF_RUN_DIR="$F373_ENVWINS_RUN" FWF_PROFILE=example CLAUDE_CODE_OAUTH_TOKEN=sk-env-wins bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   ")"
   assert_eq "AC(3)/AC(9): env still wins over token_file" "env" "$F373_ENVWINS_OUT"
   assert_contains "AC(3): the resolved value is env's, not the file's" \
@@ -3785,7 +3785,7 @@ _wait_pane_child() {
   echo '{"fake":"creds"}' > "$F373_TCRED_HOME/.claude/.credentials.json"
   F373_TCRED_RUN="$TMP/f373-tcred-run"; mkdir -p "$F373_TCRED_RUN"
   F373_TCRED_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_TCRED_HOME" FWF_RUN_DIR="$F373_TCRED_RUN" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   ")"
   assert_eq "AC(3): token_file outranks credentials_file" "token_file" "$F373_TCRED_OUT"
   assert_contains "AC(3): the resolved value is the file's" \
@@ -3800,7 +3800,7 @@ _wait_pane_child() {
   printf '%s' "sk-token-b" > "$F373_TWO_B"; chmod 600 "$F373_TWO_B"
   F373_TWO_RUN="$TMP/f373-two-run"; mkdir -p "$F373_TWO_RUN"
   F373_TWO_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN FWF_RUN_DIR="$F373_TWO_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_TWO_A:$F373_TWO_B" bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   ")"
   assert_eq "AC(3): with two readable candidates, the FIRST wins" "token_file" "$F373_TWO_OUT"
   F373_TWO_SINK="$(cat "$F373_TWO_RUN/auth.env")"
@@ -3816,7 +3816,7 @@ _wait_pane_child() {
   echo '{"fake":"creds"}' > "$F373_DIS_HOME/.claude/.credentials.json"
   F373_DIS_RUN="$TMP/f373-disabled-run"; mkdir -p "$F373_DIS_RUN"
   F373_DIS_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_DIS_HOME" FWF_RUN_DIR="$F373_DIS_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="" bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   ")"
   assert_eq "edge case: FWF_CLAUDE_TOKEN_FILE set to empty disables the source (falls to credentials_file, not the default list)" \
     "credentials_file" "$F373_DIS_OUT"
@@ -3830,7 +3830,7 @@ _wait_pane_child() {
   F373_UNREAD_TOKEN="$TMP/f373-unread-token"; printf '%s' "sk-unreadable" > "$F373_UNREAD_TOKEN"; chmod 000 "$F373_UNREAD_TOKEN"
   F373_UNREAD_RUN="$TMP/f373-unread-run"; mkdir -p "$F373_UNREAD_RUN"; F373_UNREAD_ERR="$TMP/f373-unread.err"
   F373_UNREAD_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_UNREAD_HOME" FWF_RUN_DIR="$F373_UNREAD_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_UNREAD_TOKEN" bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   " 2>"$F373_UNREAD_ERR")"
   chmod 600 "$F373_UNREAD_TOKEN"
   assert_eq "AC(5): an unreadable (mode 000) token file falls through to credentials_file" "credentials_file" "$F373_UNREAD_OUT"
@@ -3842,7 +3842,7 @@ _wait_pane_child() {
   F373_EMPTY_TOKEN="$TMP/f373-empty-token"; : > "$F373_EMPTY_TOKEN"; chmod 600 "$F373_EMPTY_TOKEN"
   F373_EMPTY_RUN="$TMP/f373-empty-run"; mkdir -p "$F373_EMPTY_RUN"; F373_EMPTY_ERR="$TMP/f373-empty.err"
   F373_EMPTY_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_EMPTY_HOME" FWF_RUN_DIR="$F373_EMPTY_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_EMPTY_TOKEN" bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   " 2>"$F373_EMPTY_ERR")"
   assert_eq "AC(5): an EMPTY token file falls through to credentials_file, never resolves as token_file" "credentials_file" "$F373_EMPTY_OUT"
   assert_contains "AC(5): the rejection names the path" "$(cat "$F373_EMPTY_ERR")" "$F373_EMPTY_TOKEN"
@@ -3853,7 +3853,7 @@ _wait_pane_child() {
   F373_WS_TOKEN="$TMP/f373-ws-token"; printf '   \n\t \n' > "$F373_WS_TOKEN"; chmod 600 "$F373_WS_TOKEN"
   F373_WS_RUN="$TMP/f373-ws-run"; mkdir -p "$F373_WS_RUN"; F373_WS_ERR="$TMP/f373-ws.err"
   F373_WS_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_WS_HOME" FWF_RUN_DIR="$F373_WS_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_WS_TOKEN" bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   " 2>"$F373_WS_ERR")"
   assert_eq "AC(5): a WHITESPACE-ONLY token file falls through to credentials_file, never resolves as token_file" "credentials_file" "$F373_WS_OUT"
   assert_contains "AC(5): the rejection names the path" "$(cat "$F373_WS_ERR")" "$F373_WS_TOKEN"
@@ -3870,7 +3870,7 @@ _wait_pane_child() {
     printf '%s' "sk-widemode-$F373_MODE" > "$F373_PERM_TOKEN"; chmod "$F373_MODE" "$F373_PERM_TOKEN"
     F373_PERM_RUN="$TMP/f373-perm-run-$F373_MODE"; mkdir -p "$F373_PERM_RUN"; F373_PERM_ERR="$TMP/f373-perm-$F373_MODE.err"
     F373_PERM_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_PERM_HOME" FWF_RUN_DIR="$F373_PERM_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_PERM_TOKEN" bash -c "
-      source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+      source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
     " 2>"$F373_PERM_ERR")"
     assert_eq "AC(7): mode $F373_MODE (group/world readable, owned by invoking uid) is refused and falls through" \
       "credentials_file" "$F373_PERM_OUT"
@@ -3886,7 +3886,7 @@ _wait_pane_child() {
   chmod 600 "$F373_SETX_HOME/.config/fwf/claude-oauth-token"
   F373_SETX_RUN="$TMP/f373-setx-run"; mkdir -p "$F373_SETX_RUN"
   F373_SETX_TRACE="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_SETX_HOME" FWF_RUN_DIR="$F373_SETX_RUN" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     set -x
     fwf_resolve_claude_auth
   " 2>&1)"
@@ -3904,11 +3904,11 @@ _wait_pane_child() {
   # BOTH fwf-up.sh and fwf-auth.sh -- no hardcoded three/four-source prose
   # survives at either call site, and neither hardcodes the old literal string.
   assert_not_contains "AC(4): fwf-up.sh no longer hardcodes the source-list prose" \
-    "$(cat "$ROOT/fwf-up.sh")" 'checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain'
+    "$(cat "$ROOT/bin/fwf-up.sh")" 'checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain'
   assert_not_contains "AC(4): fwf-auth.sh no longer hardcodes the source-list prose" \
-    "$(cat "$ROOT/fwf-auth.sh")" 'checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain'
-  assert_contains "AC(4): fwf-up.sh consumes the shared generator" "$(cat "$ROOT/fwf-up.sh")" "fwf_claude_auth_failure_message"
-  assert_contains "AC(4): fwf-auth.sh consumes the shared generator" "$(cat "$ROOT/fwf-auth.sh")" "fwf_claude_auth_failure_message"
+    "$(cat "$ROOT/bin/fwf-auth.sh")" 'checked \$CLAUDE_CODE_OAUTH_TOKEN, ~/.claude/.credentials.json, and the macOS Keychain'
+  assert_contains "AC(4): fwf-up.sh consumes the shared generator" "$(cat "$ROOT/bin/fwf-up.sh")" "fwf_claude_auth_failure_message"
+  assert_contains "AC(4): fwf-auth.sh consumes the shared generator" "$(cat "$ROOT/bin/fwf-auth.sh")" "fwf_claude_auth_failure_message"
 
   # AC 5 (advice half): when nothing resolves AND a token_file candidate was
   # present-but-unusable, the failure message must NOT advise `claude /login`
@@ -3917,7 +3917,7 @@ _wait_pane_child() {
   F373_NOLOGIN_TOKEN="$TMP/f373-nologin-token"; : > "$F373_NOLOGIN_TOKEN"; chmod 600 "$F373_NOLOGIN_TOKEN"
   F373_NOLOGIN_RUN="$TMP/f373-nologin-run"; mkdir -p "$F373_NOLOGIN_RUN"
   F373_NOLOGIN_MSG="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_NOLOGIN_HOME" FWF_RUN_DIR="$F373_NOLOGIN_RUN" FWF_PROFILE=example FWF_CLAUDE_TOKEN_FILE="$F373_NOLOGIN_TOKEN" bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_resolve_claude_auth >/dev/null 2>&1 || fwf_claude_auth_failure_message fwf
   " 2>&1)"
   assert_not_contains "AC(5): the overall failure message does not advise 'claude /login' when a token file candidate was refused" \
@@ -3925,7 +3925,7 @@ _wait_pane_child() {
   assert_contains "the generic advice IS used when nothing was even present" \
     "$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$TMP/f373-truly-empty" FWF_RUN_DIR="$TMP/f373-truly-empty-run" FWF_PROFILE=example bash -c "
       mkdir -p '$TMP/f373-truly-empty' '$TMP/f373-truly-empty-run'
-      source '$ROOT/lib.sh'
+      source '$ROOT/bin/lib.sh'
       fwf_resolve_claude_auth >/dev/null 2>&1 || fwf_claude_auth_failure_message fwf
     " 2>&1)" "claude /login"
 
@@ -3948,7 +3948,7 @@ _wait_pane_child() {
   ln -s "$F373_SYMLINK_TARGET" "$F373_SYMLINK_HOME/.config/fwf/claude-oauth-token"
   F373_SYMLINK_RUN="$TMP/f373-symlink-run"; mkdir -p "$F373_SYMLINK_RUN"
   F373_SYMLINK_OUT="$(env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$F373_SYMLINK_HOME" FWF_RUN_DIR="$F373_SYMLINK_RUN" FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'; fwf_resolve_claude_auth
+    source '$ROOT/bin/lib.sh'; fwf_resolve_claude_auth
   ")"
   assert_eq "QA repro: a symlink to a 0600-owned-by-me token file resolves via token_file (target's permissions govern, per the documented edge case)" \
     "token_file" "$F373_SYMLINK_OUT"
@@ -3966,17 +3966,17 @@ _wait_pane_child() {
   # tests).
   F217BRK="$TMP/run217brk"; mkdir -p "$F217BRK"
   assert_eq "fresh role (no prior failures): attempt allowed" "0" \
-    "$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK/fresh" FWF_RESPAWN_BREAKER_MAX=3 bash -c "source '$ROOT/lib.sh'; fwf_respawn_breaker_check r1; echo \$?" | tail -1)"
+    "$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK/fresh" FWF_RESPAWN_BREAKER_MAX=3 bash -c "source '$ROOT/bin/lib.sh'; fwf_respawn_breaker_check r1; echo \$?" | tail -1)"
   F217BRK_BELOW="$TMP/run217brk-below"; mkdir -p "$F217BRK_BELOW"
   BELOW_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BELOW" FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_respawn_breaker_fail r1
     fwf_respawn_breaker_fail r1
     fwf_respawn_breaker_check r1; echo \$?
   " | tail -1)"
   assert_eq "below FWF_RESPAWN_BREAKER_MAX (2 fails, max 3): still allowed" "0" "$BELOW_RC"
   ATMAX_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BELOW" FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_respawn_breaker_fail r1
     fwf_respawn_breaker_check r1; echo \$?
   " | tail -1)"
@@ -3993,7 +3993,7 @@ _wait_pane_child() {
   # was. Split into two invocations so each gets the margin it actually needs.
   F217BRK_BLOCK="$TMP/run217brk-block"; mkdir -p "$F217BRK_BLOCK"
   BLOCK_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_BLOCK" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_respawn_breaker_fail r1
     fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
   ")"
@@ -4001,7 +4001,7 @@ _wait_pane_child() {
 
   F217BRK_EXPIRE="$TMP/run217brk-expire"; mkdir -p "$F217BRK_EXPIRE"
   EXPIRE_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_EXPIRE" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1 bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_respawn_breaker_fail r1
     sleep 2
     fwf_respawn_breaker_check r1 && echo AFTER_ALLOWED || echo AFTER_BLOCKED
@@ -4021,7 +4021,7 @@ _wait_pane_child() {
   # places for the identical "not the value under test" purpose.
   F217BRK_LATENCY="$TMP/run217brk-latency"; mkdir -p "$F217BRK_LATENCY"
   LATENCY_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_LATENCY" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_respawn_breaker_fail r1
     sleep 0.9
     fwf_respawn_breaker_check r1 && echo IMMEDIATE_ALLOWED || echo IMMEDIATE_BLOCKED
@@ -4030,7 +4030,7 @@ _wait_pane_child() {
     "$LATENCY_OUT" "IMMEDIATE_BLOCKED"
   F217BRK_RESET="$TMP/run217brk-reset"; mkdir -p "$F217BRK_RESET"
   RESET_RC="$(FWF_PROFILE=example FWF_RUN_DIR="$F217BRK_RESET" FWF_RESPAWN_BREAKER_MAX=1 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     fwf_respawn_breaker_fail r1
     fwf_respawn_breaker_reset r1
     fwf_respawn_breaker_check r1; echo \$?
@@ -4040,25 +4040,25 @@ _wait_pane_child() {
   # Real fwf-supervise.sh integration: N consecutive respawn FAILURES produce
   # exactly N respawn attempts (never N+1) -- the discriminating half; without
   # the breaker every pass would call fwf-respawn.sh again.
-  F217ISO="$TMP/f217iso"; mkdir -p "$F217ISO/lib" "$F217ISO/profiles"
-  cp "$ROOT/fwf-supervise.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F217ISO/"
+  F217ISO="$TMP/f217iso"; mkdir -p "$F217ISO/bin" "$F217ISO/lib" "$F217ISO/profiles"
+  cp "$ROOT/bin/fwf-supervise.sh" "$ROOT/bin/config.sh" "$ROOT/bin/lib.sh" "$F217ISO/bin/"
   cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$F217ISO/lib/"
   cp "$ROOT/profiles/example.sh" "$F217ISO/profiles/"
   ln -sf "$ROOT/templates" "$F217ISO/templates"
-  ln -sf "$ROOT/fwf-usage-data.sh" "$F217ISO/fwf-usage-data.sh"
+  ln -sf "$ROOT/bin/fwf-usage-data.sh" "$F217ISO/bin/fwf-usage-data.sh"
   F217_VERDICT_FILE="$TMP/f217iso-verdict"
-  cat > "$F217ISO/fwf-pane-liveness.sh" <<EOF
+  cat > "$F217ISO/bin/fwf-pane-liveness.sh" <<EOF
 #!/usr/bin/env bash
 cat "$F217_VERDICT_FILE"
 EOF
-  chmod +x "$F217ISO/fwf-pane-liveness.sh"
+  chmod +x "$F217ISO/bin/fwf-pane-liveness.sh"
   F217_RESPAWN_LOG="$TMP/f217iso-respawn.log"
-  cat > "$F217ISO/fwf-respawn.sh" <<EOF
+  cat > "$F217ISO/bin/fwf-respawn.sh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$1" >> "$F217_RESPAWN_LOG"
 exit 1
 EOF
-  chmod +x "$F217ISO/fwf-respawn.sh"
+  chmod +x "$F217ISO/bin/fwf-respawn.sh"
   F217_SV_RUN="$TMP/f217iso-run"; mkdir -p "$F217_SV_RUN/state/example"
   echo WEDGED > "$F217_VERDICT_FILE"
   F217_LAST_PASS=""
@@ -4068,7 +4068,7 @@ EOF
   # SESSION_UNKNOWN (never reaped) regardless of the stubbed WEDGED verdict.
   for _f217_i in 1 2 3 4 5; do
     F217_LAST_PASS="$(PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F217_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
-      FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/fwf-supervise.sh" brkrole 2>&1)"
+      FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/bin/fwf-supervise.sh" brkrole 2>&1)"
   done
   assert_eq "N=3 consecutive failures produce EXACTLY 3 respawn attempts, never N+1" "3" \
     "$(wc -l < "$F217_RESPAWN_LOG" 2>/dev/null | tr -d ' ')"
@@ -4082,7 +4082,7 @@ EOF
   # itself for "who" triggered the fix.
   echo HEALTHY > "$F217_VERDICT_FILE"
   PATH="$SV_TMUX_UP:$PATH" FWF_PROFILE=example FWF_RUN_DIR="$F217_SV_RUN" FWF_WEDGE_MIN_SECS=600 FWF_SUPERVISE_AUTORESPAWN=1 \
-    FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/fwf-supervise.sh" brkrole >/dev/null 2>&1
+    FWF_RESPAWN_BREAKER_MAX=3 FWF_RESPAWN_BREAKER_BASE_SECS=1000 bash "$F217ISO/bin/fwf-supervise.sh" brkrole >/dev/null 2>&1
   if [ -f "$F217_SV_RUN/state/example/respawn-breaker/brkrole" ]; then
     bad "healing (non-WEDGED verdict) clears the breaker state"
   else
@@ -4116,7 +4116,7 @@ EOF
   env FWF_PROFILE=example FWF_RUN_DIR="$F146RUN" FWF_SESSION="$F146SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F146WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=1 \
       FWF_SKIP_BOOT_GATE=1 \
-      "$ROOT/fwf-up.sh" --coord-only >/dev/null 2>&1
+      "$ROOT/bin/fwf-up.sh" --coord-only >/dev/null 2>&1
   assert_eq "fwf up lands pm's worktree at the fresh remote tip (0 behind), not provision-time state" \
     "$F146_NEW_SHA" "$(git -C "$F146WT/ex-pm" rev-parse HEAD 2>/dev/null)"
   assert_eq "  ...same for gv" \
@@ -4149,20 +4149,20 @@ EOF
   # cold start: 2-pair floor comes up (AC e regression guard lives here too --
   # a cold floor's --pairs must still create N pairs, unaffected by this
   # ticket; this same call IS that path, no live-floor branch taken yet).
-  f190up "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  f190up "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
   assert_eq "(#190 e) cold floor: fwf-up.sh creates the requested 2 pairs" "0" \
     "$([ -d "$F190WT/ex-impl1" ] && tmux has-session -t "${F190SESS}-build" 2>/dev/null; echo $?)"
 
   # (d) regression: a bare `fwf up` (no --pairs, so FWF_PAIRS_REQUESTED unset)
   # on this now-live floor behaves EXACTLY as before -- still a silent,
   # exit-0 no-op, never the new failure.
-  rc=0; f190up "$ROOT/fwf-up.sh" --build-only >/dev/null 2>&1 || rc=$?
+  rc=0; f190up "$ROOT/bin/fwf-up.sh" --build-only >/dev/null 2>&1 || rc=$?
   assert_eq "(#190 d) no --pairs on a live floor: unchanged, still exits 0" "0" "$rc"
 
   # (c) discriminating test: --pairs matching the ALREADY-running count
   # succeeds (this must exist, or (a) below could be satisfied by simply
   # failing on every --pairs regardless of the value).
-  rc=0; OUT="$(f190up env FWF_PAIRS_REQUESTED=1 "$ROOT/fwf-up.sh" --build-only 2>&1)" || rc=$?
+  rc=0; OUT="$(f190up env FWF_PAIRS_REQUESTED=1 "$ROOT/bin/fwf-up.sh" --build-only 2>&1)" || rc=$?
   assert_eq "(#190 c) --pairs 2 on an already-2-pair live floor: exits 0" "0" "$rc"
   assert_contains "(#190 c) reports the floor already matches the requested count" "$OUT" "already up running the requested 2"
 
@@ -4171,25 +4171,25 @@ EOF
   # corrective command -- never a silent, exit-0 no-op.
   rc=0; OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F190RUN" FWF_SESSION="$F190SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F190WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=3 FWF_PAIRS_REQUESTED=1 \
-      FWF_SKIP_BOOT_GATE=1 "$ROOT/fwf-up.sh" --build-only 2>&1)" || rc=$?
+      FWF_SKIP_BOOT_GATE=1 "$ROOT/bin/fwf-up.sh" --build-only 2>&1)" || rc=$?
   assert_eq "(#190 a) --pairs 3 on a live 2-pair floor: exits non-zero" "1" "$rc"
   assert_contains "(#190 a) names the CURRENT count (2)" "$OUT" "running 2 pair(s)"
   assert_contains "(#190 a) names the REQUESTED count (3)" "$OUT" "requested 3 was NOT applied"
   assert_contains "(#190 a) names the corrective command" "$OUT" "fwf up --build-only"
   assert_contains "(#190 b) states the DESTRUCTIVE consequence, not just the flag" "$OUT" "KILLS every in-flight"
   assert_eq "(#190 g) the refusal touched no session -- pane count unchanged (still 2 pairs)" "2" \
-    "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_running_pair_count '${F190SESS}-build'")"
+    "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_running_pair_count '${F190SESS}-build'")"
 
   # (h) a half-present index (mid-respawn shape: impl2 present, qa2 not) is
   # UNKNOWN, never a confident (and wrong) lower number -- and --pairs on
   # that floor refuses saying so, not "current 1, requested N".
-  F190_QA2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F190SESS}-build' 'QA2 ·'")"
+  F190_QA2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F190SESS}-build' 'QA2 ·'")"
   [ -n "$F190_QA2_PANE" ] && tmux kill-pane -t "$F190_QA2_PANE" 2>/dev/null
   assert_eq "(#190 h) fwf_running_pair_count reports unknown for a half-present index" "unknown" \
-    "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_running_pair_count '${F190SESS}-build'")"
+    "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_running_pair_count '${F190SESS}-build'")"
   rc=0; OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F190RUN" FWF_SESSION="$F190SESS" FWF_MIN_FREE_GB=0 \
       FWF_REPO="$F85REPO" FWF_WT_BASE="$F190WT" FWF_CLAUDE_CMD="$F85CLAUDE" FWF_PAIRS=2 FWF_PAIRS_REQUESTED=1 \
-      FWF_SKIP_BOOT_GATE=1 "$ROOT/fwf-up.sh" --build-only 2>&1)" || rc=$?
+      FWF_SKIP_BOOT_GATE=1 "$ROOT/bin/fwf-up.sh" --build-only 2>&1)" || rc=$?
   assert_eq "(#190 h) --pairs on a half-present floor: exits non-zero" "1" "$rc"
   assert_contains "(#190 h) names it inconsistent/unknown, never a guessed number" "$OUT" "inconsistent pair state"
 
@@ -4208,13 +4208,13 @@ EOF
   # AC(i): the sanity bound is NOT a restatement of the old "hardcoded 3"
   # ceiling -- issue #221 already made the captain's roster dynamic. Assert
   # the refusal names #221 and the configurable var, never a bare "3".
-  F210BOUNDOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$TMP/run210bound" "$ROOT/fwf-scale.sh" --pairs 21 2>&1)"; F210BOUND_RC=$?
+  F210BOUNDOUT="$(FWF_PROFILE=example FWF_RUN_DIR="$TMP/run210bound" "$ROOT/bin/fwf-scale.sh" --pairs 21 2>&1)"; F210BOUND_RC=$?
   assert_eq "AC(i): a request far above the sanity bound refuses" "1" "$F210BOUND_RC"
   assert_contains "AC(i): names the configurable bound var" "$F210BOUNDOUT" "FWF_SCALE_MAX_PAIRS"
   assert_contains "AC(i): says this is NOT #210's original hardcoded-3 ceiling" "$F210BOUNDOUT" "issue #221 already made the captain's roster dynamic"
 
   assert_eq "fwf scale refuses when the build session is not up" "1" \
-    "$(FWF_PROFILE=example FWF_RUN_DIR="$TMP/run210down" FWF_SESSION="fwf-scale-notup-$$" "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1; echo $?)"
+    "$(FWF_PROFILE=example FWF_RUN_DIR="$TMP/run210down" FWF_SESSION="fwf-scale-notup-$$" "$ROOT/bin/fwf-scale.sh" --pairs 2 >/dev/null 2>&1; echo $?)"
 
   # --- real-tmux end-to-end: bring up 1 pair, scale to 2, verify PIDs --------
   F210WT="$TMP/wt210"
@@ -4226,20 +4226,20 @@ EOF
         FWF_REPO="$F85REPO" FWF_WT_BASE="$F210WT" FWF_CLAUDE_CMD="$F85CLAUDE" \
         FWF_SKIP_BOOT_GATE=1 "$@"
   }
-  f210 env FWF_PAIRS=1 "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  f210 env FWF_PAIRS=1 "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
 
   F210PROFILE_SUM_BEFORE="$(md5sum "$ROOT/profiles/example.sh" | awk '{print $1}')"
-  IMPL1_PID_BEFORE="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
-  COND_PID_BEFORE="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
+  IMPL1_PID_BEFORE="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
+  COND_PID_BEFORE="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
   COORD_PANES_BEFORE="$(tmux list-panes -t "${F210SESS}-coord" -F '#{pane_id}' | sort)"
 
-  F210SCALE_OUT="$(f210 "$ROOT/fwf-scale.sh" --pairs 2 2>&1)"; F210SCALE_RC=$?
+  F210SCALE_OUT="$(f210 "$ROOT/bin/fwf-scale.sh" --pairs 2 2>&1)"; F210SCALE_RC=$?
   assert_eq "AC(a): scale 1->2 exits 0" "0" "$F210SCALE_RC"
   assert_contains "scale-up creates the new pair" "$F210SCALE_OUT" "create: impl2, qa2"
   assert_contains "scale-up leaves the existing pair listed as untouched" "$F210SCALE_OUT" "untouched: impl1, qa1"
 
-  IMPL2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL2 ·'")"
-  QA2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'QA2 ·'")"
+  IMPL2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL2 ·'")"
+  QA2_PANE="$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'QA2 ·'")"
   F210IMPL2_RC=0; [ -n "$IMPL2_PANE" ] || F210IMPL2_RC=1
   assert_eq "AC(a): the new impl2 pane exists" "0" "$F210IMPL2_RC"
   F210QA2_RC=0; [ -n "$QA2_PANE" ] || F210QA2_RC=1
@@ -4312,11 +4312,11 @@ EOF
       "pane $IMPL2_PANE never reached the expected launcher command '$F485_EXPECT_CMD' within ${_f485_waited}s (budget ${FWF_TEST_PANE_CHILD_WAIT_SECS}s); last command read: '$(tmux display -p -t "$IMPL2_PANE" '#{pane_current_command}' 2>/dev/null || echo '<unreadable>')'"
   fi
 
-  IMPL1_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
-  COND_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
+  IMPL1_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL1 ·'")" '#{pane_pid}')"
+  COND_PID_AFTER="$(tmux display -p -t "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'CONDUCTOR'")" '#{pane_pid}')"
   assert_eq "AC(a): impl1's pane PID is BYTE-IDENTICAL after scale-up (never recreated)" "$IMPL1_PID_BEFORE" "$IMPL1_PID_AFTER"
   assert_eq "AC(a): the conductor's pane PID is unchanged too" "$COND_PID_BEFORE" "$COND_PID_AFTER"
-  F210WT1DIR_RC=0; [ -d "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl1")" ] || F210WT1DIR_RC=1
+  F210WT1DIR_RC=0; [ -d "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/bin/lib.sh'; wt_dir impl1")" ] || F210WT1DIR_RC=1
   assert_eq "AC(a)/impl1 worktree: still the same directory (untouched)" "0" "$F210WT1DIR_RC"
   assert_eq "AC(e): the coord session's own panes are byte-identical (never touched by a build-plane scale)" \
     "$COORD_PANES_BEFORE" "$(tmux list-panes -t "${F210SESS}-coord" -F '#{pane_id}' | sort)"
@@ -4331,7 +4331,7 @@ EOF
 
   # --- AC(b): idempotency -- same target twice, zero pane churn --------------
   PANES_BEFORE_IDEMP="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
-  F210IDEMP_OUT="$(f210 "$ROOT/fwf-scale.sh" --pairs 2 2>&1)"; F210IDEMP_RC=$?
+  F210IDEMP_OUT="$(f210 "$ROOT/bin/fwf-scale.sh" --pairs 2 2>&1)"; F210IDEMP_RC=$?
   assert_eq "AC(b): scaling to the SAME count twice exits 0" "0" "$F210IDEMP_RC"
   assert_contains "AC(b): says there's nothing to do" "$F210IDEMP_OUT" "already at 2 pair(s) -- nothing to do"
   assert_eq "AC(b): zero pane churn -- pane ids AND pids byte-identical" "$PANES_BEFORE_IDEMP" \
@@ -4349,18 +4349,18 @@ esac
 GHSTUB
   chmod +x "$F210GHBIN/gh"
   PANES_BEFORE_DRY="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
-  F210DRY_OUT="$(PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 --dry-run 2>&1)"; F210DRY_RC=$?
+  F210DRY_OUT="$(PATH="$F210GHBIN:$PATH" f210 "$ROOT/bin/fwf-scale.sh" --pairs 1 --dry-run 2>&1)"; F210DRY_RC=$?
   assert_eq "AC(f): --dry-run exits 0" "0" "$F210DRY_RC"
   assert_contains "AC(f): --dry-run's plan names the pair it WOULD remove" "$F210DRY_OUT" "remove: impl2, qa2"
   assert_contains "AC(f): --dry-run says it mutated nothing" "$F210DRY_OUT" "nothing mutated"
   assert_eq "AC(f): --dry-run genuinely touched zero panes" "$PANES_BEFORE_DRY" \
     "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id} #{pane_pid}' | sort)"
-  F210REAL_OUT="$(PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 2>&1)"; F210REAL_RC=$?
+  F210REAL_OUT="$(PATH="$F210GHBIN:$PATH" f210 "$ROOT/bin/fwf-scale.sh" --pairs 1 2>&1)"; F210REAL_RC=$?
   assert_eq "AC(f): the REAL run right after the dry-run also succeeds (plan == outcome)" "0" "$F210REAL_RC"
   assert_contains "AC(f): the real run removes the SAME pair the dry-run named" "$F210REAL_OUT" "remove: impl2, qa2"
   assert_eq "AC(c)/(d): impl2's pane is genuinely gone after a real scale-down" "" \
-    "$(env FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL2 ·'" 2>/dev/null)"
-  F210WT2DIR_RC=0; [ -d "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" ] || F210WT2DIR_RC=1
+    "$(env FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F210SESS}-build' 'IMPL2 ·'" 2>/dev/null)"
+  F210WT2DIR_RC=0; [ -d "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/bin/lib.sh'; wt_dir impl2")" ] || F210WT2DIR_RC=1
   assert_eq "the worktree is KEPT, not deleted, on scale-down" "0" "$F210WT2DIR_RC"
 
   # --- AC(c)/(d2): scale-down REFUSES on a genuinely busy highest-indexed pair,
@@ -4384,7 +4384,7 @@ GHSTUB
   # the right line, instead of masquerading as an AC(c) failure two blocks
   # down.
   F210RESCALE_RC=0
-  f210 "$ROOT/fwf-scale.sh" --pairs 2 --force >/dev/null 2>&1 || F210RESCALE_RC=$?   # back to 2 pairs
+  f210 "$ROOT/bin/fwf-scale.sh" --pairs 2 --force >/dev/null 2>&1 || F210RESCALE_RC=$?   # back to 2 pairs
   assert_eq "#387: the AC(c) fixture's re-scale-up to 2 pairs succeeds (not silently left at 1)" "0" "$F210RESCALE_RC"
   F210BUSYGHBIN="$TMP/f210busyghbin"; mkdir -p "$F210BUSYGHBIN"
   cat > "$F210BUSYGHBIN/gh" <<'GHSTUB2'
@@ -4397,7 +4397,7 @@ esac
 GHSTUB2
   chmod +x "$F210BUSYGHBIN/gh"
   PANES_BEFORE_BUSY="$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
-  F210BUSY_OUT="$(PATH="$F210BUSYGHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 2>&1)"; F210BUSY_RC=$?
+  F210BUSY_OUT="$(PATH="$F210BUSYGHBIN:$PATH" f210 "$ROOT/bin/fwf-scale.sh" --pairs 1 2>&1)"; F210BUSY_RC=$?
   assert_eq "AC(c): refuses when the highest-indexed pair has an open PR" "1" "$F210BUSY_RC"
   assert_contains "AC(c): names the blocked pair" "$F210BUSY_OUT" "impl2/qa2"
   assert_contains "AC(c): names the open-PR reason" "$F210BUSY_OUT" "has an open PR"
@@ -4405,13 +4405,13 @@ GHSTUB2
     "$(tmux list-panes -t "${F210SESS}-build" -F '#{pane_id}' | sort)"
 
   # --- AC(h): capacity guardrail refuses scale-up, --force overrides ---------
-  F210CAP_OUT="$(FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210CAP_RC=$?
+  F210CAP_OUT="$(FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/bin/fwf-scale.sh" --pairs 3 2>&1)"; F210CAP_RC=$?
   assert_eq "AC(h): an absurd per-pair RAM requirement refuses scale-up" "1" "$F210CAP_RC"
   assert_contains "AC(h): names --force as the override" "$F210CAP_OUT" "Pass --force to override"
   F210CAPFORCE_RC=0
-  FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/fwf-scale.sh" --pairs 3 --force >/dev/null 2>&1 || F210CAPFORCE_RC=$?
+  FWF_SCALE_RAM_PER_PAIR_GB=999999 f210 "$ROOT/bin/fwf-scale.sh" --pairs 3 --force >/dev/null 2>&1 || F210CAPFORCE_RC=$?
   assert_eq "AC(h): --force bypasses the capacity guardrail" "0" "$F210CAPFORCE_RC"
-  PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1   # back down for the next check (needs the gh stub -- a bare real `gh` against the fake repo fails closed and silently leaves this at 3)
+  PATH="$F210GHBIN:$PATH" f210 "$ROOT/bin/fwf-scale.sh" --pairs 2 >/dev/null 2>&1   # back down for the next check (needs the gh stub -- a bare real `gh` against the fake repo fails closed and silently leaves this at 3)
 
   # --- AC(h2): a budget HOLD refuses scale-up; scale-down is NEVER blocked ---
   # BUDGET_HOLD_FILE = $FWF_RUN/BUDGET_HOLD -- FWF_RUN resolves flat to
@@ -4425,11 +4425,11 @@ GHSTUB2
   # testing. Neutralized via the shared sensor seam (lib.sh's
   # fwf_free_ram_gb, issue #404 AC 5) rather than a one-off workaround here.
   printf 'HOLD\tsubscription usage at 97%%\n' > "$F210RUN/BUDGET_HOLD"
-  F210BUDGET_OUT="$(FWF_FREE_RAM_GB_OVERRIDE=999 f210 "$ROOT/fwf-scale.sh" --pairs 3 2>&1)"; F210BUDGET_RC=$?
+  F210BUDGET_OUT="$(FWF_FREE_RAM_GB_OVERRIDE=999 f210 "$ROOT/bin/fwf-scale.sh" --pairs 3 2>&1)"; F210BUDGET_RC=$?
   assert_eq "AC(h2): scale-up refuses while the budget sentinel reads HOLD" "1" "$F210BUDGET_RC"
   assert_contains "AC(h2): names the hold state" "$F210BUDGET_OUT" "sentinel reads 'HOLD"
   F210BUDGETDOWN_RC=0
-  PATH="$F210GHBIN:$PATH" f210 "$ROOT/fwf-scale.sh" --pairs 1 >/dev/null 2>&1 || F210BUDGETDOWN_RC=$?
+  PATH="$F210GHBIN:$PATH" f210 "$ROOT/bin/fwf-scale.sh" --pairs 1 >/dev/null 2>&1 || F210BUDGETDOWN_RC=$?
   assert_eq "AC(h2): scale-DOWN is never blocked by a budget hold" "0" "$F210BUDGETDOWN_RC"
   rm -f "$F210RUN/BUDGET_HOLD"
 
@@ -4438,9 +4438,9 @@ GHSTUB2
   # issue #431 sweep: `stat -c` is GNU-only; unguarded here it went empty on
   # both sides on macOS and the assert_eq below PASSED vacuously ("" == "").
   # `stat -f %i` is the BSD form of the same inode field -- fall back to it.
-  F210REUSE_INODE_BEFORE="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
-  f210 "$ROOT/fwf-scale.sh" --pairs 2 >/dev/null 2>&1
-  F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  F210REUSE_INODE_BEFORE="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/bin/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/bin/lib.sh'; wt_dir impl2")" 2>/dev/null)"
+  f210 "$ROOT/bin/fwf-scale.sh" --pairs 2 >/dev/null 2>&1
+  F210REUSE_INODE_AFTER="$(stat -c %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/bin/lib.sh'; wt_dir impl2")" 2>/dev/null || stat -f %i "$(env FWF_PROFILE=example FWF_WT_BASE="$F210WT" bash -c "source '$ROOT/bin/lib.sh'; wt_dir impl2")" 2>/dev/null)"
   # #275: a same-empty-string pass would be vacuous, not a real assertion.
   [ -n "$F210REUSE_INODE_BEFORE" ] \
     && ok "a later scale-up REUSES the kept worktree: inode read actually returned a value (not vacuous)" \
@@ -4454,7 +4454,7 @@ GHSTUB2
   # its own (AC k's "reads the sink, doesn't inherit" is exactly what
   # fwf_claude_cmd already guarantees -- asserted here as "calls the shared
   # primitive", the same level fwf-up.sh's own equivalent check uses).
-  F210SRC="$(cat "$ROOT/fwf-scale.sh")"
+  F210SRC="$(cat "$ROOT/bin/fwf-scale.sh")"
   assert_contains "fwf-scale.sh launches panes via fwf_claude_cmd (auth-sink-safe), never a hand-rolled launch string" "$F210SRC" 'fwf_claude_cmd "'
   assert_contains "fwf-scale.sh arms new panes via the shared fwf_arm_pane" "$F210SRC" "fwf_arm_pane "
   assert_contains "fwf-scale.sh runs the real boot health-gate on new panes" "$F210SRC" "fwf_verify_boot_ticks"
@@ -4474,7 +4474,7 @@ GHSTUB2
         FWF_REPO="$F85REPO" FWF_WT_BASE="$F452WT" FWF_CLAUDE_CMD="$F85CLAUDE" \
         FWF_SKIP_BOOT_GATE=1 "$@"
   }
-  f452 env FWF_PAIRS=2 "$ROOT/fwf-up.sh" >/dev/null 2>&1
+  f452 env FWF_PAIRS=2 "$ROOT/bin/fwf-up.sh" >/dev/null 2>&1
 
   # Simulate a floor that has actually ticked -- state/<profile>/heartbeat/
   # <role> is written by each role's own loop (fwf_tick_bump), never by
@@ -4491,7 +4491,7 @@ GHSTUB2
   # shows the check was passed (it started real pane work), never for the
   # whole command to finish.
   f452_bg_until_past_floor_check() { # $1=role $2=logfile -> sets F452_BG_PID
-    f452 env FWF_PAIRS=2 FWF_RESPAWN_VERIFY_MARGIN=0 "$ROOT/fwf-respawn.sh" "$1" >"$2" 2>&1 &
+    f452 env FWF_PAIRS=2 FWF_RESPAWN_VERIFY_MARGIN=0 "$ROOT/bin/fwf-respawn.sh" "$1" >"$2" 2>&1 &
     F452_BG_PID=$!
     local i=0
     while [ "$i" -lt 50 ]; do
@@ -4518,7 +4518,7 @@ GHSTUB2
   # --- AC (2): a seat that HAD a real pane which died is still respawnable,
   # via the SAME recovery path -- kill the pane AC(1) just created,
   # heartbeat entry untouched (a genuine wedge/crash, never a scale-down).
-  QA3_PANE_452="$(f452 bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F452SESS}-build' 'QA3 ·'" 2>/dev/null || true)"
+  QA3_PANE_452="$(f452 bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F452SESS}-build' 'QA3 ·'" 2>/dev/null || true)"
   if [ -n "$QA3_PANE_452" ]; then
     tmux kill-pane -t "$QA3_PANE_452" 2>/dev/null
     F452_QA3B_LOG="$TMP/f452-qa3b.log"
@@ -4534,7 +4534,7 @@ GHSTUB2
 
   # --- AC (3): the refusal, when it correctly fires, names BOTH numbers --
   # qa5 is outside FWF_PAIRS=2 AND never had a heartbeat entry at all.
-  F452_QA5_OUT="$(f452 env FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" qa5 2>&1)"; F452_QA5_RC=$?
+  F452_QA5_OUT="$(f452 env FWF_PAIRS=2 "$ROOT/bin/fwf-respawn.sh" qa5 2>&1)"; F452_QA5_RC=$?
   assert_eq "AC(3): a seat genuinely outside both sources refuses (exit 1)" "1" "$F452_QA5_RC"
   assert_contains "AC(3): the refusal names the configured floor" "$F452_QA5_OUT" "FWF_PAIRS=2"
   assert_contains "AC(3): the refusal names the observed roster, not just a bare number" "$F452_QA5_OUT" "observed roster:"
@@ -4544,7 +4544,7 @@ GHSTUB2
   # correctly refuses to guess a pair count against an inconsistent floor,
   # so it has to go before scale-down is exercised below (out of scope for
   # THIS ticket's own ACs, just a side effect of proving AC(1)/(2)).
-  QA3_CLEANUP_PANE_452="$(f452 bash -c "source '$ROOT/lib.sh'; fwf_find_pane '${F452SESS}-build' 'QA3 ·'" 2>/dev/null || true)"
+  QA3_CLEANUP_PANE_452="$(f452 bash -c "source '$ROOT/bin/lib.sh'; fwf_find_pane '${F452SESS}-build' 'QA3 ·'" 2>/dev/null || true)"
   [ -n "$QA3_CLEANUP_PANE_452" ] && tmux kill-pane -t "$QA3_CLEANUP_PANE_452" 2>/dev/null
   rm -f "$F452RUN/state/example/heartbeat/impl3" "$F452RUN/state/example/heartbeat/qa3"
 
@@ -4562,12 +4562,12 @@ case "$1 $2" in
 esac
 GHSTUB
   chmod +x "$F452GHBIN/gh"
-  PATH="$F452GHBIN:$PATH" f452 "$ROOT/fwf-scale.sh" --pairs 1 >/dev/null 2>&1
+  PATH="$F452GHBIN:$PATH" f452 "$ROOT/bin/fwf-scale.sh" --pairs 1 >/dev/null 2>&1
   F452_IMPL2_HB_RC=0; [ -e "$F452RUN/state/example/heartbeat/impl2" ] && F452_IMPL2_HB_RC=1
   F452_QA2_HB_RC=0; [ -e "$F452RUN/state/example/heartbeat/qa2" ] && F452_QA2_HB_RC=1
   assert_eq "AC(4): scale-down removes the seat's heartbeat entry (impl2)" "0" "$F452_IMPL2_HB_RC"
   assert_eq "AC(4): scale-down removes the seat's heartbeat entry (qa2)" "0" "$F452_QA2_HB_RC"
-  F452_QA2_AFTER_OUT="$(f452 env FWF_PAIRS=1 "$ROOT/fwf-respawn.sh" qa2 2>&1)"; F452_QA2_AFTER_RC=$?
+  F452_QA2_AFTER_OUT="$(f452 env FWF_PAIRS=1 "$ROOT/bin/fwf-respawn.sh" qa2 2>&1)"; F452_QA2_AFTER_RC=$?
   assert_eq "AC(5): a genuinely scaled-down seat is still refused (not resurrected)" "1" "$F452_QA2_AFTER_RC"
   assert_contains "AC(5): the refusal fires for the right reason" "$F452_QA2_AFTER_OUT" "beyond both the configured floor"
 
@@ -4578,7 +4578,7 @@ GHSTUB
   # roster and SAYS SO -- no tmux needed, the refusal fires before any
   # tmux command runs.
   F452_NOHB_RUN="$TMP/run452-nohb"; mkdir -p "$F452_NOHB_RUN/state/example"
-  F452_NOHB_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" qa5 2>&1)"
+  F452_NOHB_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/bin/fwf-respawn.sh" qa5 2>&1)"
   assert_contains "AC(6): a missing heartbeat dir is named, not silently trusted as complete" \
     "$F452_NOHB_OUT" "missing/unreadable -- falling back to the configured floor only"
 
@@ -4593,7 +4593,7 @@ GHSTUB
   # fast path is genuinely skipping the fallback, an in-floor respawn
   # never reaches the heartbeat-dir check and so never names it, unlike
   # AC(6)'s out-of-floor qa5 case just above.
-  F460_INFLOOR_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/fwf-respawn.sh" impl1 2>&1)"
+  F460_INFLOOR_OUT="$(env FWF_PROFILE=example FWF_RUN_DIR="$F452_NOHB_RUN" FWF_PAIRS=2 "$ROOT/bin/fwf-respawn.sh" impl1 2>&1)"
   assert_not_contains "issue #460: a seat WITHIN the profile default never triggers the heartbeat-dir fallback check" \
     "$F460_INFLOOR_OUT" "missing/unreadable -- falling back to the configured floor only"
   assert_not_contains "issue #460: ...nor the 'beyond both' refusal path (it was never in scope for the union check)" \
@@ -4611,34 +4611,34 @@ F88RUN="$TMP/run88lib"; mkdir -p "$F88RUN/state/example"
 F88ENV="FWF_RUN_DIR=$F88RUN FWF_PROFILE=example"
 F88LIBLOG="$F88RUN/state/example/floor-events.log"
 # no log at all -> no prior up on record -> cooldown never blocks
-assert_eq "no log -> no last-up epoch (build)" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_last_up_epoch build")"
-assert_eq "no log -> cooldown remaining 0 (build)" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
-assert_eq "no log -> cooldown remaining 0 (pm)" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining pm")"
+assert_eq "no log -> no last-up epoch (build)" "" "$(env $F88ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_last_up_epoch build")"
+assert_eq "no log -> cooldown remaining 0 (build)" "0" "$(env $F88ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining build")"
+assert_eq "no log -> cooldown remaining 0 (pm)" "0" "$(env $F88ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining pm")"
 # a log that has only ever seen floor-down (never a floor-up) -> still unguarded
 printf '2026-01-01T00:00:00Z\t0\tfloor-down\tcaptain\tfirst ever down\n' > "$F88LIBLOG"
-assert_eq "floor-down-only log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_last_up_epoch build")"
-assert_eq "floor-down-only log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+assert_eq "floor-down-only log -> no last-up epoch" "" "$(env $F88ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_last_up_epoch build")"
+assert_eq "floor-down-only log -> cooldown remaining 0" "0" "$(env $F88ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining build")"
 # a recent floor-up -> remaining cooldown is positive and bounded by FWF_BUILD_COOLDOWN
 NOW="$(date +%s)"
 printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$NOW" > "$F88LIBLOG"
-REM="$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+REM="$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining build")"
 case "$REM" in ''|*[!0-9]*) bad "recent floor-up -> remaining is numeric" "$REM";; *) ok "recent floor-up -> remaining is numeric";; esac
 [ "$REM" -gt 0 ] && [ "$REM" -le 100 ] && ok "recent floor-up -> 0 < remaining <= cooldown" || bad "recent floor-up -> 0 < remaining <= cooldown" "$REM"
 # FWF_FLOOR_COOLDOWN (legacy) still works, aliased into FWF_BUILD_COOLDOWN
-REM_LEGACY="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+REM_LEGACY="$(env $F88ENV FWF_FLOOR_COOLDOWN=100 bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining build")"
 [ "$REM_LEGACY" -gt 0 ] && [ "$REM_LEGACY" -le 100 ] && ok "legacy FWF_FLOOR_COOLDOWN still bounds the build plane's cooldown" \
   || bad "legacy FWF_FLOOR_COOLDOWN still bounds the build plane's cooldown" "$REM_LEGACY"
 # the pm plane is a SEPARATE cooldown, unaffected by a build-plane floor-up
 assert_eq "pm plane cooldown independent of build's recent floor-up" "0" \
-  "$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining pm")"
+  "$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining pm")"
 printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$NOW" >> "$F88LIBLOG"
-REM_PM="$(env $F88ENV FWF_PM_COOLDOWN=50 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining pm")"
+REM_PM="$(env $F88ENV FWF_PM_COOLDOWN=50 bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining pm")"
 [ "$REM_PM" -gt 0 ] && [ "$REM_PM" -le 50 ] && ok "pm plane's own recent floor-up bounds ITS cooldown via FWF_PM_COOLDOWN" \
   || bad "pm plane's own recent floor-up bounds ITS cooldown via FWF_PM_COOLDOWN" "$REM_PM"
 # an old floor-up (past the cooldown window) -> remaining is 0
 OLD=$(( NOW - 1000 ))
 printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD" > "$F88LIBLOG"
-assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining build")"
 # the LAST floor-up wins, not the first, when there are several in the log
 {
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$OLD"
@@ -4646,18 +4646,18 @@ assert_eq "elapsed floor-up -> cooldown remaining 0" "0" "$(env $F88ENV FWF_BUIL
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\n' "$NOW"
   printf '2026-01-01T00:00:00Z\t%s\tfloor-down\tcaptain\tr2\n' "$NOW"
 } > "$F88LIBLOG"
-REM2="$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining build")"
+REM2="$(env $F88ENV FWF_BUILD_COOLDOWN=100 bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining build")"
 [ "$REM2" -gt 0 ] && [ "$REM2" -le 100 ] && ok "cooldown keys off the LAST floor-up, not the first" || bad "cooldown keys off the LAST floor-up, not the first" "$REM2"
 assert_eq "fwf_plane_cooldown_remaining rejects an unknown plane" "1" \
-  "$(env $F88ENV bash -c "source '$ROOT/lib.sh'; fwf_plane_cooldown_remaining bogus >/dev/null 2>&1; echo \$?")"
+  "$(env $F88ENV bash -c "source '$ROOT/bin/lib.sh'; fwf_plane_cooldown_remaining bogus >/dev/null 2>&1; echo \$?")"
 # bogus FWF_FLOOR_COOLDOWN / FWF_BUILD_COOLDOWN / FWF_PM_COOLDOWN are all
 # rejected at source time, same style as FWF_PAIRS
-env $F88ENV FWF_FLOOR_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_FLOOR_COOLDOWN=banana rejected" || ok "FWF_FLOOR_COOLDOWN=banana rejected"
-env $F88ENV FWF_BUILD_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_BUILD_COOLDOWN=banana rejected" || ok "FWF_BUILD_COOLDOWN=banana rejected"
-env $F88ENV FWF_PM_COOLDOWN=banana bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_PM_COOLDOWN=banana rejected" || ok "FWF_PM_COOLDOWN=banana rejected"
+env $F88ENV FWF_FLOOR_COOLDOWN=banana bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "FWF_FLOOR_COOLDOWN=banana rejected" || ok "FWF_FLOOR_COOLDOWN=banana rejected"
+env $F88ENV FWF_BUILD_COOLDOWN=banana bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "FWF_BUILD_COOLDOWN=banana rejected" || ok "FWF_BUILD_COOLDOWN=banana rejected"
+env $F88ENV FWF_PM_COOLDOWN=banana bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "FWF_PM_COOLDOWN=banana rejected" || ok "FWF_PM_COOLDOWN=banana rejected"
 
 section "captain.tmpl (issue #88, per-plane by #105): dwell + deterministic cooldown are both stated"
-CAPRENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+CAPRENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
 assert_contains "captain prompt mentions the dwell" "$CAPRENDER" "dwell"
 assert_contains "captain prompt names FWF_BUILD_COOLDOWN" "$CAPRENDER" "FWF_BUILD_COOLDOWN"
 assert_contains "captain prompt names FWF_PM_COOLDOWN" "$CAPRENDER" "FWF_PM_COOLDOWN"
@@ -4731,14 +4731,14 @@ EOS
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   RECENT_UP="$(date +%s)"
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$RECENT_UP" > "$F88TLOG"
-  REFUSED="$(env $F88ENVT "$ROOT/fwf-down.sh" --build-only 2>&1)" && bad "cooldown refuses too-soon build-only down" || ok "cooldown refuses too-soon build-only down"
+  REFUSED="$(env $F88ENVT "$ROOT/bin/fwf-down.sh" --build-only 2>&1)" && bad "cooldown refuses too-soon build-only down" || ok "cooldown refuses too-soon build-only down"
   assert_contains "refusal names the remaining cooldown" "$REFUSED" "remaining"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session stays up when refused" || bad "build session stays up when refused"
   tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord session stays up when refused" || bad "coord session stays up when refused"
   assert_contains "log unchanged (no floor-down appended) when refused" "$(tail -n1 "$F88TLOG")" "floor-up"
 
   # --- --force overrides the cooldown (but not the deadlock guard) -----------
-  env $F88ENVT "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "--force overrides cooldown" || bad "--force overrides cooldown"
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "--force overrides cooldown" || bad "--force overrides cooldown"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "--force actually tears down the build session" || ok "--force actually tears down the build session"
   assert_contains "--force still logs floor-down" "$(tail -n1 "$F88TLOG")" "floor-down"
 
@@ -4746,13 +4746,13 @@ EOS
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   OLD_UP=$(( $(date +%s) - 1000 ))
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$OLD_UP" > "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "elapsed cooldown allows build-only down" || bad "elapsed cooldown allows build-only down"
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "elapsed cooldown allows build-only down" || bad "elapsed cooldown allows build-only down"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "elapsed-cooldown down actually tears down" || ok "elapsed-cooldown down actually tears down"
 
   # --- no prior floor-up on record (first-ever down) -> allowed ---------------
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   rm -f "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "no prior floor-up on record allows down" || bad "no prior floor-up on record allows down"
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "no prior floor-up on record allows down" || bad "no prior floor-up on record allows down"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "no-record down actually tears down" || ok "no-record down actually tears down"
 
   # --- PM-ONLY: its own independent cooldown (FWF_PM_COOLDOWN), pane-based ---
@@ -4761,19 +4761,19 @@ EOS
   tmux set -p -t "$(tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | tail -1)" @l "PM · refine loop"
   PMPANE_COUNT_BEFORE="$(tmux list-panes -t "${F88SESS}-coord" | wc -l | tr -d ' ')"
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$RECENT_UP" > "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --pm-only >/dev/null 2>&1 && bad "cooldown refuses too-soon pm-only down" || ok "cooldown refuses too-soon pm-only down"
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --pm-only >/dev/null 2>&1 && bad "cooldown refuses too-soon pm-only down" || ok "cooldown refuses too-soon pm-only down"
   PMPANE_COUNT_AFTER="$(tmux list-panes -t "${F88SESS}-coord" | wc -l | tr -d ' ')"
   assert_eq "PM pane survives a refused pm-only down" "$PMPANE_COUNT_BEFORE" "$PMPANE_COUNT_AFTER"
   # build's cooldown is INDEPENDENT of pm's — a fresh pm floor-up must not
   # block a build-only down whose OWN cooldown has elapsed.
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$OLD_UP" >> "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "build-only unaffected by pm's independent (still-fresh) cooldown" \
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --build-only >/dev/null 2>&1 && ok "build-only unaffected by pm's independent (still-fresh) cooldown" \
     || bad "build-only unaffected by pm's independent (still-fresh) cooldown"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build-only tore down despite pm's fresh cooldown" || ok "build-only tore down despite pm's fresh cooldown"
   # elapsed pm cooldown -> pm-only allowed, tears down the PM pane
   OLD_PM=$(( $(date +%s) - 1000 ))
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"
-  env $F88ENVT "$ROOT/fwf-down.sh" --pm-only >/dev/null 2>&1 && ok "elapsed pm cooldown allows pm-only down" || bad "elapsed pm cooldown allows pm-only down"
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --pm-only >/dev/null 2>&1 && ok "elapsed pm cooldown allows pm-only down" || bad "elapsed pm cooldown allows pm-only down"
   PMPANE_COUNT_FINAL="$(tmux list-panes -t "${F88SESS}-coord" | wc -l | tr -d ' ')"
   [ "$PMPANE_COUNT_FINAL" -lt "$PMPANE_COUNT_BEFORE" ] && ok "pm-only actually tears down the PM pane" || bad "pm-only actually tears down the PM pane" "$PMPANE_COUNT_FINAL vs $PMPANE_COUNT_BEFORE"
   tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord SESSION (captain) survives a pm-only down" || bad "coord SESSION (captain) survives a pm-only down"
@@ -4782,7 +4782,7 @@ EOS
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"   # recreate build for this scenario
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tbuild\n' "$RECENT_UP" > "$F88TLOG"   # build fresh (blocks)
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"        # pm elapsed (would allow)
-  env $F88ENVT "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1 && bad "floor-only refused when ONLY build's cooldown is fresh" || ok "floor-only refused when ONLY build's cooldown is fresh"
+  env $F88ENVT "$ROOT/bin/fwf-down.sh" --floor-only >/dev/null 2>&1 && bad "floor-only refused when ONLY build's cooldown is fresh" || ok "floor-only refused when ONLY build's cooldown is fresh"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched by the refused --floor-only" || bad "build session untouched by the refused --floor-only"
 
   # --- DEADLOCK GUARDS (issue #105 acceptance criterion 1) — --force lifts
@@ -4794,19 +4794,19 @@ EOS
   printf '2026-01-01T00:00:00Z\t%s\tfloor-up\t\t\tpm\n' "$OLD_PM" >> "$F88TLOG"
 
   # (1a) build-only refused while an open PR exists — --force does NOT override
-  BDOUT="$(env $F88ENVT F88_PR_COUNT=2 "$ROOT/fwf-down.sh" --build-only --force 2>&1)" && bad "build-only refused while a PR is open" || ok "build-only refused while a PR is open"
+  BDOUT="$(env $F88ENVT F88_PR_COUNT=2 "$ROOT/bin/fwf-down.sh" --build-only --force 2>&1)" && bad "build-only refused while a PR is open" || ok "build-only refused while a PR is open"
   assert_contains "refusal names the open PR(s)" "$BDOUT" "open PR"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (deadlock refusal survives --force)" || bad "build session untouched (deadlock refusal survives --force)"
 
   # (1a-cont) build-only refused while staging is ahead of integration (mid-promotion)
   ( cd "$F88REPO" && git fetch -q origin && git checkout -q staging && echo more >> f && git commit -qam more && git push -q origin staging ) >/dev/null 2>&1
-  BDOUT2="$(env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force 2>&1)" && bad "build-only refused mid-promotion (staging ahead of integration)" || ok "build-only refused mid-promotion (staging ahead of integration)"
+  BDOUT2="$(env $F88ENVT F88_PR_COUNT=0 "$ROOT/bin/fwf-down.sh" --build-only --force 2>&1)" && bad "build-only refused mid-promotion (staging ahead of integration)" || ok "build-only refused mid-promotion (staging ahead of integration)"
   assert_contains "refusal names mid-promotion" "$BDOUT2" "mid-promotion"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && ok "build session untouched (mid-promotion refusal)" || bad "build session untouched (mid-promotion refusal)"
   ( cd "$F88REPO" && git push -q origin staging:integration ) >/dev/null 2>&1   # resync so the next assertion sees a clean repo
 
   # (1a-safe) once the PR count is 0 and staging==integration, build-only proceeds
-  env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "build-only proceeds once the deadlock guard is clear" || bad "build-only proceeds once the deadlock guard is clear"
+  env $F88ENVT F88_PR_COUNT=0 "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1 && ok "build-only proceeds once the deadlock guard is clear" || bad "build-only proceeds once the deadlock guard is clear"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down once safe" || ok "build session torn down once safe"
 
   # --- (1a-claim) CLAIM-WINDOW guard (issue #147): pr_count==0 and
@@ -4815,7 +4815,7 @@ EOS
   # entirely. Reuses the SAME fwf-down.sh mechanism, not a new one.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   F147_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  F147OUT="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9001"$'\t'"$F147_NOW"$'\t'"CLAIM impl9" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F147OUT="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9001"$'\t'"$F147_NOW"$'\t'"CLAIM impl9" "$ROOT/bin/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)" \
     || ok "build-only refused: fresh claim, no pane signal yet (ambiguous -> fail-safe)"
   assert_contains "refusal names the claim window"  "$F147OUT" "claim window"
@@ -4830,7 +4830,7 @@ EOS
   # same role here would spuriously find a (just-stamped) signal.
   F147_OLD_EPOCH=$(( $(date -u +%s) - 1000 ))
   F147_OLD="$(date -u -d "@$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -j -f %s "$F147_OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
-  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9002"$'\t'"$F147_OLD"$'\t'"CLAIM impl8" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+  env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9002"$'\t'"$F147_OLD"$'\t'"CLAIM impl8" "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "build-only proceeds: old claim, no pane signal ever recorded (abandoned)" \
     || bad "build-only proceeds: old claim, no pane signal ever recorded (abandoned)"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: abandoned claim did not block" || ok "build session torn down: abandoned claim did not block"
@@ -4849,7 +4849,7 @@ EOS
   # pane-absent branch this test is actually about.
   printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
     "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl7.json"
-  env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9003"$'\t'"$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+  env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9003"$'\t'"$F147_NOW"$'\t'"CLAIM impl7" "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter" \
     || bad "build-only proceeds: claim's pane is confirmed ABSENT (no matching pane), fresh claim doesn't matter"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "build session torn down: confirmed-absent claimant did not block" || ok "build session torn down: confirmed-absent claimant did not block"
@@ -4867,7 +4867,7 @@ EOS
   # above for why a trusted usage cache is required to actually reach it.
   printf '{"files":{},"last_success_epoch":%s,"totals":{"input":0,"cache_creation":0,"cache_read":0,"output":0},"model":"claude-sonnet-5"}\n' \
     "$(( $(date -u +%s) - 3600 ))" > "$F88TRUN/state/example/usage-cache/impl5.json"
-  F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9004"$'\t'"$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F147OUT3="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9004"$'\t'"$F147_NOW"$'\t'"CLAIM impl5" "$ROOT/bin/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)" \
     || ok "build-only refused: claim's pane is WEDGED but still PRESENT (defers to respawn)"
   assert_contains "refusal still names the claim window (WEDGED-but-present blocks)" "$F147OUT3" "claim window"
@@ -4881,7 +4881,7 @@ EOS
   mkdir -p "$F88TRUN/state/example/tick" "$F88TRUN/state/example/tick-watch"
   printf '5 0 %s\n' "$(( $(date -u +%s) - 700 ))" > "$F88TRUN/state/example/tick-watch/impl6"
   echo 6 > "$F88TRUN/state/example/tick/impl6"   # ticked since the baseline -> HEALTHY
-  F147OUT2="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9005"$'\t'"$F147_OLD"$'\t'"CLAIM impl6" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F147OUT2="$(env $F88ENVT FWF_WEDGE_MIN_SECS=600 F88_PR_COUNT=0 F88_CLAIMS="9005"$'\t'"$F147_OLD"$'\t'"CLAIM impl6" "$ROOT/bin/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "build-only refused: claim is 15+ min old but the pane is still actively ticking" \
     || ok "build-only refused: claim is 15+ min old but the pane is still actively ticking"
   assert_contains "refusal still names the claim window (age alone did not decide it)" "$F147OUT2" "claim window"
@@ -4896,13 +4896,13 @@ EOS
   # blocks with no resolved PR), so this pair isolates exactly the ONE new
   # variable -- AC(3)'s own RED-before/GREEN-after fixture.
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
-  F391_BEFORE="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9006"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" "$ROOT/fwf-down.sh" --build-only --force 2>&1)" \
+  F391_BEFORE="$(env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9006"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" "$ROOT/bin/fwf-down.sh" --build-only --force 2>&1)" \
     && bad "#391 baseline: still refuses with NO resolved PR (fresh claim, no pane signal yet)" \
     || ok "#391 baseline: still refuses with NO resolved PR (fresh claim, no pane signal yet)"
   assert_contains "#391 baseline refusal names the claim window" "$F391_BEFORE" "claim window"
   env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9006"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" \
     F88_RESOLVED_PRS="impl10/issue-9006-some-slug" \
-    "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+    "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && ok "#391 AC(1): a claim whose PR is MERGED/closed proceeds -- 'no open PR' is not 'no PR'" \
     || bad "#391 AC(1): a claim whose PR is MERGED/closed proceeds -- 'no open PR' is not 'no PR'"
   tmux has-session -t "${F88SESS}-build" 2>/dev/null && bad "#391 AC(1): build session torn down once the claim's PR resolves as merged" || ok "#391 AC(1): build session torn down once the claim's PR resolves as merged"
@@ -4913,7 +4913,7 @@ EOS
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
   env $F88ENVT F88_PR_COUNT=0 F88_CLAIMS="9007"$'\t'"$F147_NOW"$'\t'"CLAIM impl10" \
     F88_RESOLVED_PRS="impl10/issue-9006-some-slug" \
-    "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
+    "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1 \
     && bad "#391: a resolved PR on a DIFFERENT issue number must not resolve this claim" \
     || ok "#391: a resolved PR on a DIFFERENT issue number must not resolve this claim"
   tmux kill-session -t "${F88SESS}-build" 2>/dev/null   # done with this section's build session
@@ -4921,7 +4921,7 @@ EOS
   # (1b) pm-only refused while an open product-wip draft exists — --force does NOT override
   tmux split-window -h -t "${F88SESS}-coord" -c "$TMP"
   tmux set -p -t "$(tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | tail -1)" @l "PM · refine loop"
-  PDOUT="$(env $F88ENVT F88_PR_COUNT=0 F88_WIP_COUNT=1 "$ROOT/fwf-down.sh" --pm-only --force 2>&1)" && bad "pm-only refused while a product-wip draft is open" || ok "pm-only refused while a product-wip draft is open"
+  PDOUT="$(env $F88ENVT F88_PR_COUNT=0 F88_WIP_COUNT=1 "$ROOT/bin/fwf-down.sh" --pm-only --force 2>&1)" && bad "pm-only refused while a product-wip draft is open" || ok "pm-only refused while a product-wip draft is open"
   assert_contains "refusal names the product-wip draft(s)" "$PDOUT" "product-wip"
   tmux list-panes -t "${F88SESS}-coord" -F '#{@l}' | grep -q "PM" && ok "PM pane untouched (deadlock refusal survives --force)" || bad "PM pane untouched (deadlock refusal survives --force)"
 
@@ -4932,17 +4932,17 @@ EOS
 exit 1
 EOS
   chmod +x "$F88BADGH/gh"
-  ADOUT="$(env FWF_PROFILE=example FWF_RUN_DIR=$F88TRUN FWF_SESSION=$F88SESS FWF_BUILD_COOLDOWN=300 FWF_PM_COOLDOWN=300 FWF_REPO=$F88REPO "PATH=$F88BADGH:$PATH" "$ROOT/fwf-down.sh" --pm-only --force 2>&1)" && bad "ambiguous (gh failure) declines rather than silently idling" || ok "ambiguous (gh failure) declines rather than silently idling"
+  ADOUT="$(env FWF_PROFILE=example FWF_RUN_DIR=$F88TRUN FWF_SESSION=$F88SESS FWF_BUILD_COOLDOWN=300 FWF_PM_COOLDOWN=300 FWF_REPO=$F88REPO "PATH=$F88BADGH:$PATH" "$ROOT/bin/fwf-down.sh" --pm-only --force 2>&1)" && bad "ambiguous (gh failure) declines rather than silently idling" || ok "ambiguous (gh failure) declines rather than silently idling"
   assert_contains "ambiguity refusal explains why" "$ADOUT" "assuming blocked"
   tmux list-panes -t "${F88SESS}-coord" -F '#{@l}' | grep -q "PM" && ok "PM pane untouched on ambiguous refusal" || bad "PM pane untouched on ambiguous refusal"
 
   # --- GV-REACHABLE (constraint 2): no idle path may ever tear down the GV ---
   GVPANE="$(tmux split-window -P -F '#{pane_id}' -h -t "${F88SESS}-coord" -c "$TMP")"
   tmux set -p -t "$GVPANE" @l "GRAND VIZIER"
-  env $F88ENVT F88_PR_COUNT=0 F88_WIP_COUNT=0 "$ROOT/fwf-down.sh" --pm-only --force >/dev/null 2>&1
+  env $F88ENVT F88_PR_COUNT=0 F88_WIP_COUNT=0 "$ROOT/bin/fwf-down.sh" --pm-only --force >/dev/null 2>&1
   tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | grep -qx "$GVPANE" && ok "GV pane survives a pm-only teardown" || bad "GV pane survives a pm-only teardown"
   tmux new-session -d -s "${F88SESS}-build" -c "$TMP"
-  env $F88ENVT F88_PR_COUNT=0 "$ROOT/fwf-down.sh" --build-only --force >/dev/null 2>&1
+  env $F88ENVT F88_PR_COUNT=0 "$ROOT/bin/fwf-down.sh" --build-only --force >/dev/null 2>&1
   tmux list-panes -t "${F88SESS}-coord" -F '#{pane_id}' | grep -qx "$GVPANE" && ok "GV pane survives a build-only teardown" || bad "GV pane survives a build-only teardown"
   tmux has-session -t "${F88SESS}-coord" 2>/dev/null && ok "coord SESSION (captain+GV) survives every deadlock/idle path above" || bad "coord SESSION (captain+GV) survives every deadlock/idle path above"
 
@@ -4954,10 +4954,10 @@ fi
 
 section "disk-pressure guard — refuses below the free-space floor"
 # An impossibly high floor must refuse before any tmux work; portable df runs.
-GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=999999 "$ROOT/fwf-up.sh" 2>&1)" && bad "guard refuses below floor" || ok "guard refuses below floor"
+GUARDOUT="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=999999 "$ROOT/bin/fwf-up.sh" 2>&1)" && bad "guard refuses below floor" || ok "guard refuses below floor"
 assert_contains "guard names the shortfall" "$GUARDOUT" "REFUSING to start"
 # Floor of 0 disables the guard (it must not be the thing that blocks here).
-G0="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0 "$ROOT/fwf-up.sh" --floor-only 2>&1)"
+G0="$(env FWF_PROFILE=example FWF_SESSION=fwf-selftest-$$ FWF_MIN_FREE_GB=0 "$ROOT/bin/fwf-up.sh" --floor-only 2>&1)"
 # issue #247 (A), qa2-caught (#325 review): --floor-only genuinely refuses
 # here too (no pre-existing coord session -- expected, unrelated to the disk
 # guard), so success is NOT the right proof; a silently-empty $G0 would also
@@ -4968,43 +4968,43 @@ case "$G0" in *"REFUSING to start"*) bad "floor 0 disables guard";; *) ok "floor
 
 section "runtime sizing + models (issue #7)"
 # PAIRS derives from FWF_PAIRS after the profile loads
-ROLES5="$(FWF_PAIRS=5 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" )"
+ROLES5="$(FWF_PAIRS=5 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_all_roles" )"
 assert_eq "FWF_PAIRS=5 -> 14 roles" "14" "$(printf '%s\n' "$ROLES5" | grep -c .)"
 assert_contains "impl5 exists" "$ROLES5" "impl5"
 assert_contains "qa5 exists"   "$ROLES5" "qa5"
 # bogus pair counts are rejected at source time
-FWF_PAIRS=banana FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_PAIRS=banana rejected" || ok "FWF_PAIRS=banana rejected"
-FWF_PAIRS=0      FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "FWF_PAIRS=0 rejected"      || ok "FWF_PAIRS=0 rejected"
+FWF_PAIRS=banana FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "FWF_PAIRS=banana rejected" || ok "FWF_PAIRS=banana rejected"
+FWF_PAIRS=0      FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "FWF_PAIRS=0 rejected"      || ok "FWF_PAIRS=0 rejected"
 # per-role model overrides layer correctly: role beats floor-wide beats none
-CMDS="$(FWF_MODEL=haiku FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl2; echo; fwf_claude_cmd qa1; echo; fwf_claude_cmd pm")"
+CMDS="$(FWF_MODEL=haiku FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd impl2; echo; fwf_claude_cmd qa1; echo; fwf_claude_cmd pm")"
 assert_contains "impl override wins"        "$(printf '%s' "$CMDS" | sed -n 1p)" "--model sonnet"
 assert_contains "floor default reaches qa"  "$(printf '%s' "$CMDS" | sed -n 2p)" "--model haiku"
 assert_contains "floor default reaches pm"  "$(printf '%s' "$CMDS" | sed -n 3p)" "--model haiku"
-NOMODEL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+NOMODEL="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd impl1")"
 case "$NOMODEL" in *--model*) bad "no override -> no --model flag";; *) ok "no override -> no --model flag";; esac
 # output style defaults to Concise for every seat (issue #187), is overridable,
 # and composes with --model; empty means no --settings flag at all
-STYLECMD="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+STYLECMD="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd captain")"
 assert_contains "default output style is Concise" "$STYLECMD" '--settings \{\"outputStyle\":\"Concise\"\}'
-STYLEOVERRIDE="$(FWF_OUTPUT_STYLE=Explanatory FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+STYLEOVERRIDE="$(FWF_OUTPUT_STYLE=Explanatory FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd captain")"
 assert_contains "FWF_OUTPUT_STYLE override honored" "$STYLEOVERRIDE" '--settings \{\"outputStyle\":\"Explanatory\"\}'
-STYLEOFF="$(FWF_OUTPUT_STYLE='' FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd captain")"
+STYLEOFF="$(FWF_OUTPUT_STYLE='' FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd captain")"
 # issue #247 (A), qa2-caught (#325 review): the absence of --settings also
 # holds if fwf_claude_cmd errored outright -- prove it still produced the
 # base command line before trusting the absence claim.
 assert_contains "FWF_OUTPUT_STYLE=\"\" still produces a real command line (not vacuously empty on error)" "$STYLEOFF" "claude"
 case "$STYLEOFF" in *--settings*) bad "FWF_OUTPUT_STYLE=\"\" disables --settings";; *) ok "FWF_OUTPUT_STYLE=\"\" disables --settings";; esac
-STYLEWITHMODEL="$(FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")"
+STYLEWITHMODEL="$(FWF_MODEL_IMPL=sonnet FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd impl1")"
 assert_contains "output style composes with --model (model)" "$STYLEWITHMODEL" "--model sonnet"
 assert_contains "output style composes with --model (settings)" "$STYLEWITHMODEL" '--settings \{\"outputStyle\":\"Concise\"\}'
 # pair colors cycle for any pair count
-C4="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 4")"
-C7="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 7")"
-C1="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 1")"
+C4="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; pair_color 4")"
+C7="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; pair_color 7")"
+C1="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; pair_color 1")"
 [ -n "$C4" ] && ok "pair_color 4 defined" || bad "pair_color 4 defined"
 assert_eq "palette cycles (7 wraps to 1)" "$C1" "$C7"
 # respawn refuses a role beyond the configured floor (before any tmux work)
-RSP="$(FWF_PAIRS=2 FWF_PROFILE=example "$ROOT/fwf-respawn.sh" impl3 2>&1)" && bad "respawn beyond floor rejected" || ok "respawn beyond floor rejected"
+RSP="$(FWF_PAIRS=2 FWF_PROFILE=example "$ROOT/bin/fwf-respawn.sh" impl3 2>&1)" && bad "respawn beyond floor rejected" || ok "respawn beyond floor rejected"
 assert_contains "respawn names the bound" "$RSP" "FWF_PAIRS=2"
 # dispatcher accepts the flags after the subcommand and validates them
 UPFLAG="$(FWF_PROFILE=example "$ROOT/fwf-legacy" up --pairs banana 2>&1)" && bad "fwf up --pairs banana rejected" || ok "fwf up --pairs banana rejected"
@@ -5018,61 +5018,61 @@ assert_contains "templates lists dev"      "$TLIST" "dev"
 assert_contains "templates lists refactor" "$TLIST" "refactor"
 assert_contains "help mentions --template" "$("$ROOT/fwf-legacy" help)" "--template NAME"
 # unknown template rejected at source time
-FWF_TEMPLATE=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "unknown template rejected" || ok "unknown template rejected"
+FWF_TEMPLATE=bogus FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "unknown template rejected" || ok "unknown template rejected"
 # an incomplete template (missing role tmpls) is rejected with the role named
 mkdir -p "$ROOT/templates/.__broken"; : > "$ROOT/templates/.__broken/implementer.tmpl"
-BROKEN="$(FWF_TEMPLATE=.__broken FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" 2>&1)" && bad "incomplete template rejected" || ok "incomplete template rejected"
+BROKEN="$(FWF_TEMPLATE=.__broken FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" 2>&1)" && bad "incomplete template rejected" || ok "incomplete template rejected"
 assert_contains "missing role named" "$BROKEN" "has no qa.tmpl"
 rm -rf "$ROOT/templates/.__broken"
 # refactor template: prompts render with the behavior-preservation spine intact
-RIMPL="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 1")"
+RIMPL="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 1")"
 assert_contains "refactorer characterizes first"   "$RIMPL" "CHARACTERIZE FIRST"
 assert_contains "refactorer keeps claim protocol"  "$RIMPL" "CLAIM impl1"
 assert_contains "refactorer never edits expectations" "$RIMPL" "NEVER EDIT EXISTING TEST EXPECTATIONS"
-RQA="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/qa.tmpl\" 1")"
+RQA="$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/qa.tmpl\" 1")"
 assert_contains "verifier checks behavior contract" "$RQA" "BEHAVIOR-CONTRACT CHECK"
 # template.sh defaults apply (refactor => 2 pairs) and env still wins
-assert_eq "refactor defaults to 2 pairs" "8"  "$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
-assert_eq "env FWF_PAIRS beats template" "10" "$(FWF_PAIRS=3 FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
+assert_eq "refactor defaults to 2 pairs" "8"  "$(FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_all_roles" | grep -c .)"
+assert_eq "env FWF_PAIRS beats template" "10" "$(FWF_PAIRS=3 FWF_TEMPLATE=refactor FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_all_roles" | grep -c .)"
 # captain --print honors --template
 RCAP="$("$ROOT/fwf-legacy" --profile example captain --print --template refactor 2>&1)"
 assert_contains "captain --print honors --template" "$RCAP" "REFACTORING FACTORY"
 
 section "ideation template (issue #9)"
 assert_contains "templates lists ideation" "$("$ROOT/fwf-legacy" templates)" "ideation"
-IGEN="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 2")"
+IGEN="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/implementer.tmpl\" 2")"
 assert_contains "generator has a stance"          "$IGEN" "ANALOGY TRANSFER"
 assert_contains "generator diverges before reading" "$IGEN" "DIVERGE FIRST, READ THE PORTFOLIO SECOND"
 assert_contains "generator never closes challenges" "$IGEN" "the challenge outlives your batch"
-ICRIT="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/qa.tmpl\" 1")"
+ICRIT="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/qa.tmpl\" 1")"
 assert_contains "critic hardens feasibility"  "$ICRIT" "NOVEL-BUT-INFEASIBLE"
 assert_contains "critic protects the weird"   "$ICRIT" "protect the weird ones"
-ISYN="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/conductor.tmpl\" ''")"
+ISYN="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$FWF_TEMPLATE_DIR/conductor.tmpl\" ''")"
 assert_contains "synthesizer owns the portfolio" "$ISYN" "PORTFOLIO.md"
 assert_contains "synthesizer ranks pairwise"     "$ISYN" "PAIRWISE"
-assert_eq "ideation keeps 3 pairs" "10" "$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep -c .)"
+assert_eq "ideation keeps 3 pairs" "10" "$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_all_roles" | grep -c .)"
 
 section "extra roles + template inheritance (issue #17)"
 assert_contains "templates lists dev-sre" "$("$ROOT/fwf-legacy" templates)" "dev-sre"
 # dev-sre adds the sre role to the roster (11 = 10 stock + sre)
-SRE_ROLES="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles")"
+SRE_ROLES="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_all_roles")"
 assert_eq "dev-sre roster is 11 roles" "11" "$(printf '%s\n' "$SRE_ROLES" | grep -c .)"
 assert_contains "sre in roster" "$SRE_ROLES" "sre"
 # extra-role metadata parses
-assert_eq "sre session"  "coord" "$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_extra_session sre")"
-assert_eq "sre interval" "2m"    "$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_extra_interval sre")"
+assert_eq "sre session"  "coord" "$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_extra_session sre")"
+assert_eq "sre interval" "2m"    "$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_extra_interval sre")"
 # prompt inheritance: implementer falls back to the dev base; captain is overridden
-SRE_IMPL="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 1")"
+SRE_IMPL="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$(fwf_tmpl_path implementer)\" 1")"
 assert_contains "implementer inherited from dev" "$SRE_IMPL" "You are implementer impl1"
-SRE_CAP="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
+SRE_CAP="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$(fwf_tmpl_path captain)\" ''")"
 assert_contains "captain override: one-writer contract" "$SRE_CAP" "ZERO ops actions"
-SRE_TMPL="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render \"\$(fwf_tmpl_path sre)\" ''")"
+SRE_TMPL="$(FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render \"\$(fwf_tmpl_path sre)\" ''")"
 assert_contains "sre prompt: not human-facing" "$SRE_TMPL" "NOT human-facing"
 assert_contains "sre prompt: root-cause directive" "$SRE_TMPL" "ESCALATE TO ROOT CAUSE"
 # a declared extra role without a resolvable tmpl is rejected at source time
-FWF_EXTRA_ROLES="ghost:coord:1m" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "missing extra tmpl rejected" || ok "missing extra tmpl rejected"
+FWF_EXTRA_ROLES="ghost:coord:1m" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "missing extra tmpl rejected" || ok "missing extra tmpl rejected"
 # respawn recognizes the extra role (fails on the absent session, not usage)
-SRER="$(FWF_TEMPLATE=dev-sre FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/fwf-respawn.sh" sre 2>&1)" && bad "respawn sre recognized" || ok "respawn sre recognized"
+SRER="$(FWF_TEMPLATE=dev-sre FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/bin/fwf-respawn.sh" sre 2>&1)" && bad "respawn sre recognized" || ok "respawn sre recognized"
 assert_contains "respawn sre fails on session, not usage" "$SRER" "no tmux session"
 
 section "eval harness (issue #8) — hermetic, stubbed claude"
@@ -5132,7 +5132,7 @@ assert_contains "answer contract included"        "$SPROMPT" "## Per-role models
 assert_contains "eval verification taught"        "$SPROMPT" "fwf eval --role"
 assert_contains "canonical launch shape taught"   "$SPROMPT" "fwf up --template NAME"
 # extra roles honor FWF_MODEL_<NAME> (the knob the advisor recommends)
-SREMODEL="$(FWF_MODEL_SRE=opus-test FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd sre")"
+SREMODEL="$(FWF_MODEL_SRE=opus-test FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd sre")"
 assert_contains "FWF_MODEL_SRE honored" "$SREMODEL" "--model opus-test"
 # advisor --model is NOT swallowed by the dispatcher's runtime-flag parser
 FWF_SUGGEST_CLAUDE_CMD="$SGSTUB" "$ROOT/fwf-legacy" suggest --model test-model "any goal" >/dev/null 2>&1 \
@@ -5171,9 +5171,10 @@ assert_contains "gh failure hints at clone fetch+merge" "$UPF" "fetch --tags"
 # regression (issue #71): a git *worktree* has .git as a FILE (gitdir: …), not
 # a dir — and every fwf-self swarm role runs from a worktree.  Build a
 # standalone install whose .git is a file.
-WT71="$TMP/wt71"; mkdir -p "$WT71/lib"
+WT71="$TMP/wt71"; mkdir -p "$WT71/bin" "$WT71/lib"
 cp "$ROOT/fwf-legacy" "$WT71/fwf"
-cp "$ROOT/config.sh" "$ROOT/VERSION" "$WT71/"
+cp "$ROOT/bin/config.sh" "$WT71/bin/"
+cp "$ROOT/VERSION" "$WT71/"
 cp "$ROOT/lib"/*.sh "$WT71/lib/"
 printf 'gitdir: /some/repo/.git/worktrees/wt71\n' > "$WT71/.git"
 
@@ -5199,9 +5200,10 @@ assert_contains "online worktree refusal names fwf upgrade"           "$UPWTONLI
 # dangling/unresolvable .git (present, not a dir, not a recognized worktree
 # gitdir shape): refuse — never silently fall through to the tarball path,
 # which would extract a release right on top of an existing git checkout.
-WTDANGLE="$TMP/wtdangle"; mkdir -p "$WTDANGLE/lib"
+WTDANGLE="$TMP/wtdangle"; mkdir -p "$WTDANGLE/bin" "$WTDANGLE/lib"
 cp "$ROOT/fwf-legacy" "$WTDANGLE/fwf"
-cp "$ROOT/config.sh" "$ROOT/VERSION" "$WTDANGLE/"
+cp "$ROOT/bin/config.sh" "$WTDANGLE/bin/"
+cp "$ROOT/VERSION" "$WTDANGLE/"
 cp "$ROOT/lib"/*.sh "$WTDANGLE/lib/"
 printf 'not a gitdir line\n' > "$WTDANGLE/.git"
 DANGLE="$(PATH="$GHSTUB:$PATH" FAKE_LATEST="v99.0.0" "$WTDANGLE/fwf" upgrade 2>&1)" \
@@ -5271,7 +5273,7 @@ rm -rf "$ROOT/dist"
 
 section "local issues backend (issue #26) — store CLI"
 ISSRUN="$TMP/issrun"
-ISS() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+ISS() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 OUT="$(ISS create --title "Fix pagination" --body "page 2 repeats an item" --label product-wip --label bug)"
 assert_contains "create prints number + path" "$OUT" "LI-1 created"
 ISS create --title "Dark mode" >/dev/null
@@ -5313,7 +5315,7 @@ assert_contains "un-gated issue enters survey" "$(ISS list --search "is:open -la
 # (untrustworthy) -- the #200 shape this ticket's discrimination test
 # targets. `source ... help` runs the harmless default subcommand so the
 # functions are defined without dispatching a real command first.
-LOF() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example bash -c "source '$ROOT/fwf-issues.sh' help >/dev/null 2>&1; $1"; }
+LOF() { FWF_RUN_DIR="$ISSRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/fwf-issues.sh' help >/dev/null 2>&1; $1"; }
 NOLABEL_OUT="$(ISS create --title "No labels at all")"
 NOLABEL_N="$(printf '%s' "$NOLABEL_OUT" | sed -n 's/^LI-\([0-9]*\) created.*/\1/p')"
 LOF_EMPTY_N="$(LOF "labels_of $NOLABEL_N >/dev/null; echo \$?")"
@@ -5396,7 +5398,7 @@ assert_not_contains "the label file has no labels line left" \
 # that number. Fresh, isolated fixture -- this must not share $ISSRUN's
 # cumulative issue numbering with the tests above.
 NNRUN="$TMP/issrun-nextnum"
-NNISS() { FWF_RUN_DIR="$NNRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+NNISS() { FWF_RUN_DIR="$NNRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 NNISS create --title "First" >/dev/null
 NNISS create --title "Second" >/dev/null
 NNSEQ="$NNRUN/issues/example/seq"
@@ -5417,19 +5419,19 @@ assert_eq "next_num: a normal create afterward still works (lock genuinely relea
   "3" "$(cat "$NNSEQ")"
 
 section "local issues backend — render integration"
-LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+LIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "gh issue rewritten to fwf issues" "$LIMPL" "fwf --profile example issues list"
 case "$LIMPL" in *"gh issue"*) bad "no gh issue remains";; *) ok "no gh issue remains";; esac
 assert_contains "issue refs become LI-"   "$LIMPL" "Closes LI-<num>"
 assert_contains "implementer addendum appended" "$LIMPL" "LOCAL ISSUES MODE"
-LCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+LCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 assert_contains "captain closes at release"  "$LCAP" "CLOSE SHIPPED ISSUES AT RELEASE"
 assert_contains "captain mines the store"    "$LCAP" "issues export"
-GHIMPL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+GHIMPL="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "gh mode untouched: gh issue" "$GHIMPL" "gh issue list"
 assert_contains "gh mode untouched: Closes #" "$GHIMPL" "Closes #<num>"
 case "$GHIMPL" in *"LOCAL ISSUES MODE"*) bad "gh mode has no addendum";; *) ok "gh mode has no addendum";; esac
-FWF_ISSUES=bogus FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 && bad "bogus backend rejected" || ok "bogus backend rejected"
+FWF_ISSUES=bogus FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 && bad "bogus backend rejected" || ok "bogus backend rejected"
 case "$("$ROOT/fwf-legacy" templates)" in *_local-issues*) bad "_local-issues hidden from templates";; *) ok "_local-issues hidden from templates";; esac
 assert_contains "help mentions --issues" "$("$ROOT/fwf-legacy" help)" "--issues gh|local"
 
@@ -5447,7 +5449,7 @@ STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
 GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
 EOF
 # local mode provision: ladder stays local, guard installed, nothing pushed
-FWF_ISSUES=local FWF_RUN_DIR="$PUSHD/run" FWF_PROFILE=.__pushtest "$ROOT/fwf-provision.sh" >/dev/null 2>&1 \
+FWF_ISSUES=local FWF_RUN_DIR="$PUSHD/run" FWF_PROFILE=.__pushtest "$ROOT/bin/fwf-provision.sh" >/dev/null 2>&1 \
   && ok "local provision runs" || bad "local provision runs"
 git -C "$PUSHD/repo" show-ref --verify --quiet refs/heads/staging && ok "staging exists locally" || bad "staging exists locally"
 git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/staging && bad "staging NOT pushed" || ok "staging NOT pushed"
@@ -5462,7 +5464,7 @@ git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/staging && bad "bl
 # guard blocks from a WORKTREE too (agents live in worktrees)
 ( cd "$PUSHD/wt/pt-impl1" && git push origin impl1/work >/dev/null 2>&1 ) && bad "worktree push blocked" || ok "worktree push blocked"
 # gh-mode provision on the same repo: guard removed, ladder pushed
-FWF_RUN_DIR="$PUSHD/run" FWF_PROFILE=.__pushtest "$ROOT/fwf-provision.sh" >/dev/null 2>&1
+FWF_RUN_DIR="$PUSHD/run" FWF_PROFILE=.__pushtest "$ROOT/bin/fwf-provision.sh" >/dev/null 2>&1
 grep -q "fwf no-push guard" "$PUSHHOOK" 2>/dev/null && bad "guard removed in gh mode" || ok "guard removed in gh mode"
 git --git-dir "$PUSHD/origin.git" show-ref --quiet refs/heads/integration && ok "gh mode pushes the ladder" || bad "gh mode pushes the ladder"
 rm -f "$ROOT/profiles/.__pushtest.sh"
@@ -5476,7 +5478,7 @@ git -C "$NOREMOTE" init -q
 git -C "$NOREMOTE" config user.email t@t.co && git -C "$NOREMOTE" config user.name t
 NRRUN="$TMP/norun141"
 NROUT="$(FWF_RUN_DIR="$NRRUN" FWF_REPO="$NOREMOTE" FWF_ISSUES=local FWF_PROFILE=example \
-  bash -c "set -euo pipefail; source '$ROOT/lib.sh'; fwf_install_ghguard; echo GHGUARD-DONE" 2>&1)"
+  bash -c "set -euo pipefail; source '$ROOT/bin/lib.sh'; fwf_install_ghguard; echo GHGUARD-DONE" 2>&1)"
 assert_contains "ghguard install completes under set -e with no remote at all (doesn't silently abort)" \
   "$NROUT" "GHGUARD-DONE"
 [ -x "$NRRUN/ghguard/gh" ] && ok "guard still installed with no remote" || bad "guard still installed with no remote"
@@ -5494,7 +5496,7 @@ WT_BASE="$TMP/wt141"
 STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
 GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
 EOF
-NR2OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$TMP/run141b" FWF_PROFILE=.__noremote141 "$ROOT/fwf-provision.sh" 2>&1)"
+NR2OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$TMP/run141b" FWF_PROFILE=.__noremote141 "$ROOT/bin/fwf-provision.sh" 2>&1)"
 NR2RC=$?
 assert_eq "provision succeeds on a fresh git-init repo with no remote at all" "0" "$NR2RC"
 assert_contains "provision warns loudly instead of aborting silently" "$NR2OUT" "could not fetch origin"
@@ -5503,17 +5505,17 @@ git -C "$NR2" show-ref --verify --quiet refs/heads/integration && ok "integratio
 rm -f "$ROOT/profiles/.__noremote141.sh"
 
 section "no-push flow in the rendered prompts (issue #28)"
-NPIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+NPIMPL="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "impl: never push"            "$NPIMPL" "NEVER run \`git push\`"
 assert_contains "impl: local handoff signal"  "$NPIMPL" "READY-FOR-REVIEW impl1"
-NPQA="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+NPQA="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
 assert_contains "qa: no PRs, local queue"     "$NPQA" "there are NO pull requests here"
 assert_contains "qa: frees the shared branch" "$NPQA" "git switch --detach staging"
-NPCON="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
+NPCON="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
 assert_contains "conductor: never fetch/pull/push" "$NPCON" "NEVER fetch/pull/push"
-NPCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+NPCAP="$(FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 assert_contains "captain: sole exception, per-instance" "$NPCAP" "FWF_ALLOW_PUSH=1"
-GHCAP="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+GHCAP="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
 # issue #247 (A), qa2-caught (#325 review): the absence of FWF_ALLOW_PUSH
 # also holds if the render failed outright -- prove it actually rendered
 # the captain prompt before trusting the absence claim.
@@ -5521,10 +5523,10 @@ assert_contains "gh-mode captain prompt actually rendered (not vacuously empty o
 case "$GHCAP" in *FWF_ALLOW_PUSH*) bad "gh mode has no push-guard text";; *) ok "gh mode has no push-guard text";; esac
 
 section "no shared-branch collision on claim/gate (issue #91): implementers and read-only conductors never hold local staging"
-NCIMPL="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+NCIMPL="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "impl: claims branch off origin/staging" "$NCIMPL" "git switch -c impl1/issue-<num>-<slug> origin/staging"
 case "$NCIMPL" in *"git switch staging &&"*) bad "impl: never checks out local staging";; *) ok "impl: never checks out local staging";; esac
-NCCON="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
+NCCON="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''")"
 assert_contains "conductor (dev, read-only): detaches for e2e"    "$NCCON" "git switch --detach origin/staging"
 # issue #237: promotes through the OBLIGED call site, which itself reads
 # the gate's own RECORDED tip (by literal hash), not a re-resolved
@@ -5537,12 +5539,12 @@ case "$NCCON" in *"git switch staging &&"*) bad "conductor (dev): never checks o
 # the validate/ideation adjudicators DO legitimately hold local staging (they commit
 # VERDICT.md/PORTFOLIO.md directly to it) — confirm that's still intact, and that
 # their promote step still reads from origin/staging like everyone else's.
-NCVAL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/validate/conductor.tmpl' ''")"
+NCVAL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/validate/conductor.tmpl' ''")"
 assert_contains "adjudicator: still holds staging to commit the ledger" "$NCVAL" "git switch staging && git pull --ff-only"
 assert_contains "adjudicator: promotes from origin/staging"             "$NCVAL" "git merge --ff-only origin/staging"
-NCVALIMPL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/validate/implementer.tmpl' 1")"
+NCVALIMPL="$(FWF_PROFILE=example FWF_TEMPLATE=validate bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/validate/implementer.tmpl' 1")"
 case "$NCVALIMPL" in *"git switch staging &&"*) bad "analyst: never checks out local staging";; *) ok "analyst: never checks out local staging";; esac
-NCQA="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+NCQA="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
 assert_contains "qa: told never to check out shared staging" "$NCQA" "NEVER \`git switch\`/\`git checkout\` the shared staging"
 
 section "fwf startup upgrade-staleness check (issue #94, from the #79 proposal) — hermetic, stubbed gh"
@@ -5579,7 +5581,7 @@ case "${1:-}" in
 esac
 EOS
 chmod +x "$VSSTUB/gh"
-vs_run() { PATH="$VSSTUB:$PATH" FWF_RUN_DIR="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $2"; }
+vs_run() { PATH="$VSSTUB:$PATH" FWF_RUN_DIR="$1" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $2"; }
 
 # (a) local == latest -> no warning
 VSRUN="$TMP/vs-a"; mkdir -p "$VSRUN/upgrade-check"
@@ -5797,7 +5799,7 @@ printf '999999' > "$LOCKDIR439/owner"   # simulate a real racer already holding 
 
 VS439CALLS="$TMP/vs-439-calls"; : > "$VS439CALLS"
 PATH="$MKSTUB:$VSSTUB:$PATH" FWF_RUN_DIR="$VS439RUN" FWF_PROFILE=example VS_CALL_LOG="$VS439CALLS" \
-  bash -c "source '$ROOT/lib.sh'; _fwf_version_skew_refresh" >/dev/null 2>&1
+  bash -c "source '$ROOT/bin/lib.sh'; _fwf_version_skew_refresh" >/dev/null 2>&1
 
 if [ ! -s "$VS439CALLS" ]; then
   ok "AC(439): a provisional (lying) mkdir win never calls gh once another owner already claimed the lockdir"
@@ -5823,20 +5825,20 @@ GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
 FWF_TEMPLATE="\${FWF_TEMPLATE:-refactor}"
 FWF_ISSUES="\${FWF_ISSUES:-local}"
 EOF
-PERSIST="$(FWF_PROFILE=.__persist bash -c "source '$ROOT/lib.sh'; echo \"\$FWF_TEMPLATE|\$FWF_ISSUES|\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
+PERSIST="$(FWF_PROFILE=.__persist bash -c "source '$ROOT/bin/lib.sh'; echo \"\$FWF_TEMPLATE|\$FWF_ISSUES|\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
 assert_eq "profile ':-' template persists (the #30 bug)" "refactor|local|friends-refactor-build|REFAC" "$PERSIST"
-ENVWIN="$(FWF_TEMPLATE=dev FWF_ISSUES=gh FWF_PROFILE=.__persist bash -c "source '$ROOT/lib.sh'; echo \"\$FWF_TEMPLATE|\$FWF_ISSUES|\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
+ENVWIN="$(FWF_TEMPLATE=dev FWF_ISSUES=gh FWF_PROFILE=.__persist bash -c "source '$ROOT/bin/lib.sh'; echo \"\$FWF_TEMPLATE|\$FWF_ISSUES|\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
 assert_eq "env still beats profile ':-'" "dev|gh|friends-build|IMPL" "$ENVWIN"
 rm -f "$ROOT/profiles/.__persist.sh"
-IDENT="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \"\$COORD_SESSION|\$FWF_DISPLAY_IMPL|\$FWF_DISPLAY_QA|\$FWF_DISPLAY_CONDUCTOR|\$FWF_DISPLAY_PM\"")"
+IDENT="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \"\$COORD_SESSION|\$FWF_DISPLAY_IMPL|\$FWF_DISPLAY_QA|\$FWF_DISPLAY_CONDUCTOR|\$FWF_DISPLAY_PM\"")"
 assert_eq "ideation identity + session name" "friends-ideation-coord|GEN|CRITIC|SYNTH|FRAMER" "$IDENT"
-DEVIDENT="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \"\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
+DEVIDENT="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \"\$BUILD_SESSION|\$FWF_DISPLAY_IMPL\"")"
 assert_eq "dev keeps classic names" "friends-build|IMPL" "$DEVIDENT"
 
 section "gh-write guard in local mode (issue #34)"
 GGRUN="$TMP/ggrun"
 # install the guard via the real code path, then swap in a recording fake gh
-FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_install_ghguard"
+FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_install_ghguard"
 [ -x "$GGRUN/ghguard/gh" ] && ok "guard wrapper installed" || bad "guard wrapper installed"
 GGFWF="$(readlink "$GGRUN/ghguard/fwf")"
 assert_contains "fwf resolvable in panes (the gh-fallback cause)" "$GGFWF" "fwf"
@@ -5846,7 +5848,7 @@ assert_contains "fwf resolvable in panes (the gh-fallback cause)" "$GGFWF" "fwf"
 # sed disagree on -i '' and CI runs both).
 mkdir -p "$TMP/fakebin"
 printf '#!/usr/bin/env bash\necho "REAL-GH RAN: $*"\n' > "$TMP/fakebin/gh"; chmod +x "$TMP/fakebin/gh"
-FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "PATH='$TMP/fakebin':\$PATH; source '$ROOT/lib.sh'; fwf_install_ghguard"
+FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "PATH='$TMP/fakebin':\$PATH; source '$ROOT/bin/lib.sh'; fwf_install_ghguard"
 GG() { "$GGRUN/ghguard/gh" "$@"; }
 # reads pass through
 assert_contains "issue list passes"   "$(GG issue list 2>&1)" "REAL-GH RAN: issue list"
@@ -5868,9 +5870,9 @@ assert_contains "block names the override"   "$GGMSG" "FWF_ALLOW_GH=1"
 assert_contains "FWF_ALLOW_GH=1 authorizes" "$(FWF_ALLOW_GH=1 GG issue create --title x 2>&1)" "REAL-GH RAN: issue create"
 # pane launch command carries the guard PATH in BOTH modes now (#57): the shim
 # is the REST+ETag read cache in gh mode, and additionally the write guard in local.
-GCMD="$(FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
+GCMD="$(FWF_RUN_DIR="$GGRUN" FWF_ISSUES=local FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
 assert_contains "local CLAUDE_CMD prepends guard PATH" "$GCMD" "ghguard"
-GCMD_GH="$(FWF_RUN_DIR="$GGRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
+GCMD_GH="$(FWF_RUN_DIR="$GGRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; printf '%s' \"\$CLAUDE_CMD\"")"
 assert_contains "gh mode CLAUDE_CMD prepends guard PATH (read cache)" "$GCMD_GH" "ghguard"
 
 # fwf-ghcache.sh: reshape a SEEDED canonical REST snapshot offline (#57). With
@@ -5879,7 +5881,7 @@ assert_contains "gh mode CLAUDE_CMD prepends guard PATH (read cache)" "$GCMD_GH"
 CHROOT="$TMP/ghcache"; mkdir -p "$CHROOT/x__y"
 printf '%s' '[{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-03T00:00:00Z","updated_at":"2026-01-03T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L1","name":"bug","description":"d","color":"c"}],"assignees":[]},{"number":7,"title":"Beta","body":"b","state":"open","html_url":"u","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}]' > "$CHROOT/x__y/issues.json"
 touch "$CHROOT/x__y/issues.ts"
-GHC() { FWF_GHCACHE_DIR="$CHROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GHC() { FWF_GHCACHE_DIR="$CHROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 assert_eq "ghcache reshapes canonical offline" '9,7' "$(GHC serve issue list --json number,title --jq '[.[].number]|@csv')"
 assert_eq "ghcache --label filter offline"    '9'   "$(GHC serve issue list --label bug --json number --jq '[.[].number]|@csv')"
 assert_eq "ghcache projects gh-shaped labels"  '[{"labels":[{"id":"L1","name":"bug","description":"d","color":"c"}],"number":9}]' "$(GHC serve issue list --label bug --json number,labels)"
@@ -5896,15 +5898,15 @@ printf '%s' '[
  {"number":6,"title":"[TRACKING] F","body":"","state":"open","html_url":"u","created_at":"2026-01-06T00:00:00Z","updated_at":"2026-01-06T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[{"node_id":"L6","name":"tracking","description":"","color":"c"}],"assignees":[]}
 ]' > "$SROOT/x__y/issues.json"
 touch "$SROOT/x__y/issues.ts"
-GHCS() { FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GHCS() { FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 assert_eq "search: is:open (qa queue pattern)" "1,2,3,4,5,6" "$(GHCS serve issue list --search "is:open" --json number --jq '[.[].number]|sort|@csv')"
 # issue #255: the implementer/captain/pm survey searches below are the
 # ACTUAL rendered strings (fwf_render), never hand-retyped -- a hand-typed
 # reconstruction would only prove the stub can parse SOME string, not that
 # it matches what a role actually sends (the exact gap issue #234's AC(b2)
 # and issue #278's AC(b2) both existed to close).
-GHCS_IMPL_SEARCH="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1" | grep -oE 'is:open [^"]*' | head -1)"
-GHCS_COORD_SEARCH="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''" | grep -oE 'is:open [^"]*' | head -1)"
+GHCS_IMPL_SEARCH="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1" | grep -oE 'is:open [^"]*' | head -1)"
+GHCS_COORD_SEARCH="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''" | grep -oE 'is:open [^"]*' | head -1)"
 # AC(a) -- THE DISCRIMINATING TEST: issue #6 (#161's own shape -- open,
 # ONLY the tracking label) must be excluded from BOTH the implementer and
 # coord surveys. Issue #4 (idea-labeled) stays excluded from the
@@ -5927,7 +5929,7 @@ assert_eq "search: is:open label:release-hold (pm held-issues list)" "3,5" "$(GH
 # a distinguishable sentinel proves the fallback path actually ran.
 FAKEGH_SENTINEL="$TMP/fakegh-sentinel"
 printf '#!/usr/bin/env bash\necho "REAL-GH-FALLBACK-RAN: $*"\n' > "$FAKEGH_SENTINEL"; chmod +x "$FAKEGH_SENTINEL"
-FALLBACK_OUT="$(FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_SENTINEL" bash "$ROOT/fwf-ghcache.sh" serve issue list --search "author:someone" --json number 2>/dev/null)"
+FALLBACK_OUT="$(FWF_GHCACHE_DIR="$SROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_SENTINEL" bash "$ROOT/bin/fwf-ghcache.sh" serve issue list --search "author:someone" --json number 2>/dev/null)"
 assert_contains "search: unrecognized token FAILS SAFE to real gh (not a translated snapshot)" "$FALLBACK_OUT" "REAL-GH-FALLBACK-RAN"
 
 # Re-grep-at-build fixture (#58 spec): pin the exact set of --search literals
@@ -5978,7 +5980,7 @@ printf '%s' '{"number":20,"title":"Fix the thing","body":"body text","state":"op
 touch "$VROOT/x__y/views/issue-20.ts"
 printf '%s' '{"number":30,"title":"Add feature","body":"pr body","state":"open","draft":false,"merged_at":null,"head":{"ref":"impl2/foo","sha":"abc123"},"base":{"ref":"staging"},"html_url":"https://github.com/x/y/pull/30","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","closed_at":null,"user":{"login":"carol"}}' > "$VROOT/x__y/views/pr-30.json"
 touch "$VROOT/x__y/views/pr-30.ts"
-GHV() { FWF_GHCACHE_DIR="$VROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GHV() { FWF_GHCACHE_DIR="$VROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 assert_eq "view: issue --json title,body byte-exact" '{"body":"body text","title":"Fix the thing"}' "$(GHV serve issue view 20 --json title,body)"
 assert_eq "view: issue --json labels byte-exact vs GraphQL shape" '{"labels":[{"id":"L1","name":"bug","description":"d","color":"c"}]}' "$(GHV serve issue view 20 --json labels)"
 assert_eq "view: pr --json title,isDraft,headRefName byte-exact" '{"headRefName":"impl2/foo","isDraft":false,"title":"Add feature"}' "$(GHV serve pr view 30 --json title,isDraft,headRefName)"
@@ -6016,10 +6018,10 @@ echo "REAL-GH-DIFF-FALLBACK: $*"
 EOF
 chmod +x "$FAKEGH_DIFF"
 DROOT="$TMP/ghcache-diff"; mkdir -p "$DROOT/x__y"
-DIFFOUT="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/fwf-ghcache.sh" serve pr diff 55 --name-only 2>/dev/null)"
+DIFFOUT="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/bin/fwf-ghcache.sh" serve pr diff 55 --name-only 2>/dev/null)"
 assert_eq "pr diff --name-only: full >30-file list, not truncated to page 1" "35" "$(printf '%s\n' "$DIFFOUT" | grep -c .)"
 assert_contains "pr diff --name-only: includes a page-2 file (proves pagination ran)" "$DIFFOUT" "file35.txt"
-DIFFOUT2="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/fwf-ghcache.sh" serve pr diff 55 --patch 2>/dev/null)"
+DIFFOUT2="$(FWF_GHCACHE_DIR="$DROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH_DIFF" bash "$ROOT/bin/fwf-ghcache.sh" serve pr diff 55 --patch 2>/dev/null)"
 assert_contains "pr diff (no --name-only) is not modeled, falls back to real gh" "$DIFFOUT2" "REAL-GH-DIFF-FALLBACK"
 
 # fwf-ghcache.sh (#167): `invalidate <issue|pr> <n>` is the write-through
@@ -6033,7 +6035,7 @@ IROOT="$TMP/ghcache-invalidate"; mkdir -p "$IROOT/x__y/views"
 printf 'x' > "$IROOT/x__y/issues.json"; touch "$IROOT/x__y/issues.ts"; printf 'E-ISSUES' > "$IROOT/x__y/issues.etag"
 printf 'x' > "$IROOT/x__y/prs.json";    touch "$IROOT/x__y/prs.ts";    printf 'E-PRS'    > "$IROOT/x__y/prs.etag"
 printf 'x' > "$IROOT/x__y/views/42-comments.json"; touch "$IROOT/x__y/views/42-comments.ts"; printf 'E-CMT' > "$IROOT/x__y/views/42-comments.etag"
-GHI() { FWF_GHCACHE_DIR="$IROOT" FWF_GHCACHE_REPO=x/y FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GHI() { FWF_GHCACHE_DIR="$IROOT" FWF_GHCACHE_REPO=x/y FWF_REAL_GH=/bin/false bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 GHI invalidate issue 42
 [ ! -f "$IROOT/x__y/issues.ts" ]            && ok "invalidate issue drops the canonical issues .ts"    || bad "invalidate issue drops the canonical issues .ts"
 [ ! -f "$IROOT/x__y/views/42-comments.ts" ] && ok "invalidate issue drops the comment-thread .ts"      || bad "invalidate issue drops the comment-thread .ts"
@@ -6062,7 +6064,7 @@ DGROOT="$TMP/ghcache-degraded"; mkdir -p "$DGROOT/x__y/locks" "$DGROOT/x__y/view
 printf '%s' '[{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}]' > "$DGROOT/x__y/issues.json"
 touch -t 202001010000 "$DGROOT/x__y/issues.ts"   # force STALE regardless of wall-clock TTL
 mkdir -p "$DGROOT/x__y/locks/canon-issue.lock"    # simulate ANOTHER pane already refreshing
-GHD() { FWF_GHCACHE_DIR="$DGROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=1 FWF_GHCACHE_LOCK_WAIT=0 FWF_GHCACHE_WAITER_ITERS=0 FWF_REAL_GH=/bin/false bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GHD() { FWF_GHCACHE_DIR="$DGROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=1 FWF_GHCACHE_LOCK_WAIT=0 FWF_GHCACHE_WAITER_ITERS=0 FWF_REAL_GH=/bin/false bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 GDRC=0; GDOUT="$(GHD serve issue list --json number)" || GDRC=$?
 assert_eq "(a) a degraded list read still serves the last-known-good data" '[{"number":9}]' "$GDOUT"
 assert_eq "(a) a degraded list read exits 2 -- distinguishable from 0 (validated) or 1 (no data)" "2" "$GDRC"
@@ -6075,7 +6077,7 @@ FRROOT="$TMP/ghcache-fresh"; mkdir -p "$FRROOT/x__y"
 printf '%s' '[{"number":9,"title":"Alpha","body":"a","state":"open","html_url":"u","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","closed_at":null,"user":{"login":"b"},"labels":[],"assignees":[]}]' > "$FRROOT/x__y/issues.json"
 touch "$FRROOT/x__y/issues.ts"
 FRRC=0; FWF_GHCACHE_DIR="$FRROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH=/bin/false \
-  bash "$ROOT/fwf-ghcache.sh" serve issue list --json number >/dev/null 2>&1 || FRRC=$?
+  bash "$ROOT/bin/fwf-ghcache.sh" serve issue list --json number >/dev/null 2>&1 || FRRC=$?
 assert_eq "(a) a genuinely fresh read exits 0, not 2 -- the discriminating case" "0" "$FRRC"
 
 # A degraded resource VIEW (not just list) propagates the same way through
@@ -6153,7 +6155,7 @@ fi
 EOF
 chmod +x "$FAKEGH266"
 M2ROOT="$TMP/ghcache-mech2"; mkdir -p "$M2ROOT/x__y"
-GH266() { FWF_GHCACHE_DIR="$M2ROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH266" FAKEGH266_STATE="$FAKEGH266_STATE" bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GH266() { FWF_GHCACHE_DIR="$M2ROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH266" FAKEGH266_STATE="$FAKEGH266_STATE" bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 M2_1="$(GH266 serve issue view 42 --json comments --jq '.comments | length')"
 assert_eq "mechanism 2 setup: initial fetch returns all 150 (2 pages)" "150" "$M2_1"
 # Simulate a new comment landing on page 2 (id 151) -- page 1's content and
@@ -6170,7 +6172,7 @@ assert_eq "(c) specifically, the NEW (151st) comment is present, not just the co
 printf '50' > "$FAKEGH266_STATE/count"
 printf 'etag-small' > "$FAKEGH266_STATE/etag"
 M3ROOT="$TMP/ghcache-mech2-small"; mkdir -p "$M3ROOT/x__y"
-GH266S() { FWF_GHCACHE_DIR="$M3ROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH266" FAKEGH266_STATE="$FAKEGH266_STATE" bash "$ROOT/fwf-ghcache.sh" "$@" 2>/dev/null; }
+GH266S() { FWF_GHCACHE_DIR="$M3ROOT" FWF_GHCACHE_REPO=x/y FWF_GHCACHE_TTL=9999 FWF_REAL_GH="$FAKEGH266" FAKEGH266_STATE="$FAKEGH266_STATE" bash "$ROOT/bin/fwf-ghcache.sh" "$@" 2>/dev/null; }
 M3_1="$(GH266S serve issue view 42 --json comments --jq '.comments | length')"
 assert_eq "(d) under 100: initial fetch returns all 50" "50" "$M3_1"
 rm -f "$M3ROOT/x__y/views/42-comments.ts"
@@ -6178,22 +6180,22 @@ M3_2="$(GH266S serve issue view 42 --json comments --jq '.comments | length')"
 assert_eq "(d) under 100: a page-1 304 still short-circuits correctly (count unchanged, no growth to miss)" "50" "$M3_2"
 
 section "pane recovery helpers (issue #36)"
-RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"
+RL_DEV="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_label impl2; echo; fwf_role_label captain")"
 assert_contains "dev impl label canonical" "$RL_DEV" "IMPL2 · any issue → instant draft PR · impl2/*"
 assert_contains "captain label canonical"  "$RL_DEV" "CAPTAIN · you talk here"
-RL_IDE="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_label impl2; echo; fwf_role_label conductor")"
+RL_IDE="$(FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_label impl2; echo; fwf_role_label conductor")"
 assert_contains "ideation impl label wears GEN" "$RL_IDE" "GEN2 · IMPL2 ·"
 assert_contains "ideation conductor wears SYNTH" "$RL_IDE" "SYNTH · CONDUCTOR ·"
-assert_eq "role color matches pair" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_role_color qa2")" "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; pair_color 2")"
+assert_eq "role color matches pair" "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_role_color qa2")" "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; pair_color 2")"
 # creating a pane without a live session fails loudly, not silently
-CRP="$(FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_create_role_pane captain" 2>&1)" && bad "create pane needs session" || ok "create pane needs session"
+CRP="$(FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_create_role_pane captain" 2>&1)" && bad "create pane needs session" || ok "create pane needs session"
 assert_contains "create-pane error names fwf up" "$CRP" "fwf up"
 
 section "lean loop ticks (issue #38) — role prompt persisted to disk"
-RPF="$(FWF_RUN_DIR="$TMP/armrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_write_role_prompt impl2 implementer 2")"
+RPF="$(FWF_RUN_DIR="$TMP/armrun" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_write_role_prompt impl2 implementer 2")"
 assert_contains "prompt file is per-profile+role" "$RPF" "prompts/example-impl2.prompt"
 assert_contains "file holds the rendered role"    "$(cat "$RPF")" "You are implementer impl2"
-RPF_IDE="$(FWF_RUN_DIR="$TMP/armrun" FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_write_role_prompt impl1 implementer 1")"
+RPF_IDE="$(FWF_RUN_DIR="$TMP/armrun" FWF_TEMPLATE=ideation FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_write_role_prompt impl1 implementer 1")"
 assert_contains "template-aware render persisted" "$(cat "$RPF_IDE")" "IDEA GENERATOR"
 assert_eq "issue #174 (p1): fwf_write_role_prompt ALSO stamps the commit it rendered from" "yes" \
   "$([ -s "$RPF.commit" ] && echo yes || echo no)"
@@ -6207,8 +6209,8 @@ assert_eq "issue #174 (p1): fwf_write_role_prompt ALSO stamps the commit it rend
 # relocate FWF_LIB_DIR is to relocate the script files themselves, so
 # FWF_LIB_DIR's own BASH_SOURCE resolves inside the isolated repo instead.
 section "fwf_prompt_drift_verdict: CURRENT / STALE / UNKNOWN against fwf's OWN repo state (issue #174)"
-PDISO="$TMP/prompt-drift-iso"; mkdir -p "$PDISO/lib" "$PDISO/profiles"
-cp "$ROOT/config.sh" "$ROOT/lib.sh" "$PDISO/"
+PDISO="$TMP/prompt-drift-iso"; mkdir -p "$PDISO/bin" "$PDISO/lib" "$PDISO/profiles"
+cp "$ROOT/bin/config.sh" "$ROOT/bin/lib.sh" "$PDISO/bin/"
 cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$PDISO/lib/"
 cp "$ROOT/profiles/example.sh" "$PDISO/profiles/"
 ln -s "$ROOT/templates" "$PDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
@@ -6216,7 +6218,7 @@ printf '%s' "$REALV" > "$PDISO/VERSION"
 git -C "$PDISO" init -q
 git -C "$PDISO" -c user.email=t@t -c user.name=t add -A
 git -C "$PDISO" -c user.email=t@t -c user.name=t commit -q -m "iso-init"
-PDISO_LIB="$PDISO/lib.sh"
+PDISO_LIB="$PDISO/bin/lib.sh"
 PDRUN="$TMP/prompt-drift-run"
 
 # (UNKNOWN) a prompt written before this ticket -- no .commit file at all.
@@ -6252,20 +6254,20 @@ section "fwf-supervise.sh: CONFIG_DRIFT surfaces prompt drift as one combined fi
 # transitively) to resolve back into PDISO, the isolated git repo the drift
 # test above already set up. Everything ELSE it needs can be a symlink INTO
 # PDISO; only the entry point itself needs to be a real file there.
-cp "$ROOT/fwf-supervise.sh" "$PDISO/"
-cat > "$PDISO/fwf-pane-liveness.sh" <<'EOF'
+cp "$ROOT/bin/fwf-supervise.sh" "$PDISO/bin/"
+cat > "$PDISO/bin/fwf-pane-liveness.sh" <<'EOF'
 #!/usr/bin/env bash
 echo HEALTHY
 EOF
-chmod +x "$PDISO/fwf-pane-liveness.sh"
-ln -sf "$ROOT/fwf-usage-data.sh" "$PDISO/fwf-usage-data.sh"
-SV_OUT_STALE="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example FWF_SKIP_VERSION_CHECK=1 bash "$PDISO/fwf-supervise.sh" impl2 2>&1)"
+chmod +x "$PDISO/bin/fwf-pane-liveness.sh"
+ln -sf "$ROOT/bin/fwf-usage-data.sh" "$PDISO/bin/fwf-usage-data.sh"
+SV_OUT_STALE="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example FWF_SKIP_VERSION_CHECK=1 bash "$PDISO/bin/fwf-supervise.sh" impl2 2>&1)"
 assert_contains "CONFIG_DRIFT line fires for the role with a stale prompt" "$SV_OUT_STALE" "CONFIG_DRIFT"
 assert_contains "it names BOTH halves of the mixed state in ONE line, not two" "$SV_OUT_STALE" "scripts/tools this role invokes are current"
 assert_contains "it never proposes auto-respawn (p3)" "$SV_OUT_STALE" "only a respawn"
 case "$SV_OUT_STALE" in *FWF_SUPERVISE_AUTORESPAWN*) bad "(p3) CONFIG_DRIFT must never mention the auto-respawn switch" ;; *) ok "(p3) CONFIG_DRIFT never mentions the auto-respawn switch" ;; esac
 # A role with NO recorded prompt at all (never armed in this run) is UNKNOWN, not a false CONFIG_DRIFT.
-SV_OUT_UNARMED="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example FWF_SKIP_VERSION_CHECK=1 bash "$PDISO/fwf-supervise.sh" impl9 2>&1)"
+SV_OUT_UNARMED="$(FWF_RUN_DIR="$PDRUN" FWF_PROFILE=example FWF_SKIP_VERSION_CHECK=1 bash "$PDISO/bin/fwf-supervise.sh" impl9 2>&1)"
 assert_not_contains "an unarmed role is never falsely reported as CONFIG_DRIFT" "$SV_OUT_UNARMED" "CONFIG_DRIFT"
 # The whole-factory install-freshness line (the "who watches the watcher"
 # half) is DISTINCT from the per-role CONFIG_DRIFT line -- asserted by its
@@ -6283,7 +6285,7 @@ section "dispatcher: bad input is rejected"
 # is deterministic (plain `gh issue`, no repo-dir cd).
 act() { # <env-prefix...> -- verb args... ; echoes DRYRUN output
   FWF_PROFILE=example FWF_REPO="$TMP/no-such-repo" FWF_DASH_DRYRUN=1 \
-    bash "$ROOT/fwf-dash-act.sh" "$@" 2>&1
+    bash "$ROOT/bin/fwf-dash-act.sh" "$@" 2>&1
 }
 section "dash act: gh backend constructs the right writes"
 A_OUT="$(act approve 40)"
@@ -6310,7 +6312,7 @@ assert_contains "strips leading #"  "$(act comment '#41' hi)" "gh issue comment 
 assert_contains "strips LI- prefix" "$(act comment LI-7 hi)"  "gh issue comment 7 --body hi"
 
 section "dash act: local backend routes to fwf-issues.sh (never gh)"
-loc() { FWF_PROFILE=example FWF_ISSUES=local FWF_DASH_DRYRUN=1 bash "$ROOT/fwf-dash-act.sh" "$@" 2>&1; }
+loc() { FWF_PROFILE=example FWF_ISSUES=local FWF_DASH_DRYRUN=1 bash "$ROOT/bin/fwf-dash-act.sh" "$@" 2>&1; }
 L_OUT="$(loc approve LI-3)"
 assert_contains "local approve uses fwf-issues.sh" "$L_OUT" "fwf-issues.sh comment 3 --body **OPERATOR-UNGATE #3** — approved via fwf dash"
 assert_contains "local approve un-gates"           "$L_OUT" "fwf-issues.sh edit 3 --remove-label product-wip"
@@ -6338,9 +6340,9 @@ act bogus-verb >/dev/null 2>&1 && bad "unknown verb rejected" || ok "unknown ver
 # local issues backend.
 section "fwf authz: mechanical operator-authorization check (issue #150)"
 AZRUN="$TMP/azrun"
-AZI()   { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
-AZ()    { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
-AZACT() { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example bash "$ROOT/fwf-dash-act.sh" "$@"; }
+AZI()   { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
+AZ()    { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" "$@"; }
+AZACT() { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example bash "$ROOT/bin/fwf-dash-act.sh" "$@"; }
 azrc()  { local rc=0; AZ "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 
 AZI create --title "Groomed build ticket" --label product-wip >/dev/null
@@ -6404,7 +6406,7 @@ case "$*" in
 esac
 STUB
 chmod +x "$AZGHBIN/gh"
-AZG() { PATH="$AZGHBIN:$PATH" AZG_VIEWS_DIR="$AZGROOT/x__y/views" FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+AZG() { PATH="$AZGHBIN:$PATH" AZG_VIEWS_DIR="$AZGROOT/x__y/views" FWF_RUN_DIR="$AZGROOT/run" FWF_GHCACHE_DIR="$AZGROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" "$@"; }
 azgrc() { local rc=0; AZG "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 assert_eq "authz: genuinely zero comments (successful read) is HELD, not INDETERMINATE" "10" "$(azgrc 40)"
 assert_contains "authz HELD verdict on zero-comment issue" "$(AZG 40 2>&1)" "HELD #40"
@@ -6451,10 +6453,10 @@ SHIMRUN="$TMP/authz-shim-fidelity"; mkdir -p "$SHIMRUN"
 # live, verified failure mode: the exact factory environment this test runs
 # in sets one) silently wins over FWF_RUN_DIR-derived defaults and would
 # point this "isolated" fixture at the real, shared production cache.
-( FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_REPO="$ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_install_ghguard" )
+( FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_REPO="$ROOT" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_install_ghguard" )
 shim_comments_cache_count() { find "$SHIMRUN/ghcache" -name "*-comments.*" 2>/dev/null | wc -l | tr -d ' '; }
 SHIM_BEFORE="$(shim_comments_cache_count)"
-PATH="$SHIMRUN/ghguard:$PATH" FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_PROFILE=example "$ROOT/fwf-authz.sh" 265 >/dev/null 2>&1
+PATH="$SHIMRUN/ghguard:$PATH" FWF_RUN_DIR="$SHIMRUN" FWF_GHCACHE_DIR="$SHIMRUN/ghcache" FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" 265 >/dev/null 2>&1
 SHIM_AFTER="$(shim_comments_cache_count)"
 assert_eq "AC1 (#338 review): against the REAL ghguard shim, the oracle's thread read creates NO comments cache file (FWF_GHCACHE_OFF=1 reaches fwf-ghcache.sh's own bypass even via the shim's re-exec)" "$SHIM_BEFORE" "$SHIM_AFTER"
 
@@ -6464,8 +6466,8 @@ assert_eq "AC1 (#338 review): against the REAL ghguard shim, the oracle's thread
 # and each test's thread isolated from the others.
 section "fwf authz (#218): anchoring — column 0, per comment, fence-stripped"
 AZ2RUN="$TMP/az2run"
-AZ2I() { FWF_RUN_DIR="$AZ2RUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
-AZ2()  { FWF_RUN_DIR="$AZ2RUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+AZ2I() { FWF_RUN_DIR="$AZ2RUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
+AZ2()  { FWF_RUN_DIR="$AZ2RUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" "$@"; }
 az2rc(){ local rc=0; AZ2 "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 # Every `create` prints "LI-<n> created: ...": pull <n> straight from that,
 # rather than re-listing and guessing at ordering.
@@ -6623,14 +6625,14 @@ done
 # nothing to un-gate, so a false HELD refusal must not strand it. Determined
 # from label HISTORY, never current state alone (AC c's discriminating test).
 section "fwf authz (#215): NOT-GATED for never-gated issues, distinct from AUTHORIZED"
-EX_NOT_GATED_CONST="$(grep -oE 'EX_NOT_GATED=[0-9]+' "$ROOT/fwf-authz.sh" | head -1 | cut -d= -f2)"
-CUTOFF_EPOCH_CONST="$(grep -oE 'FWF_AUTHZ_SENTINEL_CUTOFF_EPOCH=[0-9]+' "$ROOT/fwf-authz.sh" | head -1 | cut -d= -f2)"
+EX_NOT_GATED_CONST="$(grep -oE 'EX_NOT_GATED=[0-9]+' "$ROOT/bin/fwf-authz.sh" | head -1 | cut -d= -f2)"
+CUTOFF_EPOCH_CONST="$(grep -oE 'FWF_AUTHZ_SENTINEL_CUTOFF_EPOCH=[0-9]+' "$ROOT/bin/fwf-authz.sh" | head -1 | cut -d= -f2)"
 
 # --- local backend: no label history at all (Known limitation) -> ALWAYS
 # falls through to was-gated, even for an issue never labeled -- correct and
 # honest, never a guess from current state.
-AZ215I() { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
-AZ215L() { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+AZ215I() { FWF_RUN_DIR="$AZRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
+AZ215L() { FWF_RUN_DIR="$AZRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" "$@"; }
 az215Lrc() { local rc=0; AZ215L "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 AZ215I create --title "never-gated local ticket" >/dev/null
 N_NG_LOCAL="$(AZ215I list --json number --jq '.[-1].number' 2>/dev/null)"
@@ -6699,7 +6701,7 @@ az215_set_comments() { # $1=issue-num  $2=comments-json-array (default empty)
   printf '%s' "${2:-[]}" > "$AZ215GROOT/x__y/views/$1-comments.json"
   touch "$AZ215GROOT/x__y/views/$1-comments.ts"
 }
-AZ215G() { PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$@"; }
+AZ215G() { PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" "$@"; }
 az215Grc() { local rc=0; AZ215G "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 
 # (a) never carried the label at all -> NOT-GATED.
@@ -6808,11 +6810,11 @@ unset AZ215_EVENTS_FILE AZ215_CALL_LOG
 # --------------------------------------------------------------------------
 section "fwf claim: a fail-FAST authorization checkpoint at intent-formation time (issue #243)"
 CLAIMRUN="$TMP/claimrun"
-CLAIMI() { FWF_RUN_DIR="$CLAIMRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+CLAIMI() { FWF_RUN_DIR="$CLAIMRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 CLAIMGIT="$TMP/claim-gitrepo"; mkdir -p "$CLAIMGIT"
 ( cd "$CLAIMGIT" && git init -q . && git config user.email t@t.com && git config user.name t \
   && echo a > f.txt && git add f.txt && git commit -q -m init )
-CLAIM() { ( cd "$CLAIMGIT" && FWF_RUN_DIR="$CLAIMRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-claim.sh" "$@" ); }
+CLAIM() { ( cd "$CLAIMGIT" && FWF_RUN_DIR="$CLAIMRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-claim.sh" "$@" ); }
 claimrc() { local rc=0; CLAIM "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 
 # AC (a): HELD refuses, non-zero, names the verdict and "policy" cause.
@@ -6830,7 +6832,7 @@ assert_contains "routed, not a wall: prints the exact command to check" "$CLAIM1
 # one-line usage banner; a full sentence in the notice) -- assert each
 # against its own actual wording, not a single string neither guarantees.
 assert_contains "AC(h): --help carries the ergonomic-not-control statement" \
-  "$("$ROOT/fwf-claim.sh" --help 2>&1)" "NOT a security control"
+  "$("$ROOT/bin/fwf-claim.sh" --help 2>&1)" "NOT a security control"
 assert_contains "AC(h): a REFUSAL path also carries it (a reader must not read silence as 'checked and fine')" \
   "$CLAIM1_OUT" "not a security control"
 
@@ -6875,8 +6877,8 @@ assert_eq "AC(i2): fwf claim never switches/creates a branch" "$BEFORE_BRANCH" "
 # that keeps this fix from manufacturing the pressure it exists to
 # relieve: an agent must still be able to run the FULL gate on a HELD
 # issue to prepare a fix while waiting).
-assert_not_contains "AC(d): fwf-gate.sh never invokes fwf-authz.sh" "$(cat "$ROOT/fwf-gate.sh")" "fwf-authz.sh"
-assert_not_contains "AC(d): fwf-gate.sh never invokes fwf-claim.sh" "$(cat "$ROOT/fwf-gate.sh")" "fwf-claim.sh"
+assert_not_contains "AC(d): fwf-gate.sh never invokes fwf-authz.sh" "$(cat "$ROOT/bin/fwf-gate.sh")" "fwf-authz.sh"
+assert_not_contains "AC(d): fwf-gate.sh never invokes fwf-claim.sh" "$(cat "$ROOT/bin/fwf-gate.sh")" "fwf-claim.sh"
 
 # AC (j)/(j2): declared-prerequisite scan -- warn, never refuse, and an
 # ABSENT heading must say so explicitly (not read as "no prerequisites").
@@ -6914,7 +6916,7 @@ assert_eq "AC(g): text that merely reads as approval (not the anchored sentinel)
 CLAIMCGIT="$TMP/claim-notgated-gitrepo"; mkdir -p "$CLAIMCGIT"
 ( cd "$CLAIMCGIT" && git init -q . && git config user.email t@t.com && git config user.name t \
   && echo a > f.txt && git add f.txt && git commit -q -m init )
-CLAIMC() { ( cd "$CLAIMCGIT" && PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example AZ215_EVENTS_FILE="$EVFILE_EMPTY" AZ215_CALL_LOG="$CALLLOG501" "$ROOT/fwf-claim.sh" "$@" ); }
+CLAIMC() { ( cd "$CLAIMCGIT" && PATH="$AZ215GHBIN:$PATH" FWF_RUN_DIR="$AZ215GROOT/run" FWF_GHCACHE_DIR="$AZ215GROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example AZ215_EVENTS_FILE="$EVFILE_EMPTY" AZ215_CALL_LOG="$CALLLOG501" "$ROOT/bin/fwf-claim.sh" "$@" ); }
 CLAIM501_OUT="$(CLAIMC 501 2>&1)"; CLAIM501_RC=$?
 assert_eq "AC(c): NOT-GATED (rc 12 from fwf-authz.sh) flows through fwf claim end-to-end and still proceeds (rc 0)" "0" "$CLAIM501_RC"
 assert_contains "AC(c): the NOT-GATED verdict is surfaced verbatim, not silently swallowed" "$CLAIM501_OUT" "NOT-GATED"
@@ -6997,7 +6999,7 @@ chmod +x "$P370GHBIN/gh"
 P370GIT="$TMP/p370-gitrepo"; mkdir -p "$P370GIT"
 ( cd "$P370GIT" && git init -q . && git config user.email t@t.com && git config user.name t \
   && echo a > f.txt && git add f.txt && git commit -q -m init )
-P370() { ( cd "$P370GIT" && PATH="$P370GHBIN:$PATH" FWF_RUN_DIR="$TMP/p370-run" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example P370_CALL_LOG="$P370CALLLOG" "$ROOT/fwf-claim.sh" "$@" ); }
+P370() { ( cd "$P370GIT" && PATH="$P370GHBIN:$PATH" FWF_RUN_DIR="$TMP/p370-run" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example P370_CALL_LOG="$P370CALLLOG" "$ROOT/bin/fwf-claim.sh" "$@" ); }
 # Every fixture issue this section claims must itself be AUTHORIZED (a
 # real, anchored sentinel comment) -- fwf claim refuses on the FIRST
 # `fwf-authz.sh` check before ever reaching the prerequisite/mention
@@ -7084,7 +7086,7 @@ assert_contains "AC(9): the cap is announced when it bites -- no silent truncati
 # AC 5: warn-only preserved -- exit code and claim outcome are unaffected
 # by a not_planned mention (reusing #900's fixture set up above).
 CLAIM_UGI_RUN="$TMP/p370-warnonly-run"
-P370W() { ( cd "$P370GIT" && PATH="$P370GHBIN:$PATH" FWF_RUN_DIR="$CLAIM_UGI_RUN" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example P370_CALL_LOG="$P370CALLLOG" "$ROOT/fwf-claim.sh" "$@" ); }
+P370W() { ( cd "$P370GIT" && PATH="$P370GHBIN:$PATH" FWF_RUN_DIR="$CLAIM_UGI_RUN" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example P370_CALL_LOG="$P370CALLLOG" "$ROOT/bin/fwf-claim.sh" "$@" ); }
 P370W_RC=0; P370W 900 >/dev/null 2>&1 || P370W_RC=$?
 assert_eq "AC(5): a not_planned mention never turns a claim into a refusal (still rc 0)" "0" "$P370W_RC"
 
@@ -7195,7 +7197,7 @@ CLAIMGHGIT="$TMP/claimgh-gitrepo"; mkdir -p "$CLAIMGHGIT"
   && echo a > f.txt && git add f.txt && git commit -q -m init )
 CLAIMGHROOT="$TMP/claimgh-cache"; mkdir -p "$CLAIMGHROOT/x__y/views"
 touch "$CLAIMGHROOT/x__y/views/650-comments.ts"   # pre-seed a STALE stamp
-CLAIMGH() { ( cd "$CLAIMGHGIT" && PATH="$CLAIMGHBIN:$PATH" FWF_RUN_DIR="$TMP/claimgh-run" FWF_GHCACHE_DIR="$CLAIMGHROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example CLAIMGH_CALL_LOG="$CLAIMGHCALLLOG" "$ROOT/fwf-claim.sh" "$@" ); }
+CLAIMGH() { ( cd "$CLAIMGHGIT" && PATH="$CLAIMGHBIN:$PATH" FWF_RUN_DIR="$TMP/claimgh-run" FWF_GHCACHE_DIR="$CLAIMGHROOT" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example CLAIMGH_CALL_LOG="$CLAIMGHCALLLOG" "$ROOT/bin/fwf-claim.sh" "$@" ); }
 CLAIMGH 650 impl-ac4 >/dev/null 2>&1
 [ ! -f "$CLAIMGHROOT/x__y/views/650-comments.ts" ] && \
   ok "AC(4): a role'd claim busts the issue's cached comment-thread .ts stamp" || \
@@ -7211,9 +7213,9 @@ assert_contains "AC(4): the claim comment itself was posted via real gh, not ski
 # backends" requirement for the write-routing itself.
 section "fwf ungate (issue #213): one verb for comment + un-label + cache-bust + verify"
 UGRUN="$TMP/ungaterun"
-UGI() { FWF_RUN_DIR="$UGRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
-UG()  { FWF_RUN_DIR="$UGRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-ungate.sh" "$@"; }
-UGAZ() { local rc=0; FWF_RUN_DIR="$UGRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-authz.sh" "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
+UGI() { FWF_RUN_DIR="$UGRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
+UG()  { FWF_RUN_DIR="$UGRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-ungate.sh" "$@"; }
+UGAZ() { local rc=0; FWF_RUN_DIR="$UGRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-authz.sh" "$1" >/dev/null 2>&1 || rc=$?; printf '%s' "$rc"; }
 
 UGI create --title "Gated ticket one" --label product-wip >/dev/null   # #1
 UGI create --title "Gated ticket two" --label product-wip >/dev/null   # #2
@@ -7309,8 +7311,8 @@ assert_eq "AC(8): an unrelated mid-sentence mention still does not authorize" "1
 # but are DISTINGUISHABLE by their free text (AC 6) -- proven by driving
 # BOTH paths against the same issue class and diffing the constructed body.
 UGI create --title "Compare dash vs ungate" --label product-wip >/dev/null   # #7
-DASH_BODY="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ungate_comment_body 7 'approved via fwf dash: the human operator authorized this build by pressing approve on the board'")"
-UNGATE_BODY="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ungate_comment_body 7 'authorized via fwf ungate (cli): the human operator un-gated this from the command line'")"
+DASH_BODY="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_ungate_comment_body 7 'approved via fwf dash: the human operator authorized this build by pressing approve on the board'")"
+UNGATE_BODY="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_ungate_comment_body 7 'authorized via fwf ungate (cli): the human operator un-gated this from the command line'")"
 assert_contains "shared function: both bodies carry the SAME anchored sentinel" "$DASH_BODY" "**OPERATOR-UNGATE #7**"
 assert_contains "shared function: both bodies carry the SAME anchored sentinel" "$UNGATE_BODY" "**OPERATOR-UNGATE #7**"
 [ "$DASH_BODY" != "$UNGATE_BODY" ] && ok "AC(6): dash and ungate bodies are distinguishable (different free text)" || bad "AC(6): dash and ungate bodies must differ (they carry different provenance)"
@@ -7379,7 +7381,7 @@ chmod +x "$UGGH_STUB/gh"
 # the full chain, including the trailing `fwf authz` verification, genuinely
 # succeeds end-to-end here. Verified by hand before writing this assertion;
 # not assumed.
-UGGH_OUT="$(PATH="$UGGH_STUB:$PATH" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example FWF_REPO="$ROOT" "$ROOT/fwf-ungate.sh" 8 2>&1)"; UGGH_RC=$?
+UGGH_OUT="$(PATH="$UGGH_STUB:$PATH" FWF_GHCACHE_REPO=x/y FWF_PROFILE=example FWF_REPO="$ROOT" "$ROOT/bin/fwf-ungate.sh" 8 2>&1)"; UGGH_RC=$?
 assert_eq "gh backend: exits 0 on a successful un-gate" "0" "$UGGH_RC"
 assert_contains "gh backend: the ACTUAL posted comment carries the anchored sentinel" "$(cat "$UGGH_STATE/comments-8")" "**OPERATOR-UNGATE #8**"
 assert_eq "gh backend: product-wip label removed" "" "$(cat "$UGGH_STATE/labels-8")"
@@ -7406,7 +7408,7 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$UGAUDIT_STUB/gh"
-UGAUDIT_OUT="$(PATH="$UGAUDIT_STUB:$PATH" FWF_PROFILE=example "$ROOT/fwf-ungate.sh" --audit 2>&1)"
+UGAUDIT_OUT="$(PATH="$UGAUDIT_STUB:$PATH" FWF_PROFILE=example "$ROOT/bin/fwf-ungate.sh" --audit 2>&1)"
 assert_contains "audit: lists #10's issue number" "$UGAUDIT_OUT" "#10"
 assert_contains "audit: lists #10's timestamp" "$UGAUDIT_OUT" "2026-08-01T00:00:00Z"
 assert_contains "audit: classifies #10 as the board path" "$UGAUDIT_OUT" "board (fwf dash approve)"
@@ -7420,8 +7422,8 @@ assert_contains "audit: classifies #20 as the concierge-proxy path" "$UGAUDIT_OU
 # consumers of a claim's age (fwf_build_plane_blocked, fwf-scale.sh). This is
 # the third call site, reusing the SAME fwf_claim_liveness_blocks (lib.sh).
 CLRUN="$TMP/claimliveness"
-CLI() { FWF_RUN_DIR="$CLRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
-CL() { FWF_RUN_DIR="$CLRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/fwf-claim-liveness.sh" "$@"; }
+CLI() { FWF_RUN_DIR="$CLRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
+CL() { FWF_RUN_DIR="$CLRUN" FWF_ISSUES=local FWF_PROFILE=example "$ROOT/bin/fwf-claim-liveness.sh" "$@"; }
 
 section "fwf claim (#559): a RELEASE frees the issue for the next seat"
 # transom#913: the captain voided both claims with `RELEASE impl1` /
@@ -7658,7 +7660,7 @@ section "fwf claim-liveness (#515): the selector resolves the sequence rather th
 # at all). These assertions guard the replay, so they follow it to its new home
 # -- scoped to the constant's own block rather than all of lib.sh, so an
 # unrelated '.[0]' elsewhere in that 4k-line file cannot satisfy or break them.
-CL515SRC="$(sed -n "/^FWF_CLAIM_RESOLVE_JQ='/,/^  end'\$/p" "$ROOT/lib.sh")"
+CL515SRC="$(sed -n "/^FWF_CLAIM_RESOLVE_JQ='/,/^  end'\$/p" "$ROOT/bin/lib.sh")"
 assert_not_contains "no '.[0]' claim selection remains in the shared replay" "$CL515SRC" '.[0]'
 assert_contains "the marker test accepts both verbs" "$CL515SRC" 'test("^(CLAIM|RELEASE) [A-Za-z0-9_-]+$")'
 assert_contains "a CLAIM is only taken when nothing is held" "$CL515SRC" 'if .holder == null then {holder:$p[1]'
@@ -7727,9 +7729,9 @@ section "fwf claim (#559): the claim path and the liveness path share ONE CLAIM/
 # `^CLAIM <role>$` and never read RELEASE, so a captain's `RELEASE impl1`
 # arbitration was invisible to the tool that enforces claims, while
 # `fwf claim-liveness` on the same issue said RECLAIMABLE.
-C559LIB="$(cat "$ROOT/lib.sh")"
-C559CLAIM="$(cat "$ROOT/fwf-claim.sh")"
-C559LIVE="$(cat "$ROOT/fwf-claim-liveness.sh")"
+C559LIB="$(cat "$ROOT/bin/lib.sh")"
+C559CLAIM="$(cat "$ROOT/bin/fwf-claim.sh")"
+C559LIVE="$(cat "$ROOT/bin/fwf-claim-liveness.sh")"
 assert_contains "lib.sh owns the one replay" "$C559LIB" "FWF_CLAIM_RESOLVE_JQ='def firstline:"
 assert_contains "fwf-claim.sh resolves through the shared replay" "$C559CLAIM" 'FWF_CLAIM_RESOLVE_JQ'
 assert_contains "fwf-claim-liveness.sh resolves through the shared replay" "$C559LIVE" 'FWF_CLAIM_RESOLVE_JQ'
@@ -7743,8 +7745,8 @@ section "fwf claim-liveness (#502 AC7): goes RED on regression"
 # to lib.sh, but rc 3 / MALFORMED are exit-code contracts of the CLI and stay
 # asserted against fwf-claim-liveness.sh -- a jq program has no exit codes, so
 # pointing them at the extracted block made them assert nothing and go red.
-CL502SRC="$(sed -n "/^FWF_CLAIM_RESOLVE_JQ='/,/^  end'\$/p" "$ROOT/lib.sh")"
-CL502CLI="$(cat "$ROOT/fwf-claim-liveness.sh")"
+CL502SRC="$(sed -n "/^FWF_CLAIM_RESOLVE_JQ='/,/^  end'\$/p" "$ROOT/bin/lib.sh")"
+CL502CLI="$(cat "$ROOT/bin/fwf-claim-liveness.sh")"
 assert_contains "AC7: the match is applied to a first-line extraction, not the whole body" "$CL502SRC" 'split("\n")[0]'
 assert_contains "AC7: rc 3 (the new 'nothing here' code) exists" "$CL502CLI" "exit 3"
 assert_contains "AC7: rc 2 is documented as MALFORMED, not the old catch-all" "$CL502CLI" "MALFORMED"
@@ -7774,7 +7776,7 @@ assert_eq "edge: a blockquoted CLAIM does not match (rc 3, nothing here)" "3" "$
 # fwf dash DATA provider (#52): source the provider (main is guarded) and drive
 # its derivation with stubbed di_read/gh_pr — no gh, no tmux. Pins the #51
 # captain-sequenced decisions behaviour and activity bucketing/branch parsing.
-DD="$ROOT/fwf-dash-data.sh"
+DD="$ROOT/bin/fwf-dash-data.sh"
 
 section "dash data: installed_version_json (issue #153) — re-read fresh, distinct from upgrade_json"
 assert_eq "reports the real tracked VERSION file" "$REALV" \
@@ -7789,12 +7791,12 @@ assert_eq "reports the real tracked VERSION file" "$REALV" \
 # only reliable way to relocate FWF_HOME is to relocate the SCRIPT FILES
 # themselves: copy the whole sourcing chain into a temp dir and source the
 # copy, so config.sh's own BASH_SOURCE resolves there instead.
-DDISO="$TMP/dd-isolated-home"; mkdir -p "$DDISO/lib" "$DDISO/profiles"
-cp "$ROOT/config.sh" "$ROOT/lib.sh" "$ROOT/fwf-dash-data.sh" "$DDISO/"
+DDISO="$TMP/dd-isolated-home"; mkdir -p "$DDISO/bin" "$DDISO/lib" "$DDISO/profiles"
+cp "$ROOT/bin/config.sh" "$ROOT/bin/lib.sh" "$ROOT/bin/fwf-dash-data.sh" "$DDISO/bin/"
 cp "$ROOT/lib/version_check.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile-sandbox.sh" "$DDISO/lib/"
 cp "$ROOT/profiles/example.sh" "$DDISO/profiles/"
 ln -s "$ROOT/templates" "$DDISO/templates"   # lib.sh validates FWF_TEMPLATE_DIR eagerly; content unused here
-DDISO_DD="$DDISO/fwf-dash-data.sh"
+DDISO_DD="$DDISO/bin/fwf-dash-data.sh"
 printf '%s' "$REALV" > "$DDISO/VERSION"
 
 # Re-read fresh EVERY call (never cached at "launch") -- two calls in the
@@ -7918,7 +7920,7 @@ assert_contains "dashboard_json includes the top-level 'stranded_assignments' ke
   "$(grep -n 'stranded_assignments:\$stranded_assignments' "$DD")" "stranded_assignments:\$stranded_assignments"
 
 DD309_STATE="$TMP/dd309-state"; mkdir -p "$DD309_STATE/state/example"
-DD309I() { FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+DD309I() { FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 DD309SESS="fwf-selftest-309-$$"
 
 if command -v tmux >/dev/null 2>&1; then
@@ -7958,7 +7960,7 @@ if command -v tmux >/dev/null 2>&1; then
   # AC (h2): an unreadable live-floor roster (tmux unreachable) reports
   # unknown -- never a false alarm across every assignment.
   DD309UNKNOWN_OUT="$(FWF_ISSUES=local FWF_RUN_DIR="$DD309_STATE" FWF_SESSION="fwf-nonexistent-$$" FWF_PROFILE=example bash -c "
-    source lib.sh
+    source bin/lib.sh
     command() { if [ \"\$1\" = -v ] && [ \"\$2\" = tmux ]; then return 1; fi; builtin command \"\$@\"; }
     source '$DD' >/dev/null 2>&1
     stranded_assignments_json
@@ -7988,7 +7990,7 @@ assert_eq "AC(h2): count is null here too, never a fabricated 0" "null" "$(print
 # fwf_running_pair_count (issue #190), never a bare "impl$i" substring that
 # would collide impl1/impl10.
 assert_contains "fwf_live_impl_indices uses the IMPL\$i (space+middle-dot) anchor, matching #190's own precedent" \
-  "$(cat "$ROOT/lib.sh")" 'fwf_find_pane "$sess" "IMPL$i ·"'
+  "$(cat "$ROOT/bin/lib.sh")" 'fwf_find_pane "$sess" "IMPL$i ·"'
 
 section "dash data: captain_sequences_releases keys off the template (#51)"
 assert_eq "refactor → captain-sequenced" "yes" \
@@ -8113,7 +8115,7 @@ assert_eq "edge: a second marker later in the SAME comment body is not anchored 
 assert_contains "(f) fwf-dash-data.sh's GV reader calls the shared predicate" \
   "$(cat "$DD")" 'last_anchored_marker($comments;$patterns)'
 assert_contains "(f) fwf-pr-review-state.sh's QA reader calls the SAME shared predicate" \
-  "$(cat "$ROOT/fwf-pr-review-state.sh")" 'last_anchored_marker($comments; $patterns)'
+  "$(cat "$ROOT/bin/fwf-pr-review-state.sh")" 'last_anchored_marker($comments; $patterns)'
 assert_not_contains "(f) the old unanchored whole-thread glob is gone" "$(cat "$DD")" '*GV-SIGNOFF*'
 
 # AC (g): a read failure is honoured, never silently read as "no sign-off"
@@ -8329,12 +8331,12 @@ case "$DD_DETAIL" in *"detail unavailable"*) bad "detail must not be 'unavailabl
 # tiny fixture DB keyed by socket ("-S <path>", or "default" with no -S).
 section "dash data (#62): \$TMUX capture parses only the socket-path field"
 assert_eq "comma-form \$TMUX -> parsed path only (never the raw string)" "/priv/tmux-501/concierge" \
-  "$(TMUX='/priv/tmux-501/concierge,10269,0' FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_tmux_socket_value")"
+  "$(TMUX='/priv/tmux-501/concierge,10269,0' FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_tmux_socket_value")"
 assert_eq "unset \$TMUX -> literal 'default' marker (never an empty string)" "default" \
-  "$(env -u TMUX FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_tmux_socket_value")"
+  "$(env -u TMUX FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_tmux_socket_value")"
 PERSISTRUN="$TMP/run62persist"
 assert_eq "fwf_persist_tmux_socket writes FWF_TMUX_SOCKET to the documented per-profile state file" "default" \
-  "$(env -u TMUX FWF_RUN_DIR="$PERSISTRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_persist_tmux_socket \"\$(fwf_tmux_socket_value)\"" >/dev/null; cat "$PERSISTRUN/state/example/tmux_socket" 2>/dev/null)"
+  "$(env -u TMUX FWF_RUN_DIR="$PERSISTRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_persist_tmux_socket \"\$(fwf_tmux_socket_value)\"" >/dev/null; cat "$PERSISTRUN/state/example/tmux_socket" 2>/dev/null)"
 
 section "dash data (#62): roles_json queries the PERSISTED socket, not the default/ambient one"
 SOCKDB="$TMP/tmux62db"
@@ -8389,8 +8391,8 @@ assert_eq "absent-field migration fallback: no persisted socket yet, but the CUR
 # --------------------------------------------------------------------------
 # fwf dash --remote (issue #206): versioned JSON snapshot, allowlist
 # construction, local-only cost, disabled mutations.
-DR="$ROOT/fwf-dash-remote.sh"
-DA="$ROOT/fwf-dash-act.sh"
+DR="$ROOT/bin/fwf-dash-remote.sh"
+DA="$ROOT/bin/fwf-dash-act.sh"
 
 section "fwf dash --emit-snapshot (#206): shape, allowlist construction, no leakage"
 SNAPRUN="$TMP/run206snap"; mkdir -p "$SNAPRUN/state/example"
@@ -8542,7 +8544,7 @@ CACHE_FILE="$F206RUN/run/dash-remote/devbox1:example.json"
 
 FETCH_RC=0
 PATH="$F206BIN:$PATH" FWF_RUN_DIR="$F206RUN/run" FWF_PROFILE=example FWF_DASH_REMOTE_FETCH_ONCE=1 \
-  bash "$ROOT/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || FETCH_RC=$?
+  bash "$ROOT/bin/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || FETCH_RC=$?
 [ "$FETCH_RC" -eq 0 ] && ok "AC(b): a successful fetch-once iteration exits 0" || bad "fetch-once should succeed on a good ssh stub"
 assert_contains "AC(b): the fetcher writes a valid snapshot to the cache file" \
   "$(cat "$CACHE_FILE" 2>/dev/null | jq -r '.schema_version' 2>/dev/null)" "1"
@@ -8551,7 +8553,7 @@ assert_contains "AC(b): the fetcher writes a valid snapshot to the cache file" \
 # confirm the last-good snapshot survives untouched (AC c's "keeps
 # showing the last good snapshot" half).
 PATH="$F206BIN:$PATH" FWF_RUN_DIR="$F206RUN/run" FWF_PROFILE=example FWF_DASH_REMOTE_FETCH_ONCE=1 F206_SSH_MODE=fail \
-  bash "$ROOT/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || true
+  bash "$ROOT/bin/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || true
 assert_contains "AC(c): a failed fetch iteration never wipes the last-good cache" \
   "$(cat "$CACHE_FILE" 2>/dev/null | jq -r '.schema_version' 2>/dev/null)" "1"
 
@@ -8560,7 +8562,7 @@ assert_contains "AC(c): a failed fetch iteration never wipes the last-good cache
 HSTART="$(date +%s)"
 PATH="$F206BIN:$PATH" FWF_RUN_DIR="$F206RUN/run" FWF_PROFILE=example FWF_DASH_REMOTE_FETCH_ONCE=1 \
   FWF_DASH_REMOTE_FETCH_TIMEOUT=2 F206_SSH_MODE=hang \
-  bash "$ROOT/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || true
+  bash "$ROOT/bin/fwf-dash.sh" --remote devbox1 >/dev/null 2>&1 || true
 HEND="$(date +%s)"
 HELAPSED=$(( HEND - HSTART ))
 [ "$HELAPSED" -le 6 ] && ok "AC(d): a hanging ssh is bounded by the hard timeout (took ${HELAPSED}s, timeout=2s)" \
@@ -8614,7 +8616,7 @@ mkdir -p "$DREL/v$DVER"; mkdashbin "$DREL/v$DVER/$DASSET" downloaded
 # than staying in the sandbox. Routed through fwf_test_isolated_exec (defined
 # above) and TMUX_TMPDIR explicitly re-injected into the scrubbed env, same
 # as HOME/PATH/TMPDIR already are.
-drun() { fwf_test_isolated_exec env -i HOME="$TMP/dhome" PATH="$DBIN:/usr/bin:/bin" TMPDIR="$TMP" TMUX_TMPDIR="$TMUX_TMPDIR" FWF_PROFILE=example "$@" bash "$ROOT/fwf-dash.sh" 2>&1; }
+drun() { fwf_test_isolated_exec env -i HOME="$TMP/dhome" PATH="$DBIN:/usr/bin:/bin" TMPDIR="$TMP" TMUX_TMPDIR="$TMUX_TMPDIR" FWF_PROFILE=example "$@" bash "$ROOT/bin/fwf-dash.sh" 2>&1; }
 
 if [ -z "$DSLUG" ]; then
   skip "dash resolver (unsupported host arch)" 15
@@ -8671,7 +8673,7 @@ fi
 
 # --------------------------------------------------------------------------
 section "user-testing template (issue #42) — roster + source-blind personas"
-UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+UT() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="http://localhost:3939" FWF_RUN_DIR="$TMP/utrun" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 assert_contains "templates lists user-testing" "$("$ROOT/fwf-legacy" templates)" "user-testing"
 # roster: exactly 3 personas + researcher + captain (qa/conductor/gv suppressed)
 UT_ROLES="$(UT 'fwf_all_roles')"
@@ -8695,7 +8697,7 @@ assert_eq "user-testing identity + sessions" "PERSONA|RESEARCHER|friends-user-te
 # default models: personas Sonnet, researcher Opus; env override still wins
 assert_contains "persona defaults to sonnet"  "$(UT 'fwf_claude_cmd impl1')" "--model sonnet"
 assert_contains "researcher defaults to opus" "$(UT 'fwf_claude_cmd pm')"    "--model opus"
-assert_contains "FWF_MODEL_IMPL override wins" "$(FWF_MODEL_IMPL=haiku FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_claude_cmd impl1")" "--model haiku"
+assert_contains "FWF_MODEL_IMPL override wins" "$(FWF_MODEL_IMPL=haiku FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_claude_cmd impl1")" "--model haiku"
 
 section "user-testing role contracts (issue #42) — rendered prompts"
 PER="$(UT 'fwf_render "$(fwf_tmpl_path implementer)" 2')"
@@ -8719,18 +8721,18 @@ assert_contains "captain holds ground truth"        "$CAP" "KNOWN-UNFIXED DEFECT
 assert_contains "captain gates graduation"          "$CAP" "GATE WHAT GRADUATES"
 
 section "user-testing prod-target refusal (issue #42)"
-UTG() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; ${2:-} fwf_ut_guard_target"; }
+UTG() { FWF_TEMPLATE=user-testing FWF_UT_APP_URL="$1" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; ${2:-} fwf_ut_guard_target"; }
 UTG "http://localhost:3939" 2>/dev/null            && ok "loopback target allowed"   || bad "loopback target allowed"
 UTG "https://myapp-uat.internal/app" 2>/dev/null   && ok "uat host allowed"           || bad "uat host allowed"
 UTG "https://app.example.com" 2>/dev/null          && bad "prod-looking host refused" || ok "prod-looking host refused"
 UTG "" 2>/dev/null                                 && bad "empty target refused"       || ok "empty target refused"
 UTG "https://app.example.com" "FWF_UT_ALLOW_TARGET=1" 2>/dev/null && ok "human override allows it" || bad "human override allows it"
-FWF_TEMPLATE=dev UT_APP_URL="https://app.example.com" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ut_guard_target" && ok "guard no-ops for other templates" || bad "guard no-ops for other templates"
-assert_contains "refusal names the override" "$(FWF_TEMPLATE=user-testing FWF_UT_APP_URL=https://app.example.com FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_ut_guard_target" 2>&1)" "FWF_UT_ALLOW_TARGET=1"
+FWF_TEMPLATE=dev UT_APP_URL="https://app.example.com" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_ut_guard_target" && ok "guard no-ops for other templates" || bad "guard no-ops for other templates"
+assert_contains "refusal names the override" "$(FWF_TEMPLATE=user-testing FWF_UT_APP_URL=https://app.example.com FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_ut_guard_target" 2>&1)" "FWF_UT_ALLOW_TARGET=1"
 # respawn refuses a suppressed role before any tmux work; recognizes a persona
-UTRSP="$(FWF_TEMPLATE=user-testing FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/fwf-respawn.sh" conductor 2>&1)" && bad "respawn refuses suppressed conductor" || ok "respawn refuses suppressed conductor"
+UTRSP="$(FWF_TEMPLATE=user-testing FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/bin/fwf-respawn.sh" conductor 2>&1)" && bad "respawn refuses suppressed conductor" || ok "respawn refuses suppressed conductor"
 assert_contains "respawn names the suppression" "$UTRSP" "suppressed"
-UTRSP2="$(FWF_TEMPLATE=user-testing FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/fwf-respawn.sh" impl1 2>&1)" && bad "respawn persona recognized" || ok "respawn persona recognized"
+UTRSP2="$(FWF_TEMPLATE=user-testing FWF_SESSION=fwf-selftest-$$ FWF_PROFILE=example "$ROOT/bin/fwf-respawn.sh" impl1 2>&1)" && bad "respawn persona recognized" || ok "respawn persona recognized"
 assert_contains "respawn persona hits session, not usage" "$UTRSP2" "no tmux session"
 
 section "user-testing provisioning (issue #42) — personas get scratch dirs, not worktrees"
@@ -8747,7 +8749,7 @@ STAGING_BRANCH=staging; INTEGRATION_BRANCH=integration; DEFAULT_BRANCH=main
 GATE_CMD=true; BUILD_CMD=true; E2E_CMD=true; E2E_SETUP_CMD=""; DEV_UI_HINT=""
 UT_APP_URL="http://localhost:3939"
 EOF
-FWF_TEMPLATE=user-testing FWF_ISSUES=local FWF_RUN_DIR="$UTPD/run" FWF_PROFILE=.__utprov "$ROOT/fwf-provision.sh" >/dev/null 2>&1 \
+FWF_TEMPLATE=user-testing FWF_ISSUES=local FWF_RUN_DIR="$UTPD/run" FWF_PROFILE=.__utprov "$ROOT/bin/fwf-provision.sh" >/dev/null 2>&1 \
   && ok "user-testing provision runs" || bad "user-testing provision runs"
 [ -d "$UTPD/wt/utp-impl1" ] && bad "persona impl1 has NO worktree" || ok "persona impl1 has no worktree"
 [ -d "$UTPD/run/ut/.__utprov/impl1" ] && ok "persona impl1 got a scratch dir" || bad "persona impl1 got a scratch dir"
@@ -8761,7 +8763,7 @@ rm -f "$ROOT/profiles/.__utprov.sh"
 # --------------------------------------------------------------------------
 section "user-testing trial-one learnings (issue #42) — browser, per-persona URL, coverage"
 # helper: run an expression with the user-testing template + arbitrary inline env
-UTE() { FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+UTE() { FWF_TEMPLATE=user-testing FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 # per-persona app URL: UT_APP_URL_<id> overrides the shared URL; unset falls back
 assert_eq "shared URL fallback" "http://localhost:3939" \
   "$(UTE 'UT_APP_URL=http://localhost:3939 fwf_ut_app_url 1')"
@@ -8803,7 +8805,7 @@ UTE 'CLAUDE_CONFIG='"$TMP"'/claude-without.json fwf_ut_browser_mcp_registered' &
 UTE 'CLAUDE_CONFIG='"$TMP"'/does-not-exist.json fwf_ut_browser_mcp_registered' && bad "missing config = NO" || ok "missing config reads unregistered"
 # preflight is a no-op for every other template (no output)
 assert_eq "preflight no-ops off-template" "" \
-  "$(FWF_TEMPLATE=dev FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; CLAUDE_CONFIG=$TMP/claude-without.json fwf_ut_browser_preflight" 2>&1)"
+  "$(FWF_TEMPLATE=dev FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; CLAUDE_CONFIG=$TMP/claude-without.json fwf_ut_browser_preflight" 2>&1)"
 # coverage beat in the persona prompt; quarantine guidance in the researcher prompt
 assert_contains "persona has a coverage beat" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "COVERAGE BEAT"
 assert_contains "persona sweeps nav + shortcuts" "$(UTE 'fwf_render "$(fwf_tmpl_path implementer)" 1')" "KEYBOARD SHORTCUTS"
@@ -8821,12 +8823,12 @@ assert_contains "archetype 8 i18n user in library"    "$ILIB" "NON-NATIVE-ENGLIS
 assert_contains "archetype 9 accessibility in library" "$ILIB" "ACCESSIBILITY USER"
 # FWF_UT_MODE=deep expands to 9 personas; default stays at 3
 assert_eq "deep mode sets FWF_PAIRS=9" "9" \
-  "$(FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
+  "$(FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \$FWF_PAIRS")"
 assert_eq "default mode keeps FWF_PAIRS=3" "3" \
-  "$(FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
+  "$(FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \$FWF_PAIRS")"
 # explicit FWF_PAIRS still wins over the mode preset
 assert_eq "explicit FWF_PAIRS overrides deep mode" "6" \
-  "$(FWF_UT_MODE=deep FWF_PAIRS=6 FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$FWF_PAIRS")"
+  "$(FWF_UT_MODE=deep FWF_PAIRS=6 FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \$FWF_PAIRS")"
 # wrap-around guidance present for runs where FWF_PAIRS > 9
 assert_contains "wrap-around guidance in library" "$ILIB" "WRAP AROUND"
 # count-aware captain/researcher prompts: __UT_PERSONA_COUNT__ / __UT_PERSONA_PANES__
@@ -8834,14 +8836,14 @@ assert_contains "wrap-around guidance in library" "$ILIB" "WRAP AROUND"
 CAPQ="$(UTE 'fwf_render "$(fwf_tmpl_path captain)" ""')"
 assert_contains "captain reads 3 personas (quick)"  "$CAPQ" "just 3 source-blind"
 assert_contains "captain lists the persona panes"   "$CAPQ" "impl1, impl2, impl3"
-DEEPR() { FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+DEEPR() { FWF_UT_MODE=deep FWF_TEMPLATE=user-testing FWF_UT_APP_URL=http://localhost:3939 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 assert_contains "captain reads 9 personas (deep)"   "$(DEEPR 'fwf_render "$(fwf_tmpl_path captain)" ""')" "just 9 source-blind"
 assert_contains "captain lists impl9 in deep sweep" "$(DEEPR 'fwf_render "$(fwf_tmpl_path captain)" ""')" "impl9"
 assert_contains "researcher reads 9 streams (deep)" "$(DEEPR 'fwf_render "$(fwf_tmpl_path pm)" ""')" "9 streams"
 
 # --------------------------------------------------------------------------
 section "captain roster is single-sourced from FWF_PAIRS, not hardcoded impl1-3/qa1-3 (issue #221)"
-CAPR() { FWF_PAIRS="$1" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''"; }
+CAPR() { FWF_PAIRS="$1" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''"; }
 
 # AC(a): the live bug, RED first against a hardcoded template -- FWF_PAIRS=2
 # must name NO impl3/qa3 anywhere in the rendered prompt.
@@ -8881,7 +8883,7 @@ assert_eq "AC(e): no dev/dev-sre template hardcodes a bare seat name or range" "
 # at three FWF_PAIRS values, per the AC's own requirement.
 _fwf221_expected_range() { # $1=prefix $2=FWF_PAIRS -> "prefixN-M" or "prefixN", built from fwf_all_roles output alone
   local prefix="$1" pairs="$2" ids id first="" last=""
-  ids="$(FWF_PAIRS="$pairs" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_all_roles" | grep "^${prefix}[0-9][0-9]*\$" | sed "s/^$prefix//" | sort -n)"
+  ids="$(FWF_PAIRS="$pairs" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_all_roles" | grep "^${prefix}[0-9][0-9]*\$" | sed "s/^$prefix//" | sort -n)"
   for id in $ids; do [ -n "$first" ] || first="$id"; last="$id"; done
   [ -n "$first" ] || return 0
   if [ "$first" = "$last" ]; then printf '%s%s' "$prefix" "$first"; else printf '%s%s-%s' "$prefix" "$first" "$last"; fi
@@ -8896,10 +8898,10 @@ done
 
 # The two OTHER templates the ticket names as hit sites: dev-sre/captain.tmpl
 # (a genuinely separate file, not an override) and dev/pm.tmpl.
-SRECAPR2="$(FWF_PAIRS=2 FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev-sre/captain.tmpl' ''")"
+SRECAPR2="$(FWF_PAIRS=2 FWF_TEMPLATE=dev-sre FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev-sre/captain.tmpl' ''")"
 assert_contains "dev-sre/captain.tmpl: FWF_PAIRS=2 floor description uses the live roster" "$SRECAPR2" "(impl1-2, qa1-2, conductor)"
 assert_not_contains "dev-sre/captain.tmpl: FWF_PAIRS=2 names no impl3" "$SRECAPR2" "impl3"
-PMR2="$(FWF_PAIRS=2 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+PMR2="$(FWF_PAIRS=2 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
 assert_contains "dev/pm.tmpl: FWF_PAIRS=2 uses the live impl roster" "$PMR2" "impl1-2 don't collide"
 assert_contains "dev/pm.tmpl: FWF_PAIRS=2 handoff line uses the live impl roster" "$PMR2" "impl1-2 claim it next cycle"
 
@@ -8913,7 +8915,7 @@ section "e2e lock (#65): liveness-aware acquire/release shared across every role
 E2ERUN="$TMP/e2e65"
 cat > "$TMP/e2e-lock-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 case "$1" in
   symmetry)
     fwf_e2e_lock_acquire testrole && echo ACQUIRED
@@ -8973,7 +8975,7 @@ section "e2e lock waiter observability (issue #196): holder identity, hold age, 
 E196RUN="$TMP/e2e196"
 cat > "$TMP/e2e-196-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 case "$1" in
   ac-a)
     # a SECOND (fabricated) process holds the lock: known role/pid(self)/host/acquired.
@@ -9062,10 +9064,10 @@ assert_not_contains "AC(b): the two liveness words actually differ" "$AC_B_LIVE"
 # function the real acquire loop calls -- rather than a real-timing race
 # (a background release scheduled against a live poll/sleep loop is exactly
 # the kind of thing that can lose the race under sandbox/CI load and flake).
-AC_C_1="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_lock_holder_phrase 2 '' '' '' '' 1 \$(date +%s)")"
+AC_C_1="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_lock_holder_phrase 2 '' '' '' '' 1 \$(date +%s)")"
 assert_not_contains "AC(c): a SINGLE miss (missing=1) never says holder unknown" "$AC_C_1" "holder unknown"
 assert_contains     "AC(c): a single miss reads as still acquiring instead"      "$AC_C_1" "still acquiring"
-AC_C_2="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_lock_holder_phrase 2 '' '' '' '' 2 \$(date +%s)")"
+AC_C_2="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_lock_holder_phrase 2 '' '' '' '' 2 \$(date +%s)")"
 assert_contains "AC(c): two consecutive misses (missing=2) says holder unknown" "$AC_C_2" "holder unknown"
 
 # ...and the real acquire LOOP genuinely accumulates the streak across real
@@ -9090,7 +9092,7 @@ AC_D_LINES="$(printf '%s\n' "$AC_D_OUT" | grep -c '^fwf: impl1 queued')"
 # are all present and parseable (the shared contract with #195/#205).
 E196_PIN="$TMP/e2e196-pin"; mkdir -p "$E196_PIN"
 FWF_RUN_DIR="$E196_PIN" FWF_PROFILE=example bash -c "
-  source '$ROOT/lib.sh'
+  source '$ROOT/bin/lib.sh'
   fwf_e2e_lock_acquire pinrole
 "   # deliberately no release -- inspecting the owner record it left behind
 for f in role pid host worktree acquired; do
@@ -9114,13 +9116,13 @@ section "e2e lock: RESOURCE-KEYED LEASES (issue #205) -- port + data dir, not a 
 E205RUN="$TMP/e205"
 mkdir -p "$E205RUN"
 assert_eq "AC(i): FWF_E2E_MAX_LANES ships at 1 (strict no-op default)" "1" \
-  "$(FWF_PROFILE=example FWF_RUN_DIR="$E205RUN/default" bash -c "source '$ROOT/lib.sh'; echo \$FWF_E2E_MAX_LANES")"
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$E205RUN/default" bash -c "source '$ROOT/bin/lib.sh'; echo \$FWF_E2E_MAX_LANES")"
 assert_eq "lane 1's dir IS \$E2E_LOCK itself (AC d: same path, no new nesting)" "" \
-  "$(FWF_PROFILE=example FWF_RUN_DIR="$E205RUN/default" bash -c "source '$ROOT/lib.sh'; [ \"\$(_fwf_e2e_lane_dir 1)\" = \"\$E2E_LOCK\" ] || echo MISMATCH")"
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$E205RUN/default" bash -c "source '$ROOT/bin/lib.sh'; [ \"\$(_fwf_e2e_lane_dir 1)\" = \"\$E2E_LOCK\" ] || echo MISMATCH")"
 
 cat > "$TMP/e205-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 case "$1" in
   lease)
     lease="$(fwf_e2e_lock_acquire "$2")" || { echo "RC=$?"; exit 0; }
@@ -9141,7 +9143,7 @@ EOSCRIPT
 # after a `wait` for both, which would trivially find A finished by then.
 E205A="$E205RUN/aca"; mkdir -p "$E205A"
 FWF_RUN_DIR="$E205A" FWF_PROFILE=example FWF_E2E_MAX_LANES=2 ROOT_PATH="$ROOT" bash -c '
-  source "$ROOT_PATH/lib.sh"
+  source "$ROOT_PATH/bin/lib.sh"
   ( leaseA="$(fwf_e2e_lock_acquire holderA)"; read -r nA _ _ <<<"$leaseA"
     touch "'"$E205A"'/A-start"; sleep 1.5; touch "'"$E205A"'/A-done"; fwf_e2e_lock_release "$nA" ) &
   pidA=$!
@@ -9161,7 +9163,7 @@ assert_contains "AC(a): the two disjoint leases got DIFFERENT ports" "$(cat "$E2
 # the lock outright.
 E205B="$E205RUN/acb"; mkdir -p "$E205B"
 FWF_RUN_DIR="$E205B" FWF_PROFILE=example ROOT_PATH="$ROOT" bash -c '
-  source "$ROOT_PATH/lib.sh"
+  source "$ROOT_PATH/bin/lib.sh"
   lease1="$(fwf_e2e_lock_acquire holderA)"; read -r n1 _ _ <<<"$lease1"
   rc=0; out="$(FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 fwf_e2e_lock_acquire holderB 2>&1)" || rc=$?
   printf "%s\n" "$out" > "'"$E205B"'/out"
@@ -9176,7 +9178,7 @@ assert_contains "AC(b): the blocked request times out rather than being silently
 # concurrently with the first two.
 E205C="$E205RUN/acc"; mkdir -p "$E205C"
 FWF_RUN_DIR="$E205C" FWF_PROFILE=example FWF_E2E_MAX_LANES=2 ROOT_PATH="$ROOT" bash -c '
-  source "$ROOT_PATH/lib.sh"
+  source "$ROOT_PATH/bin/lib.sh"
   ( leaseA="$(fwf_e2e_lock_acquire holderA)"; read -r nA _ _ <<<"$leaseA"; sleep 2; fwf_e2e_lock_release "$nA" ) &
   ( leaseB="$(fwf_e2e_lock_acquire holderB)"; read -r nB _ _ <<<"$leaseB"; sleep 2; fwf_e2e_lock_release "$nB" ) &
   sleep 0.5
@@ -9192,7 +9194,7 @@ assert_contains "AC(c): the queue message reports a busy holder, not a phantom f
 # never reused, even for two SEQUENTIAL leases on the exact same port.
 E205G2="$E205RUN/acg2"; mkdir -p "$E205G2"
 FWF_RUN_DIR="$E205G2" FWF_PROFILE=example ROOT_PATH="$ROOT" bash -c '
-  source "$ROOT_PATH/lib.sh"
+  source "$ROOT_PATH/bin/lib.sh"
   lease1="$(fwf_e2e_lock_acquire holderA)"; read -r n1 p1 d1 <<<"$lease1"
   touch "$d1/artifact-from-run1"
   fwf_e2e_lock_release "$n1"
@@ -9214,7 +9216,7 @@ assert_contains "AC(g2): the second lease sees NO artifact written by the first 
 # two competing ones.
 E205F="$E205RUN/acf"; mkdir -p "$E205F"
 FWF_RUN_DIR="$E205F" FWF_PROFILE=example bash -c "
-  source '$ROOT/lib.sh'
+  source '$ROOT/bin/lib.sh'
   fwf_e2e_lock_acquire pinrole
 "   # deliberately no release
 for f in role pid host worktree acquired port data_dir; do
@@ -9228,7 +9230,7 @@ assert_eq "AC(f): the recorded port matches FWF_E2E_PORT_BASE for lane 1" "port=
 # next acquirer gets the SAME port back, not a permanently-stuck lane.
 E205G="$E205RUN/acg"; mkdir -p "$E205G"
 FWF_RUN_DIR="$E205G" FWF_PROFILE=example bash -c "
-  source '$ROOT/lib.sh'
+  source '$ROOT/bin/lib.sh'
   mkdir -p \"\$E2E_LOCK\"
   printf 'role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\nport=3940\ndata_dir=/nowhere\n' \
     \"\$(hostname)\" \"\$(( \$(date +%s) - 9999 ))\" > \"\$E2E_LOCK/owner\"
@@ -9248,7 +9250,7 @@ E494RUN="$TMP/e494"; mkdir -p "$E494RUN"
 # from a race.
 E494_AC1="$E494RUN/ac1"; mkdir -p "$E494_AC1"
 AC1_OUT="$(FWF_RUN_DIR="$E494_AC1" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   fwf_e2e_lock_acquire holder >/dev/null   # lane busy, so a real acquire would queue
   ta="$(_fwf_e2e_queue_take roleA)"
   tb="$(_fwf_e2e_queue_take roleB)"
@@ -9268,7 +9270,7 @@ assert_eq "AC1: A's ticket (taken first) is the queue head, not B's" "$AC1_TA" "
 # fix (waited=0 restored, no queue at all) would make this flaky/starve.
 E494_AC2="$E494RUN/ac2"; mkdir -p "$E494_AC2"
 FWF_RUN_DIR="$E494_AC2" FWF_PROFILE=example FWF_E2E_LOCK_TIMEOUT=20 FWF_E2E_LOCK_POLL=1 bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   leaseH="$(fwf_e2e_lock_acquire holder)"; read -r nH _ _ <<<"$leaseH"
   ( sleep 1; fwf_e2e_lock_release "$nH" ) &
   ( r="$(fwf_e2e_lock_acquire waiterA)"; echo "A $(date +%s%N) $r" >> "'"$E494_AC2"'/order" ) &
@@ -9289,7 +9291,7 @@ assert_eq "AC2: the EARLIER-queued waiter (A) acquired before the later one (B)"
 # forever, worse than today's lock).
 E494_AC3="$E494RUN/ac3"; mkdir -p "$E494_AC3"
 AC3_DEAD_OUT="$(FWF_RUN_DIR="$E494_AC3/dead" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   mkdir -p "$E2E_QUEUE"
   dead="$E2E_QUEUE/1000000000000000000-deadrole"
   mkdir -p "$dead"
@@ -9303,7 +9305,7 @@ assert_contains "AC3: a same-host dead-PID head is dropped, live ticket becomes 
 assert_contains "AC3: the dead ticket is actually removed" "$AC3_DEAD_OUT" "REAPED"
 
 AC3_STALE_OUT="$(FWF_RUN_DIR="$E494_AC3/stale" FWF_PROFILE=example FWF_E2E_LOCK_STALE_SECS=1 bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   mkdir -p "$E2E_QUEUE"
   stale="$E2E_QUEUE/1000000000000000000-staleroleXhost"
   mkdir -p "$stale"
@@ -9318,7 +9320,7 @@ assert_contains "AC3: a cross-host (indeterminate) head past the stale backstop 
 # -- otherwise this "fixes" starvation by creating a new false-positive
 # reap, exactly the failure class #196's own age backstop exists to avoid.
 AC3_FRESH_OUT="$(FWF_RUN_DIR="$E494_AC3/fresh" FWF_PROFILE=example FWF_E2E_LOCK_STALE_SECS=1800 bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   mkdir -p "$E2E_QUEUE"
   fresh="$E2E_QUEUE/1000000000000000000-freshroleXhost"
   mkdir -p "$fresh"
@@ -9335,7 +9337,7 @@ assert_contains "AC3: a FRESH indeterminate head (under the backstop) is NOT dro
 E494_AC4="$E494RUN/ac4"; mkdir -p "$E494_AC4"
 sleep 30 & AC4_BGPID=$!
 AC4_OUT="$(FWF_RUN_DIR="$E494_AC4" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   mkdir -p "$E2E_QUEUE"
   dead="$E2E_QUEUE/1000000000000000000-deadrole"
   mkdir -p "$dead"
@@ -9355,9 +9357,9 @@ kill "$AC4_BGPID" 2>/dev/null; wait "$AC4_BGPID" 2>/dev/null
 # self-reacquire and must NOT trip this).
 E494_AC7="$E494RUN/ac7"; mkdir -p "$E494_AC7"
 AC7_OUT="$(FWF_RUN_DIR="$E494_AC7" FWF_PROFILE=example ROOT_PATH="$ROOT" bash -c '
-  source "$ROOT_PATH/lib.sh"
+  source "$ROOT_PATH/bin/lib.sh"
   lease="$(fwf_e2e_lock_acquire parentholder)"; read -r n _ _ <<<"$lease"
-  bash -c "source \"$ROOT_PATH/lib.sh\"; fwf_e2e_lock_acquire child 2>&1; echo RC=\$?"
+  bash -c "source \"$ROOT_PATH/bin/lib.sh\"; fwf_e2e_lock_acquire child 2>&1; echo RC=\$?"
   echo "QUEUE_ENTRIES=$(find "$E2E_QUEUE" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
 ')"
 assert_contains "AC7: a real descendant of the holder is named a descendant and admitted without queueing" "$AC7_OUT" "descendant"
@@ -9368,7 +9370,7 @@ assert_contains "AC7: the descendant never took a queue ticket" "$AC7_OUT" "QUEU
 # grants the lane exclusively when it is free, unchanged in shape.
 E494_AC9="$E494RUN/ac9"; mkdir -p "$E494_AC9"
 AC9_OUT="$(FWF_RUN_DIR="$E494_AC9" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   fwf_e2e_lock_acquire conductor
 ')"
 assert_contains "AC9: an uncontended acquire is unchanged -- still lane 1, port 3940" "$AC9_OUT" "1 3940"
@@ -9380,7 +9382,7 @@ assert_contains "AC9: an uncontended acquire is unchanged -- still lane 1, port 
 # or silently succeed).
 E494_AC10="$E494RUN/ac10"; mkdir -p "$E494_AC10"
 AC10_OUT="$(FWF_RUN_DIR="$E494_AC10" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   lease="$(fwf_e2e_lock_acquire holder)"; read -r n _ _ <<<"$lease"
   rc=0; FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 fwf_e2e_lock_acquire waiter 2>&1 || rc=$?
   echo "RC=$rc"
@@ -9401,13 +9403,13 @@ git -C "$E494G_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m
 E494G1="$TMP/e494-gate-run1"; mkdir -p "$E494G1"
 E494G1_START=$(date +%s)
 (cd "$E494G_REPO" && FWF_RUN_DIR="$E494G1" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" e494full --e2e -- bash -c 'sleep 2; echo "0 passed, 0 failed, 0 skipped"' >/dev/null 2>&1)
+  "$ROOT/bin/fwf-gate.sh" e494full --e2e -- bash -c 'sleep 2; echo "0 passed, 0 failed, 0 skipped"' >/dev/null 2>&1)
 E494G1_FULL_SECS=$(( $(date +%s) - E494G1_START ))
 
 E494G2="$TMP/e494-gate-run2"; mkdir -p "$E494G2"
 E494G2_START=$(date +%s)
 (cd "$E494G_REPO" && FWF_RUN_DIR="$E494G2" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" e494short --e2e --e2e-spec one_spec.ts -- bash -c \
+  "$ROOT/bin/fwf-gate.sh" e494short --e2e --e2e-spec one_spec.ts -- bash -c \
     'if [ -n "$FWF_E2E_SPEC" ]; then sleep 0; else sleep 2; fi; echo "0 passed, 0 failed, 0 skipped"' >/dev/null 2>&1)
 E494G2_SHORT_SECS=$(( $(date +%s) - E494G2_START ))
 [ "$E494G2_SHORT_SECS" -lt "$E494G1_FULL_SECS" ] \
@@ -9420,14 +9422,14 @@ E494G2_SHORT_SECS=$(( $(date +%s) - E494G2_START ))
 E494G3="$TMP/e494-gate-run3"; mkdir -p "$E494G3"
 rc=0
 E494G3_OUT="$(cd "$E494G_REPO" && FWF_RUN_DIR="$E494G3" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" e494fail --e2e --e2e-spec bad_spec.ts -- bash -c \
+  "$ROOT/bin/fwf-gate.sh" e494fail --e2e --e2e-spec bad_spec.ts -- bash -c \
     'echo "0 passed, 1 failed, 0 skipped"; exit 1' 2>&1)" || rc=$?
 assert_eq "AC6: a failing --e2e-spec run exits non-zero, same as a failing full run" "1" "$rc"
 assert_contains "AC6: the SAME reporting contract fires (SUITE-level FAILED)" "$E494G3_OUT" "FAILED"
 
 # --e2e-spec without --e2e is a usage error, not a silently-ignored flag.
 rc=0
-E494G4_OUT="$(FWF_PROFILE=example "$ROOT/fwf-gate.sh" e494usage --e2e-spec foo.ts -- true 2>&1)" || rc=$?
+E494G4_OUT="$(FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" e494usage --e2e-spec foo.ts -- true 2>&1)" || rc=$?
 assert_eq "--e2e-spec without --e2e is a usage error" "1" "$rc"
 assert_contains "...and says so" "$E494G4_OUT" "requires --e2e"
 
@@ -9435,7 +9437,7 @@ assert_contains "...and says so" "$E494G4_OUT" "requires --e2e"
 section "fwf e2e-lock-status (issue #494 AC8): the ordered waiter queue, read-only"
 E494_AC8="$TMP/e494-ac8"; mkdir -p "$E494_AC8"
 AC8_OUT="$(FWF_RUN_DIR="$E494_AC8" FWF_PROFILE=example FWF_E2E_MAX_LANES=2 bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   fwf_e2e_lock_acquire holder1 >/dev/null
   _fwf_e2e_queue_take waiterA >/dev/null
   _fwf_e2e_queue_take waiterB >/dev/null
@@ -9458,7 +9460,7 @@ git -C "$E205GATE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty
 E205GATE_RUN="$TMP/e205-gate-run"; mkdir -p "$E205GATE_RUN"
 unset FWF_E2E_PORT FWF_E2E_DATA_DIR 2>/dev/null || true
 E205GATE_OUT="$(cd "$E205GATE_REPO" && FWF_RUN_DIR="$E205GATE_RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" e205gate --e2e -- bash -c 'echo "PORT=$FWF_E2E_PORT DATA=$FWF_E2E_DATA_DIR"' 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" e205gate --e2e -- bash -c 'echo "PORT=$FWF_E2E_PORT DATA=$FWF_E2E_DATA_DIR"' 2>&1)"
 assert_contains "AC(g3): FWF_E2E_PORT is present in the gated command's env" "$E205GATE_OUT" "PORT=3940"
 assert_contains "AC(g3): FWF_E2E_DATA_DIR is present in the gated command's env" "$E205GATE_OUT" "DATA=$E205GATE_RUN/e2e-data/lane-1/gen-"
 { [ -z "${FWF_E2E_PORT:-}" ] && [ -z "${FWF_E2E_DATA_DIR:-}" ]; } \
@@ -9467,16 +9469,16 @@ assert_contains "AC(g3): FWF_E2E_DATA_DIR is present in the gated command's env"
 
 # --------------------------------------------------------------------------
 section "AC(h): fwf doctor warns (never refuses) on an E2E_CMD that hardcodes what it should read from the env"
-H1="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --bind 127.0.0.1:3940'")"
+H1="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --bind 127.0.0.1:3940'")"
 assert_contains "a literal port with no \$FWF_E2E_PORT reference is warned" "$H1" "hardcode a port"
-H2="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --bind 127.0.0.1:\$FWF_E2E_PORT --data \$FWF_E2E_DATA_DIR'")"
+H2="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --bind 127.0.0.1:\$FWF_E2E_PORT --data \$FWF_E2E_DATA_DIR'")"
 assert_eq "a command that reads both exported vars is NOT warned" "" "$H2"
-H3="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'true'")"
+H3="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'true'")"
 assert_eq "the shipped no-op default (E2E_CMD=true) is NOT warned" "" "$H3"
-H4="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --data /tmp/transom-e2e-XXXX'")"
+H4="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'playwright test --data /tmp/transom-e2e-XXXX'")"
 assert_contains "a literal data-dir path with no \$FWF_E2E_DATA_DIR reference is warned" "$H4" "hardcode a data dir"
 assert_eq "the warn function never refuses -- always returns 0" "0" \
-  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'anything' >/dev/null; echo \$?")"
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; _fwf_e2e_cmd_hardcoded_warn 'anything' >/dev/null; echo \$?")"
 
 # --------------------------------------------------------------------------
 section "fwf e2e-lock-status (issue #499 AC4/AC5/AC9): read-only lane occupancy"
@@ -9484,12 +9486,12 @@ E499RUN="$TMP/e499"; mkdir -p "$E499RUN"
 
 # AC9: the effective FWF_E2E_MAX_LANES is reported, at the shipped default...
 assert_contains "AC9: effective lanes reads 1 at the shipped default" \
-  "$(FWF_PROFILE=example FWF_RUN_DIR="$E499RUN/ac9-default" bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_status")" \
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$E499RUN/ac9-default" bash -c "source '$ROOT/bin/lib.sh'; fwf_e2e_lock_status")" \
   "effective FWF_E2E_MAX_LANES=1"
 # ...and under an override -- so a silently-reverted override (config.sh:173's
 # own parameter-expansion default winning) is visible here, not inferred.
 assert_contains "AC9: effective lanes reads 2 under an FWF_E2E_MAX_LANES=2 override" \
-  "$(FWF_RUN_DIR="$E499RUN/ac9-override" FWF_E2E_MAX_LANES=2 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_status")" \
+  "$(FWF_RUN_DIR="$E499RUN/ac9-override" FWF_E2E_MAX_LANES=2 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_e2e_lock_status")" \
   "effective FWF_E2E_MAX_LANES=2"
 
 # AC4: occupancy for BOTH a free lane and a held one -- an all-free reading
@@ -9497,7 +9499,7 @@ assert_contains "AC9: effective lanes reads 2 under an FWF_E2E_MAX_LANES=2 overr
 # holder is named: role, pid, host, and the port/data_dir it was leased.
 E499_AC4="$E499RUN/ac4"; mkdir -p "$E499_AC4"
 AC4_OUT="$(FWF_RUN_DIR="$E499_AC4" FWF_E2E_MAX_LANES=2 FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   lease="$(fwf_e2e_lock_acquire heldrole)"; read -r n _ _ <<<"$lease"
   fwf_e2e_lock_status
 ')"
@@ -9515,12 +9517,12 @@ assert_contains "AC4: the held lane is labeled HELD, not STALE"   "$AC4_OUT" "la
 E499_AC5="$E499RUN/ac5"; mkdir -p "$E499_AC5/e2e.lock"
 printf 'role=deadrole\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\nport=3940\ndata_dir=/nowhere\n' \
   "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$E499_AC5/e2e.lock/owner"
-AC5_STATUS="$(FWF_RUN_DIR="$E499_AC5" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_status")"
+AC5_STATUS="$(FWF_RUN_DIR="$E499_AC5" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_e2e_lock_status")"
 assert_contains "AC5: a dead-PID holder reads STALE/LEAKED, not HELD" "$AC5_STATUS" "lane 1: STALE/LEAKED --"
 [ -f "$E499_AC5/e2e.lock/owner" ] \
   && ok "AC5: the status read is strictly read-only -- the planted lease survives it untouched" \
   || bad "AC5: a status read must never reap or kill" "owner record was removed by fwf_e2e_lock_status"
-AC5_ACQUIRE="$(FWF_RUN_DIR="$E499_AC5" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_e2e_lock_acquire impl9")"
+AC5_ACQUIRE="$(FWF_RUN_DIR="$E499_AC5" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_e2e_lock_acquire impl9")"
 assert_contains "AC5: the SAME planted lease is the one a real acquire reclaims (agreement)" "$AC5_ACQUIRE" "1 3940"
 
 # --------------------------------------------------------------------------
@@ -9543,7 +9545,7 @@ E499G1="$TMP/e499-gate-run1"; mkdir -p "$E499G1"
 rc=0
 # shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
 E499G1_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G1" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_MAX_LANES=2 \
-  "$ROOT/fwf-gate.sh" e499g1 --e2e -- bash -c 'echo --timeout 30000; python3 -m http.server "$FWF_E2E_PORT" --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
+  "$ROOT/bin/fwf-gate.sh" e499g1 --e2e -- bash -c 'echo --timeout 30000; python3 -m http.server "$FWF_E2E_PORT" --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
 assert_eq "AC3: a compliant consumer (binds \$FWF_E2E_PORT) PASSES even with a spurious 4-5 digit number in its command line" "0" "$rc"
 
 # Direction 2 -- a NON-COMPLIANT consumer that ignores $FWF_E2E_PORT and
@@ -9552,7 +9554,7 @@ assert_eq "AC3: a compliant consumer (binds \$FWF_E2E_PORT) PASSES even with a s
 E499G2="$TMP/e499-gate-run2"; mkdir -p "$E499G2"
 rc=0
 E499G2_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G2" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_MAX_LANES=2 \
-  "$ROOT/fwf-gate.sh" e499g2 --e2e -- bash -c 'python3 -m http.server 18040 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
+  "$ROOT/bin/fwf-gate.sh" e499g2 --e2e -- bash -c 'python3 -m http.server 18040 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
 assert_eq "AC3: a non-compliant consumer (hardcodes its own port, ignores \$FWF_E2E_PORT) FAILS" "1" "$rc"
 assert_contains "AC3: the failure states WHY -- it never bound its allocated port" "$E499G2_OUT" "never bound its allocated port"
 
@@ -9563,7 +9565,7 @@ E499G3="$TMP/e499-gate-run3"; mkdir -p "$E499G3"
 rc=0
 # shellcheck disable=SC2034  # exit status is the assertion; output captured only to keep it off the log
 E499G3_OUT="$(cd "$E499G_REPO" && FWF_RUN_DIR="$E499G3" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" e499g3 --e2e -- bash -c 'python3 -m http.server 18041 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
+  "$ROOT/bin/fwf-gate.sh" e499g3 --e2e -- bash -c 'python3 -m http.server 18041 --bind 127.0.0.1 >/dev/null 2>&1 & p=$!; sleep 1; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; echo "0 passed, 0 failed, 0 skipped"' 2>&1)" || rc=$?
 assert_eq "AC6: at N=1 (shipped default) the SAME non-compliant command is unaffected by AC3's check (strict no-op)" "0" "$rc"
 
 # --------------------------------------------------------------------------
@@ -9571,7 +9573,7 @@ section "cargo build concurrency SEMAPHORE (issue #138 piece C): N slots, not a 
 CBRUN="$TMP/cargobuild138"
 cat > "$TMP/cargo-build-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 case "$1" in
   symmetry)
     s="$(fwf_cargo_build_slot_acquire testrole)" && echo "ACQUIRED=$s"
@@ -9635,7 +9637,7 @@ case "$CB_LIVE" in *"breaking it"*) bad "a LIVE same-host holder must never be b
 
 # fwf_render auto-detection: a profile's GATE_CMD/E2E_CMD containing "cargo"
 # gets --cargo-build with no template changes; one that doesn't never pays for it.
-cbr_render() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; GATE_CMD='$1'; E2E_CMD='$2'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1"; }
+cbr_render() { FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; GATE_CMD='$1'; E2E_CMD='$2'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1"; }
 CBR_CARGO="$(cbr_render 'cd dash && cargo test' 'bash test/run.sh')"
 assert_contains     "GATE_CMD with cargo -> --cargo-build auto-appended" "$CBR_CARGO" "fwf gate impl1 --cargo-build -- bash"
 assert_not_contains "E2E_CMD without cargo -> no --cargo-build"          "$CBR_CARGO" "fwf gate impl1 --e2e --cargo-build --"
@@ -9657,7 +9659,7 @@ CBGRUN="$TMP/cargobuild-e2e"
 mkdir -p "$CBGRUN"
 CB_COUNTER="$CBGRUN/holders"; CB_PEAKS="$CBGRUN/peaks.log"; CB_EVIDENCE="$CBGRUN/evidence.log"
 mkdir -p "$CB_COUNTER"; : > "$CB_PEAKS"; : > "$CB_EVIDENCE"
-CB_LOCK_DIR="$(FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$CARGO_BUILD_LOCK\"")"
+CB_LOCK_DIR="$(FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; printf '%s' \"\$CARGO_BUILD_LOCK\"")"
 # issue #292 AC(b): the marker now carries the holder's role/pid and the
 # concurrency it saw (not just an empty touch), so a peak-exceeded run can
 # be diagnosed instead of merely detected -- which of #292's two causes
@@ -9726,7 +9728,7 @@ EOSCRIPT
 run_cargo_gated() { # $1=role $2=holdsecs
   FWF_RUN_DIR="$CBGRUN" FWF_PROFILE=example FWF_CARGO_BUILD_CONCURRENCY=2 FWF_MEM_ADMIT_ENABLE=0 \
     FWF_CARGO_BUILD_LOCK_POLL=1 FWF_CARGO_BUILD_LOCK_TIMEOUT=15 \
-    "$ROOT/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2" "$1" "$CB_EVIDENCE" "$CB_LOCK_DIR"
+    "$ROOT/bin/fwf-gate.sh" "$1" --cargo-build -- bash "$TMP/cargo-build-harness.sh" "$CB_COUNTER" "$CB_PEAKS" "$2" "$1" "$CB_EVIDENCE" "$CB_LOCK_DIR"
 }
 run_cargo_gated cbe2e-a 2 > "$CBGRUN/a.out" 2>&1 & CBA_PID=$!
 run_cargo_gated cbe2e-b 2 > "$CBGRUN/b.out" 2>&1 & CBB_PID=$!
@@ -9794,7 +9796,7 @@ CBRACE_COUNTER="$CBRACE/holders"; CBRACE_PEAKS="$CBRACE/peaks.log"
 mkdir -p "$CBRACE_COUNTER"; : > "$CBRACE_PEAKS"
 cat > "$TMP/cargo-race-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 label="$1"; counter_dir="$2"; peaks_file="$3"
 s="$(fwf_cargo_build_slot_acquire "$label")" || { echo "$label TIMEOUT"; exit 0; }
 me="$counter_dir/$$-$RANDOM"
@@ -9820,7 +9822,7 @@ race_run() { # $1=which racer's stdout file
 }
 # Pre-stamp the ONLY slot with a dead owner, in the SAME run dir race_run uses.
 FWF_RUN_DIR="$CBRACE/run" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   mkdir -p "$CARGO_BUILD_LOCK/slot-1"
   printf "role=zombie\npid=999999999\nhost=%s\nworktree=/nowhere\nacquired=%s\n" \
     "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$CARGO_BUILD_LOCK/slot-1/owner"
@@ -9857,7 +9859,7 @@ section "gate single-flight lock (#123): per-role guard against self-relaunch pi
 GATERUN="$TMP/gate123"
 cat > "$TMP/gate-lock-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 case "$1" in
   symmetry)
     fwf_gate_lock_acquire testrole && echo ACQUIRED
@@ -9989,7 +9991,7 @@ if [ "$FWF195_HAVE_PY3" = 1 ]; then
 section "fwf gate (#195 AC a/e): a clean exit tears down a backgrounded server BEFORE the lock releases"
 G195A_ROOT="$TMP/gate195-a"; mkdir -p "$G195A_ROOT/state/example"
 G195A_PORT=$(( 21000 + RANDOM % 3000 ))
-FWF_RUN_DIR="$G195A_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" role195a -- \
+FWF_RUN_DIR="$G195A_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/bin/fwf-gate.sh" role195a -- \
   bash -c "(python3 -m http.server $G195A_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 0.3; exit 7" >/dev/null 2>&1
 G195A_RC=$?
 assert_eq "AC(e): the wrapped command's own exit code propagates through teardown" "7" "$G195A_RC"
@@ -10008,7 +10010,7 @@ section "fwf gate (#195 AC b): HUP/TERM/INT to the wrapper tear down the child a
 for FWF195_SIG in HUP TERM INT; do
   G195B_ROOT="$TMP/gate195-sig-$FWF195_SIG"; mkdir -p "$G195B_ROOT/state/example"
   G195B_PORT=$(( 22000 + RANDOM % 3000 ))
-  FWF_RUN_DIR="$G195B_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" "role195sig$FWF195_SIG" -- \
+  FWF_RUN_DIR="$G195B_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/bin/fwf-gate.sh" "role195sig$FWF195_SIG" -- \
     bash -c "(python3 -m http.server $G195B_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
   G195B_PID=$!
   if _fwf195_wait_listening "$G195B_PORT" 50; then
@@ -10034,7 +10036,7 @@ done
 section "fwf gate (#195 AC c): acquire-side reconciliation reaps an orphan an untrappable SIGKILL to the wrapper left behind"
 G195C_ROOT="$TMP/gate195-c"; mkdir -p "$G195C_ROOT/state/example"
 G195C_PORT=$(( 23000 + RANDOM % 3000 ))
-FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195c -- \
+FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" role195c -- \
   bash -c "(python3 -m http.server $G195C_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
 G195C_PID=$!
 if _fwf195_wait_listening "$G195C_PORT" 50; then
@@ -10044,7 +10046,7 @@ if _fwf195_wait_listening "$G195C_PORT" 50; then
     "$(_fwf195_port_listening "$G195C_PORT" && echo true || echo false)"
   # A second acquirer for the SAME role must reap the dead holder's
   # recorded PGID (killing the orphaned server) and proceed cleanly.
-  G195C2_OUT="$(FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195c -- bash -c 'echo second-run-ok' 2>&1)"
+  G195C2_OUT="$(FWF_RUN_DIR="$G195C_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" role195c -- bash -c 'echo second-run-ok' 2>&1)"
   assert_contains "AC(c): the next acquirer names the reap as an ANOMALY (not a silent takeover)" "$G195C2_OUT" "ANOMALY"
   assert_contains "AC(c): the next acquirer's wrapped command actually ran" "$G195C2_OUT" "second-run-ok"
   # The reap's SIGKILL is asynchronous (the kernel tears the process down
@@ -10099,7 +10101,7 @@ fi
 section "e2e lock (#375): 'acquired' is re-stamped alongside pgid, so a legitimate holder whose group started after a long resource wait is REAPED, not refused"
 cat > "$TMP/e2e-375-drive.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 case "$1" in
   legit)
     # "acquired" is stamped now -- the mutex taken BEFORE the resource wait.
@@ -10194,7 +10196,7 @@ assert_contains "#375 AC3: the unrelated newer process sharing that pgid is UNTO
 section "gate reaper (#550 AC4): the #544 descendant guard refuses our own tree at ANY depth, and allows a foreign one"
 cat > "$TMP/g550-desc.sh" <<'EOSCRIPT'
 set -uo pipefail
-source "$ROOT_PATH/lib.sh"
+source "$ROOT_PATH/bin/lib.sh"
 inter=""
 case "$1" in
   child)   # one level: a direct child in its own process group
@@ -10281,7 +10283,7 @@ if [ -z "$G195H_REUSE_PGID" ]; then
 else
 printf 'role=role195h\npid=999999999\npgid=%s\npgleader=1\nhost=%s\nacquired=%s\n' \
   "$G195H_REUSE_PGID" "$(hostname)" "$(( $(date +%s) - 9999 ))" > "$G195H_ROOT/state/example/gate-lock/role195h/owner"
-G195H_OUT="$(FWF_RUN_DIR="$G195H_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195h -- bash -c 'echo ran' 2>&1)"
+G195H_OUT="$(FWF_RUN_DIR="$G195H_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" role195h -- bash -c 'echo ran' 2>&1)"
 assert_contains "AC(h): the reused pgid is named as a refusal, not silently reaped" "$G195H_OUT" "refusing to signal pgid"
 if kill -0 "$G195H_REUSE_PID" 2>/dev/null; then
   ok "AC(h): the unrelated newer process sharing that pgid number is UNTOUCHED"
@@ -10303,7 +10305,7 @@ while [ "$G195D_WAITED" -lt 50 ]; do
 done
 if [ -n "$G195D_PORT" ] && _fwf195_port_listening "$G195D_PORT"; then
   G195D_ROOT="$TMP/gate195-d"; mkdir -p "$G195D_ROOT/state/example"
-  G195D_OUT="$(FWF_RUN_DIR="$G195D_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate.sh" role195d -- \
+  G195D_OUT="$(FWF_RUN_DIR="$G195D_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" role195d -- \
     bash -c "printf 'stdout line one\n'; printf 'Error: listen EADDRINUSE: address already in use 127.0.0.1:$G195D_PORT\n' >&2; exit 9" 2>"$TMP/fwf195d-stderr.log")"
   G195D_RC=$?
   assert_eq "AC(g): the wrapped command's exit code still propagates with the diagnostic active" "9" "$G195D_RC"
@@ -10330,7 +10332,7 @@ kill "$G195D_OCC_PID" 2>/dev/null; wait "$G195D_OCC_PID" 2>/dev/null
 section "fwf gate (#195 AC f): a double signal delivery still converges to the correct final state (idempotent teardown)"
 G195F_ROOT="$TMP/gate195-f"; mkdir -p "$G195F_ROOT/state/example"
 G195F_PORT=$(( 24000 + RANDOM % 3000 ))
-FWF_RUN_DIR="$G195F_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/fwf-gate.sh" role195f -- \
+FWF_RUN_DIR="$G195F_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS=2 "$ROOT/bin/fwf-gate.sh" role195f -- \
   bash -c "(python3 -m http.server $G195F_PORT --bind 127.0.0.1 >/dev/null 2>&1 &) ; sleep 30" >/dev/null 2>&1 &
 G195F_PID=$!
 if _fwf195_wait_listening "$G195F_PORT" 50; then
@@ -10372,7 +10374,7 @@ s.listen(1)
 time.sleep(30)
 PYEOF
 G195E_GRACE=1
-FWF_RUN_DIR="$G195E_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS="$G195E_GRACE" "$ROOT/fwf-gate.sh" role195e -- \
+FWF_RUN_DIR="$G195E_ROOT" FWF_PROFILE=example FWF_GATE_TEARDOWN_GRACE_SECS="$G195E_GRACE" "$ROOT/bin/fwf-gate.sh" role195e -- \
   python3 "$G195E_PY" >/dev/null 2>&1 &
 G195E_PID=$!
 if _fwf195_wait_listening "$G195E_PORT" 50; then
@@ -10456,7 +10458,7 @@ rm -f "$FIXED_MARKER"
 GATEHRUN="$TMP/gate-hermetic"
 run_gated() { # $1=role $2=hold $3=wait_budget $4=outfile
   FWF_RUN_DIR="$GATEHRUN" FWF_PROFILE=example FWF_E2E_LOCK_POLL=1 FWF_E2E_LOCK_TIMEOUT=15 \
-    "$ROOT/fwf-gate.sh" "$1" --e2e -- bash "$TMP/fixed-resource-harness.sh" "$FIXED_MARKER" "$2" "$3" > "$4" 2>&1
+    "$ROOT/bin/fwf-gate.sh" "$1" --e2e -- bash "$TMP/fixed-resource-harness.sh" "$FIXED_MARKER" "$2" "$3" > "$4" 2>&1
 }
 run_gated hermetic-a 4 10  "$TMP/green-a.out" & GREEN_A_PID=$!
 sleep 0.5
@@ -10474,7 +10476,7 @@ assert_contains "GREEN: second invocation's own output shows it actually ran, no
 # instead. Drives the REAL helper (never a decoy grep) with stubbed
 # prs_comments/prs_meta fixtures, pinning: column-0-only sentinels, last-wins,
 # the busy-loop guard, amend/rebase robustness, and the self-trigger guard.
-PRS="$ROOT/fwf-pr-review-state.sh"
+PRS="$ROOT/bin/fwf-pr-review-state.sh"
 prs_state() { # $1=comments-json  $2=state  $3=lastCommitAt
   FWF_PROFILE=example bash -c "
     source '$PRS'
@@ -10519,7 +10521,7 @@ assert_eq "non-numeric PR arg -> NONE" "NONE" "$(FWF_PROFILE=example bash -c "so
 # from its recorded `fwf-Reviewer:` marker, never re-derived from a branch
 # prefix. Same stubbed-fixture pattern as pr-review-state above -- drives the
 # REAL helper, never a decoy grep.
-PRV="$ROOT/fwf-pr-reviewer.sh"
+PRV="$ROOT/bin/fwf-pr-reviewer.sh"
 prv() { # $1=body  $2=comments-json (or omit for '[]')
   FWF_PROFILE=example bash -c "
     source '$PRV'
@@ -10581,7 +10583,7 @@ assert_contains "help mentions pr-reviewer" "$("$ROOT/fwf-legacy" help)" "pr-rev
 # be, from the CONFIGURED roster, deterministically. Real FWF_PAIRS/
 # FWF_SUPPRESS_ROLES config (never mocked -- fwf_qa_roster is pure) + a
 # stubbed gh_pr_list for the open-PR-count half.
-FAR="$ROOT/fwf-pr-assign-reviewer.sh"
+FAR="$ROOT/bin/fwf-pr-assign-reviewer.sh"
 far() { # $1=pairs  $2=head-branch  $3=open-prs-json(optional, default [])
   FWF_PROFILE=example FWF_PAIRS="$1" bash -c "
     source '$FAR'
@@ -10640,8 +10642,8 @@ assert_contains "help mentions pr-assign-reviewer" "$("$ROOT/fwf-legacy" help)" 
 # fixes the observed incidents: a captain/*, gv/*, pm/*, or conductor/* PR now
 # gets a reviewer at creation time, and qaN's survey routes by that recorded
 # marker instead of re-deriving from the branch name on every cycle.
-DEVIMPL_194="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
-DEVQA_194="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
+DEVIMPL_194="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+DEVQA_194="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/qa.tmpl' 1")"
 
 section "dev implementer template (#194): PR body records an fwf-Reviewer: marker at creation time"
 assert_contains "gh pr create computes the reviewer via fwf pr-assign-reviewer" "$DEVIMPL_194" \
@@ -10863,7 +10865,7 @@ assert_eq "no template anywhere still hardcodes a bare survey-exclusion -label: 
 F255_RENAME_OUT="$(FWF_SURVEY_EXCLUDE_IMPL='renamed-wip renamed-hold renamed-idea renamed-tracking' \
   FWF_SURVEY_EXCLUDE_COORD='renamed-wip renamed-hold renamed-tracking' \
   FWF_PROFILE=example bash -c "
-    source '$ROOT/lib.sh'
+    source '$ROOT/bin/lib.sh'
     for f in $F255_NINE; do
       fwf_render \"$ROOT/\$f\" 1
       echo '---'
@@ -10878,9 +10880,9 @@ assert_not_contains "AC(c): the OLD 'idea' literal is gone once renamed too -- t
 # change. Implementers exclude "idea"; captain/pm do NOT (the PM's own role
 # prompt instructs it to SEE parked ideas and skip them by hand -- excluding
 # the label would hide exactly what it's told to watch).
-F255_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
-F255_CAPTAIN_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
-F255_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+F255_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+F255_CAPTAIN_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/captain.tmpl' ''")"
+F255_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
 for tok in '-label:product-wip' '-label:release-hold' '-label:idea' '-label:tracking' '-label:coordination-only'; do
   assert_contains "AC(e): implementer survey excludes $tok" "$F255_IMPL_RENDER" "$tok"
 done
@@ -10903,24 +10905,24 @@ done
 # independently drift the way six statements in two styles did.
 assert_contains "AC(d): dev implementer eligibility prose names tracking, matching the search" \
   "$F255_IMPL_RENDER" 'NOT "tracking" (a living coordination document, not buildable work)'
-F255_REFACTOR_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/implementer.tmpl' 1")"
+F255_REFACTOR_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/refactor/implementer.tmpl' 1")"
 assert_contains "AC(d): refactor implementer eligibility prose names tracking, matching the search" \
   "$F255_REFACTOR_RENDER" 'NOT "tracking" (a living coordination document, not buildable work)'
 
 # --------------------------------------------------------------------------
 section "coordination-lane idle-backfill (issue #169): routing, hard preemption, comment-checkpoint handoff"
 
-F169_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
-F169_GV_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/gv.tmpl' ''")"
-F169_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+F169_PM_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")"
+F169_GV_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/gv.tmpl' ''")"
+F169_IMPL_RENDER="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 
 # --- config.sh / lib.sh wiring ---------------------------------------------
 assert_eq "COORD_LABEL default is coordination-only" "coordination-only" \
-  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$COORD_LABEL")"
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \$COORD_LABEL")"
 assert_eq "FWF_COORD_LABEL overrides the default" "renamed-coord" \
-  "$(FWF_COORD_LABEL=renamed-coord FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$COORD_LABEL")"
+  "$(FWF_COORD_LABEL=renamed-coord FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \$COORD_LABEL")"
 assert_contains "__COORD_LABEL__ placeholder renders in a template" \
-  "$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")" \
+  "$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/pm.tmpl' ''")" \
   "coordination-only"
 
 # --- PM: routing, comment-checkpoint format, hard preemption --------------
@@ -10948,7 +10950,7 @@ PM_WIP_OFFSET="${F169_PM_RENDER%%before idling see COORDINATION-LANE IDLE-BACKFI
   || bad "pm.tmpl: idle-backfill step appears AFTER the ordinary WIP-draft sweep (last-checked, not spliced in early)" "idle offset ${#PM_IDLE_OFFSET} <= wip offset ${#PM_WIP_OFFSET}"
 
 # --- GV: floor-down gating, routing, sustained-sitting model --------------
-F169_BUILD_SESSION="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; echo \$BUILD_SESSION")"
+F169_BUILD_SESSION="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; echo \$BUILD_SESSION")"
 assert_contains "gv.tmpl checks the BUILD session before starting (floor-down gate, placeholder resolved)" \
   "$F169_GV_RENDER" "tmux has-session -t \"$F169_BUILD_SESSION\""
 assert_not_contains "gv.tmpl's __BUILD_SESSION__ placeholder actually resolved (no stale token)" \
@@ -10995,7 +10997,7 @@ assert_not_contains "gv.tmpl floor-down pass never mentions committing or a bran
 # policy-diff logic driven with stubbed gh_branch_protection fixtures (never
 # a decoy grep), covering compliant/drifted/unprotected/unreadable, plus a
 # real fixture proving today's live repo is genuinely unprotected (AC a).
-BP="$ROOT/fwf-branch-policy.sh"
+BP="$ROOT/bin/fwf-branch-policy.sh"
 BP_POLICY='{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","functional suite (macos-latest)","dash crate (rust)"],"strict":false,"enforce_admins":true,"branches":["staging","integration","main"]}'
 
 section "branch-policy (#220): diff_branch -- pure policy-vs-live comparison"
@@ -11121,7 +11123,7 @@ assert_not_contains "the real .github/branch-policy.json's required_contexts no 
 
 # --------------------------------------------------------------------------
 section "fwf-release-ci-gate.sh (issue #303): consults ci.yml's verdict for the release SHA, never re-implements it"
-RCG="$ROOT/fwf-release-ci-gate.sh"
+RCG="$ROOT/bin/fwf-release-ci-gate.sh"
 RCG_POLICY="$TMP/rcg-policy.json"
 printf '{"required_contexts":["shellcheck + syntax","functional suite (ubuntu-latest)","dash crate (rust)"]}' > "$RCG_POLICY"
 rcg_run() { # $1=check-runs-json
@@ -11246,21 +11248,21 @@ assert_not_contains "conductor-e2e.sh no longer references fwf-release-ci-gate.s
 assert_not_contains "conductor-e2e.sh no longer references branch-policy.json" "$CE2E_SRC" "branch-policy.json"
 assert_contains "fwf-release-ci-gate.sh itself is untouched -- still wired into release.yml" "$RELYML" "fwf-release-ci-gate.sh"
 
-CE2ETMP="$TMP/ce2e"; mkdir -p "$CE2ETMP/scripts"
+CE2ETMP="$TMP/ce2e"; mkdir -p "$CE2ETMP/bin" "$CE2ETMP/scripts"
 cp "$ROOT/scripts/conductor-e2e.sh" "$CE2ETMP/scripts/conductor-e2e.sh"
 # A stub GitHub-consult oracle that would hang for real if conductor-e2e.sh
 # still called it -- present on disk (so a real regression back to the old
 # 2-step design would find it and actually poll) but never invoked.
-cat > "$CE2ETMP/fwf-release-ci-gate.sh" <<'HANGSTUB'
+cat > "$CE2ETMP/bin/fwf-release-ci-gate.sh" <<'HANGSTUB'
 #!/usr/bin/env bash
 sleep 1200
 exit 1
 HANGSTUB
-chmod +x "$CE2ETMP/fwf-release-ci-gate.sh"
+chmod +x "$CE2ETMP/bin/fwf-release-ci-gate.sh"
 mkdir -p "$CE2ETMP/.github"; printf '{}' > "$CE2ETMP/.github/branch-policy.json"
 
 ce2e_stub() { # $1=verdict-mode(green|red)  $2=run-marker-file
-  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+  cat > "$CE2ETMP/bin/fwf-local-ci.sh" <<STUB
 #!/usr/bin/env bash
 if [ "\$1" = verdict ]; then
   case "$1" in
@@ -11274,7 +11276,7 @@ if [ "\$1" = run ]; then
   exit 0
 fi
 STUB
-  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+  chmod +x "$CE2ETMP/bin/fwf-local-ci.sh"
 }
 
 # AC: a GREEN local-ci verdict skips the re-run, fast, exactly as before #409.
@@ -11340,7 +11342,7 @@ CE2E_RED_ELAPSED=$(( CE2E_T3 - CE2E_T2 ))
 # it. Same safe stub harness as above (a real fall-through execs `run`, so a
 # stub keeps this from recursing into the real suite).
 ce2e_stub_msg() { # $1=verdict-exit-code $2=verdict-stdout $3=run-marker-file
-  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+  cat > "$CE2ETMP/bin/fwf-local-ci.sh" <<STUB
 #!/usr/bin/env bash
 if [ "\$1" = verdict ]; then
   echo "$2"
@@ -11352,7 +11354,7 @@ if [ "\$1" = run ]; then
   exit 0
 fi
 STUB
-  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+  chmod +x "$CE2ETMP/bin/fwf-local-ci.sh"
 }
 
 ce2e_stub_msg 1 "local-ci: recovered:1, not yet skip-eligible" "$CE2ETMP/run-marker-recov1"
@@ -11382,7 +11384,7 @@ assert_contains "AC(2): the skip decision's own output names 'recovered:2' (the 
 # gh_pr_comments fixtures, reproducing instance 2 (the live incident this
 # ticket was filed on) directly: a deterministic red (shellcheck) alongside
 # a genuinely flaky red, with only the flaky one named.
-PCH="$ROOT/fwf-pr-checks-honored.sh"
+PCH="$ROOT/bin/fwf-pr-checks-honored.sh"
 pch() { # $1=checks-json $2=comments-json
   FWF_PROFILE=example bash -c "
     source '$PCH'
@@ -11428,9 +11430,9 @@ assert_contains "help mentions pr-checks-honored" "$("$ROOT/fwf-legacy" help)" "
 # reliably (the 2026-07-14 impl1 incident this closes). Local-backend tests
 # drive the REAL helper end-to-end over a real fwf-issues.sh store (identical
 # code path to production); gh-backend tests override the gh_ boundary only.
-FC="$ROOT/fwf-flag-captain.sh"
+FC="$ROOT/bin/fwf-flag-captain.sh"
 FCRUN="$TMP/flagcaptain-local"
-FCISS() { FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+FCISS() { FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 FCL()   { FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example FWF_ISSUES=local "$FC" "$@"; }
 
 section "fwf flag-captain (#113): local backend — raise, sweep, clear round-trip"
@@ -11572,7 +11574,7 @@ CLOSED_NUM="$(FCISS create --title "Flag survives a close" | sed -n 's/^LI-\([0-
 FCL "$CLOSED_NUM" --role gv --reason "the close itself is the thing that needs a decision" >/dev/null
 FCISS close "$CLOSED_NUM" >/dev/null
 assert_eq "fixture item is actually closed (test validity)" "state: closed" \
-  "$(FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" view "$CLOSED_NUM" | grep -o 'state: .*')"
+  "$(FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" view "$CLOSED_NUM" | grep -o 'state: .*')"
 CLOSED_SWEEP="$(FCL sweep)"
 # AC(6): the property, not the scope -- a cause-of-emptiness the sweep must
 # never fall into. This item is the ONLY flag left unresolved from earlier
@@ -11589,7 +11591,7 @@ section "fwf flag-captain (#374 AC 2): --clear works on a closed item without re
 CLEAR_CLOSED_OUT="$(FCL "$CLOSED_NUM" --clear --note "routed: closing #333 was correct")"
 assert_contains "clear on a closed item confirms" "$CLEAR_CLOSED_OUT" "needs-captain cleared"
 assert_eq "clearing a closed item's flag does not reopen it" "state: closed" \
-  "$(FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" view "$CLOSED_NUM" | grep -o 'state: .*')"
+  "$(FWF_RUN_DIR="$FCRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" view "$CLOSED_NUM" | grep -o 'state: .*')"
 # AC(5): latest-clear-wins still holds for a closed item -- once cleared, it
 # stays cleared and does not resurrect as permanent sweep noise.
 POST_CLEAR_CLOSED_SWEEP="$(FCL sweep)"
@@ -11729,7 +11731,7 @@ esac
 # (#194), but nothing OBLIGED anyone to notice -- twice in one day (#380,
 # #384) it sat unrouted, once for 24 minutes while blocking a release. This
 # reuses the needs-captain mechanism (#113/#374) rather than a new channel.
-PRC="$ROOT/fwf-pr-route-check.sh"
+PRC="$ROOT/bin/fwf-pr-route-check.sh"
 PRC_ISO_OLD="2020-01-01T00:00:00Z"   # always past the default 300s grace
 PRC_ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"  # always within the grace window
 
@@ -11833,11 +11835,11 @@ assert_contains "help mentions pr-route-check sweep" "$("$ROOT/fwf-legacy" help)
 # reading it and running fwf authz, never by trusting pane text. Local
 # backend drives the REAL helper end-to-end over a real fwf-issues.sh store
 # (identical code path to production, same spirit as flag-captain's tests).
-OD="$ROOT/fwf-operator-decision.sh"
+OD="$ROOT/bin/fwf-operator-decision.sh"
 ODRUN="$TMP/opdecision-local"
-ODISS() { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example "$ROOT/fwf-issues.sh" "$@"; }
+ODISS() { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example "$ROOT/bin/fwf-issues.sh" "$@"; }
 ODL()   { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example FWF_ISSUES=local "$OD" "$@"; }
-ODAZ()  { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example FWF_ISSUES=local "$ROOT/fwf-authz.sh" "$@"; }
+ODAZ()  { FWF_RUN_DIR="$ODRUN" FWF_PROFILE=example FWF_ISSUES=local "$ROOT/bin/fwf-authz.sh" "$@"; }
 
 section "fwf operator-decision (#192 AC a): fwf --help lists the verb"
 assert_contains "help lists operator-decision" "$("$ROOT/fwf-legacy" help)" "operator-decision <n> <text>"
@@ -11960,7 +11962,7 @@ assert_eq "gh backend: no comment call for a refused closed-target post" "" "$(c
 # from FAKE Claude Code project dirs — never touches the real
 # ~/.claude/projects (FWF_CLAUDE_PROJECTS_DIR override) or the real run dir
 # (FWF_RUN_DIR override).
-UD="$ROOT/fwf-usage-data.sh"
+UD="$ROOT/bin/fwf-usage-data.sh"
 UT="$TMP/usage"; mkdir -p "$UT/wt" "$UT/claude-projects"
 cat > "$ROOT/profiles/.__usage.sh" <<EOF
 FWF_REPO="$UT/repo"; WT_PREFIX="ut"; WT_BASE="$UT/wt"
@@ -12116,7 +12118,7 @@ assert_contains "CLI: TOTAL line carries a visible PARTIAL marker" "$CLIOUT289" 
 assert_contains "CLI: the excluded seat is named on the display path too" "$CLIOUT289" "impl2 (claude-totally-unknown)"
 
 section "fwf usage (issue #289 f): price_state — priced / stale / unpriced, on an INJECTABLE clock"
-_fwf_usage_load_for_test() { FWF_PROFILE=.__usage bash -c "source '$ROOT/lib.sh'; source '$UD'; \"\$1\" \"\${2:-}\" \"\${3:-}\"" _ "$@"; }
+_fwf_usage_load_for_test() { FWF_PROFILE=.__usage bash -c "source '$ROOT/bin/lib.sh'; source '$UD'; \"\$1\" \"\${2:-}\" \"\${3:-}\"" _ "$@"; }
 BEFORE_EPOCH="$(date -u -d '2026-08-30T00:00:00Z' +%s 2>/dev/null || date -u -jf '%Y-%m-%dT%H:%M:%SZ' '2026-08-30T00:00:00Z' +%s)"
 AFTER_EPOCH="$(date -u -d '2026-09-05T00:00:00Z' +%s 2>/dev/null || date -u -jf '%Y-%m-%dT%H:%M:%SZ' '2026-09-05T00:00:00Z' +%s)"
 assert_eq "(f0) before valid_until: sonnet-5 is priced" "priced" "$(_fwf_usage_load_for_test _fwf_usage_price_state claude-sonnet-5 "$BEFORE_EPOCH")"
@@ -12160,9 +12162,9 @@ mkdir -p "$BC289_ROOT/claude-projects/$BC289_SLUG"
 printf '%s\n' '{"type":"assistant","message":{"model":"claude-brand-new","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' \
   > "$BC289_ROOT/claude-projects/$BC289_SLUG/s.jsonl"
 env FWF_PROFILE=.__usage289 FWF_RUN_DIR="$BC289_ROOT/run" FWF_CLAUDE_PROJECTS_DIR="$BC289_ROOT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_baseline_ensure"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_baseline_ensure"
 env FWF_PROFILE=.__usage289 FWF_RUN_DIR="$BC289_ROOT/run" FWF_CLAUDE_PROJECTS_DIR="$BC289_ROOT/claude-projects" FWF_PAIRS=1 FWF_BUDGET_USD=1 \
-  "$ROOT/fwf-budget-check.sh" >/dev/null 2>&1
+  "$ROOT/bin/fwf-budget-check.sh" >/dev/null 2>&1
 BC289_HOLD="$(cat "$BC289_ROOT/run/BUDGET_HOLD" 2>/dev/null || true)"
 assert_contains "(d) fail-closed message names the seat" "$BC289_HOLD" "impl1"
 assert_contains "(d) fail-closed message ALSO names the model, not a generic pause" "$BC289_HOLD" "claude-brand-new"
@@ -12202,7 +12204,7 @@ assert_contains "clean run: recent unknowns reports none" "$CLEAN" "recent unkno
 # log (recent unknowns) in the same call.
 mkdir -p "$URUN/run/state/.__usage/tick"
 printf garbage > "$URUN/run/state/.__usage/tick/impl1"
-FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" bash -c "source '$ROOT/lib.sh'; fwf_tick_read impl1 >/dev/null"
+FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" bash -c "source '$ROOT/bin/lib.sh'; fwf_tick_read impl1 >/dev/null"
 DIRTY="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$URUN/run" FWF_CLAUDE_PROJECTS_DIR="$URUN/claude-projects" FWF_PAIRS=1 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "live probe names the untrustworthy role" "$DIRTY" "tick read is UNTRUSTED right now for: impl1"
 assert_contains "recent-unknowns section shows the logged entry" "$DIRTY" "fwf_tick_read"
@@ -12246,7 +12248,7 @@ assert_contains "--budget-usd set but writer not running -> NOT ARMED" "$UNARMED
 assert_contains "unarmed \$ message names FWF_BUDGET_USD" "$UNARMEDUSD" "FWF_BUDGET_USD=5"
 
 env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_start"
 ARMED="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "writer running for this profile -> ARMED (unchanged wording, back-compat)" "$ARMED" "budget enforcement: ARMED (ceiling 1000 tokens)"
 assert_contains "this-run-vs-cumulative line appears once a baseline exists" "$ARMED" "this run:"
@@ -12256,7 +12258,7 @@ assert_contains "this-run line names cumulative too" "$ARMED" "cumulative:"
 # next tick (real usage data from these fixtures) races the manual overwrite
 # below and can clobber it before "fwf usage" ever reads it.
 env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_stop"
 printf 'HOLD — 1200 tokens spent this run (of 1200 cumulative; includes cache-read), budget is 1000 — lift: raise FWF_TOKEN_BUDGET or fwf usage --clear-hold\n' > "$UT/run/BUDGET_HOLD"
 HELDOUT="$(FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 "$ROOT/fwf-legacy" usage 2>&1)"
 assert_contains "usage report surfaces the current hold state verbatim" "$HELDOUT" "hold state: HOLD — 1200 tokens spent this run"
@@ -12266,13 +12268,13 @@ assert_contains "--clear-hold confirms" "$CLEAROUT" "cleared"
 [ -f "$UT/run/BUDGET_HOLD" ] && bad "--clear-hold removes the hold file" || ok "--clear-hold removes the hold file"
 
 env FWF_PROFILE=.__usage FWF_RUN_DIR="$UT/run" FWF_CLAUDE_PROJECTS_DIR="$UT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_stop"
 
 rm -f "$ROOT/profiles/.__usage.sh"
 
 # --------------------------------------------------------------------------
 section "token-budget unit disambiguation (issue #108, AC3): both ceilings set -> rejected at source time"
-env FWF_TOKEN_BUDGET=1000 FWF_BUDGET_USD=5 FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'" >/dev/null 2>&1 \
+env FWF_TOKEN_BUDGET=1000 FWF_BUDGET_USD=5 FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'" >/dev/null 2>&1 \
   && bad "FWF_TOKEN_BUDGET + FWF_BUDGET_USD both set rejected" || ok "FWF_TOKEN_BUDGET + FWF_BUDGET_USD both set rejected"
 
 section "fwf --help / help (#108 AC10): documents --budget-usd, the poll-interval guarantee, and the price-table coupling"
@@ -12283,7 +12285,7 @@ assert_contains "--help states the poll-interval (not instant) guarantee" "$HELP
 assert_contains "--help names the price-table coupling for \$ enforcement" "$HELPTXT" "price table"
 
 section "fwf-respawn.sh (issue #108 AC7): never touches the token-budget arming path — a respawn cannot reset the baseline"
-case "$(cat "$ROOT/fwf-respawn.sh")" in
+case "$(cat "$ROOT/bin/fwf-respawn.sh")" in
   *fwf_budget_writer_start*|*fwf_budget_baseline*) bad "fwf-respawn.sh must not call the budget-arming path" ;;
   *) ok "fwf-respawn.sh never calls fwf_budget_writer_start/fwf_budget_baseline_* (same-run recovery, not a new run)" ;;
 esac
@@ -12294,17 +12296,17 @@ FD108RUN="$TMP/run108down"; mkdir -p "$FD108RUN/state/example"
 FD108BASE="$FD108RUN/state/example/budget-baseline.json"
 
 printf '{"tokens_total":100,"cost_usd":1}' > "$FD108BASE"
-env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/fwf-down.sh" --floor-only >/dev/null 2>&1
+env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/bin/fwf-down.sh" --floor-only >/dev/null 2>&1
 [ -f "$FD108BASE" ] && ok "AC5: --floor-only down preserves the baseline (same run)" \
   || bad "AC5: --floor-only down preserves the baseline (same run)"
 
-env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/fwf-down.sh" >/dev/null 2>&1
+env $FD108ENV FWF_RUN_DIR="$FD108RUN" "$ROOT/bin/fwf-down.sh" >/dev/null 2>&1
 [ -f "$FD108BASE" ] && bad "AC5: a full 'fwf down' must clear the baseline (next full 'fwf up' gets a fresh one)" \
   || ok "AC5: a full 'fwf down' clears the baseline"
 
 # --------------------------------------------------------------------------
 section "fwf-budget-check.sh (#96, Ticket B of #70; #108 delta+\$ enforcement): the WRITER — hermetic, isolated fixture"
-BC="$ROOT/fwf-budget-check.sh"
+BC="$ROOT/bin/fwf-budget-check.sh"
 BT="$TMP/budget"; mkdir -p "$BT/wt" "$BT/claude-projects"
 cat > "$ROOT/profiles/.__budget.sh" <<EOF
 FWF_REPO="$BT/repo"; WT_PREFIX="bt"; WT_BASE="$BT/wt"
@@ -12323,7 +12325,7 @@ hold_file() { cat "$BT/run/BUDGET_HOLD" 2>/dev/null || true; }
 # dir, mirroring what fwf_budget_writer_start does on a genuinely fresh arm.
 baseline_ensure() { # $1=FWF_RUN_DIR
   env FWF_PROFILE=.__budget FWF_RUN_DIR="$1" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
-    bash -c "source '$ROOT/lib.sh'; fwf_budget_baseline_ensure"
+    bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_baseline_ensure"
 }
 baseline_file() { echo "$1/state/.__budget/budget-baseline.json"; }
 
@@ -12444,24 +12446,24 @@ rm -rf "$UNPRICEDPROJ"
 section "fwf-budget-check.sh / fwf_budget_writer_stop (#108 AC5/AC7): stopping the writer preserves the baseline — only an explicit clear resets it"
 rm -rf "$BT/run13" "$BPROJ"; mkdir -p "$BPROJ"
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_start"
 BEFORE="$(cat "$(baseline_file "$BT/run13")")"
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_stop"
 [ -f "$(baseline_file "$BT/run13")" ] && ok "fwf_budget_writer_stop (floor-down equivalent) leaves the baseline file in place" \
   || bad "fwf_budget_writer_stop must not delete the baseline"
 # new usage arrives between the stop and a floor-only re-up...
 printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":9999,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$BPROJ/s1.jsonl"
 # ...but re-arming (a floor-only `fwf up` equivalent) must NOT re-snapshot.
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 FWF_TOKEN_BUDGET=1000 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_start"
 AFTER="$(cat "$(baseline_file "$BT/run13")")"
 assert_eq "AC5/AC7: re-arming after a stop does not overwrite an existing baseline, even with fresh usage sitting in between" "$BEFORE" "$AFTER"
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_stop"
 # explicit clear (the full-teardown path) DOES reset it.
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/run13" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_baseline_clear"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_baseline_clear"
 [ -f "$(baseline_file "$BT/run13")" ] && bad "fwf_budget_baseline_clear must remove the baseline" \
   || ok "fwf_budget_baseline_clear (full-teardown path) resets the baseline for the next full 'fwf up'"
 
@@ -12568,7 +12570,7 @@ sub_run "$BT/sub10"
 section "fwf-budget-check.sh (#149): monotonic-within-window sanity — a ONE-OFF drop is masked, a CONFIRMED (2nd consecutive) drop is trusted"
 rm -rf "$BT/sub11state"; mkdir -p "$BT/sub11state"
 mono_apply() { # $1=kind $2=new -> effective value
-  env FWF_RUN_DIR="$BT/sub11state" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply '$1' '$2'"
+  env FWF_RUN_DIR="$BT/sub11state" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_subscription_monotonic_apply '$1' '$2'"
 }
 E1="$(mono_apply session 90)"; assert_eq "first-ever reading is trusted as-is" "90" "$E1"
 E2="$(mono_apply session 11)"; assert_eq "single lower reading (90->11, the digit-drop shape) is MASKED — effective stays at the accepted value" "90" "$E2"
@@ -12577,9 +12579,9 @@ E4="$(mono_apply session 11)"; assert_eq "the cleared candidate means a NEW sing
 
 # Separate fixture: the confirm path (drop, then a SECOND consecutive drop).
 rm -rf "$BT/sub11state2"; mkdir -p "$BT/sub11state2"
-F1="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply weekly 90")"
-F2="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply weekly 40")"
-F3="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_monotonic_apply weekly 40")"
+F1="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_subscription_monotonic_apply weekly 90")"
+F2="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_subscription_monotonic_apply weekly 40")"
+F3="$(env FWF_RUN_DIR="$BT/sub11state2" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_subscription_monotonic_apply weekly 40")"
 assert_eq "poll 1: 90 accepted"                                        "90" "$F1"
 assert_eq "poll 2: 40 (first sub-accepted reading) MASKED -> stays 90"  "90" "$F2"
 assert_eq "poll 3: 40 again (2nd consecutive) CONFIRMED -> ratchets to 40" "40" "$F3"
@@ -12624,11 +12626,11 @@ section "fwf-budget-check.sh (#149): fwf_budget_writer_start arms on subscriptio
 rm -rf "$BT/sub15"
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub15" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
   FWF_SESSION_PCT_PARK=85 FWF_SESSION_PCT_RESUME=70 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_start && fwf_budget_writer_running" \
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_start && fwf_budget_writer_running" \
   && ok "session-pct alone (no --budget-usd/--token-budget) arms the writer" \
   || bad "session-pct alone arms the writer" "did not arm"
 env FWF_PROFILE=.__budget FWF_RUN_DIR="$BT/sub15" FWF_CLAUDE_PROJECTS_DIR="$BT/claude-projects" FWF_PAIRS=1 \
-  bash -c "source '$ROOT/lib.sh'; fwf_budget_writer_stop"
+  bash -c "source '$ROOT/bin/lib.sh'; fwf_budget_writer_stop"
 
 section "fwf CLI (#149): --session-pct/--weekly-pct PARK[/RESUME] parsing"
 PCTFN="$(awk '/^_fwf_parse_pct_flag\(\)/,/^}/' "$ROOT/fwf-legacy")"
@@ -12673,7 +12675,7 @@ section "fwf-down.sh (#149): full teardown clears the subscription ratchet + par
 rm -rf "$BT/sub16"; mkdir -p "$BT/sub16"
 touch "$BT/sub16/subscription-parked"
 printf '{"session":{"accepted":90,"pending":null}}' > "$BT/sub16/subscription-monotonic.json"
-env FWF_RUN_DIR="$BT/sub16" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_subscription_state_clear"
+env FWF_RUN_DIR="$BT/sub16" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_subscription_state_clear"
 [ -f "$BT/sub16/subscription-parked" ] && bad "fwf_subscription_state_clear removes the parked marker" || ok "fwf_subscription_state_clear removes the parked marker"
 [ -f "$BT/sub16/subscription-monotonic.json" ] && bad "fwf_subscription_state_clear removes the ratchet state" || ok "fwf_subscription_state_clear removes the ratchet state"
 
@@ -12689,7 +12691,7 @@ for tdir in templates/*/; do
   for tmplfile in "$tdir"*.tmpl; do
     [ -e "$tmplfile" ] || continue
     role="$(basename "$tmplfile" .tmpl)"
-    rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$tmplfile' 1" 2>/dev/null || true)"
+    rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$tmplfile' 1" 2>/dev/null || true)"
     case "$rendered" in
       *"STOP CHECK"*)
         case "$rendered" in
@@ -12736,7 +12738,7 @@ wtr_advance_origin() { # push a new commit to origin from a throwaway clone
          && echo b >> f && git add -A && git commit -qm c2 && git push -q origin main )
   rm -rf "$seed"
 }
-wtr_run() { FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; WT_PREFIX=testwt WT_BASE='$WTR_BASE-$1' DEFAULT_BRANCH=main $2"; }
+wtr_run() { FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; WT_PREFIX=testwt WT_BASE='$WTR_BASE-$1' DEFAULT_BRANCH=main $2"; }
 
 # A. detached + clean + already current -> REFRESHED, no-op ancestry-wise.
 wtr_setup a
@@ -12776,7 +12778,7 @@ assert_contains "unreachable origin -> FETCH_FAILED (loud, not silent)" "$R" "FE
 
 # F. no worktree at all for this role -> NO_WORKTREE, not a crash.
 NOWT_BASE="$TMP/wtr146-nowt"; mkdir -p "$NOWT_BASE"
-R="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; WT_PREFIX=testwt WT_BASE='$NOWT_BASE' DEFAULT_BRANCH=main fwf_worktree_refresh_role foorole")"
+R="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; WT_PREFIX=testwt WT_BASE='$NOWT_BASE' DEFAULT_BRANCH=main fwf_worktree_refresh_role foorole")"
 assert_contains "no worktree present -> NO_WORKTREE, no crash" "$R" "NO_WORKTREE"
 
 # --- CLI wrapper (fwf-worktree-refresh.sh): three-tier exit code is the
@@ -12787,7 +12789,7 @@ assert_contains "no worktree present -> NO_WORKTREE, no crash" "$R" "NO_WORKTREE
 # deliberate safety skip that still leaves the worktree unrefreshed
 # (SKIPPED_BRANCH/SKIPPED_DIRTY) -- distinct from 1 so a caller CAN tell
 # "broken" from "protected", but both are non-zero on purpose.
-wtr_cli() { FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" bash "$ROOT/fwf-worktree-refresh.sh" foorole; }
+wtr_cli() { FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" bash "$ROOT/bin/fwf-worktree-refresh.sh" foorole; }
 
 wtr_setup g
 OUT="$(wtr_cli g)"; RC=$?
@@ -12819,7 +12821,7 @@ assert_contains "CLI: SKIPPED_DIRTY names it as an anomaly for a read-only role"
 # fwf_worktree_refresh_role, which legitimately treat NO_WORKTREE as fine for
 # their own distinct purposes (see the case blocks there).
 NOWT_CLI_BASE="$TMP/wtr146-nowt-cli"; mkdir -p "$NOWT_CLI_BASE"
-OUT="$(FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$NOWT_CLI_BASE" bash "$ROOT/fwf-worktree-refresh.sh" foorole 2>&1)"; RC=$?
+OUT="$(FWF_PROFILE=example FWF_WT_PREFIX=testwt FWF_WT_BASE="$NOWT_CLI_BASE" bash "$ROOT/bin/fwf-worktree-refresh.sh" foorole 2>&1)"; RC=$?
 assert_eq "CLI: NO_WORKTREE is a hard failure — exit 1, never a silent no-op" "1" "$RC"
 assert_contains "CLI: NO_WORKTREE names that the role has nothing to read from" "$OUT" "nothing to read"
 
@@ -12854,7 +12856,7 @@ wtsv_run() { # $1=fixture label  $2=role -> supervise output, with an
     "$(( $(date -u +%s) - 3600 ))" > "$svrun/state/example/usage-cache/$2.json"
   FWF_PROFILE=example FWF_RUN_DIR="$svrun" FWF_WEDGE_MIN_SECS=600 \
     FWF_WT_PREFIX=testwt FWF_WT_BASE="$WTR_BASE-$1" \
-    "$ROOT/fwf-supervise.sh" "$2" 2>&1
+    "$ROOT/bin/fwf-supervise.sh" "$2" 2>&1
 }
 
 wtr_setup_role j gv
@@ -12914,7 +12916,7 @@ rec_fork() { # $1=branch $2=base-sha -> a NEW commit forking off base-sha (indep
   ( cd "$REC_SEED" && git checkout -q "$2" && echo "$RANDOM$RANDOM" >> f && git commit -qam "fork $1 from $2" \
     && git push -q origin "HEAD:$1" )
 }
-rec_run() { FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1"; }
+rec_run() { FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1"; }
 
 # --- classifier: BEHIND -------------------------------------------------
 rec_setup behind
@@ -12995,7 +12997,7 @@ rec_setup cli-mixed
 rec_advance main; rec_advance main           # main advances twice from the common base -> staging (still at base) is BEHIND by 2
 rec_advance integration                      # integration then advances PAST that (a descendant of the new main tip) -> AHEAD (safe, never a false alarm)
 CLI_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)"; rc=$?
+  "$ROOT/bin/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)"; rc=$?
 assert_eq   "CLI: exits 0 when every branch ends up safe (BEHIND auto-FF'd, AHEAD normal)" "0" "$rc"
 assert_contains "CLI: reports the staging reconcile" "$CLI_OUT" "reconciled staging"
 assert_contains "CLI: reports the integration normal-ahead" "$CLI_OUT" "normal-ahead integration"
@@ -13005,7 +13007,7 @@ CH_BASE="$(rec_sha main)"
 rec_advance main
 rec_fork staging "$CH_BASE"   # staging forks independently from the common base -> DIVERGED from main
 CLI_RC=0; CLI_OUT2="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
+  "$ROOT/bin/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
 assert_eq   "CLI: exits non-zero when any branch is unsafe (halted-diverged)" "1" "$CLI_RC"
 assert_contains "CLI: names the diverged branch" "$CLI_OUT2" "halted-diverged staging"
 
@@ -13024,7 +13026,7 @@ rec_seed_busy_lock() { # $1=branch (uses the current REC_RUN/PROFILE=example)
 rec_setup cli-indeterminate
 rec_seed_busy_lock staging
 CLI_RC=0; CLI_OUT3="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
+  "$ROOT/bin/fwf-reconcile.sh" --branch staging --branch integration --against main 2>&1)" || CLI_RC=$?
 assert_eq       "CLI: lock-busy alone is its own exit code (2), not 0 or 1" "2" "$CLI_RC"
 assert_contains "CLI: reports the lock-busy branch" "$CLI_OUT3" "lock-busy staging"
 assert_contains "CLI: still reports the unaffected branch normally" "$CLI_OUT3" "clean no-op integration"
@@ -13035,7 +13037,7 @@ rec_advance main
 rec_fork staging "$CH2_BASE"        # staging genuinely diverged -> escalate
 rec_seed_busy_lock integration      # integration merely lock-busy -> indeterminate
 CLI_RC=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  "$ROOT/fwf-reconcile.sh" --branch staging --branch integration --against main >/dev/null 2>&1 || CLI_RC=$?
+  "$ROOT/bin/fwf-reconcile.sh" --branch staging --branch integration --against main >/dev/null 2>&1 || CLI_RC=$?
 assert_eq "CLI: ESCALATE(1) always wins the aggregate over INDETERMINATE(2)" "1" "$CLI_RC"
 
 # --- flap detection (#114 AC9): repeated consecutive reconciles surface as an anomaly ---
@@ -13173,7 +13175,7 @@ assert_contains "  ...but the collapse is logged for observability (#211 AC f)" 
 # BUDGET CHECK check above, so a future prompt refactor can't silently drop
 # this guard with nothing to catch it.
 for t in dev dev-sre refactor; do
-  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
+  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
   assert_contains "$t/captain: STALE-BASE GUARD present (composed/rendered)" "$rendered" "STALE-BASE GUARD"
   assert_contains "$t/captain: names the fwf reconcile command"              "$rendered" "fwf reconcile"
 done
@@ -13233,7 +13235,7 @@ shp_delete_branch() { git -C "$SHP_SEED" push -q origin --delete "$1" >/dev/null
 shp_run() { # $@ = args to fwf-shipped.sh
   PATH="$SHP_GHBIN:$PATH" SHP_STUB_DATA="$SHP_GHDATA" \
     FWF_REPO="$SHP_DRIVE" FWF_RUN_DIR="$SHP_RUN" FWF_PROFILE=example FWF_GHCACHE_REPO=x/y \
-    "$ROOT/fwf-shipped.sh" "$@"
+    "$ROOT/bin/fwf-shipped.sh" "$@"
 }
 
 # --- AC(1)/AC(2) RED-first, exactly #377's own shape: a hollow-merged PR
@@ -13573,7 +13575,7 @@ CAPTMPL="$(cat "$ROOT/templates/dev/captain.tmpl")"
 assert_contains "captain.tmpl names 'fwf shipped' as a real verb in the release step" "$CAPTMPL" "fwf shipped"
 assert_contains "captain.tmpl states the check's ceiling honestly (point-of-belief, not enforcement)" "$CAPTMPL" "point-of-belief"
 for t in dev dev-sre refactor; do
-  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
+  rendered="$(FWF_PROFILE=example FWF_TEMPLATE="$t" bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/$t/captain.tmpl' ''" 2>/dev/null || true)"
   assert_contains "$t/captain (rendered): names fwf shipped" "$rendered" "fwf shipped"
 done
 
@@ -13585,7 +13587,7 @@ section "cargo target isolation (issue #151)"
 # fixture, and prints "<CARGO_TARGET_DIR|UNSET>|<target-state>|<rc>|<wrapper>".
 ci_run() { # $1 = setup snippet (runs with $wt=worktree, $shared=out-of-tree dir)
   FWF_PROFILE=example bash -c '
-    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    source "'"$ROOT"'/bin/lib.sh" 2>/dev/null
     wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
     shared="$(mktemp -d "${TMPDIR:-/tmp}/fwf-shared.XXXXXX")"
     '"$1"'
@@ -13631,7 +13633,7 @@ ci_run_nosccache() {
     return 0
   fi
   FWF_PROFILE=example PATH="$_p" bash -c '
-    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    source "'"$ROOT"'/bin/lib.sh" 2>/dev/null
     wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
     '"$1"'
     fwf_cargo_isolate; rc=$?
@@ -13714,7 +13716,7 @@ fi
 # (steps 1-2) still runs regardless of this param.
 ci_run_noconfigure() { # $1 = setup snippet
   FWF_PROFILE=example bash -c '
-    source "'"$ROOT"'/lib.sh" 2>/dev/null
+    source "'"$ROOT"'/bin/lib.sh" 2>/dev/null
     wt="$(mktemp -d "${TMPDIR:-/tmp}/fwf-ci.XXXXXX")"; cd "$wt" && git init -q
     shared="$(mktemp -d "${TMPDIR:-/tmp}/fwf-shared.XXXXXX")"
     '"$1"'
@@ -13740,9 +13742,9 @@ section "fwf-gate.sh (issue #277 AC a1/b/c/d): hints the by-path workaround only
 # the comparison this AC needs is between $DIR (the installed copy actually
 # executing) and the CALLER's own worktree, discovered via
 # `git rev-parse --show-toplevel` from the caller's cwd.
-G277_WT="$TMP/gate277-worktree"; mkdir -p "$G277_WT/lib" "$G277_WT/profiles"
+G277_WT="$TMP/gate277-worktree"; mkdir -p "$G277_WT/bin" "$G277_WT/lib" "$G277_WT/profiles"
 ( cd "$G277_WT" && git init -q && git config user.email t@t.co && git config user.name t )
-cp "$ROOT/fwf-gate.sh" "$ROOT/lib.sh" "$ROOT/config.sh" "$G277_WT/"
+cp "$ROOT/bin/fwf-gate.sh" "$ROOT/bin/lib.sh" "$ROOT/bin/config.sh" "$G277_WT/bin/"
 cp "$ROOT/lib/detect.sh" "$ROOT/lib/pr_context.sh" "$ROOT/lib/profile.sh" "$ROOT/lib/version_check.sh" "$ROOT/lib/profile-sandbox.sh" "$G277_WT/lib/"
 cp "$ROOT/profiles/example.sh" "$G277_WT/profiles/"
 ln -s "$ROOT/templates" "$G277_WT/templates"
@@ -13750,12 +13752,12 @@ printf '%s' "$(cat "$ROOT/VERSION")" > "$G277_WT/VERSION"
 ( cd "$G277_WT" && git add -A && git commit -qm base )
 
 # --- AC(b): identical tree -> silence --------------------------------------
-IDENT_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-ident" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
+IDENT_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-ident" bash "$ROOT/bin/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
 assert_not_contains "AC(b): identical worktree fwf-gate.sh -> silence, no hint" "$IDENT_OUT" "issue #277"
 
 # --- AC(a1)/(b): differing tree (gate path itself changed) -> hint ---------
-echo "# a local edit to the gate path" >> "$G277_WT/fwf-gate.sh"
-DIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-diff" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
+echo "# a local edit to the gate path" >> "$G277_WT/bin/fwf-gate.sh"
+DIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-diff" bash "$ROOT/bin/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
 assert_contains "AC(a1): a content-differing worktree fwf-gate.sh fires the hint" "$DIFF_OUT" "issue #277"
 # issue #337 (third occurrence of this class): the hint names the RESOLVED
 # worktree path, because the gate resolves it. On macOS /var is a symlink to
@@ -13764,19 +13766,19 @@ assert_contains "AC(a1): a content-differing worktree fwf-gate.sh fires the hint
 # run. Pre-existing in #277's test, invisible until the suite could finish on
 # macOS. Compare resolved-to-resolved; `pwd -P` is a no-op on Linux.
 G277_WT_REAL="$(cd "$G277_WT" && pwd -P)"
-assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT_REAL/fwf-gate.sh\""
+assert_contains "AC(a1): the hint names the by-path remedy"                      "$DIFF_OUT" "bash \"$G277_WT_REAL/bin/fwf-gate.sh\""
 assert_contains "AC(c): safety-equivalence is stated CONDITIONALLY, never flatly" "$DIFF_OUT" "PROVIDED your diff does not touch the locking path"
 assert_contains "AC(c): names the lock files to verify before trusting the result" "$DIFF_OUT" "gate-lock/<role>/owner"
 assert_contains "AC(d): the wrapped command still ran (hint never gates)"        "$DIFF_OUT" "hi"
 
 # --- AC(a1): a differing lib.sh (not fwf-gate.sh) also fires ---------------
-( cd "$G277_WT" && git checkout -q -- fwf-gate.sh )
-echo "# a local edit to lib.sh" >> "$G277_WT/lib.sh"
-LIBDIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-libdiff" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
+( cd "$G277_WT" && git checkout -q -- bin/fwf-gate.sh )
+echo "# a local edit to lib.sh" >> "$G277_WT/bin/lib.sh"
+LIBDIFF_OUT="$(cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-libdiff" bash "$ROOT/bin/fwf-gate.sh" impl2 -- bash -c "echo hi" 2>&1)"
 assert_contains "AC(a1): a content-differing worktree lib.sh ALSO fires the hint (not just fwf-gate.sh)" "$LIBDIFF_OUT" "issue #277"
 
 # --- AC(d): exit code and normal behaviour unaffected either way -----------
-( cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-rc" bash "$ROOT/fwf-gate.sh" impl2 -- bash -c "exit 0" >/dev/null 2>&1 )
+( cd "$G277_WT" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gate277-run-rc" bash "$ROOT/bin/fwf-gate.sh" impl2 -- bash -c "exit 0" >/dev/null 2>&1 )
 assert_eq "AC(d): the hint changes no exit code on success" "0" "$?"
 
 section "repo profiles (issue #188): out-of-tree profile resolution + isolated import"
@@ -13812,32 +13814,32 @@ EOF
 cp "$P188/good.sh" "$P188/fixture-repo/.fwf/whatever.sh"
 
 # --- AC(a): regression -- bare in-tree name unchanged -----------------------
-A_OUT="$(cd "$ROOT" && FWF_PROFILE=example bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $GATE_CMD"')"
+A_OUT="$(cd "$ROOT" && FWF_PROFILE=example bash -c 'source bin/lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $GATE_CMD"')"
 assert_eq "AC(a): bare name still resolves in-tree, sourced directly" "in-tree make test" "$A_OUT"
 
 # --- AC(b): explicit path resolves (both forms) -----------------------------
-B1_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/good.sh" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
+B1_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/good.sh" bash -c 'source bin/lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
 assert_eq "AC(b): FWF_PROFILE_PATH resolves out-of-tree" "explicit /some/repo" "$B1_OUT"
-B2_OUT="$(cd "$ROOT" && FWF_PROFILE="$P188/good.sh" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
+B2_OUT="$(cd "$ROOT" && FWF_PROFILE="$P188/good.sh" bash -c 'source bin/lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $FWF_REPO"')"
 assert_eq "AC(b): a path-shaped FWF_PROFILE resolves the same way" "explicit /some/repo" "$B2_OUT"
 
 # --- AC(c): explicit path missing fails loudly, never falls to auto-detect --
-C_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/does-not-exist.sh" FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh' 2>&1)"; C_RC=$?
+C_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_PROFILE_PATH="$P188/does-not-exist.sh" FWF_REPO="$P188/fixture-repo" bash -c 'source bin/lib.sh' 2>&1)"; C_RC=$?
 assert_contains "AC(c): missing explicit path fails with the pre-existing error quality" "$C_OUT" "fwf: unknown profile 'whatever' (missing $P188/does-not-exist.sh)"
 assert_nonzero_rc "AC(c): missing explicit path is a hard failure (non-zero exit)" "$C_RC"
 assert_not_contains "AC(c): does NOT fall through to auto-detection despite a matching .fwf/whatever.sh existing" "$C_OUT" "auto-detected"
 
 # --- AC(d): auto-detect fires only where fwf would already have errored -----
-D_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
+D_OUT="$(cd "$ROOT" && FWF_PROFILE=whatever FWF_REPO="$P188/fixture-repo" bash -c 'source bin/lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
 assert_eq "AC(d): bare name + no in-tree file + repo file present -> auto-detected" "auto-detected $P188/fixture-repo/.fwf/whatever.sh" "$D_OUT"
 cp "$P188/good.sh" "$P188/fixture-repo/.fwf/example.sh"
-COLL_OUT="$(cd "$ROOT" && FWF_PROFILE=example FWF_REPO="$P188/fixture-repo" bash -c 'source lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
+COLL_OUT="$(cd "$ROOT" && FWF_PROFILE=example FWF_REPO="$P188/fixture-repo" bash -c 'source bin/lib.sh; echo "$FWF_PROFILE_RESOLUTION_MODE $PROFILE_FILE"')"
 assert_eq "AC(d): collision (both exist) -- in-tree wins deterministically" "in-tree $ROOT/profiles/example.sh" "$COLL_OUT"
 
 # --- AC(e): a redefined builtin/helper never reaches the parent -------------
 E_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/func_hijack.sh" bash -c '
   before="$(type printf)"
-  source lib.sh
+  source bin/lib.sh
   after="$(type printf)"
   [ "$before" = "$after" ] && echo UNCHANGED || echo HIJACKED
 ')"
@@ -13847,7 +13849,7 @@ assert_eq "AC(e): a profile function redefinition has no effect on the calling p
 # lib.sh defaults FWF_ISSUES to 'gh' AFTER profile resolution (line ~112)
 # whether or not anything set it -- so the discriminating check is that the
 # forged 'local' value never took, not that the var stayed unset.
-F0_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/forge.sh" bash -c 'source lib.sh; echo "$FWF_ISSUES"')"
+F0_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/forge.sh" bash -c 'source bin/lib.sh; echo "$FWF_ISSUES"')"
 assert_eq "AC(f0): bytes a profile writes to its own fd never reach the import channel (falls back to the real default, not the forged 'local')" "gh" "$F0_OUT"
 
 # --- AC(f1): profiles are data, not code -------------------------------------
@@ -13858,26 +13860,26 @@ EX_FUNCS="$(grep -vE '^[[:space:]]*#' "$ROOT/profiles/example.sh" | grep -c '() 
 assert_eq "AC(f1): the tracked example profile defines no LIVE functions (comments don't count)" "0" "$EX_FUNCS"
 
 # --- AC(f): denylisted keys are refused outright, not silently dropped ------
-F_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/deny.sh" bash -c 'source lib.sh' 2>&1)"; F_RC=$?
+F_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/deny.sh" bash -c 'source bin/lib.sh' 2>&1)"; F_RC=$?
 assert_contains "AC(f): a profile setting a denylisted name fails loudly" "$F_OUT" "denylisted name FWF_ISSUES"
 assert_nonzero_rc "AC(f): denylist violation is a hard failure" "$F_RC"
 # fwf authz's verdict: a hostile out-of-tree profile can never even reach a
 # verdict computation -- the whole invocation fails closed before that point,
 # which is a strictly stronger guarantee than "the verdict is unchanged".
 AZ188RUN="$TMP/az188run"
-AZ188_OUT="$(FWF_RUN_DIR="$AZ188RUN" FWF_ISSUES=local FWF_PROFILE_PATH="$P188/deny.sh" "$ROOT/fwf-authz.sh" 1 2>&1)"; AZ188_RC=$?
+AZ188_OUT="$(FWF_RUN_DIR="$AZ188RUN" FWF_ISSUES=local FWF_PROFILE_PATH="$P188/deny.sh" "$ROOT/bin/fwf-authz.sh" 1 2>&1)"; AZ188_RC=$?
 assert_not_contains "AC(f): fwf authz never reaches/reports AUTHORIZED behind a hostile profile" "$AZ188_OUT" "AUTHORIZED"
 assert_nonzero_rc "AC(f): fwf authz fails closed (non-zero) rather than proceeding" "$AZ188_RC"
 
 # --- AC(g): source-site ordering (the #30/#31 pin) is unmoved ---------------
-G1_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" bash -c 'source lib.sh; echo "$FWF_TEMPLATE"')"
+G1_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" bash -c 'source bin/lib.sh; echo "$FWF_TEMPLATE"')"
 assert_eq "AC(g): FWF_TEMPLATE persistence via \${FWF_TEMPLATE:-default} still works out-of-tree" "ideation" "$G1_OUT"
-G2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" FWF_TEMPLATE=dev bash -c 'source lib.sh; echo "$FWF_TEMPLATE"')"
+G2_OUT="$(cd "$ROOT" && FWF_PROFILE_PATH="$P188/tmpl.sh" FWF_TEMPLATE=dev bash -c 'source bin/lib.sh; echo "$FWF_TEMPLATE"')"
 assert_eq "AC(g): explicit env still wins over the profile's own default" "dev" "$G2_OUT"
 
 # --- timeout: a hung profile fails the invocation, never wedges it ----------
 H_START=$(date +%s)
-H_OUT="$(cd "$ROOT" && FWF_PROFILE_EVAL_TIMEOUT_SECS=2 FWF_PROFILE_PATH="$P188/hang.sh" bash -c 'source lib.sh' 2>&1)"; H_RC=$?
+H_OUT="$(cd "$ROOT" && FWF_PROFILE_EVAL_TIMEOUT_SECS=2 FWF_PROFILE_PATH="$P188/hang.sh" bash -c 'source bin/lib.sh' 2>&1)"; H_RC=$?
 H_ELAPSED=$(( $(date +%s) - H_START ))
 assert_contains "timeout: a hung profile fails loudly naming the timeout" "$H_OUT" "timed out after 2s"
 assert_nonzero_rc "timeout: a hung profile is a hard failure, not a silent hang" "$H_RC"
@@ -13910,15 +13912,15 @@ I188_RUN="$TMP/p188-isolation-run"   # the realistic default: no FWF_RUN_DIR ove
 # fwf_gate_tip_marker_path resolves to the SAME path for both, because
 # FWF_STATE_DIR="$FWF_RUN/state/$PROFILE" (lib.sh) keys on the profile NAME
 # only, never on $FWF_REPO.
-I188_PATH_A="$(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_marker_path impl1')"
-I188_PATH_B="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_marker_path impl1')"
+I188_PATH_A="$(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source bin/lib.sh; fwf_gate_tip_marker_path impl1')"
+I188_PATH_B="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source bin/lib.sh; fwf_gate_tip_marker_path impl1')"
 assert_eq "AC(i) KNOWN GAP (pinned, not desired): two different repos sharing a profile NAME resolve the SAME gate-tip state path" \
   "$I188_PATH_A" "$I188_PATH_B"
 
 # The consequence, end to end: repo A's gate tip becomes readable as repo
 # B's own verified tip via the real `fwf gate-tip` CLI -- a genuine
 # cross-repo false green, not a synthetic path comparison.
-(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source lib.sh; fwf_gate_tip_record impl1 sha-from-repoA GREEN')
+(cd "$ROOT" && FWF_REPO="$I188/repoA" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" bash -c 'source bin/lib.sh; fwf_gate_tip_record impl1 sha-from-repoA GREEN')
 I188_READBACK="$(cd "$ROOT" && FWF_REPO="$I188/repoB" FWF_PROFILE=laptop FWF_RUN_DIR="$I188_RUN" ./fwf-gate-tip.sh impl1 2>&1)"
 assert_eq "AC(i) KNOWN GAP: repo B's 'fwf gate-tip' reads repo A's SHA as its own verified tip (the exact cross-repo false-green #237 SS5 warns about)" \
   "sha-from-repoA" "$I188_READBACK"
@@ -13932,7 +13934,7 @@ gts_setup() { # $1=label -> a throwaway local repo, 'main' at one commit -> $GTS
     && git config user.email t@t.co && git config user.name t \
     && echo base > README.md && git add -A && git commit -qm base )
 }
-gts_run() { ( cd "$GTS_DIR" && FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; $1" ); }
+gts_run() { ( cd "$GTS_DIR" && FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; $1" ); }
 gts_touch() { echo "${RANDOM}${RANDOM}" >> "$1"; } # $1=path, creates parent dirs first if needed
 
 # --- SKIP: every changed file matches a --safe glob -----------------------
@@ -13981,7 +13983,7 @@ assert_contains "unresolvable base reason is fail-safe" "$DEC" "fail-safe"
 gts_setup cli-skip
 ( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
 GTS_LOG="$TMP/gts-cli-skip-run/shadow.log"
-CLIOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-skip-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --log "$GTS_LOG")"
+CLIOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-skip-run" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --log "$GTS_LOG")"
 assert_contains "CLI: loud WOULD SKIP line"          "$CLIOUT" "Rust suite WOULD SKIP"
 assert_contains "CLI: shadow log records SKIP"       "$(cat "$GTS_LOG")" "decision=SKIP"
 assert_contains "CLI: shadow log records the target" "$(cat "$GTS_LOG")" "against=main"
@@ -13989,19 +13991,19 @@ assert_contains "CLI: shadow log records the target" "$(cat "$GTS_LOG")" "agains
 gts_setup cli-run
 ( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash && gts_touch dash/x.rs && git add -A && git commit -qm "rust" )
 GTS_LOG2="$TMP/gts-cli-run-run/shadow.log"
-CLIOUT2="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --log "$GTS_LOG2" --full-suite-secs 42)"
+CLIOUT2="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --log "$GTS_LOG2" --full-suite-secs 42)"
 assert_contains "CLI: loud WOULD RUN line"                "$CLIOUT2" "Rust suite WOULD RUN"
 assert_contains "CLI: shadow log records RUN"             "$(cat "$GTS_LOG2")" "decision=RUN"
 assert_contains "CLI: shadow log records the measured wall-clock" "$(cat "$GTS_LOG2")" "full_suite_secs=42"
 
 # --- CLI wrapper: ALWAYS exits 0 -- it observes, never gates ---------------
-rc=0; (cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run2" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' >/dev/null 2>&1) || rc=$?
+rc=0; (cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-cli-run-run2" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' >/dev/null 2>&1) || rc=$?
 assert_eq "CLI: exits 0 even on a RUN verdict (shadow never gates)" "0" "$rc"
 
 # --- Kill switch: FWF_GATE_FULL=1 forces RUN regardless of an otherwise-SKIP-eligible diff ---
 gts_setup killswitch
 ( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only, would normally SKIP" )
-KSOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_GATE_FULL=1 FWF_RUN_DIR="$TMP/gts-ks-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
+KSOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_GATE_FULL=1 FWF_RUN_DIR="$TMP/gts-ks-run" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
 assert_contains "FWF_GATE_FULL=1 forces WOULD RUN even on a docs-only diff" "$KSOUT" "Rust suite WOULD RUN"
 assert_contains "FWF_GATE_FULL=1 names itself as the reason"                "$KSOUT" "FWF_GATE_FULL=1"
 
@@ -14019,7 +14021,7 @@ gts_setup wired
 GTS_WIRE_RUN="$TMP/gts-wired-run"; GTS_WIRE_LOG="$GTS_WIRE_RUN/shadow.log"
 GTS_WIRE_GATE_CMD="\"$ROOT/fwf\" gate-rust-scope --against main --safe \"docs/*\" --safe \"*.md\" --log \"$GTS_WIRE_LOG\" || true
 echo stub-rust-suite-ran"
-WIREOUT="$(cd "$GTS_DIR" && FWF_RUN_DIR="$GTS_WIRE_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" gtswire -- bash -c "$GTS_WIRE_GATE_CMD" 2>&1)"
+WIREOUT="$(cd "$GTS_DIR" && FWF_RUN_DIR="$GTS_WIRE_RUN" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" gtswire -- bash -c "$GTS_WIRE_GATE_CMD" 2>&1)"
 assert_contains "AC(261 a1): a REAL 'fwf gate' run still runs the wrapped Rust suite (shadow mode -- verdict never withholds it)" "$WIREOUT" "stub-rust-suite-ran"
 assert_contains "AC(261 a0): ...and that real gate run appends a shadow-log entry (not the classifier called by path)" "$(cat "$GTS_WIRE_LOG" 2>/dev/null)" "decision=SKIP"
 
@@ -14048,13 +14050,13 @@ section "gate-rust-scope --suite-name (issue #352): CLI reused for a second, non
 # --- default text is UNCHANGED (backward compat with #261's existing wiring)
 gts_setup suite-name-default
 ( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
-SNDEFOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-sndef-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
+SNDEFOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-sndef-run" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md')"
 assert_contains "no --suite-name given -> default 'Rust suite' wording, unchanged" "$SNDEFOUT" "Rust suite WOULD SKIP"
 
 # --- --suite-name customizes the echoed line, for a suite that is not Rust --
 gts_setup suite-name-custom
 ( cd "$GTS_DIR" && git checkout -qb feature && gts_touch README.md && git add -A && git commit -qm "docs only" )
-SNOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-sn-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --suite-name "bash test/run.sh")"
+SNOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-sn-run" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --safe '*.md' --suite-name "bash test/run.sh")"
 assert_contains "--suite-name replaces the wrapped-suite name in the WOULD SKIP line" "$SNOUT" "bash test/run.sh WOULD SKIP"
 case "$SNOUT" in
   *"Rust suite"*) bad "--suite-name fully replaces 'Rust suite', no stale fallback text" ;;
@@ -14063,7 +14065,7 @@ esac
 
 gts_setup suite-name-custom-run
 ( cd "$GTS_DIR" && git checkout -qb feature && mkdir -p dash && gts_touch dash/x.rs && git add -A && git commit -qm "rust" )
-SNRUNOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-snrun-run" "$ROOT/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --suite-name "bash test/run.sh")"
+SNRUNOUT="$(cd "$GTS_DIR" && FWF_PROFILE=example FWF_RUN_DIR="$TMP/gts-snrun-run" "$ROOT/bin/fwf-gate-rust-scope.sh" --against main --safe 'docs/*' --suite-name "bash test/run.sh")"
 assert_contains "--suite-name also replaces the name in the WOULD RUN line" "$SNRUNOUT" "bash test/run.sh WOULD RUN"
 
 # --- issue #352: a SECOND, in-repo call site -- this repo's own ci.yml
@@ -14208,7 +14210,7 @@ assert_contains "the reservation is 4 GiB, derived from the measured 3212 MB pea
 # shared production one.
 F480_POOL="$TMP/f480-mem-admit"; mkdir -p "$F480_POOL"
 F480_OUT="$(FWF_RUN_DIR="$F480_POOL" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   mkdir -p "$MEM_ADMIT"
   printf "reserved_gb=NOTANUMBER\n" > "$MEM_ADMIT/res-f480-bad"
   printf "reserved_gb=7\n"          > "$MEM_ADMIT/res-f480-good"
@@ -14226,7 +14228,7 @@ assert_contains "AC7: ...and it names itself as a candidate for 'reserved 0GiB'"
 # Anti-vacuity: a well-formed store must stay quiet, or the diagnostic above
 # would pass by shouting on every read.
 F480_QUIET="$(FWF_RUN_DIR="$F480_POOL" FWF_PROFILE=example bash -c '
-  source "'"$ROOT"'/lib.sh"
+  source "'"$ROOT"'/bin/lib.sh"
   rm -f "$MEM_ADMIT"/res-f480-bad
   _fwf_mem_admit_reserved_sum >/dev/null
 ' 2>&1)"
@@ -14258,7 +14260,7 @@ if command -v shellcheck >/dev/null 2>&1; then
   # than block a whole gate cycle behind cargo-build-scale patience.
   SC_TOKEN="$(FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT="${FWF_MEM_ADMIT_TIMEOUT_SHELLCHECK:-120}" \
     FWF_MEM_ADMIT_FLOOR_GB="${FWF_MEM_ADMIT_FLOOR_GB_SHELLCHECK:-1}" FWF_MEM_ADMIT_POLL=3 \
-    bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-$$' '${FWF_MEM_RESERVE_SHELLCHECK_GB:-4}'")"
+    bash -c "source '$ROOT/bin/lib.sh'; fwf_mem_admit 'shellcheck-$$' '${FWF_MEM_RESERVE_SHELLCHECK_GB:-4}'")"
   SC_RC=$?
   if [ "$SC_RC" != 0 ]; then
     skip "shellcheck (RAM admission timed out under concurrent box load -- issue #418; not a code finding)"
@@ -14305,7 +14307,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     # reflects BOTH calls -- a clean sixty must never be reported as a clean
     # lint when test/run.sh did not survive its own call.
     _sc480_dispatch "$_SC480_SHIPPED_RC" "$_SC480_SELF_RC" "$_SC480_SECS"
-    FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_mem_admit_release '$SC_TOKEN'"
+    FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_mem_admit_release '$SC_TOKEN'"
   fi
 else
   skip "shellcheck (not installed)"
@@ -14325,14 +14327,14 @@ assert_contains "and releases its token afterward" "$RUN_SRC" "fwf_mem_admit_rel
 
 F418_RUN="$TMP/f418-run"; mkdir -p "$F418_RUN"
 F418_TOKEN="$(FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT=5 FWF_MEM_ADMIT_FLOOR_GB=1 FWF_MEM_ADMIT_POLL=1 \
-  FWF_FREE_RAM_GB_OVERRIDE=20 bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-f418' '3'")"; F418_RC=$?
+  FWF_FREE_RAM_GB_OVERRIDE=20 bash -c "source '$ROOT/bin/lib.sh'; fwf_mem_admit 'shellcheck-f418' '3'")"; F418_RC=$?
 assert_eq "the exact call shape used admits when RAM is ample (pinned 20GiB, need 3+1)" "0" "$F418_RC"
 assert_eq "admission returned a usable token" "false" "$([ -z "$F418_TOKEN" ] && echo true || echo false)"
-FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_mem_admit_release '$F418_TOKEN'"
+FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_mem_admit_release '$F418_TOKEN'"
 
 F418_RC2=0
 FWF_RUN_DIR="$F418_RUN" FWF_PROFILE=example FWF_MEM_ADMIT_TIMEOUT=2 FWF_MEM_ADMIT_FLOOR_GB=1 FWF_MEM_ADMIT_POLL=1 \
-  FWF_FREE_RAM_GB_OVERRIDE=2 bash -c "source '$ROOT/lib.sh'; fwf_mem_admit 'shellcheck-f418-b' '3'" >/dev/null 2>&1 || F418_RC2=$?
+  FWF_FREE_RAM_GB_OVERRIDE=2 bash -c "source '$ROOT/bin/lib.sh'; fwf_mem_admit 'shellcheck-f418-b' '3'" >/dev/null 2>&1 || F418_RC2=$?
 assert_eq "correctly refuses (never admitted) when pinned RAM genuinely can't meet reserve+floor" "1" "$F418_RC2"
 
 # --------------------------------------------------------------------------
@@ -14358,7 +14360,7 @@ chmod +x "$TMP/f175-probe.sh"
 
 # (a) caller with a CLEAN env -> wrapped command must see nothing set.
 env -u FWF_REPO -u FWF_PROFILE -u FWF_PAIRS FWF_RUN_DIR="$F175RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f175a -- "$TMP/f175-probe.sh" > "$F175REPORT" 2>/dev/null
+    "$ROOT/bin/fwf-gate.sh" f175a -- "$TMP/f175-probe.sh" > "$F175REPORT" 2>/dev/null
 assert_contains "clean caller: no FWF_PROFILE leaks to wrapped cmd" "$(cat "$F175REPORT")" "PROFILE=<unset>"
 assert_contains "clean caller: no FWF_PAIRS leaks to wrapped cmd"   "$(cat "$F175REPORT")" "PAIRS=<unset>"
 assert_contains "clean caller: no FWF_REPO leaks to wrapped cmd"    "$(cat "$F175REPORT")" "REPO=<unset>"
@@ -14370,7 +14372,7 @@ assert_contains "clean caller: no FWF_REPO leaks to wrapped cmd"    "$(cat "$F17
 #     it exit before ever reaching the wrapped command (correct behaviour, but
 #     it tests nothing). `example` is the tracked profile every checkout has.
 env FWF_PROFILE=example FWF_PAIRS=7 FWF_REPO="$ROOT" FWF_RUN_DIR="$F175RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f175b -- "$TMP/f175-probe.sh" > "$F175REPORT" 2>/dev/null
+    "$ROOT/bin/fwf-gate.sh" f175b -- "$TMP/f175-probe.sh" > "$F175REPORT" 2>/dev/null
 assert_contains "caller's own FWF_PROFILE is preserved" "$(cat "$F175REPORT")" "PROFILE=example"
 assert_contains "caller's own FWF_PAIRS is preserved"   "$(cat "$F175REPORT")" "PAIRS=7"
 assert_contains "caller's own FWF_REPO is preserved"    "$(cat "$F175REPORT")" "REPO=$ROOT"
@@ -14389,28 +14391,28 @@ f426_tick() { cat "$F426RUN/state/example/tick/$1" 2>/dev/null || echo 0; }
 # (a) a normal, successful gate run bumps the tick.
 assert_eq "AC(a): no tick recorded yet" "0" "$(f426_tick f426a)"
 FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f426a -- bash -c 'echo hi' >/dev/null 2>&1
+    "$ROOT/bin/fwf-gate.sh" f426a -- bash -c 'echo hi' >/dev/null 2>&1
 assert_eq "AC(a): a completed gate run bumps the tick counter" "1" "$(f426_tick f426a)"
 
 # (b) a SKIPPED run (unchanged --tip-cmd) ALSO bumps the tick -- an attempt
 # is real activity even when the gate itself decides there's nothing to do.
 FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f426b --tip-cmd 'echo sametip' -- bash -c 'echo hi' >/dev/null 2>&1
+    "$ROOT/bin/fwf-gate.sh" f426b --tip-cmd 'echo sametip' -- bash -c 'echo hi' >/dev/null 2>&1
 assert_eq "AC(b): first run (real work) bumps the tick" "1" "$(f426_tick f426b)"
 F426B_RC=0
 FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f426b --tip-cmd 'echo sametip' -- bash -c 'echo hi' >/dev/null 2>&1 || F426B_RC=$?
+    "$ROOT/bin/fwf-gate.sh" f426b --tip-cmd 'echo sametip' -- bash -c 'echo hi' >/dev/null 2>&1 || F426B_RC=$?
 assert_eq "AC(b): the second (unchanged-tip) run is genuinely SKIPPED" "75" "$F426B_RC"
 assert_eq "AC(b): ...but STILL bumps the tick -- a skip is still a live attempt" "2" "$(f426_tick f426b)"
 
 # (c) a run that SKIPS because this role's own prior gate is still in
 # flight ALSO bumps the tick -- same reasoning as (b).
-mkdir -p "$(FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_lock_dir f426c")"
+mkdir -p "$(FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_lock_dir f426c")"
 printf 'role=f426c\npid=%s\nhost=%s\nacquired=%s\n' "$$" "$(hostname)" "$(date +%s)" \
-  > "$(FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_lock_dir f426c")/owner"
+  > "$(FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_lock_dir f426c")/owner"
 F426C_RC=0
 FWF_PROFILE=example FWF_RUN_DIR="$F426RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f426c -- bash -c 'echo hi' >/dev/null 2>&1 || F426C_RC=$?
+    "$ROOT/bin/fwf-gate.sh" f426c -- bash -c 'echo hi' >/dev/null 2>&1 || F426C_RC=$?
 assert_eq "AC(c): a busy-own-lock run is genuinely SKIPPED" "75" "$F426C_RC"
 assert_eq "AC(c): ...but STILL bumps the tick" "1" "$(f426_tick f426c)"
 
@@ -14430,7 +14432,7 @@ F426_RO="$TMP/run426-ro"; mkdir -p "$F426_RO/state/example/tick" "$F426_RO/state
 chmod 555 "$F426_RO/state/example/tick" "$F426_RO/state/example/heartbeat" 2>/dev/null
 F426E_RC=0
 F426E_OUT="$(FWF_PROFILE=example FWF_RUN_DIR="$F426_RO" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f426e -- bash -c 'echo ran-anyway; exit 7' 2>&1)" || F426E_RC=$?
+    "$ROOT/bin/fwf-gate.sh" f426e -- bash -c 'echo ran-anyway; exit 7' 2>&1)" || F426E_RC=$?
 chmod 755 "$F426_RO/state/example/tick" "$F426_RO/state/example/heartbeat" 2>/dev/null
 assert_contains "AC(e): the wrapped command still runs even if the tick-bump write can't" "$F426E_OUT" "ran-anyway"
 assert_eq "AC(e): the wrapped command's own exit code still propagates" "7" "$F426E_RC"
@@ -14475,21 +14477,21 @@ F268PATH="$F268STUB:$PATH"
 #     sccache configured, even though it IS installed and would otherwise
 #     auto-configure (this is the exact repro from #268).
 env -u RUSTC_WRAPPER -u SCCACHE_DIR PATH="$F268PATH" FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f268a -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+    "$ROOT/bin/fwf-gate.sh" f268a -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
 assert_contains "no --cargo-build: RUSTC_WRAPPER not configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=<unset>"
 assert_contains "no --cargo-build: SCCACHE_DIR not configured for wrapped cmd"   "$(cat "$F268REPORT")" "SCCACHE_DIR=<unset>"
 
 # (b) --cargo-build IS passed: the wrapped command still gets sccache, since
 #     it is actually going to build cargo -- the speed-up #138 piece A intends.
 env -u RUSTC_WRAPPER -u SCCACHE_DIR PATH="$F268PATH" FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f268b --cargo-build -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+    "$ROOT/bin/fwf-gate.sh" f268b --cargo-build -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
 assert_contains "--cargo-build: RUSTC_WRAPPER IS configured for wrapped cmd" "$(cat "$F268REPORT")" "WRAPPER=sccache"
 
 # (c) a caller's own explicit RUSTC_WRAPPER survives regardless of --cargo-build
 #     -- no --cargo-build never touches it, and #138's own no-override rule
 #     covers the --cargo-build path.
 env RUSTC_WRAPPER=caller-wrapper FWF_RUN_DIR="$F268RUN" FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f268c -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
+    "$ROOT/bin/fwf-gate.sh" f268c -- "$TMP/f268-probe.sh" > "$F268REPORT" 2>/dev/null
 assert_contains "caller's own RUSTC_WRAPPER survives with no --cargo-build" "$(cat "$F268REPORT")" "WRAPPER=caller-wrapper"
 
 # --------------------------------------------------------------------------
@@ -14632,7 +14634,7 @@ rec_fork staging "$(rec_sha staging)"
 GUARD_DIR="$TMP/rec179-guard"; guard_stub "$GUARD_DIR"
 guard_run() {
   FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_GH="$GUARD_DIR/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1
+  FWF_GH="$GUARD_DIR/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch staging 2>&1
 }
 rc=0; OUT="$(guard_run)" || rc=$?
 assert_eq       "AC3: divergence -> guard exits non-zero (the check goes red)" "1" "$rc"
@@ -14656,7 +14658,7 @@ GUARD_CLEAN="$TMP/rec179-guard-clean"; guard_stub "$GUARD_CLEAN"
 printf 'OPEN\n' > "$GUARD_CLEAN/issues.json"    # pretend an artifact is already open
 guard_run_clean() {
   FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_GH="$GUARD_CLEAN/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1
+  FWF_GH="$GUARD_CLEAN/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch staging 2>&1
 }
 rc=0; OUT3="$(guard_run_clean)" || rc=$?
 GH_LOG="$GUARD_CLEAN/calls.log"
@@ -14737,7 +14739,7 @@ assert_contains "the Actions-unavailable fallback cites the Verify step by its h
 # and must be RETAINED, not deleted along with the fix. Asserted directly
 # against the source, not re-derived from a fixture (that message is already
 # exercised end-to-end by #179's own AC2 test above and by AC(b) here).
-LIB_SRC="$(cat "$ROOT/lib.sh")"
+LIB_SRC="$(cat "$ROOT/bin/lib.sh")"
 assert_contains "AC(d): check-diverged's message is retained verbatim" "$LIB_SRC" \
   "a genuine DIVERGED needs a human decision, NOT a rerun"
 
@@ -14972,7 +14974,7 @@ CL_DIR="$TMP/rec238-indeterminate"
 CL_STUB="$(guard_reconcile_stub "$CL_DIR" "cas-lost staging (ref moved under us, re-check next tick)" 2)"
 CL_GH="$TMP/rec238-indeterminate-gh"; guard_stub "$CL_GH"
 rc=0; CL_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$CL_STUB" FWF_GH="$CL_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1)" || rc=$?
+  FWF_RECONCILE_SCRIPT="$CL_STUB" FWF_GH="$CL_GH/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch staging 2>&1)" || rc=$?
 GH_LOG="$CL_GH/calls.log"
 assert_eq       "AC1: indeterminate alone -> guard exits its OWN code (2), never 0" "2" "$rc"
 assert_contains "AC1: guard reports it, does not file" "$CL_OUT" "indeterminate"
@@ -14992,7 +14994,7 @@ CL2_STUB="$(guard_reconcile_stub "$CL2_DIR" "cas-lost integration (ref moved und
 CL2_GH="$TMP/rec238-indeterminate-existing-gh"; guard_stub "$CL2_GH"
 printf 'OPEN\n' > "$CL2_GH/issues.json"   # a real divergence artifact is already open
 rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$CL2_STUB" FWF_GH="$CL2_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch integration >/dev/null 2>&1 || rc=$?
+  FWF_RECONCILE_SCRIPT="$CL2_STUB" FWF_GH="$CL2_GH/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch integration >/dev/null 2>&1 || rc=$?
 GH_LOG="$CL2_GH/calls.log"
 assert_eq       "AC3: indeterminate with an existing artifact still exits 2" "2" "$rc"
 assert_eq       "AC3: indeterminate does NOT close the existing artifact" "0" "$(gh_calls 'issue close')"
@@ -15012,7 +15014,7 @@ LB_STUB="$(guard_reconcile_stub "$LB_DIR" "lock-busy staging (another reconcile 
 LB_GH="$TMP/rec238-lockbusy-guard-gh"; guard_stub "$LB_GH"
 printf 'OPEN\n' > "$LB_GH/issues.json"   # a real divergence artifact is already open
 rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$LB_STUB" FWF_GH="$LB_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" --branch staging >/dev/null 2>&1 || rc=$?
+  FWF_RECONCILE_SCRIPT="$LB_STUB" FWF_GH="$LB_GH/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch staging >/dev/null 2>&1 || rc=$?
 GH_LOG="$LB_GH/calls.log"
 assert_eq "AC5: lock-busy alone must NOT close an existing (real) divergence artifact" "0" "$(gh_calls 'issue close')"
 
@@ -15021,7 +15023,7 @@ MIX_DIR="$TMP/rec238-mixed"
 MIX_STUB="$(guard_reconcile_stub "$MIX_DIR" "halted-diverged staging abc1234 def5678" 1)"
 MIX_GH="$TMP/rec238-mixed-gh"; guard_stub "$MIX_GH"
 rc=0; MIX_OUT="$(FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$MIX_STUB" FWF_GH="$MIX_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
+  FWF_RECONCILE_SCRIPT="$MIX_STUB" FWF_GH="$MIX_GH/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" 2>&1)" || rc=$?
 GH_LOG="$MIX_GH/calls.log"
 assert_eq       "AC2: a genuine divergence still escalates (rc 1, unchanged)" "1" "$rc"
 assert_eq       "AC2: an artifact is still filed for the real divergence" "1" "$(gh_calls 'issue create')"
@@ -15039,7 +15041,7 @@ AC6_IND_STUB="$(guard_reconcile_stub "$AC6_IND_DIR" "totally-opaque-message-ment
 AC6_IND_GH="$TMP/rec238-ac6-indeterminate-gh"; guard_stub "$AC6_IND_GH"
 printf 'OPEN\n' > "$AC6_IND_GH/issues.json"
 rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$AC6_IND_STUB" FWF_GH="$AC6_IND_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
+  FWF_RECONCILE_SCRIPT="$AC6_IND_STUB" FWF_GH="$AC6_IND_GH/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
 GH_LOG="$AC6_IND_GH/calls.log"
 assert_eq "AC6: exit code 2 alone (unrecognizable text) still means indeterminate -- no close" "0" "$(gh_calls 'issue close')"
 
@@ -15047,7 +15049,7 @@ AC6_ESC_DIR="$TMP/rec238-ac6-escalate"
 AC6_ESC_STUB="$(guard_reconcile_stub "$AC6_ESC_DIR" "totally-opaque-message-mentioning-nothing-recognizable" 1)"
 AC6_ESC_GH="$TMP/rec238-ac6-escalate-gh"; guard_stub "$AC6_ESC_GH"
 rc=0; FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
-  FWF_RECONCILE_SCRIPT="$AC6_ESC_STUB" FWF_GH="$AC6_ESC_GH/gh" bash "$ROOT/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
+  FWF_RECONCILE_SCRIPT="$AC6_ESC_STUB" FWF_GH="$AC6_ESC_GH/gh" bash "$ROOT/bin/fwf-reconcile-guard.sh" >/dev/null 2>&1 || rc=$?
 GH_LOG="$AC6_ESC_GH/calls.log"
 assert_eq "AC6: exit code 1 alone (unrecognizable text) still means escalate -- files" "1" "$(gh_calls 'issue create')"
 
@@ -15075,7 +15077,7 @@ AC258_GH="$TMP/rec258-streak-gh"; guard_stub "$AC258_GH"
 AC258_run() {
   FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
     FWF_RECONCILE_SCRIPT="$AC258_STUB" FWF_GH="$AC258_GH/gh" \
-    bash "$ROOT/fwf-reconcile-guard.sh" --branch staging 2>&1
+    bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch staging 2>&1
 }
 rc=0; AC258_run >/dev/null 2>&1 || rc=$?
 GH_LOG="$AC258_GH/calls.log"
@@ -15113,7 +15115,7 @@ AC258B_GH="$TMP/rec258-streak-failread-gh"; guard_stub "$AC258B_GH"
 AC258B_run() {
   FWF_REPO="$REC_DRIVE" FWF_RUN_DIR="$REC_RUN" FWF_PROFILE=example \
     FWF_RECONCILE_SCRIPT="$AC258B_STUB" FWF_GH="$AC258B_GH/gh" \
-    bash "$ROOT/fwf-reconcile-guard.sh" --branch integration 2>&1
+    bash "$ROOT/bin/fwf-reconcile-guard.sh" --branch integration 2>&1
 }
 rc=0; AC258B_run >/dev/null 2>&1 || rc=$?              # 1/3: streak integration 0 -> 1
 assert_eq "AC(a2): setup run 1/3 is indeterminate" "2" "$rc"
@@ -15161,7 +15163,7 @@ git -C "$F202REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c
 F202SHA1="$(git -C "$F202REPO" rev-parse HEAD)"
 f202gate() { # extra fwf-gate.sh args...
   ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-    "$ROOT/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" "$@" )
+    "$ROOT/bin/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" "$@" )
 }
 
 # first run at a fresh tip: no marker exists yet, so it proceeds and records GREEN
@@ -15183,7 +15185,7 @@ LOCKDIR="$F202RUN/state/example/gate-lock/f202role"
 # (the tip has not moved YET when that check runs) so the wrapped command
 # actually executes and gets the chance to move it out from under the run.
 rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" -- \
+        "$ROOT/bin/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" -- \
         bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "tip moving mid-run reports EX_STALE (76), not green" "76" "$rc"
 F202SHA2="$(git -C "$F202REPO" rev-parse HEAD)"
@@ -15203,15 +15205,15 @@ assert_contains "skip message reports the RED verdict" "$OUT" "last verdict red"
 # FWF_GATE_FORCE=1 is the "explicit resume" escape hatch: it re-runs an
 # otherwise-skippable unchanged tip
 rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" -- true ) >/dev/null 2>&1 || rc=$?
+        "$ROOT/bin/fwf-gate.sh" f202role --tip-cmd "git rev-parse HEAD" -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "FWF_GATE_FORCE=1 bypasses an unchanged-tip skip" "0" "$rc"
 
 # --tip-cmd is fully optional: every existing (no-flag) caller is unaffected
 rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
+        "$ROOT/bin/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "no --tip-cmd: behaves exactly as before" "0" "$rc"
 rc=0; ( cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
+        "$ROOT/bin/fwf-gate.sh" f202plain -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
 
 # --- issue #298: FWF_GATE_FORCE must not leak into anything the wrapped
@@ -15225,15 +15227,15 @@ assert_eq "no --tip-cmd: a second identical run is NOT skipped" "0" "$rc"
 # skip immediately (rc 75); that is the exact behavior FWF_GATE_FORCE
 # leaking into this nested call would defeat.
 NESTED_OUT="$(cd "$F202REPO" && FWF_RUN_DIR="$F202RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-  "$ROOT/fwf-gate.sh" f202outer --tip-cmd "git rev-parse HEAD" -- bash -c \
-  "FWF_RUN_DIR='$F202RUN' FWF_PROFILE=example FWF_MIN_FREE_GB=0 '$ROOT/fwf-gate.sh' f202role --tip-cmd 'git rev-parse HEAD' -- true; echo NESTED_RC=\$?" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" f202outer --tip-cmd "git rev-parse HEAD" -- bash -c \
+  "FWF_RUN_DIR='$F202RUN' FWF_PROFILE=example FWF_MIN_FREE_GB=0 '$ROOT/bin/fwf-gate.sh' f202role --tip-cmd 'git rev-parse HEAD' -- true; echo NESTED_RC=\$?" 2>&1)"
 assert_contains "(#298) the NESTED gate call still skips its own unchanged tip (rc 75) -- FWF_GATE_FORCE did not leak from the outer invocation" \
   "$NESTED_OUT" "NESTED_RC=75"
 case "$NESTED_OUT" in
   *"NESTED_RC=0"*) bad "(#298) regression: FWF_GATE_FORCE leaked into the nested fwf-gate.sh call, forcing it past its own skip" ;;
   *) ;;
 esac
-case "$(cat "$ROOT/fwf-gate.sh")" in
+case "$(cat "$ROOT/bin/fwf-gate.sh")" in
   *"unset FWF_GATE_FORCE"*) ok "(#298) fwf-gate.sh's own source unsets FWF_GATE_FORCE before proceeding" ;;
   *) bad "(#298) fwf-gate.sh's own source unsets FWF_GATE_FORCE before proceeding" ;;
 esac
@@ -15252,7 +15254,7 @@ git -C "$F220REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c
 F220SHA="$(git -C "$F220REPO" rev-parse HEAD)"
 
 rc=0; ( cd "$F220REPO" && FWF_RUN_DIR="$F220RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f220plain -- true ) >/dev/null 2>&1 || rc=$?
+        "$ROOT/bin/fwf-gate.sh" f220plain -- true ) >/dev/null 2>&1 || rc=$?
 assert_eq "AC(r0): a gate run with NO --tip-cmd still exits normally" "0" "$rc"
 F220_VERDICT_FILE="$F220RUN/state/example/gate-verdict/$F220SHA"
 [ -f "$F220_VERDICT_FILE" ] && ok "AC(r0): the SHA-keyed verdict marker exists after a --tip-cmd-less run (costs one ls)" \
@@ -15261,13 +15263,13 @@ assert_contains "the recorded verdict names the role" "$(cat "$F220_VERDICT_FILE
 assert_contains "the recorded verdict is green (wrapped command succeeded)" "$(cat "$F220_VERDICT_FILE" 2>/dev/null)" "verdict=green"
 
 rc=0; ( cd "$F220REPO" && FWF_RUN_DIR="$F220RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f220plainred -- false ) >/dev/null 2>&1 || rc=$?
+        "$ROOT/bin/fwf-gate.sh" f220plainred -- false ) >/dev/null 2>&1 || rc=$?
 assert_eq "a failing wrapped command still exits non-zero" "1" "$rc"
 assert_contains "a RED wrapped command records verdict=red, not silently green" \
   "$(cat "$F220RUN/state/example/gate-verdict/$F220SHA" 2>/dev/null)" "verdict=red"
 
 assert_eq "AC(r0)/discriminating: a SHA nobody has gated yet has NO verdict record -- never attempted is not misread as green" "" \
-  "$(FWF_PROFILE=example FWF_RUN_DIR="$F220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read 0000000000000000000000000000000000dead" 2>/dev/null)"
+  "$(FWF_PROFILE=example FWF_RUN_DIR="$F220RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read 0000000000000000000000000000000000dead" 2>/dev/null)"
 
 section "fwf dash (issue #220 AC r): a recorded verdict is visible through the artifact a reviewer actually reads, not just the local store"
 # The bar qa1 set on PR #296: recording a verdict nobody but the gate itself
@@ -15277,14 +15279,14 @@ section "fwf dash (issue #220 AC r): a recorded verdict is visible through the a
 # regresses (e.g. the set -e bug this PR also fixes silently swallowing the
 # record call), this goes RED without needing to inspect the state dir.
 DD220RUN="$TMP/run220dash"; mkdir -p "$DD220RUN"
-FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_record '$F220SHA' impl1 green"
+FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_record '$F220SHA' impl1 green"
 # issue #447: a hyphenated verdict token (green-lint-skipped) seeded on a
 # THIRD PR here -- the dash's own field-extraction regex used to truncate at
 # the first `-`, so this would have displayed as plain "green", the exact
 # silent-misdirection defect #447 exists to prevent, one layer up from the
 # state-dir record itself.
 DD220_LINTSKIP_SHA="0000000000000000000000000000000000d447"
-FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_record '$DD220_LINTSKIP_SHA' impl1 green-lint-skipped"
+FWF_PROFILE=example FWF_RUN_DIR="$DD220RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_record '$DD220_LINTSKIP_SHA' impl1 green-lint-skipped"
 printf '%s' '[
   {"number":21,"title":"gated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-220-x","headRefOid":"'"$F220SHA"'","statusCheckRollup":[]},
   {"number":22,"title":"ungated","isDraft":true,"baseRefName":"staging","headRefName":"impl1/issue-221-y","headRefOid":"0000000000000000000000000000000000face","statusCheckRollup":[]},
@@ -15325,23 +15327,23 @@ F254SHA1="$(git -C "$F254REPO" rev-parse HEAD)"
 # be USED -- recorded and returned as the wrapped command's own rc, not
 # discarded. This is the case the merged #202 code got wrong.
 rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+        "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
         bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "(a) tip moved but still an ancestor, --tip-ancestry -> verdict USED (rc 0, not 76)" "0" "$rc"
 F254SHA2="$(git -C "$F254REPO" rev-parse HEAD)"
 [ "$F254SHA2" != "$F254SHA1" ] || bad "the fixture actually moved the tip" "still at $F254SHA1"
 OUT="$(cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-       "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+       "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
        bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2b; false' 2>&1)"
 assert_contains "(a) says the verdict stands and names 'literal hash'" "$OUT" "verdict stands"
 # fwf-gate-tip (issue #254 AC d/e): the RECORDED tip is readable back, by
 # LITERAL hash -- this is what a caller promotes, never a re-resolved ref.
-F254RECORDED="$(FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example "$ROOT/fwf-gate-tip.sh" f254role 2>/dev/null)"
+F254RECORDED="$(FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example "$ROOT/bin/fwf-gate-tip.sh" f254role 2>/dev/null)"
 assert_eq "(a) fwf gate-tip reads back the recorded (pre-move) tip, by literal hash" "$F254SHA2" "$F254RECORDED"
 
 # a RED verdict on the ancestor case is ALSO used (not silently upgraded/discarded).
 rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+        "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
         bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2c; false' ) >/dev/null 2>&1 || rc=$?
 assert_eq "(a) a RED verdict on the ancestor case is used too (rc 1, not 76)" "1" "$rc"
 
@@ -15351,11 +15353,11 @@ assert_eq "(a) a RED verdict on the ancestor case is used too (rc 1, not 76)" "1
 # (a) would pass trivially by removing the check altogether.
 F254SHA_BEFORE_REWRITE="$(git -C "$F254REPO" rev-parse HEAD)"
 rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+        "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
         bash -c 'git reset -q --hard HEAD~1; git -c user.email=t@t -c user.name=t commit -q --allow-empty -m rewritten; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "(b) history rewritten (not an ancestor), --tip-ancestry -> still STALE (76)" "76" "$rc"
 OUT="$(cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-       "$ROOT/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
+       "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "git rev-parse HEAD" --tip-ancestry -- \
        bash -c 'git reset -q --hard HEAD~1; git -c user.email=t@t -c user.name=t commit -q --allow-empty -m rewritten2; true' 2>&1)"
 assert_contains "(b) message names it a history rewrite (NOT an ancestor)" "$OUT" "NOT an ancestor"
 [ "$(git -C "$F254REPO" rev-parse HEAD)" != "$F254SHA_BEFORE_REWRITE" ] || bad "the fixture actually rewrote history"
@@ -15370,12 +15372,12 @@ assert_contains "(b) message names it a history rewrite (NOT an ancestor)" "$OUT
 # objects"), not a hypothetical.
 F254TIPFILE="$TMP/f254-tipfile"; printf 'not-a-real-commit-1' > "$F254TIPFILE"
 rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f254role --tip-cmd "cat '$F254TIPFILE'" --tip-ancestry -- \
+        "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "cat '$F254TIPFILE'" --tip-ancestry -- \
         bash -c "printf 'not-a-real-commit-2' > '$F254TIPFILE'; true" ) >/dev/null 2>&1 || rc=$?
 assert_eq "ancestry indeterminate (neither value is a real commit) -> also STALE (76), fail-closed" "76" "$rc"
 printf 'not-a-real-commit-1' > "$F254TIPFILE"
 OUT="$(cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-       "$ROOT/fwf-gate.sh" f254role --tip-cmd "cat '$F254TIPFILE'" --tip-ancestry -- \
+       "$ROOT/bin/fwf-gate.sh" f254role --tip-cmd "cat '$F254TIPFILE'" --tip-ancestry -- \
        bash -c "printf 'not-a-real-commit-2' > '$F254TIPFILE'; true" 2>&1)"
 assert_contains "(h) indeterminate-ancestry message says so, distinctly from a rewrite" "$OUT" "could not be determined"
 F254MARKER="$F254RUN/state/example/gate-tip/f254role"
@@ -15387,25 +15389,25 @@ assert_contains "(h) the record's reason= distinguishes indeterminate-ancestry" 
 # must never run on an empty/unreadable value.
 F254FLAG="$TMP/f254-readable-once"; : > "$F254FLAG"
 rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f254unreadable --tip-cmd "[ -f '$F254FLAG' ] && git rev-parse HEAD || true" --tip-ancestry -- \
+        "$ROOT/bin/fwf-gate.sh" f254unreadable --tip-cmd "[ -f '$F254FLAG' ] && git rev-parse HEAD || true" --tip-ancestry -- \
         bash -c "rm -f '$F254FLAG'; true" ) >/dev/null 2>&1 || rc=$?
 assert_eq "(c) tip unreadable after the run -> still STALE (76) with --tip-ancestry" "76" "$rc"
 
 # without --tip-ancestry, behaviour is EXACTLY as #202 shipped it: ANY move is
 # stale, ancestor or not -- the deployment-safe default for an old prompt.
 rc=0; ( cd "$F254REPO" && FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_FORCE=1 \
-        "$ROOT/fwf-gate.sh" f254plain --tip-cmd "git rev-parse HEAD" -- \
+        "$ROOT/bin/fwf-gate.sh" f254plain --tip-cmd "git rev-parse HEAD" -- \
         bash -c 'git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c3; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "no --tip-ancestry: an ancestor move is STILL stale (76) -- unchanged #202 default" "76" "$rc"
 
 # fwf gate-tip: no marker yet for a role -> fails loudly, never fabricates a value.
-rc=0; ( FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example "$ROOT/fwf-gate-tip.sh" never-gated-role ) >/dev/null 2>&1 || rc=$?
+rc=0; ( FWF_RUN_DIR="$F254RUN" FWF_PROFILE=example "$ROOT/bin/fwf-gate-tip.sh" never-gated-role ) >/dev/null 2>&1 || rc=$?
 assert_eq "fwf gate-tip on an unknown role fails (never fabricates a tip)" "1" "$rc"
 
 # __PROMOTE_GATE__ (the conductor's macro) composes --tip-cmd with --e2e and
 # names the tracked staging branch, without touching the generic __E2E__ macro
 # implementers' own self-verification renders (it has no shared ref to key on)
-RENDERED="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''" 2>&1)"
+RENDERED="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/conductor.tmpl' ''" 2>&1)"
 assert_contains "dev conductor template's promote gate takes --e2e"     "$RENDERED" "--e2e"
 assert_contains "dev conductor template's promote gate takes --tip-cmd" "$RENDERED" "--tip-cmd"
 assert_contains "dev conductor template's promote gate watches origin/staging" "$RENDERED" "origin/staging"
@@ -15442,7 +15444,7 @@ esac
 # the same worktree (no cd between them). Assert no absolute path was
 # baked in for this macro.
 assert_not_contains "AC2: promote gate command names no absolute path (resolution deferred to conductor execution time, i.e. post-checkout)" \
-  "$RENDERED" "$ROOT/fwf-gate.sh"
+  "$RENDERED" "$ROOT/bin/fwf-gate.sh"
 
 section "promote gate wraps the tree under test, not the installed binary (issue #276)"
 # AC3: the floor-wide e2e lock (E2E_LOCK, config.sh) derives from
@@ -15453,20 +15455,20 @@ section "promote gate wraps the tree under test, not the installed binary (issue
 # "live" test above) rather than racing a real background holder --
 # deterministic, no timing margin to get wrong.
 F276_RUN="$TMP/gate276-e2e"; mkdir -p "$F276_RUN/state/example"
-F276_E2E_LOCK="$(FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; printf '%s' \"\$E2E_LOCK\"")"
+F276_E2E_LOCK="$(FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; printf '%s' \"\$E2E_LOCK\"")"
 mkdir -p "$F276_E2E_LOCK"
 printf 'role=selfheld\npid=%s\nhost=%s\nworktree=%s\nacquired=%s\n' \
   "$$" "$(hostname)" "$PWD" "$(( $(date +%s) - 9999 ))" > "$F276_E2E_LOCK/owner"
 
-F276_COPY="$TMP/gate276-worktree-copy"; mkdir -p "$F276_COPY/lib" "$F276_COPY/profiles"
-cp "$ROOT/fwf-gate.sh" "$ROOT/config.sh" "$ROOT/lib.sh" "$F276_COPY/"
+F276_COPY="$TMP/gate276-worktree-copy"; mkdir -p "$F276_COPY/bin" "$F276_COPY/lib" "$F276_COPY/profiles"
+cp "$ROOT/bin/fwf-gate.sh" "$ROOT/bin/config.sh" "$ROOT/bin/lib.sh" "$F276_COPY/bin/"
 cp "$ROOT"/lib/*.sh "$F276_COPY/lib/"
 cp "$ROOT/profiles/example.sh" "$F276_COPY/profiles/"
 ln -sf "$ROOT/templates" "$F276_COPY/templates"
 
 F276_RC=0
 FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_E2E_LOCK_TIMEOUT=1 FWF_E2E_LOCK_POLL=1 \
-  "$F276_COPY/fwf-gate.sh" f276waiter --e2e -- bash -c true >/dev/null 2>&1 || F276_RC=$?
+  "$F276_COPY/bin/fwf-gate.sh" f276waiter --e2e -- bash -c true >/dev/null 2>&1 || F276_RC=$?
 assert_eq "AC3: a genuinely SEPARATE fwf-gate.sh copy still excludes against a lock LIVE-held under the SAME \$FWF_RUN" "75" "$F276_RC"
 
 # AC4: fwf-gate.sh names its own resolved tree in every run's output --
@@ -15475,10 +15477,10 @@ assert_eq "AC3: a genuinely SEPARATE fwf-gate.sh copy still excludes against a l
 # `fwf gate <role> -- ...` legitimately runs the INSTALLED binary against
 # their OWN, different worktree -- that is correct, not a defect).
 F276_DIAG="$(FWF_RUN_DIR="$F276_RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f276diag -- bash -c true 2>&1 1>/dev/null)"
+  "$ROOT/bin/fwf-gate.sh" f276diag -- bash -c true 2>&1 1>/dev/null)"
 assert_contains "AC4: the run names which tree fwf-gate.sh itself resolved to" "$F276_DIAG" "fwf-gate.sh: running from $ROOT"
 
-RENDERED_REFACTOR="$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/refactor/conductor.tmpl' ''" 2>&1)"
+RENDERED_REFACTOR="$(FWF_PROFILE=example FWF_TEMPLATE=refactor bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/refactor/conductor.tmpl' ''" 2>&1)"
 assert_contains "refactor conductor template's promote gate takes --tip-cmd" "$RENDERED_REFACTOR" "--tip-cmd"
 assert_contains "refactor conductor template's promote gate takes --tip-ancestry" "$RENDERED_REFACTOR" "--tip-ancestry"
 assert_not_contains "refactor conductor template has no leftover __PROMOTE_GATE__ token" "$RENDERED_REFACTOR" "__PROMOTE_GATE__"
@@ -15553,7 +15555,7 @@ assert_eq "AC(d): detached HEAD at the correct sha produces no #278 refusal text
 # proves the promoting role's good case, not that a non-promoting role is
 # left alone.
 ( cd "$F278" && git checkout -q -b "impl1/issue-9-slug" "$F278_SHA_OLD" )
-F278_D2_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" impl1 --e2e -- bash -c true 2>&1 1>/dev/null)"; F278_D2_RC=$?
+F278_D2_ERR="$(cd "$F278" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" impl1 --e2e -- bash -c true 2>&1 1>/dev/null)"; F278_D2_RC=$?
 assert_eq "AC(d2): non-promoting role on a feature branch with --e2e does not refuse" "0" "$F278_D2_RC"
 # issue #247 AC (a6): same routing as (d) above -- legitimately empty, not converted.
 assert_eq "AC(d2): non-promoting role produces no #278 refusal text" "" \
@@ -15564,7 +15566,7 @@ F278_NOREF="$(mktemp -d "${TMPDIR:-/tmp}/fwf-test278-noref.XXXXXX")"
 ( cd "$F278_NOREF" && git init -q -b main \
     && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m c0 )
 F278_NOREF_RC=0
-( cd "$F278_NOREF" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/fwf-gate.sh" conductor -- bash -c true ) >/dev/null 2>&1 || F278_NOREF_RC=$?
+( cd "$F278_NOREF" && FWF_RUN_DIR="$F278_RUN" FWF_PROFILE=example "$ROOT/bin/fwf-gate.sh" conductor -- bash -c true ) >/dev/null 2>&1 || F278_NOREF_RC=$?
 assert_eq "unresolvable origin/\$STAGING_BRANCH refuses, never guesses" "1" "$F278_NOREF_RC"
 
 # (qa2 adversarial, issue #202): if --tip-cmd cannot be RE-READ after the
@@ -15581,7 +15583,7 @@ printf 'sha-A' > "$F202YREPO/tipfile"
 F202YRUN="$TMP/run202y"; mkdir -p "$F202YRUN"
 rc=0
 ( cd "$F202YREPO" && FWF_RUN_DIR="$F202YRUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f202yrole --tip-cmd "cat tipfile" -- \
+  "$ROOT/bin/fwf-gate.sh" f202yrole --tip-cmd "cat tipfile" -- \
   bash -c 'rm tipfile; true' ) >/dev/null 2>&1 || rc=$?
 assert_eq "tip-cmd unreadable on exit fails closed (EX_STALE), never a silent promotable verdict" "76" "$rc"
 
@@ -15592,7 +15594,7 @@ section "e2e consolidation: conductor is the SOLE full-suite authority, impl onl
 # only; the UI-touching case runs the FULL mobile-safari playwright PROJECT
 # (never a per-spec subset -- that kind of selection silently under-covers
 # as views are renamed/added, per this ticket's own rejected alternative).
-IMPL168="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
+IMPL168="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_render '$ROOT/templates/dev/implementer.tmpl' 1")"
 assert_contains "impl template: default e2e self-verification is none (GATE-only)" "$IMPL168" "DEFAULT: no e2e self-verification at all"
 assert_contains "impl template: UI-touching diffs trigger the full mobile-safari PROJECT" "$IMPL168" "mobile-safari"
 assert_contains "impl template: the mobile-safari run goes through --project=mobile-safari, not a spec subset" \
@@ -15655,7 +15657,7 @@ assert_contains "ci.yml runs test/mem-admit-test.sh (issue #156's own suite)" \
 # the WIRING in fwf-local-ci.sh, which is what gates every release now via the
 # two-runner local green in RELEASING.md.
 assert_contains "local CI runs test/mem-admit-test.sh where releases are decided" \
-  "$(cat "$ROOT/fwf-local-ci.sh")" "test/mem-admit-test.sh"
+  "$(cat "$ROOT/bin/fwf-local-ci.sh")" "test/mem-admit-test.sh"
 # (e): a workflow step that only LINTS the file (shellcheck/bash -n) does not
 # satisfy this — it must actually EXECUTE the suite's assertions.
 case "$(cat "$ROOT/.github/workflows/ci.yml")" in
@@ -15667,11 +15669,11 @@ esac
 section "fwf-local-ci.sh: verdict-line duration (issue #407 item 1)"
 # An isolated copy in its own scratch git repo with a FAKE test/run.sh --
 # the real one is THIS suite, so invoking it for real here would recurse.
-LCI_ROOT="$TMP/lci-root"; mkdir -p "$LCI_ROOT/test"
-cp "$ROOT/fwf-local-ci.sh" "$LCI_ROOT/fwf-local-ci.sh"
+LCI_ROOT="$TMP/lci-root"; mkdir -p "$LCI_ROOT/bin" "$LCI_ROOT/test"
+cp "$ROOT/bin/fwf-local-ci.sh" "$LCI_ROOT/bin/fwf-local-ci.sh"
 ( cd "$LCI_ROOT" && git init -q . && git config user.email t@t.com && git config user.name t )
 LCIRUN="$TMP/lci-run"
-LCI() { ( cd "$LCI_ROOT" && FWF_RUN="$LCIRUN" bash fwf-local-ci.sh "$@" ); }
+LCI() { ( cd "$LCI_ROOT" && FWF_RUN="$LCIRUN" bash bin/fwf-local-ci.sh "$@" ); }
 lci_commit_fixture() { # $1 = fake test/run.sh body, $2 = optional sleep seconds (default 0)
   cat > "$LCI_ROOT/test/run.sh" <<EOF
 #!/usr/bin/env bash
@@ -15893,7 +15895,7 @@ assert_eq "edge: a truncated run (no summary) still records exactly 'red truncat
 # The marker is overridable to empty -- a profile whose harness never emits
 # this idiom, or wants the check off, pays nothing.
 LCI_OFF_SHA="$(lci_commit_fixture 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; echo "3 passed, 0 failed, 0 skipped"')"
-( cd "$LCI_ROOT" && FWF_RUN="$LCIRUN" FWF_LOCAL_CI_LAPSE_MARKER="" bash fwf-local-ci.sh run ) >/dev/null 2>&1
+( cd "$LCI_ROOT" && FWF_RUN="$LCIRUN" FWF_LOCAL_CI_LAPSE_MARKER="" bash bin/fwf-local-ci.sh run ) >/dev/null 2>&1
 assert_contains "FWF_LOCAL_CI_LAPSE_MARKER=\"\" disables the check -- the same fixture records plain green" \
   "$(cat "$LCIRUN/local-ci/$LCI_OFF_SHA")" "green"
 
@@ -15911,11 +15913,11 @@ assert_contains "AC(2): ...and carries the reason through" "$LCI_INDET_VERDICT_O
 # --------------------------------------------------------------------------
 section "fwf-local-ci.sh lapse-streak (issue #446 AC 3): a counter any consumer can read without grepping logs"
 
-LCISTREAK_ROOT="$TMP/lci-streak-root"; mkdir -p "$LCISTREAK_ROOT/test"
-cp "$ROOT/fwf-local-ci.sh" "$LCISTREAK_ROOT/fwf-local-ci.sh"
+LCISTREAK_ROOT="$TMP/lci-streak-root"; mkdir -p "$LCISTREAK_ROOT/bin" "$LCISTREAK_ROOT/test"
+cp "$ROOT/bin/fwf-local-ci.sh" "$LCISTREAK_ROOT/bin/fwf-local-ci.sh"
 ( cd "$LCISTREAK_ROOT" && git init -q . && git config user.email t@t.com && git config user.name t )
 LCISTREAKRUN="$TMP/lci-streak-run"
-LCISTREAK() { ( cd "$LCISTREAK_ROOT" && FWF_RUN="$LCISTREAKRUN" bash fwf-local-ci.sh "$@" ); }
+LCISTREAK() { ( cd "$LCISTREAK_ROOT" && FWF_RUN="$LCISTREAKRUN" bash bin/fwf-local-ci.sh "$@" ); }
 lcistreak_fixture() { # $1 = fake test/run.sh body
   cat > "$LCISTREAK_ROOT/test/run.sh" <<EOF
 #!/usr/bin/env bash
@@ -15954,7 +15956,7 @@ CE2E446_INDET="$TMP/ce2e446-indet"
 ce2e_stub446() { # $1=cached-verdict-mode(none|green|lapsed)  $2=newline-separated run outcomes(green|red|lapsed)
   rm -f "$CE2E446_COUNTER" "$CE2E446_INDET"
   printf '%s\n' "$2" > "$CE2E446_PLAN"
-  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+  cat > "$CE2ETMP/bin/fwf-local-ci.sh" <<STUB
 #!/usr/bin/env bash
 if [ "\$1" = verdict ]; then
   case "$1" in
@@ -15978,7 +15980,7 @@ if [ "\$1" = mark-indeterminate ]; then
   exit 0
 fi
 STUB
-  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+  chmod +x "$CE2ETMP/bin/fwf-local-ci.sh"
 }
 
 # AC (2): first attempt lapses, second attempt is a real green -> succeeds,
@@ -16054,7 +16056,7 @@ ce2e_stub457() { # $1=streak $2=indeterminate-recent age text ("" = not recently
   rm -f "$CE2E457_COUNTER" "$CE2E457_INDET"
   printf '%s\n' "$3" > "$CE2E457_PLAN"
   local streak_val="$1" indet_val="$2"
-  cat > "$CE2ETMP/fwf-local-ci.sh" <<STUB
+  cat > "$CE2ETMP/bin/fwf-local-ci.sh" <<STUB
 #!/usr/bin/env bash
 if [ "\$1" = verdict ]; then
   echo "local-ci: no verdict recorded for \$2" >&2; exit 1
@@ -16080,7 +16082,7 @@ if [ "\$1" = mark-indeterminate ]; then
   exit 0
 fi
 STUB
-  chmod +x "$CE2ETMP/fwf-local-ci.sh"
+  chmod +x "$CE2ETMP/bin/fwf-local-ci.sh"
 }
 
 # AC (1) control: a LOW streak (below the backoff threshold) is unaffected
@@ -16116,11 +16118,11 @@ assert_eq "high streak, recently marked: ZERO suite runs this cycle (the fix -- 
 
 # --------------------------------------------------------------------------
 section "fwf-local-ci.sh indeterminate-recent (issue #457): the cooldown clock, keyed off mark-indeterminate's own marker file"
-LCI457_ROOT="$TMP/lci457-root"; mkdir -p "$LCI457_ROOT/test"
-cp "$ROOT/fwf-local-ci.sh" "$LCI457_ROOT/fwf-local-ci.sh"
+LCI457_ROOT="$TMP/lci457-root"; mkdir -p "$LCI457_ROOT/bin" "$LCI457_ROOT/test"
+cp "$ROOT/bin/fwf-local-ci.sh" "$LCI457_ROOT/bin/fwf-local-ci.sh"
 ( cd "$LCI457_ROOT" && git init -q . && git config user.email t@t.com && git config user.name t )
 LCI457RUN="$TMP/lci457-run"
-LCI457() { ( cd "$LCI457_ROOT" && FWF_RUN="$LCI457RUN" bash fwf-local-ci.sh "$@" ); }
+LCI457() { ( cd "$LCI457_ROOT" && FWF_RUN="$LCI457RUN" bash bin/fwf-local-ci.sh "$@" ); }
 LCI457_SHA="deadbeef457"
 
 LCI457 indeterminate-recent "$LCI457_SHA" 900 >/dev/null 2>&1
@@ -16309,7 +16311,7 @@ set -uo pipefail
 FWF_RUN_DIR="$G227_ROOT" FWF_PROFILE=example
 export FWF_RUN_DIR FWF_PROFILE
 # shellcheck source=/dev/null
-source "$ROOT/lib.sh"
+source "$ROOT/bin/lib.sh"
 
 echo "TAG_UNKNOWN_SUMMARY_RC:\$(fwf_gate_history_summary g227-never-seen main >/dev/null 2>&1; echo \$?)"
 echo "TAG_UNKNOWN_BASELINE:\$(fwf_gate_history_baseline g227-never-seen deadbeef)"
@@ -16511,7 +16513,7 @@ echo "TAG_FILES_SPLIT:$(find "$D" -maxdepth 1 -type f ! -name '*.label' | wc -l 
 echo "TAG_ENTRIES_AFTER:$(wc -l < "$D/$K" | tr -d ' ')"
 echo "TAG_KEY_DIFFERS:$([ "$(_fwf_gate_history_key "$LBAD")" != "$K" ] && echo yes || echo no)"
 F519_HEOF
-F519_HOUT="$(FWF_RUN_DIR="$F519_HROOT" FWF_PROFILE=example FWF519_LIB="$ROOT/lib.sh" bash "$F519_HSCRIPT" 2>&1)"
+F519_HOUT="$(FWF_RUN_DIR="$F519_HROOT" FWF_PROFILE=example FWF519_LIB="$ROOT/bin/lib.sh" bash "$F519_HSCRIPT" 2>&1)"
 assert_contains "#519 AC4: 5 runs of one case leave exactly 5 entries -- the COUNT, not just both verdicts" \
   "$F519_HOUT" "TAG_ENTRIES:5"
 assert_contains "#519 AC4: ...and those 5 entries carry BOTH verdicts" "$F519_HOUT" "TAG_VERDICTS:FAIL PASS"
@@ -16541,7 +16543,7 @@ G227E_EXTRACTOR='awk "/^  ok   / { print \"PASS \" substr(\$0,8) } /^  FAIL / { 
 
 # AC (d): per-case mode is used and NAMED when an extractor is declared.
 G227E_OUT1="$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
-  "$ROOT/fwf-gate.sh" g227erole -- bash "$G227E_STUB" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" g227erole -- bash "$G227E_STUB" 2>&1)"
 assert_contains "AC(d): per-case mode is named in the output when GATE_CASE_EXTRACTOR is declared" \
   "$G227E_OUT1" "per-case (GATE_CASE_EXTRACTOR)"
 assert_contains "AC(d): the specific FAILING case's own label is what gets reported, not a generic suite line" \
@@ -16551,7 +16553,7 @@ assert_contains "stdout still carries the wrapped command's own ok/FAIL lines un
 
 # AC (d): SUITE-level mode is used and NAMED when no extractor is declared.
 G227E_OUT2="$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example \
-  "$ROOT/fwf-gate.sh" g227erole2 -- bash "$G227E_STUB" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" g227erole2 -- bash "$G227E_STUB" 2>&1)"
 assert_contains "AC(d): SUITE-level mode is named in the output when no extractor is declared" \
   "$G227E_OUT2" "SUITE-level (no GATE_CASE_EXTRACTOR declared)"
 
@@ -16561,14 +16563,14 @@ G227E_OK="$TMP/gate227-stub-ok.sh"
 printf '#!/usr/bin/env bash\nprintf "  ok   all good\\n"\nexit 0\n' > "$G227E_OK"
 chmod +x "$G227E_OK"
 G227E_OUT3="$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
-  "$ROOT/fwf-gate.sh" g227erole3 -- bash "$G227E_OK" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" g227erole3 -- bash "$G227E_OK" 2>&1)"
 case "$G227E_OUT3" in
   *"fwf gate [#227"*) bad "AC(h): a green run must never print the #227 diagnostic" ;;
   *) ok "AC(h): a green run, extractor declared, prints zero #227 diagnostic output" ;;
 esac
 assert_eq "AC(h): a green run's exit code is untouched by the history feature" "0" \
   "$(FWF_RUN_DIR="$G227E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_EXTRACTOR" \
-     "$ROOT/fwf-gate.sh" g227erole4 -- bash "$G227E_OK" >/dev/null 2>&1; echo $?)"
+     "$ROOT/bin/fwf-gate.sh" g227erole4 -- bash "$G227E_OK" >/dev/null 2>&1; echo $?)"
 
 # AC (i) regression (qa2 review on this PR): a declared extractor that
 # matches ZERO lines on a PASSING run must still fall back to a SUITE-level
@@ -16583,10 +16585,10 @@ chmod +x "$G227E_UNMATCHED_STUB"
 G227E_NEVER_MATCHES='grep -oE "^NEVERMATCHES.*"'
 G227E_ROOT2="$TMP/gate227-e2e-acifix"; mkdir -p "$G227E_ROOT2/state/example"
 G227E_OUT5="$(FWF_RUN_DIR="$G227E_ROOT2" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_NEVER_MATCHES" \
-  "$ROOT/fwf-gate.sh" g227erole5 -- bash "$G227E_UNMATCHED_STUB" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" g227erole5 -- bash "$G227E_UNMATCHED_STUB" 2>&1)"
 assert_eq "AC(i) regression: a passing run whose extractor matches nothing still exits 0 (the wrapped command's own outcome is untouched)" \
   "0" "$(FWF_RUN_DIR="$G227E_ROOT2" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G227E_NEVER_MATCHES" \
-     "$ROOT/fwf-gate.sh" g227erole6 -- bash "$G227E_UNMATCHED_STUB" >/dev/null 2>&1; echo $?)"
+     "$ROOT/bin/fwf-gate.sh" g227erole6 -- bash "$G227E_UNMATCHED_STUB" >/dev/null 2>&1; echo $?)"
 assert_contains "AC(i) regression: the run still names the SUITE-level fallback (diagnostic honesty, even on a pass)" \
   "$G227E_OUT5" "falling back to SUITE-level"
 G227E_HISTDIR="$G227E_ROOT2/state/example/gate-history"
@@ -16605,7 +16607,7 @@ set -uo pipefail
 FWF_RUN_DIR="$G237_ROOT" FWF_PROFILE=example
 export FWF_RUN_DIR FWF_PROFILE
 # shellcheck source=/dev/null
-source "$ROOT/lib.sh"
+source "$ROOT/bin/lib.sh"
 
 fwf_gate_verdict_record shaA roleA green "" fpA
 echo "TAG_READ_WITH_FP:\$(fwf_gate_verdict_read shaA)"
@@ -16673,9 +16675,9 @@ exit 0
 STUBEOF
 chmod +x "$G237K_STUB_OK"
 FWF_RUN_DIR="$G237K_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G237K_EXTRACTOR" FWF_GATE_CANARY_MARKER="$G237K_MARKER" \
-  "$ROOT/fwf-gate.sh" g237kroleok -- bash "$G237K_STUB_OK" >/dev/null 2>&1
+  "$ROOT/bin/fwf-gate.sh" g237kroleok -- bash "$G237K_STUB_OK" >/dev/null 2>&1
 G237K_SHA_OK="$(git rev-parse HEAD)"
-G237K_VERDICT_OK="$(FWF_RUN_DIR="$G237K_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G237K_SHA_OK'")"
+G237K_VERDICT_OK="$(FWF_RUN_DIR="$G237K_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$G237K_SHA_OK'")"
 assert_contains "AC(k): canary correctly reports FAIL -> the real green stands" "$G237K_VERDICT_OK" "verdict=green"
 
 G237K_ROOT2="$TMP/gate237-canary2"; mkdir -p "$G237K_ROOT2/state/example"
@@ -16687,9 +16689,9 @@ exit 0
 STUBEOF
 chmod +x "$G237K_STUB_BROKEN"
 G237K_OUT="$(FWF_RUN_DIR="$G237K_ROOT2" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G237K_EXTRACTOR" FWF_GATE_CANARY_MARKER="$G237K_MARKER" \
-  "$ROOT/fwf-gate.sh" g237krolebroken -- bash "$G237K_STUB_BROKEN" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" g237krolebroken -- bash "$G237K_STUB_BROKEN" 2>&1)"
 G237K_SHA_BROKEN="$(git rev-parse HEAD)"
-G237K_VERDICT_BROKEN="$(FWF_RUN_DIR="$G237K_ROOT2" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G237K_SHA_BROKEN'")"
+G237K_VERDICT_BROKEN="$(FWF_RUN_DIR="$G237K_ROOT2" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$G237K_SHA_BROKEN'")"
 assert_contains "AC(k): fixture -- a harness stubbed to exit 0 unconditionally (#242 shape) with the canary absent records UNKNOWN, not a pass" \
   "$G237K_VERDICT_BROKEN" "verdict=unknown"
 assert_contains "AC(k): the downgrade is explained, not silent" "$G237K_OUT" "no confirmed path to red"
@@ -16699,9 +16701,9 @@ assert_contains "AC(k): the downgrade is explained, not silent" "$G237K_OUT" "no
 # unverifiable green.
 G237K_ROOT3="$TMP/gate237-canary3"; mkdir -p "$G237K_ROOT3/state/example"
 FWF_RUN_DIR="$G237K_ROOT3" FWF_PROFILE=example FWF_GATE_CANARY_MARKER="$G237K_MARKER" \
-  "$ROOT/fwf-gate.sh" g237krolemisconf -- bash "$G237K_STUB_OK" >/dev/null 2>&1
+  "$ROOT/bin/fwf-gate.sh" g237krolemisconf -- bash "$G237K_STUB_OK" >/dev/null 2>&1
 G237K_SHA3="$(git rev-parse HEAD)"
-G237K_VERDICT3="$(FWF_RUN_DIR="$G237K_ROOT3" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$G237K_SHA3'")"
+G237K_VERDICT3="$(FWF_RUN_DIR="$G237K_ROOT3" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$G237K_SHA3'")"
 assert_contains "AC(k): a canary marker with no GATE_CASE_EXTRACTOR to verify it fails closed to UNKNOWN" \
   "$G237K_VERDICT3" "verdict=unknown"
 
@@ -16727,7 +16729,7 @@ _g237_fixture() { # $1=var-prefix -> sets ${prefix}_BARE/_CONDUCTOR/_STAGING_SHA
 # AC (f): no record at all -> INDETERMINATE, distinct wording from a real refusal.
 _g237_fixture G237P1
 G237P1_ROOT="$TMP/gate237p1-state"; mkdir -p "$G237P1_ROOT/state/example"
-G237P1_OUT="$(cd "$G237P1_CONDUCTOR" && FWF_RUN_DIR="$G237P1_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p1 integration 2>&1)"
+G237P1_OUT="$(cd "$G237P1_CONDUCTOR" && FWF_RUN_DIR="$G237P1_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p1 integration 2>&1)"
 G237P1_RC=$?
 assert_eq "AC(f): no recorded gate at all -> refuses (rc 1)" "1" "$G237P1_RC"
 assert_contains "AC(f): an ABSENT record is INDETERMINATE too (#211's three outcomes), never a confident 'not gated'" "$G237P1_OUT" "INDETERMINATE"
@@ -16737,15 +16739,15 @@ assert_contains "AC(h): names the actionable fwf gate command" "$G237P1_OUT" "fw
 # AC (a)/(b): a RED record refuses; a GREEN record for the SAME sha promotes.
 _g237_fixture G237P2
 G237P2_ROOT="$TMP/gate237p2-state"; mkdir -p "$G237P2_ROOT/state/example"
-FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g237p2 '$G237P2_STAGING_SHA' red"
-G237P2_OUT_RED="$(cd "$G237P2_CONDUCTOR" && FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p2 integration 2>&1)"
+FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_tip_record g237p2 '$G237P2_STAGING_SHA' red"
+G237P2_OUT_RED="$(cd "$G237P2_CONDUCTOR" && FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p2 integration 2>&1)"
 G237P2_RC_RED=$?
 assert_eq "AC(a): a RED record refuses (rc 1), against the real defect (nothing enforced this before #237)" "1" "$G237P2_RC_RED"
 assert_contains "AC(a): names the actual recorded verdict" "$G237P2_OUT_RED" "is 'red', not green"
 assert_eq "integration is untouched after a refused promote" "$G237P2_STAGING_SHA" "$G237P2_STAGING_SHA"
 
-FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g237p2 '$G237P2_STAGING_SHA' green"
-G237P2_OUT_GREEN="$(cd "$G237P2_CONDUCTOR" && FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p2 integration 2>&1)"
+FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_tip_record g237p2 '$G237P2_STAGING_SHA' green"
+G237P2_OUT_GREEN="$(cd "$G237P2_CONDUCTOR" && FWF_RUN_DIR="$G237P2_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p2 integration 2>&1)"
 G237P2_RC_GREEN=$?
 assert_eq "AC(b): the green path -- gate green on SHA X -> promote X succeeds" "0" "$G237P2_RC_GREEN"
 assert_not_contains "AC(b): a successful promote never prints a REFUSED line" "$G237P2_OUT_GREEN" "REFUSED"
@@ -16758,11 +16760,11 @@ assert_eq "AC(b): integration actually advanced to the recorded green SHA" "$G23
 _g237_fixture G237P3
 G237P3_ROOT="$TMP/gate237p3-state"; mkdir -p "$G237P3_ROOT/state/example"
 FWF_RUN_DIR="$G237P3_ROOT" FWF_PROFILE=example bash -c "
-  source '$ROOT/lib.sh'
+  source '$ROOT/bin/lib.sh'
   fwf_gate_verdict_record shaX g237p3 green   # an unrelated sha's own green record exists in the store
   fwf_gate_tip_record g237p3 '$G237P3_STAGING_SHA' red   # but THIS role's own current tip is red
 "
-G237P3_OUT="$(cd "$G237P3_CONDUCTOR" && FWF_RUN_DIR="$G237P3_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p3 integration 2>&1)"
+G237P3_OUT="$(cd "$G237P3_CONDUCTOR" && FWF_RUN_DIR="$G237P3_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p3 integration 2>&1)"
 assert_eq "AC(c): a green record for an UNRELATED sha never authorizes promoting this role's own (red) tip" "1" "$?"
 assert_contains "AC(c): refuses on THIS role's own recorded verdict, not a different sha's" "$G237P3_OUT" "not green"
 
@@ -16771,8 +16773,8 @@ assert_contains "AC(c): refuses on THIS role's own recorded verdict, not a diffe
 # filed against.
 _g237_fixture G237P4
 G237P4_ROOT="$TMP/gate237p4-state"; mkdir -p "$G237P4_ROOT/state/example"
-FWF_RUN_DIR="$G237P4_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g237p4 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef green"
-G237P4_OUT="$(cd "$G237P4_CONDUCTOR" && FWF_RUN_DIR="$G237P4_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p4 integration 2>&1)"
+FWF_RUN_DIR="$G237P4_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_tip_record g237p4 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef green"
+G237P4_OUT="$(cd "$G237P4_CONDUCTOR" && FWF_RUN_DIR="$G237P4_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p4 integration 2>&1)"
 assert_eq "AC(e2): an unresolvable recorded sha refuses (rc 1)" "1" "$?"
 assert_contains "AC(e2): named CORRUPT, distinctly from a plain not-gated/red refusal" "$G237P4_OUT" "CORRUPT"
 
@@ -16780,7 +16782,7 @@ assert_contains "AC(e2): named CORRUPT, distinctly from a plain not-gated/red re
 _g237_fixture G237P5
 G237P5_ROOT="$TMP/gate237p5-state"; mkdir -p "$G237P5_ROOT/state/example/gate-tip"
 : > "$G237P5_ROOT/state/example/gate-tip/g237p5"
-G237P5_OUT="$(cd "$G237P5_CONDUCTOR" && FWF_RUN_DIR="$G237P5_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p5 integration 2>&1)"
+G237P5_OUT="$(cd "$G237P5_CONDUCTOR" && FWF_RUN_DIR="$G237P5_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p5 integration 2>&1)"
 assert_eq "AC(f): an unreadable/malformed record refuses (rc 1)" "1" "$?"
 assert_contains "AC(f): named INDETERMINATE, distinct from both 'not gated' and 'gated'" "$G237P5_OUT" "INDETERMINATE"
 
@@ -16789,12 +16791,12 @@ assert_contains "AC(f): named INDETERMINATE, distinct from both 'not gated' and 
 _g237_fixture G237P6
 G237P6_ROOT="$TMP/gate237p6-state"; mkdir -p "$G237P6_ROOT/state/example"
 FWF_RUN_DIR="$G237P6_ROOT" FWF_PROFILE=example bash -c "
-  source '$ROOT/lib.sh'
+  source '$ROOT/bin/lib.sh'
   fwf_gate_tip_record g237p6 '$G237P6_STAGING_SHA' green
   fwf_gate_verdict_record '$G237P6_STAGING_SHA' g237p6 green '' badfp237
   fwf_gate_revoke_fingerprint badfp237 'test: known-broken gate'
 "
-G237P6_OUT="$(cd "$G237P6_CONDUCTOR" && FWF_RUN_DIR="$G237P6_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p6 integration 2>&1)"
+G237P6_OUT="$(cd "$G237P6_CONDUCTOR" && FWF_RUN_DIR="$G237P6_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p6 integration 2>&1)"
 assert_eq "AC(k2): a green record whose fingerprint is revoked still refuses (rc 1)" "1" "$?"
 assert_contains "AC(k2): named REVOKED, distinctly" "$G237P6_OUT" "REVOKED"
 
@@ -16803,7 +16805,7 @@ assert_contains "AC(k2): named REVOKED, distinctly" "$G237P6_OUT" "REVOKED"
 _g237_fixture G237P7
 G237P7_ROOT="$TMP/gate237p7-state"; mkdir -p "$G237P7_ROOT"
 mkdir -p "$G237P7_ROOT" && printf 'stale-unresolvable-sha-from-a-previous-session\n' > "$G237P7_ROOT/conductor-last-gated-sha"
-( cd "$G237P7_CONDUCTOR" && FWF_RUN_DIR="$G237P7_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p7-nonexistent integration >/dev/null 2>&1 )
+( cd "$G237P7_CONDUCTOR" && FWF_RUN_DIR="$G237P7_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p7-nonexistent integration >/dev/null 2>&1 )
 if [ -f "$G237P7_ROOT/conductor-last-gated-sha" ]; then
   bad "AC(d3): the legacy conductor-last-gated-sha file must be removed, not left as a permanent trap"
 else
@@ -16815,16 +16817,16 @@ section "gate-revoke: the CLI wiring for AC (k2) (issue #237)"
 _g237_fixture G237P8
 G237P8_ROOT="$TMP/gate237p8-state"; mkdir -p "$G237P8_ROOT/state/example"
 FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example bash -c "
-  source '$ROOT/lib.sh'
+  source '$ROOT/bin/lib.sh'
   fwf_gate_tip_record g237p8 '$G237P8_STAGING_SHA' green
   fwf_gate_verdict_record '$G237P8_STAGING_SHA' g237p8 green '' cliroundtripfp
 "
-FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example bash "$ROOT/fwf-gate-revoke.sh" cliroundtripfp "test: cli round-trip" >/dev/null 2>&1
-G237P8_OUT="$(cd "$G237P8_CONDUCTOR" && FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g237p8 integration 2>&1)"
+FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example bash "$ROOT/bin/fwf-gate-revoke.sh" cliroundtripfp "test: cli round-trip" >/dev/null 2>&1
+G237P8_OUT="$(cd "$G237P8_CONDUCTOR" && FWF_RUN_DIR="$G237P8_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g237p8 integration 2>&1)"
 assert_eq "fwf gate-revoke's CLI-written revocation is honoured by gate-promote (rc 1)" "1" "$?"
 assert_contains "the CLI round-trip refuses as REVOKED, same as the direct lib.sh path" "$G237P8_OUT" "REVOKED"
 assert_eq "fwf-gate-revoke.sh with no fingerprint argument is a usage error (rc 2), distinct from a refusal" \
-  "2" "$(bash "$ROOT/fwf-gate-revoke.sh" >/dev/null 2>&1; echo $?)"
+  "2" "$(bash "$ROOT/bin/fwf-gate-revoke.sh" >/dev/null 2>&1; echo $?)"
 
 # --------------------------------------------------------------------------
 section "fwf gate (issue #447): a lint-SKIP inside the wrapped command's output must not record the same verdict as a real green"
@@ -16839,10 +16841,10 @@ F447SHA="$(git -C "$F447REPO" rev-parse HEAD)"
 # the bare green a real clean-lint run gets -- and must say so loudly on its
 # own stderr, not just encode it silently in the verdict token.
 rc=0; ( cd "$F447REPO" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f447skip -- bash -c 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; exit 0' \
+        "$ROOT/bin/fwf-gate.sh" f447skip -- bash -c 'echo "skip shellcheck (killed by signal 9 under concurrent box load, issue #418/#427 -- not a code finding)"; exit 0' \
       ) >/dev/null 2>"$TMP/f447-skip.err" || rc=$?
 assert_eq "a lint-skipped run still exits 0 (the suite itself did not fail, only the lint step was skipped)" "0" "$rc"
-F447_VERDICT_LINE="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA'" 2>/dev/null)"
+F447_VERDICT_LINE="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F447SHA'" 2>/dev/null)"
 assert_eq "AC(1): the recorded verdict token is EXACTLY green-lint-skipped -- not a substring match against plain green" \
   "green-lint-skipped" "$(printf '%s' "$F447_VERDICT_LINE" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 assert_contains "AC(3): the skip is surfaced loudly on the gate's own stderr at gate time, not only encoded in the verdict token" \
@@ -16855,8 +16857,8 @@ F447REPO2="$TMP/repo447b"; mkdir -p "$F447REPO2"
 ( cd "$F447REPO2" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F447SHA2="$(git -C "$F447REPO2" rev-parse HEAD)"
 ( cd "$F447REPO2" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f447clean -- true ) >/dev/null 2>&1
-F447_VERDICT_LINE2="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA2'" 2>/dev/null)"
+  "$ROOT/bin/fwf-gate.sh" f447clean -- true ) >/dev/null 2>&1
+F447_VERDICT_LINE2="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F447SHA2'" 2>/dev/null)"
 assert_eq "a normal clean run (no skip idiom in its output) still records plain green, unaffected" \
   "green" "$(printf '%s' "$F447_VERDICT_LINE2" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -16867,8 +16869,8 @@ F447REPO3="$TMP/repo447c"; mkdir -p "$F447REPO3"
 ( cd "$F447REPO3" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F447SHA3="$(git -C "$F447REPO3" rev-parse HEAD)"
 ( cd "$F447REPO3" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f447red -- bash -c 'echo "skip shellcheck (not installed)"; exit 1' ) >/dev/null 2>&1
-F447_VERDICT_LINE3="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA3'" 2>/dev/null)"
+  "$ROOT/bin/fwf-gate.sh" f447red -- bash -c 'echo "skip shellcheck (not installed)"; exit 1' ) >/dev/null 2>&1
+F447_VERDICT_LINE3="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F447SHA3'" 2>/dev/null)"
 assert_eq "a genuinely failing run records red, never a lint-skip-flavored verdict, regardless of skip text in its output" \
   "red" "$(printf '%s' "$F447_VERDICT_LINE3" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -16878,8 +16880,8 @@ F447REPO4="$TMP/repo447d"; mkdir -p "$F447REPO4"
 ( cd "$F447REPO4" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F447SHA4="$(git -C "$F447REPO4" rev-parse HEAD)"
 ( cd "$F447REPO4" && FWF_RUN_DIR="$F447RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_LINT_SKIP_MARKER="" \
-  "$ROOT/fwf-gate.sh" f447off -- bash -c 'echo "skip shellcheck (not installed)"; exit 0' ) >/dev/null 2>&1
-F447_VERDICT_LINE4="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F447SHA4'" 2>/dev/null)"
+  "$ROOT/bin/fwf-gate.sh" f447off -- bash -c 'echo "skip shellcheck (not installed)"; exit 0' ) >/dev/null 2>&1
+F447_VERDICT_LINE4="$(FWF_PROFILE=example FWF_RUN_DIR="$F447RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F447SHA4'" 2>/dev/null)"
 assert_eq "FWF_GATE_LINT_SKIP_MARKER=\"\" disables the check -- the same run records plain green" \
   "green" "$(printf '%s' "$F447_VERDICT_LINE4" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -16889,8 +16891,8 @@ assert_eq "FWF_GATE_LINT_SKIP_MARKER=\"\" disables the check -- the same run rec
 # the same technique G237P2's red/green cases already use.
 _g237_fixture G447P2
 G447P2_ROOT="$TMP/gate447p2-state"; mkdir -p "$G447P2_ROOT/state/example"
-FWF_RUN_DIR="$G447P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record g447p2 '$G447P2_STAGING_SHA' green-lint-skipped"
-G447P2_OUT="$(cd "$G447P2_CONDUCTOR" && FWF_RUN_DIR="$G447P2_ROOT" FWF_PROFILE=example "$ROOT/fwf-gate-promote.sh" g447p2 integration 2>&1)"
+FWF_RUN_DIR="$G447P2_ROOT" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_tip_record g447p2 '$G447P2_STAGING_SHA' green-lint-skipped"
+G447P2_OUT="$(cd "$G447P2_CONDUCTOR" && FWF_RUN_DIR="$G447P2_ROOT" FWF_PROFILE=example "$ROOT/bin/fwf-gate-promote.sh" g447p2 integration 2>&1)"
 G447P2_RC=$?
 assert_eq "AC(2): a green-lint-skipped record refuses promotion (rc 1) -- it is not literally 'green'" "1" "$G447P2_RC"
 assert_contains "AC(2): names the actual recorded verdict, not a generic refusal" "$G447P2_OUT" "is 'green-lint-skipped', not green"
@@ -16910,10 +16912,10 @@ F479REPO="$TMP/repo479"; mkdir -p "$F479REPO"
 ( cd "$F479REPO" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F479SHA="$(git -C "$F479REPO" rev-parse HEAD)"
 rc=0; ( cd "$F479REPO" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f479kill -- bash -c 'echo "partial output, never reached a conclusion"; kill -9 "$$"' \
+        "$ROOT/bin/fwf-gate.sh" f479kill -- bash -c 'echo "partial output, never reached a conclusion"; kill -9 "$$"' \
       ) >/dev/null 2>"$TMP/f479-kill.err"; rc=$?
 assert_eq "the wrapped command's own exit lands in the signal range 128+N (137 == SIGKILL)" "137" "$rc"
-F479_VERDICT_LINE="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA'" 2>/dev/null)"
+F479_VERDICT_LINE="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F479SHA'" 2>/dev/null)"
 assert_eq "AC(1)/AC(6): the recorded verdict is EXACTLY indeterminate -- not red, not green, not any other unrecognised-case fallback" \
   "indeterminate" "$(printf '%s' "$F479_VERDICT_LINE" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -16935,15 +16937,15 @@ F479REPO2="$TMP/repo479b"; mkdir -p "$F479REPO2"
 ( cd "$F479REPO2" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F479BRANCH2="$(git -C "$F479REPO2" rev-parse --abbrev-ref HEAD)"
 ( cd "$F479REPO2" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f479green -- bash -c 'echo "3 passed, 0 failed, 0 skipped"' ) >/dev/null 2>&1
-F479_SUM_BEFORE="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_history_summary SUITE '$F479BRANCH2'")"
+  "$ROOT/bin/fwf-gate.sh" f479green -- bash -c 'echo "3 passed, 0 failed, 0 skipped"' ) >/dev/null 2>&1
+F479_SUM_BEFORE="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_history_summary SUITE '$F479BRANCH2'")"
 F479_TOTAL_BEFORE="$(printf '%s\n' "$F479_SUM_BEFORE" | sed -n 's/^total=//p')"
 F479_FAILED_BEFORE="$(printf '%s\n' "$F479_SUM_BEFORE" | sed -n 's/^failed=//p')"
 F479_LASTGREEN_BEFORE="$(printf '%s\n' "$F479_SUM_BEFORE" | sed -n 's/^last_green=//p')"
 ( cd "$F479REPO2" && git commit -q --allow-empty -m c2 )
 ( cd "$F479REPO2" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f479kill2 -- bash -c 'echo "partial"; kill -9 "$$"' ) >/dev/null 2>&1
-F479_SUM_AFTER="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_history_summary SUITE '$F479BRANCH2'")"
+  "$ROOT/bin/fwf-gate.sh" f479kill2 -- bash -c 'echo "partial"; kill -9 "$$"' ) >/dev/null 2>&1
+F479_SUM_AFTER="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_history_summary SUITE '$F479BRANCH2'")"
 F479_TOTAL_AFTER="$(printf '%s\n' "$F479_SUM_AFTER" | sed -n 's/^total=//p')"
 F479_FAILED_AFTER="$(printf '%s\n' "$F479_SUM_AFTER" | sed -n 's/^failed=//p')"
 F479_LASTGREEN_AFTER="$(printf '%s\n' "$F479_SUM_AFTER" | sed -n 's/^last_green=//p')"
@@ -16962,10 +16964,10 @@ F479REPO3="$TMP/repo479c"; mkdir -p "$F479REPO3"
 ( cd "$F479REPO3" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F479SHA3="$(git -C "$F479REPO3" rev-parse HEAD)"
 rc=0; ( cd "$F479REPO3" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f479red -- bash -c 'echo "3 passed, 1 failed, 0 skipped"; exit 1' \
+        "$ROOT/bin/fwf-gate.sh" f479red -- bash -c 'echo "3 passed, 1 failed, 0 skipped"; exit 1' \
       ) >/dev/null 2>"$TMP/f479-red.err" || rc=$?
 assert_eq "AC(4): a genuine failure still exits non-zero" "1" "$rc"
-F479_VERDICT_LINE3="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA3'" 2>/dev/null)"
+F479_VERDICT_LINE3="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F479SHA3'" 2>/dev/null)"
 assert_eq "AC(4): a genuine test failure is still recorded red, not swept into indeterminate" \
   "red" "$(printf '%s' "$F479_VERDICT_LINE3" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 assert_contains "AC(4): the content verdict line is still printed for a real failure" "$(cat "$TMP/f479-red.err")" "FAILED — SUITE"
@@ -16978,10 +16980,10 @@ F479REPO4="$TMP/repo479d"; mkdir -p "$F479REPO4"
 ( cd "$F479REPO4" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F479SHA4="$(git -C "$F479REPO4" rev-parse HEAD)"
 rc=0; ( cd "$F479REPO4" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-        "$ROOT/fwf-gate.sh" f479selfexit -- bash -c 'echo "3 passed, 0 failed, 0 skipped"; exit 137' \
+        "$ROOT/bin/fwf-gate.sh" f479selfexit -- bash -c 'echo "3 passed, 0 failed, 0 skipped"; exit 137' \
       ) >/dev/null 2>&1 || rc=$?
 assert_eq "the suite's own chosen exit code happens to land in the signal range too" "137" "$rc"
-F479_VERDICT_LINE4="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA4'" 2>/dev/null)"
+F479_VERDICT_LINE4="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F479SHA4'" 2>/dev/null)"
 assert_eq "AC(5): a completing run whose OWN exit code is signal-range is red, not indeterminate -- rc only ever gates the question, never answers it" \
   "red" "$(printf '%s' "$F479_VERDICT_LINE4" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -16991,8 +16993,8 @@ F479REPO5="$TMP/repo479e"; mkdir -p "$F479REPO5"
 ( cd "$F479REPO5" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F479SHA5="$(git -C "$F479REPO5" rev-parse HEAD)"
 ( cd "$F479REPO5" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 \
-  "$ROOT/fwf-gate.sh" f479empty -- bash -c 'kill -9 "$$"' ) >/dev/null 2>&1
-F479_VERDICT_LINE5="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA5'" 2>/dev/null)"
+  "$ROOT/bin/fwf-gate.sh" f479empty -- bash -c 'kill -9 "$$"' ) >/dev/null 2>&1
+F479_VERDICT_LINE5="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F479SHA5'" 2>/dev/null)"
 assert_eq "edge case: killed before ANY output is still indeterminate, not an error/crash" \
   "indeterminate" "$(printf '%s' "$F479_VERDICT_LINE5" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -17004,8 +17006,8 @@ F479REPO6="$TMP/repo479f"; mkdir -p "$F479REPO6"
 ( cd "$F479REPO6" && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m c1 )
 F479SHA6="$(git -C "$F479REPO6" rev-parse HEAD)"
 ( cd "$F479REPO6" && FWF_RUN_DIR="$F479RUN" FWF_PROFILE=example FWF_MIN_FREE_GB=0 FWF_GATE_COMPLETION_MARKER="" \
-  "$ROOT/fwf-gate.sh" f479off -- bash -c 'echo "partial"; kill -9 "$$"' ) >/dev/null 2>&1
-F479_VERDICT_LINE6="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/lib.sh'; fwf_gate_verdict_read '$F479SHA6'" 2>/dev/null)"
+  "$ROOT/bin/fwf-gate.sh" f479off -- bash -c 'echo "partial"; kill -9 "$$"' ) >/dev/null 2>&1
+F479_VERDICT_LINE6="$(FWF_PROFILE=example FWF_RUN_DIR="$F479RUN" bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_verdict_read '$F479SHA6'" 2>/dev/null)"
 assert_eq "FWF_GATE_COMPLETION_MARKER=\"\" disables the check -- a killed run degrades to today's plain red" \
   "red" "$(printf '%s' "$F479_VERDICT_LINE6" | sed -n 's/.*verdict=\([a-z-]*\).*/\1/p')"
 
@@ -17022,7 +17024,7 @@ chmod +x "$G479E_STUB"
 G479E_EXTRACTOR='awk "/^  ok   / { print \"PASS \" substr(\$0,8) } /^  FAIL / { print \"FAIL \" substr(\$0,8) }"'
 G479E_ROOT="$TMP/gate479-e2e"; mkdir -p "$G479E_ROOT/state/example"
 G479E_OUT="$(FWF_RUN_DIR="$G479E_ROOT" FWF_PROFILE=example GATE_CASE_EXTRACTOR="$G479E_EXTRACTOR" \
-  "$ROOT/fwf-gate.sh" g479erole -- bash "$G479E_STUB" 2>&1)"
+  "$ROOT/bin/fwf-gate.sh" g479erole -- bash "$G479E_STUB" 2>&1)"
 assert_contains "A(4): a killed run in per-case (GATE_CASE_EXTRACTOR) mode ALSO says it did not reach a conclusion" \
   "$G479E_OUT" "did NOT reach a conclusion"
 assert_not_contains "A(4): per-case mode's own content-verdict line is not printed for a killed run either" \
@@ -17070,27 +17072,27 @@ G239_ENV="G239_STATE=$G239_STATE FWF_REAL_GH=$G239_FAKEGH FWF_GHCACHE_DIR=$G239_
 
 assert_eq "AC: before any traffic, all three counters are zero, not UNKNOWN or an error" \
   "hit=0 revalidated=0 charged=0 window=3600s" \
-  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+  "$(env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" metrics 3600)"
 
-env $G239_ENV bash "$ROOT/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
+env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
 assert_eq "the first-ever poll is a charged 200 fetch" \
   "hit=0 revalidated=0 charged=1 window=3600s" \
-  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+  "$(env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" metrics 3600)"
 
 # AC: "a burst of identical polls shows as hits, not as spend."
 for _ in 1 2 3 4 5; do
-  env $G239_ENV bash "$ROOT/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
+  env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
 done
 assert_eq "AC(hit-storm != spend-storm): 5 more identical polls inside the TTL window register as hits, charged stays 1" \
   "hit=5 revalidated=0 charged=1 window=3600s" \
-  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+  "$(env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" metrics 3600)"
 
 # Force staleness (without changing the upstream ETag) to drive a 304.
 touch -t 202001010000 "$G239_CACHE/owner__g239repo/issues.ts"
-env $G239_ENV bash "$ROOT/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
+env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" serve issue list --json number,title >/dev/null 2>&1
 assert_eq "an unchanged poll past the TTL revalidates via 304 -- free, not charged" \
   "hit=5 revalidated=1 charged=1 window=3600s" \
-  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+  "$(env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" metrics 3600)"
 
 # The window actually bounds the count, not just labels it -- proven with a
 # deliberately backdated log entry rather than a real-time race against the
@@ -17100,10 +17102,10 @@ G239_METRICS_LOG="$G239_CACHE/owner__g239repo/metrics.log"
 printf 'ts=%s kind=charged\n' "$(( $(date +%s) - 7200 ))" >> "$G239_METRICS_LOG"
 assert_eq "a backdated (2h-old) event is EXCLUDED by a 1-hour window" \
   "hit=5 revalidated=1 charged=1 window=3600s" \
-  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 3600)"
+  "$(env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" metrics 3600)"
 assert_eq "the SAME backdated event IS included once the window widens past its age" \
   "hit=5 revalidated=1 charged=2 window=10800s" \
-  "$(env $G239_ENV bash "$ROOT/fwf-ghcache.sh" metrics 10800)"
+  "$(env $G239_ENV bash "$ROOT/bin/fwf-ghcache.sh" metrics 10800)"
 
 # --------------------------------------------------------------------------
 section "fwf-ghcache.sh headroom: rate-limit exhaustion renders as UNKNOWN, never a guessed number (issue #239)"
@@ -17111,11 +17113,11 @@ G239_FAILGH="$TMP/gate239-failgh.sh"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$G239_FAILGH"
 chmod +x "$G239_FAILGH"
 G239_FAIL_CACHE="$TMP/gate239-fail-cache"
-G239_HEADROOM_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail bash "$ROOT/fwf-ghcache.sh" headroom)"
+G239_HEADROOM_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail bash "$ROOT/bin/fwf-ghcache.sh" headroom)"
 assert_eq "AC: with the API forced to fail, headroom prints the literal UNKNOWN, never a number" \
   "UNKNOWN" "$G239_HEADROOM_OUT"
 assert_eq "the UNKNOWN case exits non-zero (a caller checking rc, not just parsing stdout, still catches it)" \
-  "1" "$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail bash "$ROOT/fwf-ghcache.sh" headroom >/dev/null 2>&1; echo $?)"
+  "1" "$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_FAIL_CACHE" FWF_GHCACHE_REPO=owner/g239fail bash "$ROOT/bin/fwf-ghcache.sh" headroom >/dev/null 2>&1; echo $?)"
 
 G239_OKGH="$TMP/gate239-okgh.sh"
 cat > "$G239_OKGH" <<'OKEOF'
@@ -17128,15 +17130,15 @@ exit 1
 OKEOF
 chmod +x "$G239_OKGH"
 G239_OK_CACHE="$TMP/gate239-ok-cache"
-G239_OK_OUT="$(FWF_REAL_GH="$G239_OKGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/fwf-ghcache.sh" headroom)"
+G239_OK_OUT="$(FWF_REAL_GH="$G239_OKGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/bin/fwf-ghcache.sh" headroom)"
 assert_eq "a successful headroom read reports the real numbers" "remaining=42 limit=5000 reset=9999999999" "$G239_OK_OUT"
 
 # AC: "the headroom report is cached on the standard TTL, and asserted NOT
 # to add a per-render API call." Swap in a gh that FAILS after the first
 # successful read -- if headroom re-fetched instead of serving its cache,
 # the second call would flip to UNKNOWN.
-FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/fwf-ghcache.sh" headroom >/dev/null 2>&1
-G239_CACHED_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/fwf-ghcache.sh" headroom)"
+FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/bin/fwf-ghcache.sh" headroom >/dev/null 2>&1
+G239_CACHED_OUT="$(FWF_REAL_GH="$G239_FAILGH" FWF_GHCACHE_DIR="$G239_OK_CACHE" FWF_GHCACHE_REPO=owner/g239ok bash "$ROOT/bin/fwf-ghcache.sh" headroom)"
 assert_eq "AC: a second headroom call inside the TTL window is served from cache, not a new API call" \
   "remaining=42 limit=5000 reset=9999999999" "$G239_CACHED_OUT"
 
@@ -17158,13 +17160,13 @@ G442_REPO="$TMP/g442-repo"; mkdir -p "$G442_REPO"
 
 # (a) origin/main == HEAD -> up to date
 ( cd "$G442_REPO" && git update-ref refs/remotes/origin/main HEAD )
-G442_A="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_REPO'")"
+G442_A="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_doctor_install_head_line '$G442_REPO'")"
 assert_contains "AC(442a): install HEAD == origin/main -> up to date" "$G442_A" "up to date with origin/main"
 
 # (b) origin/main N commits ahead -> names the count and issue #442
 ( cd "$G442_REPO" && git commit -q --allow-empty -m ahead1 && git commit -q --allow-empty -m ahead2 \
   && git update-ref refs/remotes/origin/main HEAD && git reset -q --hard HEAD~2 )
-G442_B="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_REPO'")"
+G442_B="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_doctor_install_head_line '$G442_REPO'")"
 assert_contains "AC(442b): 2 commits behind -> names the count"     "$G442_B" "2 commit(s) behind origin/main"
 assert_contains "AC(442b): names the issue"                         "$G442_B" "issue #442"
 assert_contains "AC(442b): points at the operator, not a unilateral fix" "$G442_B" "ask the operator"
@@ -17173,17 +17175,17 @@ assert_contains "AC(442b): points at the operator, not a unilateral fix" "$G442_
 G442_C_REPO="$TMP/g442-repo-noremote"; mkdir -p "$G442_C_REPO"
 ( cd "$G442_C_REPO" && git init -q && git config user.email t@t.co && git config user.name t \
   && git commit -q --allow-empty -m base )
-G442_C="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_C_REPO'")"
+G442_C="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_doctor_install_head_line '$G442_C_REPO'")"
 assert_contains "AC(442c): no origin/main ref -> could not check" "$G442_C" "could not check"
 assert_not_contains "AC(442c): never falsely reports up to date"  "$G442_C" "up to date"
 
 # (d) not a git checkout at all -> its own distinct state, not a crash
 G442_D_DIR="$TMP/g442-not-a-repo"; mkdir -p "$G442_D_DIR"
-G442_D="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line '$G442_D_DIR'")"
+G442_D="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_doctor_install_head_line '$G442_D_DIR'")"
 assert_contains "AC(442d): not a git checkout -> its own distinct line" "$G442_D" "not a git checkout"
 
 # (e) default (no arg) call site falls back to \$FWF_HOME, unchanged
-G442_E="$(FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_doctor_install_head_line" 2>&1)"
+G442_E="$(FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_doctor_install_head_line" 2>&1)"
 case "$G442_E" in
   "  fwf install: "*) ok "AC(442e): no-arg call falls back to \$FWF_HOME, still a well-formed line" ;;
   *) bad "AC(442e): no-arg call falls back to \$FWF_HOME, still a well-formed line" "got [$G442_E]" ;;
@@ -17224,7 +17226,7 @@ EOF
 chmod +x "$G239DRIFT_STUB/gh"
 rm -f "$G239DRIFT_LOG"
 ( export PATH="$G239DRIFT_STUB:$PATH"
-  FWF_PROFILE=example FWF_REPO="$G239DRIFT_GITROOT" bash -c "source '$ROOT/lib.sh'; fwf_build_plane_blocked" >/dev/null 2>&1 )
+  FWF_PROFILE=example FWF_REPO="$G239DRIFT_GITROOT" bash -c "source '$ROOT/bin/lib.sh'; fwf_build_plane_blocked" >/dev/null 2>&1 )
 assert_eq "AC(drift): fwf_build_plane_blocked makes exactly 3 gh calls per tick in its worst case (pr-count + claim scan + #391 resolved-PR fetch) -- change this number only deliberately" \
   "3" "$(wc -l < "$G239DRIFT_LOG" | tr -d ' ')"
 assert_eq "the FIRST call is the pr-count check" "pr list" \
@@ -17253,7 +17255,7 @@ exit 1
 EOF
 chmod +x "$G239FAIL_STUB/gh"
 
-G239BUILD_OUT="$(PATH="$G239FAIL_STUB:$PATH" FWF_PROFILE=example FWF_REPO="$ROOT" bash -c "source '$ROOT/lib.sh'; fwf_build_plane_blocked")"
+G239BUILD_OUT="$(PATH="$G239FAIL_STUB:$PATH" FWF_PROFILE=example FWF_REPO="$ROOT" bash -c "source '$ROOT/bin/lib.sh'; fwf_build_plane_blocked")"
 assert_contains "AC: fwf_build_plane_blocked (#147) does NOT conclude 'nothing in flight' when gh genuinely fails -- it reports blocked" \
   "$G239BUILD_OUT" "could not query open PRs"
 case "$G239BUILD_OUT" in
@@ -17261,7 +17263,7 @@ case "$G239BUILD_OUT" in
   *) ok "fwf_build_plane_blocked returns a non-empty (blocked) reason under a failed gh read, never the empty/safe string" ;;
 esac
 
-G239PM_OUT="$(PATH="$G239FAIL_STUB:$PATH" FWF_PROFILE=example FWF_ISSUES=gh bash -c "source '$ROOT/lib.sh'; fwf_pm_plane_blocked")"
+G239PM_OUT="$(PATH="$G239FAIL_STUB:$PATH" FWF_PROFILE=example FWF_ISSUES=gh bash -c "source '$ROOT/bin/lib.sh'; fwf_pm_plane_blocked")"
 assert_contains "AC: fwf_pm_plane_blocked (#147) does NOT conclude 'nothing in flight' when gh genuinely fails -- it reports blocked" \
   "$G239PM_OUT" "could not query"
 case "$G239PM_OUT" in
@@ -17332,7 +17334,7 @@ assert_eq "AC1: the final summary format names a skipped count, not just passed/
 # waiting for a Mac to notice. Each names the defect it prevents.
 section "portability (#337): no GNU-only constructs on kill / cache / time paths"
 
-PORT_FILES="$ROOT/lib.sh $ROOT/fwf-gate.sh $ROOT/fwf-ghcache.sh"
+PORT_FILES="$ROOT/bin/lib.sh $ROOT/bin/fwf-gate.sh $ROOT/bin/fwf-ghcache.sh"
 # Match only LIVE code, never comments. Deliberately POSIX: an earlier version
 # of this very guard used `grep -v '^\s*#'`, and \s is itself a GNU extension --
 # a portability check that was not portable. awk strips "file:line:" then any
@@ -17370,12 +17372,12 @@ PORT_DATEJ="$(port_live 'date -j -f' | grep -v 'date -u -j -f' || true)"
 section "portability (#332): _fwf_ps_elapsed_secs + the fail-CLOSED split"
 
 # Behavioural, and platform-neutral: `ps -o etime=` exists on GNU and BSD.
-PORT_EL_LIVE="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs \$\$")"
+PORT_EL_LIVE="$(bash -c "source '$ROOT/bin/lib.sh'; _fwf_ps_elapsed_secs \$\$")"
 case "$PORT_EL_LIVE" in
   ''|*[!0-9]*) bad "elapsed-secs of a LIVE pid is numeric" "got [$PORT_EL_LIVE]";;
   *) ok "elapsed-secs of a LIVE pid is numeric (portable 'ps -o etime=' parse)";;
 esac
-PORT_EL_DEAD="$(bash -c "source '$ROOT/lib.sh'; _fwf_ps_elapsed_secs 999999999")"
+PORT_EL_DEAD="$(bash -c "source '$ROOT/bin/lib.sh'; _fwf_ps_elapsed_secs 999999999")"
 [ -z "$PORT_EL_DEAD" ] \
   && ok "elapsed-secs of a DEAD pid is EMPTY, never a fabricated 0 (#211)" \
   || bad "elapsed-secs of a DEAD pid is EMPTY" "got [$PORT_EL_DEAD]"
@@ -17421,7 +17423,7 @@ chmod +x "$PORT_STUB/ps"
 # expanded below: assigning and expanding the SAME name in one command line is
 # SC2097/SC2098 (the expansion would not see the assignment).
 PORT_REFUSE="$(PATH="$PORT_STUB:$PATH" FWF_STUB_PGID="$PORT_TARGET_PGID" \
-  bash -c "source '$ROOT/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 $PORT_TARGET_PGID \$(( \$(date +%s) - 9999 ))" 2>&1)"
+  bash -c "source '$ROOT/bin/lib.sh'; _fwf_kill_orphan_group \"\$(hostname)\" 1 $PORT_TARGET_PGID \$(( \$(date +%s) - 9999 ))" 2>&1)"
 case "$PORT_REFUSE" in
   '') bad "#332 fail-CLOSED: the stub must REACH the elapsed-time branch" "empty output -- the self-check or ancestor-walk short-circuited; the test is vacuous";;
   *"refusing to signal"*) ok "#332 fail-CLOSED: LIVE pgid with undeterminable elapsed time REFUSES (never reaps)";;
@@ -17435,12 +17437,12 @@ esac
 # ---------------------------------------------------------------------------
 section "fwf gate-verdict-watchdog (#469): a recorded GREEN verdict is a claim, not a passive record"
 
-GVW="$ROOT/fwf-gate-verdict-watchdog.sh"
+GVW="$ROOT/bin/fwf-gate-verdict-watchdog.sh"
 
 # $1=role $2=verdict $3=tip -> writes a real gate-tip record via lib.sh so
 # tip_record's own read path is exercised, not a hand-authored file.
 GVW_SEED_TIP() {
-  FWF_RUN_DIR="$GVWRUN" FWF_PROFILE=example bash -c "source '$ROOT/lib.sh'; fwf_gate_tip_record '$1' '$3' '$2'"
+  FWF_RUN_DIR="$GVWRUN" FWF_PROFILE=example bash -c "source '$ROOT/bin/lib.sh'; fwf_gate_tip_record '$1' '$3' '$2'"
 }
 GVW_RECORDED_AT() { # $1=role -> the epoch lib.sh actually stamped, from the real file
   awk -F= '/^recorded=/{print $2}' "$GVWRUN/state/example/gate-tip/$1"

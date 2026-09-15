@@ -430,7 +430,7 @@ the real path —
 
 ```bash
 FWF_TEMPLATE=my-variant FWF_PROFILE=example bash -c \
-  'source lib.sh; fwf_render "$(fwf_tmpl_path captain)" ""' | head -c 400
+  'source bin/lib.sh; fwf_render "$(fwf_tmpl_path captain)" ""' | head -c 400
 ```
 
 and add an eval scenario for any behavior you care about (next section).

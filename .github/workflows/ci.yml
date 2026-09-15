@@ -76,7 +76,7 @@ jobs:
           secs="$(( $(date +%s) - start ))"
           against="${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}"
           against="${against:-HEAD^}"
-          bash fwf-gate-rust-scope.sh --against "$against" --log .gate-bash-suite-shadow.log \
+          bash bin/fwf-gate-rust-scope.sh --against "$against" --log .gate-bash-suite-shadow.log \
             --full-suite-secs "$secs" --suite-name "bash test/run.sh" \
             --safe 'docs/*' --safe '*.md'
         env:
@@ -164,11 +164,11 @@ jobs:
           secs="$(( $(date +%s) - start ))"
           against="${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}"
           against="${against:-HEAD^}"
-          bash ../fwf-gate-rust-scope.sh --against "$against" --log ../.gate-rust-shadow.log \
+          bash ../bin/fwf-gate-rust-scope.sh --against "$against" --log ../.gate-rust-shadow.log \
             --full-suite-secs "$secs" \
             --safe 'docs/*' --safe '*.md' --safe 'test/*' --safe 'templates/*' \
-            --safe 'lib/*' --safe 'lib.sh' --safe 'fwf' --safe 'fwf-*.sh' \
-            --safe 'config.sh' --safe 'profiles/*' --safe 'eval/*' --safe 'install.sh'
+            --safe 'lib/*' --safe 'bin/*' --safe 'fwf-legacy' \
+            --safe 'profiles/*' --safe 'eval/*' --safe 'install.sh'
         env:
           # profiles/example.sh is the ONLY profile that lives in this repo;
           # 'fwf' is an installed, out-of-tree profile, so naming it here made

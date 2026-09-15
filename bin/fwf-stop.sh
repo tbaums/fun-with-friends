@@ -16,7 +16,7 @@ for s in "$COORD_SESSION" "$BUILD_SESSION"; do tmux has-session -t "$s" 2>/dev/n
 mkdir -p "$FWF_RUN"
 : > "$STOP_FILE"   # sentinel: looping agents that check __STOPFILE__ will self-halt
 
-MSG="$(tr '\n' ' ' < "$DIR/prompts/stop.txt" | tr -s ' ')"
+MSG="$(tr '\n' ' ' < "$DIR/../prompts/stop.txt" | tr -s ' ')"
 for s in "$COORD_SESSION" "$BUILD_SESSION"; do
   tmux has-session -t "$s" 2>/dev/null || continue
   for p in $(tmux list-panes -t "$s" -F '#{pane_id}'); do

@@ -13,7 +13,7 @@ context that has never reported is a refusal, exactly like a failing one; this
 polls for up to 20 minutes, matched to `ci.yml`'s own observed
 `functional suite (ubuntu-latest)` worst case plus scheduling margin, then
 fails closed rather than publishing on an incomplete picture — see
-[`fwf-release-ci-gate.sh`](fwf-release-ci-gate.sh)). Only then does it verify
+[`bin/fwf-release-ci-gate.sh`](bin/fwf-release-ci-gate.sh)). Only then does it verify
 `tag == VERSION`, lint (`shellcheck -S warning`), run the
 functional suite, build a tarball with [`scripts/package.sh`](scripts/package.sh),
 builds prebuilt `fwf-dash` binaries for every target in

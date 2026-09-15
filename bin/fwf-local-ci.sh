@@ -272,7 +272,7 @@ failed_marker="$VDIR/$sha.failed"
 start_ts="$(date +%s)"
 
 rc=0
-bash "$DIR/test/run.sh" > "$log" 2>&1 || rc=$?
+bash "$DIR/../test/run.sh" > "$log" 2>&1 || rc=$?
 
 # MEMORY-ADMISSION GATE (issue #156, moved here 2026-08-29). This used to be a
 # dedicated step in ci.yml/release.yml. CI is off GitHub now, so the gate lives
@@ -280,9 +280,9 @@ bash "$DIR/test/run.sh" > "$log" 2>&1 || rc=$?
 # test/run.sh on purpose: #156's suite spawns memory-hungry children and nesting
 # it got the whole outer gate SIGKILLed mid-run as "wedged" (the #123 anomaly).
 # It stays a separate invocation, and a red here is a red verdict.
-if [ -f "$DIR/test/mem-admit-test.sh" ]; then
+if [ -f "$DIR/../test/mem-admit-test.sh" ]; then
   echo "--- memory-admission suite (issue #156) ---" >> "$log"
-  bash "$DIR/test/mem-admit-test.sh" >> "$log" 2>&1 || rc=$?
+  bash "$DIR/../test/mem-admit-test.sh" >> "$log" 2>&1 || rc=$?
 fi
 elapsed="$(( $(date +%s) - start_ts ))"
 summary="$(grep -E '^[0-9]+ passed,' "$log" | tail -1)"
