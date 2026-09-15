@@ -1,6 +1,22 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.6 — 2026-09-15
+
+Core-9 burn-down, every ticket through GV triage → PM spec → GV sign-off.
+
+- **Scheduler drives gated issues through GV→PM→GV automatically** (#629, PR #647) — a `product-wip` allow-listed issue is triaged, specced and re-triaged by the loop; un-gate stays human-only (`fwf ungate --by`). Delegated sign-off split to #645, discovery policy to #646.
+- **No ticket is impl-eligible without a PM spec + GV READY sign-off** (#630, PR #651) — eligibility now requires the review, not just the missing gate label.
+- **Repo root tidied** (#622, PR #648) — the 49 `fwf-*.sh` scripts plus `lib.sh`/`config.sh` move to `bin/`; every caller repointed (QA caught the one miss in `lib/version_check.sh`).
+- **dash: golden real-record test** (#627, PR #649) — `log::read_all → fold → render` exercised end-to-end on a real run record.
+- **dash: `--help` prints help** (#628, PR #650) — no longer renders a board for the wrong floor on an unknown flag.
+- Closed as already shipped in earlier merges: #623 (retire the 0.x bash tool), #624/#625/#626 (dash width, stale RED alerts, `--watch` default), #602/#604/#621.
+
+## 1.0.5 — 2026-09-14
+
+- **Branch push token minted from the impl App with `workflows: write`** (#636) — branches touching `.github/workflows/` push again.
+- **one-release.yml triggers on `v*` tags** (#641) — Linux assets build for every release; the legacy `one-v*` trigger is gone.
+
 ## 1.0.3 — 2026-09-13
 
 The docs release. Nothing in the supervisor's behavior changes; the repo now reads as fwf 1.0's front door instead of 0.x's, and the prompts are where a reader lands first.
