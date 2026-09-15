@@ -497,6 +497,9 @@ fn number_in(s: &str) -> Option<u64> {
 /// The joins the record cannot make on its own: the manifest, tmux
 /// liveness, the meter — and the rows the board draws from them.
 pub mod floor;
+/// #627 — a real floor's record through `read_all` → `fold` → `render`.
+#[cfg(test)]
+mod golden;
 /// The four tab bodies and the cost ledger.
 pub mod panes;
 /// The terminal layer: size, raw mode, keys, the frame loop.

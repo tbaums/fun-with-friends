@@ -559,6 +559,23 @@ pub(crate) mod fixture {
         render(&b, &floor(), &v, 1_000_100)
     }
 
+    /// The width of a rendered line, measured without going through
+    /// `vis_len` — the bug was *in* `vis_len`, so a test that trusts it
+    /// cannot see the bug (#624). Escapes are stripped here; every remaining
+    /// character is asked how wide it is.
+    pub fn columns(s: &str) -> usize {
+        let mut n = 0;
+        let mut esc = false;
+        for c in s.chars() {
+            match c {
+                _ if esc => esc = c != 'm',
+                '\x1b' => esc = true,
+                _ => n += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0),
+            }
+        }
+        n
+    }
+
     pub fn frame_at(tab: Tab, now: u64) -> String {
         let v = View {
             tab,
@@ -643,23 +660,6 @@ mod tests {
             0,
         );
         assert!(u.contains("run record is empty"));
-    }
-
-    /// The width of a rendered line, measured without going through
-    /// `vis_len` — the bug was *in* `vis_len`, so a test that trusts it
-    /// cannot see the bug (#624). Escapes are stripped here; every remaining
-    /// character is asked how wide it is.
-    fn columns(s: &str) -> usize {
-        let mut n = 0;
-        let mut esc = false;
-        for c in s.chars() {
-            match c {
-                _ if esc => esc = c != 'm',
-                '\x1b' => esc = true,
-                _ => n += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0),
-            }
-        }
-        n
     }
 
     /// ⛔ is two columns wide. Counting it as one is what made a frame built
