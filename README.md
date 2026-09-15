@@ -121,8 +121,11 @@ prints what it refused and why, and the refusal is recorded.
   than the author, plus a live claim fence matching the commit the work was
   built on, plus completed checks on that head. A review made one commit ago is
   not an approval of this one.
-- **Only a human un-gates.** A model may gate an issue; `fwf ungate --by NAME`
-  is the only thing that makes it eligible, and the record names who.
+- **A named person un-gates.** A model may gate an issue; `fwf ungate --by NAME`
+  is what makes it eligible, and the record names who. A floor may delegate that
+  sign-off to one approver with `delegate_ungate = "NAME"` in the manifest — the
+  loop then un-gates after a spec under that name, and the record still names
+  who. Nothing else removes the gate.
 - **A promotion needs a recorded green gate for that literal SHA.** A gate
   result for a different commit, or a stale one, is refused rather than
   reinterpreted.
@@ -142,7 +145,7 @@ prints what it refused and why, and the refusal is recorded.
 | `up`, `doctor`, `status`, `dash`, `why <pr>`, `cost`, `version` | read-only: validate and mint, one-screen status, the five-tab board, one PR's timeline, measured tokens | - |
 | `seats --up/--down` | mirror, worktree clones and warm panes; `--down` refuses while a seat is Working | - |
 | `init-manifest` | print an example manifest, or convert an existing profile | - |
-| `run [--once]` | the supervisor loop; only allow-listed issues; parks on the meter brake | all three |
+| `run [--once]` | the supervisor loop; GV triage and PM spec of gated issues (`auto_spec`), then impl/QA on allow-listed ones; parks on the meter brake | all three |
 | `spec --issue N` | wake the PM seat on a gated issue; its spec is written into the issue, gate untouched | ops |
 | `triage --issue N` | wake the GV seat; a not-ready verdict gates the issue | ops |
 | `ungate --issue N --by NAME` | the one human decision, made mechanical and recorded | ops |

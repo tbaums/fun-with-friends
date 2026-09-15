@@ -126,7 +126,7 @@ pub fn spec(args: &[String]) -> ExitCode {
         repo: name.into(),
         issue,
         gate_label: "product-wip".into(),
-        discovery_label: "discovery".into(),
+        discovery_label: spec::DISCOVERY_LABEL.into(),
         seat_target: seat,
         seat_expect_cmd: get(args, "--expect").unwrap_or_else(|| "claude".into()),
         floor_dir: floor,
@@ -709,12 +709,9 @@ pub fn run_loop(args: &[String]) -> ExitCode {
     };
     let floor = m.floor();
     let (run_log, mirror_dir) = slice::defaults(&floor);
-    let mut impl_seats = Vec::new();
-    let mut qa_seats = Vec::new();
-    for n in 1..=m.pairs {
-        impl_seats.push((n, m.seat_target("impl", n)));
-        qa_seats.push((n, m.seat_target("qa", n)));
-    }
+    let seats = |role: &str| -> Vec<(u8, String)> {
+        (1..=m.pairs).map(|n| (n, m.seat_target(role, n))).collect()
+    };
     let cfg = run::RunConfig {
         owner: m.owner().to_string(),
         repo: m.name().to_string(),
@@ -723,8 +720,8 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         floor_dir: floor.clone(),
         mirror_dir,
         run_log,
-        impl_seats,
-        qa_seats,
+        impl_seats: seats("impl"),
+        qa_seats: seats("qa"),
         seat_expect_cmd: "claude".into(),
         interval: Duration::from_secs(m.poll_interval_secs),
         job_timeout: Duration::from_secs(m.job_timeout_secs),
@@ -735,6 +732,9 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         skip_labels: m.skip_labels.clone(),
         triage_new: m.triage_new,
         gv_seat: m.models.contains_key("gv").then(|| m.seat_target("gv", 1)),
+        auto_spec: m.auto_spec,
+        pm_seat: m.models.contains_key("pm").then(|| m.seat_target("pm", 1)),
+        delegate_ungate: m.delegate_ungate.clone(),
         park_at_weekly_pct: m.park_at_weekly_pct,
         rework_cap: m.rework_cap,
         gate_suite: m.fast_suite.clone(),

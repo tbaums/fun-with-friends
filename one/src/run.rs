@@ -41,6 +41,13 @@ pub struct RunConfig {
     /// GV triage of new issues each tick (manifest `triage_new`); needs a GV seat.
     pub triage_new: bool,
     pub gv_seat: Option<String>,
+    /// The spec cycle for gated issues each tick (manifest `auto_spec`): one GV
+    /// wake and one PM wake, budgeted apart from the impl/QA seats.
+    pub auto_spec: bool,
+    pub pm_seat: Option<String>,
+    /// When set, the loop un-gates under this name once a spec lands instead
+    /// of waiting for a human `fwf ungate` (manifest `delegate_ungate`).
+    pub delegate_ungate: Option<String>,
     /// Park the floor while the last logged weekly meter % is at or above this.
     pub park_at_weekly_pct: u8,
     /// How many rework rounds one PR may have before it becomes a human's
@@ -69,12 +76,8 @@ pub fn triaged_issues(events: &[crate::log::Event]) -> std::collections::BTreeSe
             } => {
                 out.insert(*issue);
             }
-            Kind::Note { text } if text.starts_with("GV triage: #") => {
-                if let Some(n) = text["GV triage: #".len()..]
-                    .split(|c: char| !c.is_ascii_digit())
-                    .next()
-                    .and_then(|s| s.parse().ok())
-                {
+            Kind::Note { text } => {
+                if let Some(n) = note_issue(text, crate::triage::READY_NOTE_PREFIX) {
                     out.insert(n);
                 }
             }
@@ -82,6 +85,117 @@ pub fn triaged_issues(events: &[crate::log::Event]) -> std::collections::BTreeSe
         }
     }
     out
+}
+
+/// The issue number a record note names, when the note starts with `prefix`.
+fn note_issue(text: &str, prefix: &str) -> Option<u64> {
+    text.strip_prefix(prefix)?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// What GV has already said about each issue, replayed from the record: `true`
+/// where GV judged it ready, `false` where the verdict gated it. An issue
+/// absent from this map has no GV verdict, which is what puts it in front of
+/// the GV seat (#629). Later verdicts win, so a re-triage after a human edit
+/// replaces the old one.
+pub fn gv_verdicts(events: &[crate::log::Event]) -> BTreeMap<u64, bool> {
+    use crate::log::Kind;
+    use crate::types::IssueState;
+    let mut out = BTreeMap::new();
+    for e in events {
+        match &e.kind {
+            Kind::Issue {
+                issue,
+                to: IssueState::Gated,
+            } => {
+                out.insert(*issue, false);
+            }
+            Kind::Note { text } => {
+                if let Some(n) = note_issue(text, crate::triage::READY_NOTE_PREFIX) {
+                    out.insert(n, true);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Issues a PM spec is already recorded for; PM is never woken twice on one.
+pub fn specced_issues(events: &[crate::log::Event]) -> std::collections::BTreeSet<u64> {
+    use crate::log::Kind;
+    events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Note { text } => note_issue(text, crate::spec::SPEC_NOTE_PREFIX),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A skip label parks an issue — except on a `discovery` ticket, whose
+/// deliverable is a proposal and which therefore gets the same GV→PM path as
+/// anything else (#629).
+fn parked(labels: &[String], skip_labels: &[String]) -> bool {
+    !labels.iter().any(|l| l == crate::spec::DISCOVERY_LABEL)
+        && labels.iter().any(|l| skip_labels.contains(l))
+}
+
+/// Open, gated, not parked. The two halves of the spec cycle share this and
+/// then differ only in what the record must (not) already say.
+fn gated_open<'a>(
+    snap: &'a crate::poll::Snapshot,
+    gate_label: &str,
+    skip_labels: &[String],
+) -> Vec<&'a crate::poll::IssueView> {
+    let mut v: Vec<&crate::poll::IssueView> = snap
+        .issues
+        .iter()
+        .filter(|i| {
+            i.state == "open"
+                && i.labels.iter().any(|l| l == gate_label)
+                && !parked(&i.labels, skip_labels)
+        })
+        .collect();
+    v.sort_unstable_by_key(|i| i.number);
+    v
+}
+
+/// Gated issues GV has never judged, oldest first. These are the tickets the
+/// operator's convention files with the gate label already on: before #629
+/// nothing ever looked at them, because the in-loop `triage_new` filter only
+/// ever considered issues *without* the gate.
+pub fn gv_gated_candidates(
+    snap: &crate::poll::Snapshot,
+    gate_label: &str,
+    skip_labels: &[String],
+    judged: &BTreeMap<u64, bool>,
+) -> Vec<u64> {
+    gated_open(snap, gate_label, skip_labels)
+        .into_iter()
+        .filter(|i| !judged.contains_key(&i.number))
+        .map(|i| i.number)
+        .collect()
+}
+
+/// Gated issues GV judged ready and PM has not specced, oldest first. A
+/// not-ready verdict keeps an issue out of here until a human edits it and a
+/// fresh GV verdict lands: the loop never re-triages its own refusal.
+pub fn pm_candidates(
+    snap: &crate::poll::Snapshot,
+    gate_label: &str,
+    skip_labels: &[String],
+    judged: &BTreeMap<u64, bool>,
+    specced: &std::collections::BTreeSet<u64>,
+) -> Vec<u64> {
+    gated_open(snap, gate_label, skip_labels)
+        .into_iter()
+        .filter(|i| judged.get(&i.number) == Some(&true) && !specced.contains(&i.number))
+        .map(|i| i.number)
+        .collect()
 }
 
 /// Open, un-gated, not parked by a `skip_labels` tag, never-triaged, and not
@@ -147,6 +261,105 @@ pub fn unpushed_issues(events: &[crate::log::Event]) -> std::collections::BTreeS
     crate::log::pending_pushes(events).into_keys().collect()
 }
 
+/// The spec cycle (#629): GV judges one gated issue it has never judged, then
+/// PM specs one gated issue GV called ready. At most one wake of each per
+/// tick, budgeted apart from the impl/QA seats.
+///
+/// It runs before the allow-list narrows the snapshot, for the same reason
+/// `triage_new` does: a specced ticket is how an issue becomes worth
+/// allow-listing in the first place. The gate label is never removed here —
+/// the outcome is "specced, awaiting un-gate" — unless `delegate_ungate` names
+/// the approver who stands in for the human.
+fn spec_cycle(
+    cfg: &RunConfig,
+    ops: Option<&crate::github::AppEntry>,
+    snap: &crate::poll::Snapshot,
+) {
+    let Some(ops) = ops else { return };
+    let events = || crate::log::read_all(&cfg.run_log).unwrap_or_default();
+    if let Some(gv) = &cfg.gv_seat {
+        let judged = gv_verdicts(&events());
+        if let Some(&n) =
+            gv_gated_candidates(snap, &cfg.gate_label, &cfg.skip_labels, &judged).first()
+        {
+            let tcfg = crate::triage::TriageConfig {
+                owner: cfg.owner.clone(),
+                repo: cfg.repo.clone(),
+                issue: n,
+                gate_label: cfg.gate_label.clone(),
+                seat_target: gv.clone(),
+                seat_expect_cmd: cfg.seat_expect_cmd.clone(),
+                floor_dir: cfg.floor_dir.clone(),
+                job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "gv"),
+                run_log: cfg.run_log.clone(),
+                timeout: cfg.job_timeout,
+            };
+            match crate::triage::run(&tcfg, ops) {
+                Ok((ready, reason)) => println!(
+                    "fwf run: GV judged gated #{n}: {} — {reason}",
+                    if ready {
+                        "ready (PM specs it next)"
+                    } else {
+                        "not ready (still gated, reason posted)"
+                    }
+                ),
+                // A stalled or refused seat records as such and leaves no
+                // verdict, so the issue is offered again next tick.
+                Err(e) => eprintln!("fwf run: GV cycle for #{n} failed: {}", e.0),
+            }
+        }
+    }
+    let Some(pm) = &cfg.pm_seat else { return };
+    // Re-read: GV may have judged an issue ready moments ago, and PM may take
+    // it in this same tick.
+    let evs = events();
+    let (judged, specced) = (gv_verdicts(&evs), specced_issues(&evs));
+    let Some(&n) =
+        pm_candidates(snap, &cfg.gate_label, &cfg.skip_labels, &judged, &specced).first()
+    else {
+        return;
+    };
+    let scfg = crate::spec::SpecConfig {
+        owner: cfg.owner.clone(),
+        repo: cfg.repo.clone(),
+        issue: n,
+        gate_label: cfg.gate_label.clone(),
+        discovery_label: crate::spec::DISCOVERY_LABEL.into(),
+        seat_target: pm.clone(),
+        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
+        floor_dir: cfg.floor_dir.clone(),
+        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "pm"),
+        run_log: cfg.run_log.clone(),
+        timeout: cfg.job_timeout,
+    };
+    match crate::spec::run(&scfg, ops) {
+        Ok((title, questions)) => {
+            println!(
+                "fwf run: PM specced #{n} — {title} ({} open question(s)); specced, awaiting un-gate",
+                questions.len()
+            );
+            if let Some(actor) = &cfg.delegate_ungate {
+                match crate::triage::ungate(
+                    &cfg.owner,
+                    &cfg.repo,
+                    n,
+                    &cfg.gate_label,
+                    actor,
+                    &cfg.run_log,
+                    ops,
+                ) {
+                    Ok(()) => println!("fwf run: #{n} un-gated on {actor}'s behalf; now eligible"),
+                    Err(e) => eprintln!(
+                        "fwf run: #{n} is specced but the delegated un-gate failed: {}",
+                        e.0
+                    ),
+                }
+            }
+        }
+        Err(e) => eprintln!("fwf run: PM cycle for #{n} failed: {}", e.0),
+    }
+}
+
 fn ready_or_gated_in_record(run_log: &std::path::Path, issue: u64) -> bool {
     crate::log::read_all(run_log)
         .map(|evs| triaged_issues(&evs).contains(&issue))
@@ -173,6 +386,19 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
     ) {
         Ok(0) | Err(_) => {}
         Ok(n) => eprintln!("run: {n} stale Working seat(s) from an interrupted run marked Stalled"),
+    }
+    // A stage with no seat is a stage that silently does nothing — the #629
+    // failure exactly. Say so once, at startup, as `triage_new` does.
+    if cfg.auto_spec {
+        if ops_app.is_none() {
+            eprintln!("run: auto_spec is on but there is no [ops] app; no gated issue will be triaged or specced");
+        }
+        if cfg.gv_seat.is_none() {
+            eprintln!("run: auto_spec is on but no GV seat is configured (`gv` in [models]); gated issues will not be triaged");
+        }
+        if cfg.pm_seat.is_none() {
+            eprintln!("run: auto_spec is on but no PM seat is configured (`pm` in [models]); gated issues will not be specced");
+        }
     }
     loop {
         // Meter brake (T-28): the operator's meter log is the only source of
@@ -335,10 +561,25 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 }
             }
         }
+        // The gated half of the same question (#629): GV on a gated issue it
+        // has never judged, PM on one GV called ready. Like triage above, this
+        // runs before the allow-list narrows the snapshot.
+        if cfg.auto_spec {
+            spec_cycle(cfg, ops_app, &snap);
+        }
         snap.issues
             .retain(|i| !i.labels.iter().any(|l| cfg.skip_labels.contains(l)));
         if !cfg.allow_issues.is_empty() {
             snap.issues.retain(|i| cfg.allow_issues.contains(&i.number));
+            // An allow-list pointing at closed or shipped tickets is what made
+            // 80 idle ticks look healthy (#629): a floor that plans nothing
+            // because its rail matches nothing says so, every tick.
+            if snap.issues.is_empty() {
+                eprintln!(
+                    "fwf run: the `issues` allow-list {:?} matches no open, eligible issue — nothing will be planned; widen it or clear it",
+                    cfg.allow_issues
+                );
+            }
             snap.prs.retain(|p| {
                 p.closes_issue
                     .is_some_and(|n| cfg.allow_issues.contains(&n))
@@ -752,175 +993,4 @@ fn last_meter_reading() -> Option<(u8, String)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::log::{Event, Kind};
-    use crate::poll::{IssueView, Snapshot};
-    use crate::types::IssueState;
-
-    fn issue(n: u64, labels: &[&str], claimed: bool) -> IssueView {
-        IssueView {
-            number: n,
-            title: format!("issue {n}"),
-            author_association: "OWNER".into(),
-            labels: labels.iter().map(|s| s.to_string()).collect(),
-            assignees: vec![],
-            state: "open".into(),
-            updated_at: String::new(),
-            claim: if claimed {
-                Some(crate::types::Fence("f".repeat(40)))
-            } else {
-                None
-            },
-        }
-    }
-
-    /// #602, fwf floor 2026-09-12: impl1 finished #583, its verdict was
-    /// valid, and the push upstream was rejected. The cycle was logged as a
-    /// failure, the issue went back to `ready`, and the next tick re-sliced
-    /// it — a 29-minute Opus cycle about to be run twice. The record is what
-    /// stops it: the work exists, only the write is owed.
-    #[test]
-    fn an_implemented_but_unpushed_issue_is_never_woken_a_second_time() {
-        let pending = crate::log::PendingPush {
-            issue: 583,
-            seat: 1,
-            branch: "impl1/issue-583-thin-slice".into(),
-            head: "a".repeat(40),
-            why: "[remote rejected] (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without `workflows` permission)".into(),
-        };
-        let evs = vec![Event {
-            ts: 1,
-            repo: "o/r".into(),
-            kind: Kind::Note {
-                text: pending.note(),
-            },
-        }];
-        let mut snap = Snapshot {
-            issues: vec![issue(583, &[], false), issue(584, &[], false)],
-            prs: vec![],
-            fetched_at: 1,
-            known: true,
-        };
-        let seats = vec![SeatSlot {
-            seat: 1,
-            role: Role::Impl,
-            state: SeatState::Idle,
-        }];
-        // the snapshot alone still offers the finished issue — GitHub has no
-        // idea the verdict exists
-        assert_eq!(
-            plan(&snap, &seats, "product-wip", true, 10).actions.first(),
-            Some(&Action::WakeImpl {
-                seat: 1,
-                issue: 583
-            })
-        );
-        let owed = unpushed_issues(&evs);
-        assert!(owed.contains(&583));
-        snap.issues.retain(|i| !owed.contains(&i.number));
-        let actions = plan(&snap, &seats, "product-wip", true, 10).actions;
-        assert!(
-            !actions.iter().any(|a| a.issue() == Some(583)),
-            "#583 was planned again: {actions:?}"
-        );
-        // and the floor is not parked by it: the next issue takes the seat
-        assert_eq!(
-            actions.first(),
-            Some(&Action::WakeImpl {
-                seat: 1,
-                issue: 584
-            })
-        );
-    }
-
-    #[test]
-    fn meter_age_parses_a_local_stamp_and_rejects_garbage() {
-        let now = crate::seat::now();
-        // Render `now - 600` as a local stamp with whichever `date` this is
-        // (BSD `-r`, GNU `-d @`), so the test exercises the same fallback path
-        // the brake uses on Linux runners.
-        let then = (now - 600).to_string();
-        let attempts: [Vec<String>; 2] = [
-            vec!["-r".into(), then.clone()],
-            vec!["-d".into(), format!("@{then}")],
-        ];
-        let stamp = attempts
-            .iter()
-            .find_map(|a| {
-                let out = std::process::Command::new("date")
-                    .args(a)
-                    .arg("+%Y-%m-%d %H:%M:%S")
-                    .output()
-                    .ok()?;
-                out.status
-                    .success()
-                    .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-            })
-            .expect("a date that renders epoch seconds as a local stamp");
-        let age = meter_age_secs(&stamp, now).unwrap();
-        assert!((595..=605).contains(&age), "{age}");
-        assert_eq!(meter_age_secs("not a date", now), None);
-    }
-
-    #[test]
-    fn triage_candidates_skip_gated_claimed_parked_and_already_judged() {
-        // #374 is the shape that started #585: parked as an `idea`, and offered
-        // to GV anyway because this filter never read the skip labels.
-        let snap = Snapshot {
-            issues: vec![
-                issue(5, &[], false),
-                issue(3, &["product-wip"], false),
-                issue(4, &[], true),
-                issue(2, &[], false),
-                issue(9, &[], false),
-                issue(374, &["idea"], false),
-                issue(375, &["tracking", "product-wip"], false),
-                issue(376, &["needs-human"], false),
-            ],
-            prs: vec![],
-            fetched_at: 0,
-            known: true,
-        };
-        let skip: Vec<String> = ["idea", "release-hold", "tracking", "needs-human"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let evs = vec![
-            Event {
-                ts: 1,
-                repo: "o/r".into(),
-                kind: Kind::Issue {
-                    issue: 9,
-                    to: IssueState::Gated,
-                },
-            },
-            Event {
-                ts: 2,
-                repo: "o/r".into(),
-                kind: Kind::Note {
-                    text: "GV triage: #2 judged ready — awaiting the human un-gate".into(),
-                },
-            },
-        ];
-        let seen = triaged_issues(&evs);
-        assert_eq!(seen.into_iter().collect::<Vec<_>>(), vec![2, 9]);
-        let seen = triaged_issues(&evs);
-        assert_eq!(
-            triage_candidates(&snap, "product-wip", &skip, &seen),
-            vec![5],
-            "a parked ticket is not GV's to judge"
-        );
-        // #5 is only in because it carries no skip label: take the list away
-        // and the parked ones come back (the default-off behaviour, unchanged).
-        assert_eq!(
-            triage_candidates(&snap, "product-wip", &[], &seen),
-            vec![5, 374, 376]
-        );
-        // a skip label alone is enough, with or without the gate label
-        assert_eq!(
-            triage_candidates(&snap, "no-such-gate", &skip, &seen),
-            vec![3, 5]
-        );
-    }
-}
+mod tests;
