@@ -9,13 +9,19 @@ name: one release (linux asset)
 # ubuntu-latest, like one-ci.yml. (The legacy tool's release.yml runs on a local
 # devbox for reasons particular to its own long suite; that rule is not this
 # crate's.)
+#
+# Tags: `v1.*`, not the old `one-v*` (#582 follow-up, shipped in v1.0.4 — which
+# is why that cut got only its two macOS assets, #641). The legacy 0.x tool's
+# release.yml keeps `v*.*.*` minus `v1.*`, so the two never both fire: the major
+# version, not a prefix, is what says which product a tag belongs to. A future
+# `v2.*` line has to be added here and excluded there in the same change.
 on:
   push:
-    tags: ['one-v*']
+    tags: ['v1.*']
   workflow_dispatch:
     inputs:
       tag:
-        description: the one-v* tag to upload onto
+        description: the v1.x tag to upload onto
         required: true
       ref:
         description: >-
@@ -55,7 +61,7 @@ jobs:
           bin="$(awk '/^\[\[bin\]\]/{inbin=1; next} inbin && /^name *=/{gsub(/.*= *"|"/,""); print; exit}' Cargo.toml)"
           [ -n "$version" ] || { echo "::error::no version in one/Cargo.toml"; exit 1; }
           [ -n "$bin" ] || { echo "::error::no [[bin]] name in one/Cargo.toml"; exit 1; }
-          [ "$TAG" = "one-v$version" ] || {
+          [ "$TAG" = "v$version" ] || {
             echo "::error::tag $TAG does not match one/Cargo.toml version $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
