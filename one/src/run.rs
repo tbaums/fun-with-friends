@@ -9,7 +9,7 @@
 use crate::github::Apps;
 use crate::poll::Poller;
 use crate::qa::{self, QaConfig};
-use crate::sched::{plan, Action, SeatSlot};
+use crate::sched::{Action, SeatSlot};
 use crate::slice::{self, SliceConfig};
 use crate::types::{Role, SeatState};
 use std::collections::BTreeMap;
@@ -603,7 +603,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 state: SeatState::Idle,
             });
         }
-        let p = plan(&snap, &seats, &cfg.gate_label, true, now);
+        let p = review::planned_after_review(cfg, &snap, &seats, now);
         let mut acted = 0;
         for a in &p.actions {
             match a {
@@ -991,6 +991,9 @@ fn local_stamp_to_epoch(when: &str) -> Option<u64> {
 fn last_meter_reading() -> Option<(u8, String)> {
     last_meter().map(|(w, _, when)| (w, when))
 }
+
+mod review;
+pub use review::*;
 
 #[cfg(test)]
 mod tests;

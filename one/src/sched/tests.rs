@@ -77,7 +77,10 @@ fn eligibility_rules() {
         seat(1, Role::Impl, SeatState::Idle),
         seat(2, Role::Qa, SeatState::Idle),
     ];
-    let p = plan(&s, &seats, GATE, true, 100);
+    // #630: the record decides. Only #3 is signed off, so only #3 is served —
+    // #4 is open, owner-authored and unlabelled, exactly the shape that used
+    // to go straight to impl unreviewed.
+    let p = plan(&s, &seats, true, &BTreeSet::from([3]), 100);
     assert_eq!(
         p.actions,
         vec![
@@ -85,9 +88,61 @@ fn eligibility_rules() {
             Action::WakeQa { seat: 2, pr: 10 }
         ]
     );
-    // owner_only=false admits #2 first (FIFO)
-    let p = plan(&s, &seats, GATE, false, 100);
+    // nothing signed off, nothing fast-tracked: no issue is claimable at all,
+    // whatever the labels say
+    let p = plan(&s, &seats, true, &BTreeSet::new(), 100);
+    assert!(!p
+        .actions
+        .iter()
+        .any(|a| matches!(a, Action::WakeImpl { .. })));
+    // a sign-off is final in v1: a re-gated issue is still served
+    let p = plan(&s, &seats, true, &BTreeSet::from([1]), 100);
+    assert_eq!(p.actions[0], Action::WakeImpl { seat: 1, issue: 1 });
+    // …but the claim label still means a seat holds it
+    let p = plan(&s, &seats, true, &BTreeSet::from([5]), 100);
+    assert!(!p
+        .actions
+        .iter()
+        .any(|a| matches!(a, Action::WakeImpl { .. })));
+    // owner_only=false admits #2, whose sign-off is what put it in the set
+    let p = plan(&s, &seats, false, &BTreeSet::from([2]), 100);
     assert_eq!(p.actions[0], Action::WakeImpl { seat: 1, issue: 2 });
+    let p = plan(&s, &seats, true, &BTreeSet::from([2]), 100);
+    assert!(!p
+        .actions
+        .iter()
+        .any(|a| matches!(a, Action::WakeImpl { .. })));
+}
+
+/// #630's opt-out: a label a human applies by hand, and the only thing other
+/// than a recorded sign-off that reaches an impl seat. `triage_new` being off,
+/// a missing gate label, an OWNER author — none of them are a review.
+#[test]
+fn fast_track_is_the_only_bypass_and_nothing_else_grants_eligibility() {
+    let s = snap(
+        vec![
+            issue(1, &[], "OWNER"),
+            issue(2, &[FAST_TRACK_LABEL], "OWNER"),
+            issue(3, &[GATE, FAST_TRACK_LABEL], "OWNER"),
+            issue(4, &[FAST_TRACK_LABEL], "NONE"),
+        ],
+        vec![],
+    );
+    let seats = [
+        seat(1, Role::Impl, SeatState::Idle),
+        seat(2, Role::Impl, SeatState::Idle),
+    ];
+    // no record at all: only the fast-tracked, owner-authored ones are served
+    let p = plan(&s, &seats, true, &BTreeSet::new(), 100);
+    assert_eq!(
+        p.actions,
+        vec![
+            Action::WakeImpl { seat: 1, issue: 2 },
+            Action::WakeImpl { seat: 2, issue: 3 },
+        ],
+        "a gated fast-track is still a deliberate bypass; #1 is unreviewed and #4 is not the owner's"
+    );
+    assert_eq!(fast_track_note(2), "fast-track: #2 bypassed review");
 }
 
 #[test]
@@ -123,25 +178,39 @@ fn busy_and_dead_seats_get_nothing_and_unknown_is_empty() {
         seat(5, Role::Qa, SeatState::Unknown),
     ];
     assert_eq!(
-        plan(&s, &busy, GATE, true, 100).actions,
+        plan(&s, &busy, true, &all_reviewed(&s), 100).actions,
         vec![Action::Nothing]
     );
-    assert!(plan(&s, &busy, GATE, true, 100).is_empty());
+    assert!(plan(&s, &busy, true, &all_reviewed(&s), 100).is_empty());
     assert!(plan(
         &Snapshot::unknown(),
         &[seat(1, Role::Impl, SeatState::Idle)],
-        GATE,
         true,
+        &BTreeSet::new(),
         1
     )
     .actions
     .is_empty());
     // head-anchored reviews are not QA work; drafts ARE (seats open drafts)
     let s = snap(vec![], vec![pr(3, None, false, true)]);
-    assert!(plan(&s, &[seat(1, Role::Qa, SeatState::Idle)], GATE, true, 1).is_empty());
+    assert!(plan(
+        &s,
+        &[seat(1, Role::Qa, SeatState::Idle)],
+        true,
+        &all_reviewed(&s),
+        1
+    )
+    .is_empty());
     let s = snap(vec![], vec![pr(2, None, true, false)]);
     assert_eq!(
-        plan(&s, &[seat(1, Role::Qa, SeatState::Idle)], GATE, true, 1).actions,
+        plan(
+            &s,
+            &[seat(1, Role::Qa, SeatState::Idle)],
+            true,
+            &all_reviewed(&s),
+            1
+        )
+        .actions,
         vec![Action::WakeQa { seat: 1, pr: 2 }]
     );
 }
@@ -164,11 +233,11 @@ fn live_job_blocks_rewake_and_stale_claim_is_released() {
         seat(2, Role::Impl, SeatState::Idle),
     ];
     assert_eq!(
-        plan(&s, &seats, GATE, true, 100).actions,
+        plan(&s, &seats, true, &all_reviewed(&s), 100).actions,
         vec![Action::WakeImpl { seat: 2, issue: 2 }]
     );
     // past the deadline the claim is stale → release with its fence
-    let p = plan(&s, &seats, GATE, true, 501);
+    let p = plan(&s, &seats, true, &all_reviewed(&s), 501);
     assert_eq!(
         p.actions,
         vec![
@@ -191,7 +260,7 @@ fn live_job_blocks_rewake_and_stale_claim_is_released() {
         ),
         seat(2, Role::Impl, SeatState::Idle),
     ];
-    let p = plan(&s, &seats, GATE, true, 100);
+    let p = plan(&s, &seats, true, &all_reviewed(&s), 100);
     assert_eq!(
         p.actions,
         vec![Action::ReleaseClaim {
@@ -235,8 +304,11 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
     ];
     let poller = Poller::new(fake.base_url(), &ops, O, R);
 
+    // Only `eligible` is signed off in the record (#630); `foreign` and
+    // `gated` are not, and neither is fast-tracked.
+    let signed_off = BTreeSet::from([eligible]);
     let s1 = poller.poll(1).unwrap();
-    let p1 = plan(&s1, &seats, GATE, true, 1);
+    let p1 = plan(&s1, &seats, true, &signed_off, 1);
     let wakes: Vec<&Action> = p1
         .actions
         .iter()
@@ -271,7 +343,7 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
 
     // unchanged: every URL is a 304, the plan is identical
     let s2 = poller.poll(2).unwrap();
-    let p2 = plan(&s2, &seats, GATE, true, 2);
+    let p2 = plan(&s2, &seats, true, &signed_off, 2);
     assert_eq!(p2, p1);
     assert_eq!(s2.issues, s1.issues);
     assert_eq!((poller.requests(), poller.not_modified()), (6, 3));
@@ -293,7 +365,10 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
     .call()
     .unwrap();
     let s3 = poller.poll(3).unwrap();
-    let p3 = plan(&s3, &seats, GATE, true, 3);
+    // Removing the label on GitHub is not a review: the plan does not move
+    // until the record says someone signed the issue off (#630).
+    assert_eq!(plan(&s3, &seats, true, &signed_off, 3).actions, p1.actions);
+    let p3 = plan(&s3, &seats, true, &BTreeSet::from([eligible, gated]), 3);
     assert_eq!(
         p3.actions,
         vec![
@@ -312,7 +387,7 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
     assert_eq!(fake.request_count(&list), 3);
     // the non-owner issue never appears unless owner_only is off
     assert!(!p3.actions.iter().any(|a| a.issue() == Some(foreign)));
-    let p3b = plan(&s3, &seats, GATE, false, 3);
+    let p3b = plan(&s3, &seats, false, &all_reviewed(&s3), 3);
     assert_eq!(
         p3b.actions
             .iter()
@@ -373,7 +448,7 @@ fn a_refused_pr_read_back_through_the_api_plans_one_rework() {
     // before the review: QA's job, and the impl seat is held by its own PR
     let s = poller.poll(1).unwrap();
     assert_eq!(
-        plan(&s, &seats, GATE, true, 1).actions,
+        plan(&s, &seats, true, &all_reviewed(&s), 1).actions,
         vec![Action::WakeQa { seat: 1, pr }]
     );
     // QA refuses it at that head
@@ -383,7 +458,7 @@ fn a_refused_pr_read_back_through_the_api_plans_one_rework() {
         serde_json::json!({"event":"REQUEST_CHANGES","commit_id":head,"body":"the base is two merges behind"}),
     );
     let s = poller.poll(2).unwrap();
-    let p = plan(&s, &seats, GATE, true, 2);
+    let p = plan(&s, &seats, true, &all_reviewed(&s), 2);
     assert_eq!(
         p.actions,
         vec![Action::Rework {
@@ -511,7 +586,7 @@ proptest! {
     fn never_two_actions_for_one_issue_or_seat(
         s in arb_snapshot(), seats in arb_seats(), owner_only in any::<bool>(), now in 0u64..200
     ) {
-        let p = plan(&s, &seats, GATE, owner_only, now);
+        let p = plan(&s, &seats, owner_only, &all_reviewed(&s), now);
         let mut issues = BTreeSet::new();
         let mut used_seats = BTreeSet::new();
         let mut prs = BTreeSet::new();
@@ -538,7 +613,7 @@ proptest! {
     fn non_idle_seats_never_receive_work(
         s in arb_snapshot(), seats in arb_seats(), now in 0u64..200
     ) {
-        let p = plan(&s, &seats, GATE, true, now);
+        let p = plan(&s, &seats, true, &all_reviewed(&s), now);
         for a in &p.actions {
             if let Some(st) = a.seat() {
                 let idle = seats.iter().any(|x| x.seat == st && x.state == SeatState::Idle);
@@ -553,7 +628,7 @@ proptest! {
     fn eligible_issues_are_served_in_ascending_order(
         s in arb_snapshot(), seats in arb_seats(), owner_only in any::<bool>(), now in 0u64..200
     ) {
-        let p = plan(&s, &seats, GATE, owner_only, now);
+        let p = plan(&s, &seats, owner_only, &all_reviewed(&s), now);
         let woken: Vec<u64> = p.actions.iter().filter_map(|a| match a {
             Action::WakeImpl { issue, .. } => Some(*issue),
             _ => None,
@@ -564,7 +639,7 @@ proptest! {
             let closed: BTreeSet<u64> = s.prs.iter().filter_map(|p| p.closes_issue).collect();
             let (busy, _) = live_jobs(&seats, now);
             for i in &s.issues {
-                if i.number < last && issue_eligible(i, GATE, owner_only)
+                if i.number < last && issue_eligible(i, owner_only, &all_reviewed(&s))
                     && !closed.contains(&i.number) && !busy.contains(&i.number)
                 {
                     prop_assert!(woken.contains(&i.number), "skipped eligible #{}", i.number);
@@ -577,7 +652,7 @@ proptest! {
     fn every_rework_is_a_refused_pr_on_the_seat_that_owns_its_branch(
         s in arb_snapshot(), seats in arb_seats(), owner_only in any::<bool>(), now in 0u64..200
     ) {
-        let p = plan(&s, &seats, GATE, owner_only, now);
+        let p = plan(&s, &seats, owner_only, &all_reviewed(&s), now);
         for a in &p.actions {
             let Action::Rework { seat, pr, issue } = a else { continue };
             let v = s.prs.iter().find(|x| x.number == *pr).unwrap();
@@ -591,23 +666,59 @@ proptest! {
         }
     }
 
+    /// #630's invariant, over arbitrary labels and arbitrary sign-off sets:
+    /// an issue is eligible exactly when it is fast-tracked or reviewed —
+    /// never because a gate label happens to be missing.
+    #[test]
+    fn eligibility_is_fast_track_or_a_recorded_sign_off_and_nothing_else(
+        s in arb_snapshot(), owner_only in any::<bool>(), picks in proptest::collection::vec(1u64..12, 0..6)
+    ) {
+        let reviewed: BTreeSet<u64> = picks.into_iter().collect();
+        for i in &s.issues {
+            let open_and_free = i.state == "open"
+                && !i.labels.iter().any(|l| l == CLAIM_LABEL)
+                && (!owner_only || i.author_association == "OWNER")
+                && i.assignees.is_empty()
+                && i.claim.is_none();
+            let want = open_and_free && (is_fast_track(i) || reviewed.contains(&i.number));
+            prop_assert_eq!(
+                issue_eligible(i, owner_only, &reviewed),
+                want,
+                "labels={:?} reviewed={:?}", i.labels, reviewed
+            );
+        }
+        // and nothing the planner wakes is outside that set
+        for a in plan(&s, &[seat(1, Role::Impl, SeatState::Idle)], owner_only, &reviewed, 100).actions {
+            if let Action::WakeImpl { issue, .. } = a {
+                let i = s.issues.iter().find(|i| i.number == issue).unwrap();
+                prop_assert!(is_fast_track(i) || reviewed.contains(&issue));
+            }
+        }
+    }
+
     #[test]
     fn unknown_snapshot_plans_nothing(seats in arb_seats(), now in 0u64..200) {
-        prop_assert!(plan(&Snapshot::unknown(), &seats, GATE, true, now).actions.is_empty());
+        prop_assert!(plan(&Snapshot::unknown(), &seats, true, &BTreeSet::new(), now)
+            .actions
+            .is_empty());
     }
 
     #[test]
     fn every_woken_issue_is_eligible_and_known(
         s in arb_snapshot(), seats in arb_seats(), owner_only in any::<bool>(), now in 0u64..200
     ) {
-        let p = plan(&s, &seats, GATE, owner_only, now);
+        let p = plan(&s, &seats, owner_only, &all_reviewed(&s), now);
         if !s.known {
             prop_assert!(p.actions.is_empty());
             return Ok(());
         }
         for a in &p.actions {
             if let Action::WakeImpl { issue, .. } = a {
-                prop_assert!(s.issues.iter().any(|i| i.number == *issue && issue_eligible(i, GATE, owner_only)));
+                let reviewed = all_reviewed(&s);
+                prop_assert!(s
+                    .issues
+                    .iter()
+                    .any(|i| i.number == *issue && issue_eligible(i, owner_only, &reviewed)));
             }
         }
     }
@@ -654,7 +765,7 @@ fn an_impl_seat_with_an_open_pr_is_not_woken_for_the_next_issue() {
             state: SeatState::Idle,
         },
     ];
-    let p = plan(&snap, &seats, "product-wip", true, 0);
+    let p = plan(&snap, &seats, true, &all_reviewed(&snap), 0);
     assert!(
         !p.actions
             .iter()
@@ -675,7 +786,7 @@ fn an_impl_seat_with_an_open_pr_is_not_woken_for_the_next_issue() {
     for foreign in ["someone", "fwf-qa[bot]", ""] {
         let mut legacy = snap.clone();
         legacy.prs[0].author = foreign.into();
-        let p = plan(&legacy, &seats, "product-wip", true, 0);
+        let p = plan(&legacy, &seats, true, &all_reviewed(&legacy), 0);
         assert!(
             p.actions
                 .iter()
@@ -688,7 +799,7 @@ fn an_impl_seat_with_an_open_pr_is_not_woken_for_the_next_issue() {
     let mut renamed = snap.clone();
     renamed.prs[0].head_ref = "impl1/renamed".into();
     assert!(
-        !plan(&renamed, &seats, "product-wip", true, 0)
+        !plan(&renamed, &seats, true, &all_reviewed(&renamed), 0)
             .actions
             .iter()
             .any(|a| matches!(a, Action::WakeImpl { .. })),
@@ -727,7 +838,7 @@ fn a_refused_pr_is_rework_for_its_own_seat_not_a_parked_floor() {
     claimed.claim = Some(Fence("f".repeat(40)));
     let s = snap(vec![claimed], vec![mk(refused(), "open")]);
     assert_eq!(
-        plan(&s, &seats, GATE, true, 100).actions,
+        plan(&s, &seats, true, &all_reviewed(&s), 100).actions,
         vec![Action::Rework {
             seat: 1,
             pr: 1270,
@@ -752,7 +863,7 @@ fn a_refused_pr_is_rework_for_its_own_seat_not_a_parked_floor() {
         seat(1, Role::Qa, SeatState::Idle),
     ];
     assert_eq!(
-        plan(&s, &busy, GATE, true, 100).actions,
+        plan(&s, &busy, true, &all_reviewed(&s), 100).actions,
         vec![Action::Nothing]
     );
     // Closed, approved-at-head, stale-head or foreign-reviewer: no rework.
@@ -791,7 +902,7 @@ fn a_refused_pr_is_rework_for_its_own_seat_not_a_parked_floor() {
         ),
     ] {
         let s = snap(vec![], vec![mk(reviews, state)]);
-        let p = plan(&s, &seats, GATE, true, 100);
+        let p = plan(&s, &seats, true, &all_reviewed(&s), 100);
         assert!(
             !p.actions.iter().any(|a| matches!(a, Action::Rework { .. })),
             "{:?}",
@@ -803,7 +914,7 @@ fn a_refused_pr_is_rework_for_its_own_seat_not_a_parked_floor() {
     human.head_ref = "jamie/fix".into();
     let s = snap(vec![], vec![human]);
     assert_eq!(
-        plan(&s, &seats, GATE, true, 100).actions,
+        plan(&s, &seats, true, &all_reviewed(&s), 100).actions,
         vec![Action::Nothing]
     );
 }
@@ -838,7 +949,7 @@ fn an_approved_at_head_pr_is_finished_not_re_reviewed() {
         fetched_at: 0,
         known: true,
     };
-    let p = plan(&snap, &seats, GATE, true, 0);
+    let p = plan(&snap, &seats, true, &all_reviewed(&snap), 0);
     assert_eq!(p.actions, vec![Action::FinishPr { pr: 11 }]);
     // Approval by the author App, or at an old head, is not an approval.
     for reviews in [
@@ -859,7 +970,7 @@ fn an_approved_at_head_pr_is_finished_not_re_reviewed() {
             fetched_at: 0,
             known: true,
         };
-        let p = plan(&snap, &seats, GATE, true, 0);
+        let p = plan(&snap, &seats, true, &all_reviewed(&snap), 0);
         assert!(
             !p.actions
                 .iter()
