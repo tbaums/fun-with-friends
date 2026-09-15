@@ -494,6 +494,8 @@ fn number_in(s: &str) -> Option<u64> {
         .parse()
         .ok()
 }
+/// #628 — the flags `dash` answers before reading anything.
+pub mod args;
 /// The joins the record cannot make on its own: the manifest, tmux
 /// liveness, the meter — and the rows the board draws from them.
 pub mod floor;
