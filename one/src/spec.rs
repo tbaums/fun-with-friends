@@ -13,6 +13,23 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// The label PM applies to a ticket whose deliverable is a proposal. It is
+/// also the one label a `skip_labels` list never parks: a `discovery` ticket is
+/// exactly what the PM cycle is for (#629).
+pub const DISCOVERY_LABEL: &str = "discovery";
+
+/// Every "PM specced this" note starts with this; the run loop reads the issue
+/// number back out of it to know a spec is already recorded.
+pub const SPEC_NOTE_PREFIX: &str = "PM spec written into #";
+
+/// The record's note for a written spec. One spelling, written here and read
+/// by `run`'s spec cycle.
+pub fn spec_note(issue: u64, chars: usize, discovery: bool, questions: usize) -> String {
+    format!(
+        "{SPEC_NOTE_PREFIX}{issue} ({chars} chars, discovery={discovery}, {questions} question(s)); gate untouched"
+    )
+}
+
 pub struct SpecConfig {
     pub owner: String,
     pub repo: String,
@@ -259,12 +276,7 @@ pub fn run(cfg: &SpecConfig, ops: &AppEntry) -> Result<(String, Vec<String>), Sp
         &mut log,
         &repo,
         Kind::Note {
-            text: format!(
-                "PM spec written into #{} ({} chars, discovery={discovery}, {} question(s)); gate untouched",
-                cfg.issue,
-                spec.len(),
-                questions.len()
-            ),
+            text: spec_note(cfg.issue, spec.len(), discovery, questions.len()),
         },
     )?;
     Ok((title_final, questions))

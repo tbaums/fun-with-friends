@@ -46,8 +46,22 @@ fn record(log: &mut Log, repo: &str, kind: Kind) -> Result<(), TriageError> {
     Ok(())
 }
 
+/// Every "GV judged this ready" note starts with this; the run loop reads the
+/// issue number back out of it.
+pub const READY_NOTE_PREFIX: &str = "GV triage: #";
+
+/// The record's note for a ready verdict. One spelling, written here and read
+/// by `run`'s spec cycle, so the two cannot drift apart.
+pub fn ready_note(issue: u64) -> String {
+    format!("{READY_NOTE_PREFIX}{issue} judged ready — awaiting the human un-gate")
+}
+
 /// Wake the GV seat on one issue; apply the gate label with the reason if the
 /// verdict is not-ready. Returns (ready, reason).
+///
+/// A gated issue is judged the same way an un-gated one is (#629): the not-ready
+/// path re-asserts the label it already carries, which GitHub accepts, so the
+/// loop's spec cycle can offer newly filed `product-wip` tickets here.
 pub fn run(cfg: &TriageConfig, ops: &AppEntry) -> Result<(bool, String), TriageError> {
     let repo = format!("{}/{}", cfg.owner, cfg.repo);
     let mut log = Log::open(&cfg.run_log)?;
@@ -186,10 +200,7 @@ pub fn run(cfg: &TriageConfig, ops: &AppEntry) -> Result<(bool, String), TriageE
             &mut log,
             &repo,
             Kind::Note {
-                text: format!(
-                    "GV triage: #{} judged ready — awaiting the human un-gate",
-                    cfg.issue
-                ),
+                text: ready_note(cfg.issue),
             },
         )?;
     }
@@ -233,22 +244,33 @@ pub fn ungate(
         return Err(TriageError(format!("un-gate comment refused ({c2})")));
     }
     let mut log = Log::open(run_log)?;
-    log.append(&Event {
-        ts: seat::now(),
-        repo: full.clone(),
-        kind: Kind::Human {
-            actor: actor.to_string(),
-            action: "ungate".into(),
-            target: format!("#{issue}"),
-        },
-    })?;
-    log.append(&Event {
-        ts: seat::now(),
-        repo: full,
-        kind: Kind::Issue {
-            issue,
-            to: IssueState::Ready,
-        },
-    })?;
+    for ev in ungate_events(&full, issue, actor, seat::now()) {
+        log.append(&ev)?;
+    }
     Ok(())
+}
+
+/// What an un-gate leaves in the record: who did it, and that the issue is now
+/// eligible. `fwf run`'s spec cycle reads both back (a delegated un-gate is
+/// still an attributable human act), so the shape lives in one place.
+pub fn ungate_events(repo: &str, issue: u64, actor: &str, ts: u64) -> [Event; 2] {
+    [
+        Event {
+            ts,
+            repo: repo.to_string(),
+            kind: Kind::Human {
+                actor: actor.to_string(),
+                action: "ungate".into(),
+                target: format!("#{issue}"),
+            },
+        },
+        Event {
+            ts,
+            repo: repo.to_string(),
+            kind: Kind::Issue {
+                issue,
+                to: IssueState::Ready,
+            },
+        },
+    ]
 }

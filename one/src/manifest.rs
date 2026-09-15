@@ -81,6 +81,20 @@ pub struct Manifest {
     /// eligible issue.
     #[serde(default)]
     pub issues: Vec<u64>,
+    /// The spec cycle inside `fwf run` (#629): each tick, GV judges one gated
+    /// issue it has never judged, and PM specs one gated issue GV called ready.
+    /// On by default — a ticket filed with the gate label is meant to reach
+    /// PM without an operator typing `fwf triage`/`fwf spec` by hand. Needs a
+    /// `gv`/`pm` seat in `[models]`; a missing seat disables that half with a
+    /// warning at startup.
+    #[serde(default = "default_true")]
+    pub auto_spec: bool,
+    /// Who un-gates on the floor's behalf once a spec lands. Unset (the
+    /// default) leaves the sign-off to a human running `fwf ungate`; set to a
+    /// name and `fwf run` removes the gate label itself and records that name
+    /// as the actor, so the decision stays attributable either way.
+    #[serde(default)]
+    pub delegate_ungate: Option<String>,
 }
 
 fn default_staging() -> String {
@@ -287,6 +301,9 @@ park_at_weekly_pct = 85
 rework_cap = 2
 template = "dev"
 triage_new = false
+# GV triage + PM spec of gated issues, inside the loop. Set delegate_ungate to
+# a name to let the loop un-gate after a spec instead of waiting on a human.
+auto_spec = true
 skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
 # Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
 issues = [564]
@@ -314,6 +331,22 @@ mod tests {
         assert_eq!(m.seat_target("impl", 1), "fwf-one:impl1");
         let raw: toml::Value = toml::from_str(EXAMPLE).unwrap();
         assert!(raw.as_table().unwrap().len() <= MAX_KEYS);
+    }
+
+    /// #629: the spec cycle is on unless a manifest turns it off, and the
+    /// un-gate stays a human's until one names a delegate.
+    #[test]
+    fn auto_spec_defaults_on_and_the_ungate_delegate_is_opt_in() {
+        let bare = Manifest::parse("repo = \"a/b\"\n[suites]\nfast=\"x\"\n").unwrap();
+        assert!(bare.auto_spec);
+        assert_eq!(bare.delegate_ungate, None);
+        let m = Manifest::parse(
+            "repo = \"a/b\"\nauto_spec = false\ndelegate_ungate = \"tbaums\"\n[suites]\nfast=\"x\"\n",
+        )
+        .unwrap();
+        assert!(!m.auto_spec);
+        assert_eq!(m.delegate_ungate.as_deref(), Some("tbaums"));
+        assert!(Manifest::parse(EXAMPLE).unwrap().auto_spec);
     }
 
     #[test]
