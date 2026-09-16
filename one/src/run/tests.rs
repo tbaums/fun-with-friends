@@ -1,6 +1,7 @@
 //! The run loop's tests: what the record makes ineligible, the meter stamp,
-//! and the two candidate lists the spec cycle plans from. Split out of
-//! `run.rs` to keep both files inside the 1,000-line rule (T-30).
+//! and the three candidate lists the spec cycle plans from — first pass, spec,
+//! sign-off. Split out of `run.rs` to keep both files inside the 1,000-line
+//! rule (T-30).
 
 use super::*;
 use crate::log::{Event, Kind};
@@ -428,6 +429,173 @@ fn test_config() -> RunConfig {
     }
 }
 
+/// Every pass's queue for one issue, as a tick would compute them.
+fn queues(snap: &Snapshot, f: &ReviewFilter, evs: &[Event]) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+    let (judged, specced, signed) = (gv_verdicts(evs), specced_issues(evs), signed_off(evs));
+    (
+        gv_gated_candidates(snap, f, &judged),
+        pm_candidates(snap, f, &judged, &specced),
+        signoff_candidates(snap, f, &specced, &signed),
+    )
+}
+
+fn one_gated(n: u64) -> Snapshot {
+    Snapshot {
+        issues: vec![issue(n, &["product-wip"], false)],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    }
+}
+
+/// #655, fwf floor 2026-09-15: `GV triage: #653 judged ready` → `PM spec
+/// written into #653` → `human jamie-proxy ungate`, two seconds apart. The
+/// first pass had judged the *raw ticket*; the spec an implementer would build
+/// from was written afterwards and read by nobody. A written spec now earns a
+/// reader, and only that reader's ready verdict un-gates.
+#[test]
+fn a_ready_first_pass_buys_a_spec_and_nothing_else_until_gv_reads_it_back() {
+    let snap = one_gated(653);
+    let skip = skip_labels();
+    let f = ReviewFilter::all_gated("product-wip", &skip);
+    let mut evs: Vec<Event> = vec![];
+
+    // tick 1: the gated ticket is the first pass's, and only its
+    assert_eq!(queues(&snap, &f, &evs), (vec![653], vec![], vec![]));
+    evs.push(note(crate::triage::ready_note(653)));
+    // ready on the raw ticket: PM's now — and there is still no spec to read
+    assert_eq!(queues(&snap, &f, &evs), (vec![], vec![653], vec![]));
+    evs.push(note(crate::spec::spec_note(653, 900, false, 1)));
+
+    // this is the exact point the loop used to un-gate
+    assert_eq!(queues(&snap, &f, &evs), (vec![], vec![], vec![653]));
+    assert!(signed_off(&evs).is_empty());
+    assert!(
+        reviewed_issues(&evs).is_empty(),
+        "a spec is not a sign-off: nothing is eligible yet"
+    );
+
+    // the sign-off lands ready, and only now does the un-gate follow
+    evs.push(note(signoff_note(653, true)));
+    assert_eq!(
+        queues(&snap, &f, &evs),
+        (vec![], vec![], vec![]),
+        "every pass is done with it; nothing is woken twice"
+    );
+    evs.extend(crate::triage::ungate_events("o/r", 653, "jamie-proxy", 9));
+    assert_eq!(
+        reviewed_issues(&evs).into_iter().collect::<Vec<_>>(),
+        vec![653]
+    );
+
+    // and the record reads in that order, which is the acceptance criterion:
+    // spec → sign-off → un-gate, never spec → un-gate
+    let note_at = |prefix: &str| {
+        evs.iter()
+            .position(|e| matches!(&e.kind, Kind::Note { text } if text.starts_with(prefix)))
+            .expect(prefix)
+    };
+    let ungate_at = evs
+        .iter()
+        .position(|e| {
+            matches!(
+                &e.kind,
+                Kind::Issue {
+                    issue: 653,
+                    to: IssueState::Ready
+                }
+            )
+        })
+        .expect("an un-gate");
+    assert!(note_at(crate::triage::READY_NOTE_PREFIX) < note_at(crate::spec::SPEC_NOTE_PREFIX));
+    assert!(note_at(crate::spec::SPEC_NOTE_PREFIX) < note_at(SIGNOFF_NOTE_PREFIX));
+    assert!(note_at(SIGNOFF_NOTE_PREFIX) < ungate_at);
+}
+
+/// A refused sign-off is a first-pass refusal in every way that matters: the
+/// gate stays on with the reason posted, nothing un-gates, and nothing re-specs
+/// it — rewriting the spec on GV's word alone is a loop, not a decision. A
+/// human's `fwf ungate` (or an edit and a fresh verdict) is the way out.
+#[test]
+fn a_refused_sign_off_leaves_it_gated_and_nothing_re_specs_it() {
+    let snap = one_gated(653);
+    let skip = skip_labels();
+    let f = ReviewFilter::all_gated("product-wip", &skip);
+    let mut evs = vec![
+        note(crate::triage::ready_note(653)),
+        note(crate::spec::spec_note(653, 900, false, 1)),
+    ];
+    assert_eq!(queues(&snap, &f, &evs), (vec![], vec![], vec![653]));
+    // what `triage::run` records for a not-ready verdict, then the loop's own
+    // answer to "has GV read this spec"
+    evs.push(Event {
+        ts: 4,
+        repo: "o/r".into(),
+        kind: Kind::Issue {
+            issue: 653,
+            to: IssueState::Gated,
+        },
+    });
+    evs.push(note(signoff_note(653, false)));
+    assert_eq!(
+        queues(&snap, &f, &evs),
+        (vec![], vec![], vec![]),
+        "no re-triage, no re-spec, no second sign-off"
+    );
+    assert_eq!(gv_verdicts(&evs).get(&653), Some(&false));
+    assert!(
+        reviewed_issues(&evs).is_empty(),
+        "a refused spec is never un-gated"
+    );
+}
+
+/// The first-pass refusal itself is untouched by #655: gated with its reason,
+/// and it never reaches PM, so there is nothing to sign off.
+#[test]
+fn a_first_pass_refusal_never_reaches_the_spec_or_the_sign_off() {
+    let snap = one_gated(653);
+    let skip = skip_labels();
+    let f = ReviewFilter::all_gated("product-wip", &skip);
+    let evs = vec![Event {
+        ts: 2,
+        repo: "o/r".into(),
+        kind: Kind::Issue {
+            issue: 653,
+            to: IssueState::Gated,
+        },
+    }];
+    assert_eq!(queues(&snap, &f, &evs), (vec![], vec![], vec![]));
+    assert!(specced_issues(&evs).is_empty());
+    assert!(signed_off(&evs).is_empty());
+    assert!(reviewed_issues(&evs).is_empty());
+}
+
+/// A human who un-gates between the spec and the sign-off has answered the
+/// question the sign-off was going to ask. The next poll's snapshot has no gate
+/// label on it, so no pass offers it and the loop does not act twice.
+#[test]
+fn a_human_ungate_between_the_spec_and_the_sign_off_is_a_no_op() {
+    let skip = skip_labels();
+    let f = ReviewFilter::all_gated("product-wip", &skip);
+    let mut evs = vec![
+        note(crate::triage::ready_note(653)),
+        note(crate::spec::spec_note(653, 900, false, 1)),
+    ];
+    assert_eq!(
+        queues(&one_gated(653), &f, &evs),
+        (vec![], vec![], vec![653])
+    );
+    evs.extend(crate::triage::ungate_events("o/r", 653, "tbaums", 5));
+    let ungated = Snapshot {
+        issues: vec![issue(653, &[], false)],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    assert_eq!(queues(&ungated, &f, &evs), (vec![], vec![], vec![]));
+    assert!(reviewed_issues(&evs).contains(&653));
+}
+
 /// `delegate_ungate = "name"`: the loop un-gates after the spec, and what
 /// it leaves in the record is the same human act `fwf ungate` writes —
 /// attributable, and enough to end the cycle for that issue.
@@ -462,8 +630,9 @@ fn a_delegated_ungate_records_the_actor_and_ends_the_cycle() {
 /// The #629 walk, against a real (fake) GitHub: an operator files a gated
 /// ticket and never types another verb. Tick one offers it to GV; GV's
 /// verdict lands in `run.jsonl`; tick two offers it to PM; PM's spec lands;
-/// tick three has nothing to do, and the issue is still gated — "specced,
-/// awaiting un-gate".
+/// tick three offers the written spec back to GV for the sign-off (#655);
+/// tick four has nothing to do, and the issue is still gated — "specced,
+/// signed off, awaiting un-gate".
 #[test]
 fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     use crate::fake_github::FakeGitHub;
@@ -515,11 +684,27 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
         text: crate::spec::spec_note(n, 1200, false, 1),
     });
 
-    // tick 3: nothing owed, and the ticket is still gated
+    // tick 3: what a written spec owes is a reader (#655) — GV again, on the
+    // body PM just wrote, and nobody else
     let snap = poller.poll(12).unwrap();
     let evs = read();
     assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
     assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
+    assert_eq!(
+        signoff_candidates(&snap, &f, &specced_issues(&evs), &signed_off(&evs)),
+        vec![n]
+    );
+    append(Kind::Note {
+        text: signoff_note(n, true),
+    });
+
+    // tick 4: nothing owed, and the ticket is still gated — the un-gate is a
+    // human's (or the delegate's), never the spec cycle's own doing
+    let snap = poller.poll(13).unwrap();
+    let evs = read();
+    assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
+    assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
+    assert!(signoff_candidates(&snap, &f, &specced_issues(&evs), &signed_off(&evs)).is_empty());
     let labels: Vec<String> = fake.issue_json(O, R, n).unwrap()["labels"]
         .as_array()
         .unwrap()

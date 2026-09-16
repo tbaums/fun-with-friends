@@ -155,6 +155,51 @@ pub fn pm_candidates(
         .collect()
 }
 
+/// Gated issues PM has specced and GV has not yet read back, oldest first —
+/// the sign-off queue (#655).
+///
+/// A first-pass ready verdict judged the *raw ticket*; the spec an implementer
+/// builds from did not exist yet. So a specced issue owes one more GV read
+/// before anything un-gates it, and it stays here until that read is recorded.
+/// A sign-off that never finished (a stalled seat records no note) is offered
+/// again next tick, like every other cycle here.
+pub fn signoff_candidates(
+    snap: &Snapshot,
+    f: &ReviewFilter,
+    specced: &BTreeSet<u64>,
+    signed: &BTreeSet<u64>,
+) -> Vec<u64> {
+    reviewable(snap, f)
+        .into_iter()
+        .filter(|i| specced.contains(&i.number) && !signed.contains(&i.number))
+        .map(|i| i.number)
+        .collect()
+}
+
+/// Every "GV read the spec back" note starts with this.
+pub const SIGNOFF_NOTE_PREFIX: &str = "GV sign-off: #";
+
+/// The record's note for a sign-off verdict, either way it went. Written for a
+/// refusal too: the question "has GV read this spec" is answered once, and a
+/// refusal is an answer.
+pub fn signoff_note(issue: u64, ready: bool) -> String {
+    format!(
+        "{SIGNOFF_NOTE_PREFIX}{issue} {} the spec",
+        if ready { "approved" } else { "refused" }
+    )
+}
+
+/// Issues whose spec GV has already read back.
+pub fn signed_off(events: &[crate::log::Event]) -> BTreeSet<u64> {
+    events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            crate::log::Kind::Note { text } => note_issue(text, SIGNOFF_NOTE_PREFIX),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The gated issues this tick's filter drops, with the reason, oldest first —
 /// minus the ones `seen` says the record already named.
 pub fn gated_skips(
