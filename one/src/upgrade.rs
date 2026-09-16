@@ -18,10 +18,10 @@
 //! --tags origin` lists `v1.0.4`, `v1.0.5`, `v1.0.6`, and `release-publish.sh`
 //! tags `v$VERSION` to match. So the assets live under
 //! `releases/download/v<version>/` and are `fwf-<version>-<slug>.tar.gz` plus
-//! `.sha256`. `install.sh` still builds a `one-v<version>` download URL — the
-//! pre-#641 spelling, which now downloads nothing (#653 does not repair it) —
-//! so nothing here is copied from it, and [`strip_tag`] reads either spelling
-//! back so an old tag in hand still parses.
+//! `.sha256`. `install.sh` built a `one-v<version>` URL — the pre-#641
+//! spelling, which downloaded nothing — until #660 fixed it and pinned the two
+//! together with a test. [`strip_tag`] still reads either spelling, so an old
+//! tag in hand parses.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -101,9 +101,9 @@ pub fn asset_stem(version: &str, slug: &str) -> String {
 }
 
 /// Where that tarball is fetched from. The tag in the path is `v<version>` —
-/// what the remote actually carries (`v1.0.4`, `v1.0.5`, `v1.0.6`) and what
-/// `release-publish.sh` tags — never `install.sh`'s stale `one-v<version>`,
-/// which is a 404. The `.sha256` beside it is this URL plus that suffix.
+/// what the remote actually carries (`v1.0.4`, `v1.0.5`, `v1.0.6`), what
+/// `release-publish.sh` tags, and what `install.sh` fetches; a test pins all
+/// three (#660). The `.sha256` beside it is this URL plus that suffix.
 pub fn asset_url(repo: &str, version: &str, slug: &str) -> String {
     format!(
         "{DOWNLOAD_BASE}/{repo}/releases/download/v{version}/{}.tar.gz",
