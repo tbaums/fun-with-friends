@@ -220,7 +220,15 @@ fn main() -> ExitCode {
                 eprintln!("fwf ungate: no [ops] app");
                 return ExitCode::from(2);
             };
-            match triage::ungate(owner, name, issue, "product-wip", &by, &run_log, ops) {
+            match triage::ungate(
+                owner,
+                name,
+                issue,
+                "product-wip",
+                triage::Ungate::Manual(&by),
+                &run_log,
+                ops,
+            ) {
                 Ok(()) => {
                     println!("#{issue} un-gated by {by}");
                     ExitCode::SUCCESS

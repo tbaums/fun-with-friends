@@ -100,6 +100,11 @@ pub struct Manifest {
     /// the un-gate to a human running `fwf ungate`; set to a name and `fwf
     /// run` removes the gate label itself and records that name as the actor,
     /// so the decision stays attributable either way.
+    ///
+    /// Attributable, and marked as delegated (#645): the issue comment and the
+    /// run record both say the loop typed it, and `fwf up` names the delegate
+    /// in its floor plan — a floor that approves its own specced tickets says
+    /// so before it starts, not only afterwards in the record.
     #[serde(default)]
     pub delegate_ungate: Option<String>,
 }

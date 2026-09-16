@@ -7,6 +7,7 @@ use super::*;
 use crate::log::{Event, Kind};
 use crate::poll::{IssueView, Snapshot};
 use crate::sched::plan;
+use crate::triage::Ungate::{Delegated, Manual};
 use crate::types::IssueState;
 
 /// #630: what makes an issue claimable is the `Ready` event `fwf ungate`
@@ -23,7 +24,7 @@ fn the_record_is_what_makes_an_issue_claimable() {
         },
     }];
     assert!(reviewed_issues(&evs).is_empty(), "a gate is not a sign-off");
-    evs.extend(crate::triage::ungate_events("o/r", 10, "tbaums", 5));
+    evs.extend(crate::triage::ungate_events("o/r", 10, Manual("tbaums"), 5));
     assert_eq!(
         reviewed_issues(&evs).into_iter().collect::<Vec<_>>(),
         vec![10]
@@ -482,7 +483,12 @@ fn a_ready_first_pass_buys_a_spec_and_nothing_else_until_gv_reads_it_back() {
         (vec![], vec![], vec![]),
         "every pass is done with it; nothing is woken twice"
     );
-    evs.extend(crate::triage::ungate_events("o/r", 653, "jamie-proxy", 9));
+    evs.extend(crate::triage::ungate_events(
+        "o/r",
+        653,
+        Delegated("jamie-proxy"),
+        9,
+    ));
     assert_eq!(
         reviewed_issues(&evs).into_iter().collect::<Vec<_>>(),
         vec![653]
@@ -585,7 +591,12 @@ fn a_human_ungate_between_the_spec_and_the_sign_off_is_a_no_op() {
         queues(&one_gated(653), &f, &evs),
         (vec![], vec![], vec![653])
     );
-    evs.extend(crate::triage::ungate_events("o/r", 653, "tbaums", 5));
+    evs.extend(crate::triage::ungate_events(
+        "o/r",
+        653,
+        Manual("tbaums"),
+        5,
+    ));
     let ungated = Snapshot {
         issues: vec![issue(653, &[], false)],
         prs: vec![],
@@ -597,20 +608,25 @@ fn a_human_ungate_between_the_spec_and_the_sign_off_is_a_no_op() {
 }
 
 /// `delegate_ungate = "name"`: the loop un-gates after the spec, and what
-/// it leaves in the record is the same human act `fwf ungate` writes —
-/// attributable, and enough to end the cycle for that issue.
+/// it leaves in the record is an attributable human act — named, marked as
+/// delegated (#645), and enough to end the cycle for that issue.
 #[test]
 fn a_delegated_ungate_records_the_actor_and_ends_the_cycle() {
     let mut evs = vec![
         note(crate::triage::ready_note(11)),
         note(crate::spec::spec_note(11, 900, false, 0)),
     ];
-    evs.extend(crate::triage::ungate_events("o/r", 11, "tbaums", 5));
+    evs.extend(crate::triage::ungate_events(
+        "o/r",
+        11,
+        Delegated("tbaums"),
+        5,
+    ));
     assert!(
         evs.iter()
             .any(|e| matches!(&e.kind, Kind::Human { actor, action, target }
-            if actor == "tbaums" && action == "ungate" && target == "#11")),
-        "the un-gate names who approved it: {evs:?}"
+            if actor == "tbaums" && action == "ungate (delegated)" && target == "#11")),
+        "the un-gate names who approved it, and that they did not type it: {evs:?}"
     );
     // the label is gone on GitHub, so the next poll's snapshot drops the
     // issue out of both halves of the cycle
