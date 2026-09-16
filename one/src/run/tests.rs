@@ -6,7 +6,7 @@
 use super::*;
 use crate::log::{Event, Kind};
 use crate::poll::{IssueView, Snapshot};
-use crate::sched::plan;
+use crate::sched::plan_fifo;
 use crate::triage::Ungate::{Delegated, Manual};
 use crate::types::IssueState;
 
@@ -96,7 +96,7 @@ fn an_implemented_but_unpushed_issue_is_never_woken_a_second_time() {
     // the snapshot alone still offers the finished issue — GitHub has no
     // idea the verdict exists
     assert_eq!(
-        plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 10)
+        plan_fifo(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 10)
             .actions
             .first(),
         Some(&Action::WakeImpl {
@@ -107,7 +107,7 @@ fn an_implemented_but_unpushed_issue_is_never_woken_a_second_time() {
     let owed = unpushed_issues(&evs);
     assert!(owed.contains(&583));
     snap.issues.retain(|i| !owed.contains(&i.number));
-    let actions = plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 10).actions;
+    let actions = plan_fifo(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 10).actions;
     assert!(
         !actions.iter().any(|a| a.issue() == Some(583)),
         "#583 was planned again: {actions:?}"
@@ -795,4 +795,183 @@ fn triage_candidates_skip_gated_claimed_parked_and_already_judged() {
         triage_candidates(&snap, "no-such-gate", &skip, &seen),
         vec![3, 5]
     );
+}
+
+/// #656, fwf floor 2026-09-15: a delegated un-gate wrote `Ready` for #653,
+/// the operator put `product-wip` back on because the spec needed rework —
+/// and the loop went on planning it every tick, because a `Ready` anywhere in
+/// history was a sign-off forever. The label is the human's decision; the
+/// record has to carry it.
+#[test]
+fn a_gate_label_put_back_after_a_sign_off_takes_the_sign_off_away() {
+    let dir = std::env::temp_dir().join(format!("fwfd-regate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run_log = dir.join("run.jsonl");
+    let _ = std::fs::remove_file(&run_log);
+    let cfg = RunConfig {
+        run_log: run_log.clone(),
+        ..test_config()
+    };
+    let mut log = crate::log::Log::open(&run_log).unwrap();
+    let mut append = |kind| {
+        log.append(&Event {
+            ts: 1,
+            repo: "tbaums/transom".into(),
+            kind,
+        })
+        .unwrap()
+    };
+    for ev in crate::triage::ungate_events(
+        "tbaums/transom",
+        653,
+        crate::triage::Ungate::Delegated("jamie-proxy"),
+        1,
+    ) {
+        append(ev.kind);
+    }
+    let read = || crate::log::read_all(&run_log).unwrap();
+    assert!(reviewed_issues(&read()).contains(&653), "signed off");
+
+    // the operator re-gates: the label is back on the live issue
+    let regated = Snapshot {
+        issues: vec![issue(653, &["product-wip"], false)],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    assert_eq!(
+        reconcile_regated(&cfg, &regated)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![653]
+    );
+    let evs = read();
+    assert!(
+        !reviewed_issues(&evs).contains(&653),
+        "a re-gated issue is not claimable"
+    );
+    assert_eq!(
+        latest_issue_state(&evs).get(&653),
+        Some(&IssueState::Gated),
+        "the record's last word is the gate"
+    );
+    assert!(evs
+        .iter()
+        .any(|e| matches!(&e.kind, Kind::Note { text } if *text == regated_note(653))));
+    // said once: the next tick sees its own Gated event and adds nothing
+    assert!(reconcile_regated(&cfg, &regated).is_empty());
+    assert_eq!(read().len(), evs.len());
+
+    // and un-gating again makes it claimable again, like any gated issue
+    for ev in crate::triage::ungate_events(
+        "tbaums/transom",
+        653,
+        crate::triage::Ungate::Manual("tbaums"),
+        9,
+    ) {
+        append(ev.kind);
+    }
+    assert!(reviewed_issues(&read()).contains(&653));
+    // an issue with no gate label is nobody's to reconcile
+    let ungated = Snapshot {
+        issues: vec![issue(653, &[], false)],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    assert!(reconcile_regated(&cfg, &ungated).is_empty());
+    let _ = std::fs::remove_file(&run_log);
+}
+
+/// The other half of #653's hour: one idle seat, FIFO by number, and #653
+/// refusing every cycle in front of #655. A refusal is not a verdict on the
+/// issue — it goes to the back of the queue for a tick, and is still served
+/// when nothing else is eligible.
+#[test]
+fn an_issue_that_just_refused_waits_behind_the_ones_that_have_not() {
+    let snap = Snapshot {
+        issues: vec![issue(653, &[], false), issue(655, &[], false)],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    let seats = vec![SeatSlot {
+        seat: 1,
+        role: Role::Impl,
+        state: SeatState::Idle,
+    }];
+    let reviewed = crate::sched::all_reviewed(&snap);
+    let wake = |refused: &std::collections::BTreeSet<u64>| {
+        crate::sched::plan(&snap, &seats, true, &reviewed, refused, 10)
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                Action::WakeImpl { issue, .. } => Some(*issue),
+                _ => None,
+            })
+    };
+    // FIFO while nothing has refused: the lower number takes the seat
+    assert_eq!(wake(&Default::default()), Some(653));
+    // #653 refuses; the very next tick the clean one is claimed
+    assert_eq!(wake(&[653].into()), Some(655));
+    // both refusing is still FIFO — a tie-break, never a skip
+    assert_eq!(wake(&[653, 655].into()), Some(653));
+    // and the refusing issue alone is still served, every tick
+    let solo = Snapshot {
+        issues: vec![issue(653, &[], false)],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    assert_eq!(
+        crate::sched::plan(
+            &solo,
+            &seats,
+            true,
+            &crate::sched::all_reviewed(&solo),
+            &[653].into(),
+            10
+        )
+        .actions
+        .first(),
+        Some(&Action::WakeImpl {
+            seat: 1,
+            issue: 653
+        })
+    );
+}
+
+/// What counts as "just refused": this poll interval's refusals, and not an
+/// issue whose claim the record still holds — that is a cycle in flight.
+#[test]
+fn only_a_recent_refusal_with_no_claim_behind_it_defers_an_issue() {
+    let refused = |issue: u64, ts: u64| Event {
+        ts,
+        repo: "o/r".into(),
+        kind: Kind::Refused {
+            what: format!("#{issue}"),
+            why: "seat worktree is dirty".into(),
+        },
+    };
+    let mut evs = vec![refused(653, 100), refused(41, 10)];
+    assert_eq!(
+        refused_recently(&evs, 120, 60)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![653],
+        "#41 refused two intervals ago; it waits for nobody now"
+    );
+    // a claim the record still holds is work in flight, not a refusal
+    evs.push(Event {
+        ts: 110,
+        repo: "o/r".into(),
+        kind: Kind::Issue {
+            issue: 653,
+            to: IssueState::Claimed {
+                seat: 1,
+                fence: crate::types::Fence("a".repeat(40)),
+            },
+        },
+    });
+    assert!(refused_recently(&evs, 120, 60).is_empty());
 }

@@ -175,7 +175,16 @@ fn recheck(
         role: Role::Impl,
         state: SeatState::Idle,
     }];
-    let p = plan(snap, &seats, true, reviewed, now);
+    // A targeted slice plans over the one issue it was pointed at, so there
+    // is nothing for #656's refusal tie-break to reorder here.
+    let p = plan(
+        snap,
+        &seats,
+        true,
+        reviewed,
+        &std::collections::BTreeSet::new(),
+        now,
+    );
     let wake = p.actions.iter().find_map(|a| match a {
         Action::WakeImpl { seat, issue } if *issue == cfg.issue => Some(*seat),
         _ => None,
@@ -250,6 +259,58 @@ use deliver::{claim, push_and_open_pr};
 /// Read the run record, or an empty record if it cannot be read.
 pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
     crate::log::read_all(&cfg.run_log).unwrap_or_default()
+}
+
+/// Everything between the claim and the wake: realign the seat's worktree to
+/// the fence (`seats --up` may have cloned it several merges ago), read the
+/// issue GitHub has right now, and render the job from the template.
+///
+/// One function because every failure in it owes the same thing — the claim
+/// back (#656). The caller releases; this one only says what went wrong.
+#[allow(clippy::too_many_arguments)]
+fn stage_cycle(
+    log: &mut Log,
+    repo: &str,
+    cfg: &SliceConfig,
+    poller: &Poller,
+    mirror: &Mirror,
+    seat_no: u8,
+    fence: &crate::types::Fence,
+) -> Result<(String, String), SliceError> {
+    let seat_wt = cfg.floor_dir.join(format!("wt-impl{seat_no}"));
+    align_seat_worktree(
+        log,
+        repo,
+        cfg.issue,
+        &seat_wt,
+        &mirror.seat_remote_url(),
+        &fence.0,
+        None,
+    )?;
+    let issue_json = poller
+        .get(&format!(
+            "https://api.github.com/repos/{repo}/issues/{}",
+            cfg.issue
+        ))?
+        .ok_or_else(|| SliceError("issue read returned nothing".into()))?;
+    let title = issue_json["title"].as_str().unwrap_or("").to_string();
+    let body = issue_json["body"].as_str().unwrap_or("").to_string();
+    let branch = format!("impl{seat_no}/issue-{}-thin-slice", cfg.issue);
+    let job_text = std::fs::read_to_string(&cfg.job_template)?
+        .replace("{{SEAT}}", &seat_no.to_string())
+        .replace("{{ISSUE}}", &cfg.issue.to_string())
+        .replace("{{REPO}}", repo)
+        .replace("{{TITLE}}", &title)
+        .replace("{{BODY}}", &body)
+        .replace("{{CHECK}}", &cfg.check_cmd)
+        .replace("{{BRANCH}}", &branch)
+        // The seat is told when its cycle ends, so a long proof can be cut
+        // short with a real verdict instead of parking on it (#589).
+        .replace(
+            "{{DEADLINE}}",
+            &seat::local_hhmm(now() + cfg.timeout.as_secs()),
+        );
+    Ok((job_text, title))
 }
 /// Branch-push token: always the impl App with `contents`+`workflows` write — a push under `.github/workflows/` needs `workflows`, which `ops` is not granted (#636). `ops` stays a param (it still backs merges/labels/check-runs).
 fn push_token_mint<'a>(
@@ -378,43 +439,25 @@ pub fn run_with(
         },
     )?;
 
-    // 4. The seat branches from its worktree's HEAD, which `seats --up` may
-    // have cloned several merges ago: realign it to the fence before the wake.
-    let seat_wt = cfg.floor_dir.join(format!("wt-impl{seat_no}"));
-    align_seat_worktree(
-        &mut log,
-        &repo,
-        cfg.issue,
-        &seat_wt,
-        &mirror.seat_remote_url(),
-        &fence.0,
-        None,
-    )?;
-
-    // 5. Render the job and wake the pane.
-    let issue_json = poller
-        .get(&format!(
-            "https://api.github.com/repos/{repo}/issues/{}",
-            cfg.issue
-        ))?
-        .ok_or_else(|| SliceError("issue read returned nothing".into()))?;
-    let title = issue_json["title"].as_str().unwrap_or("").to_string();
-    let body = issue_json["body"].as_str().unwrap_or("").to_string();
+    // 4 and 5. Realign the seat's worktree to the fence and render its job.
+    // Both can fail, and from here on a failure owes the claim back (#656):
+    // one exit, one release, one `Refused` in the record.
+    let staged = stage_cycle(&mut log, &repo, cfg, &poller, &mirror, seat_no, &fence);
+    let (job_text, title) = match staged {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(deliver::release_and_refuse(
+                &mut log,
+                &repo,
+                cfg,
+                &mirror,
+                &fence,
+                &push_tok.token,
+                e.0,
+            ))
+        }
+    };
     let branch = format!("impl{seat_no}/issue-{}-thin-slice", cfg.issue);
-    let job_text = std::fs::read_to_string(&cfg.job_template)?
-        .replace("{{SEAT}}", &seat_no.to_string())
-        .replace("{{ISSUE}}", &cfg.issue.to_string())
-        .replace("{{REPO}}", &repo)
-        .replace("{{TITLE}}", &title)
-        .replace("{{BODY}}", &body)
-        .replace("{{CHECK}}", &cfg.check_cmd)
-        .replace("{{BRANCH}}", &branch)
-        // The seat is told when its cycle ends, so a long proof can be cut
-        // short with a real verdict instead of parking on it (#589).
-        .replace(
-            "{{DEADLINE}}",
-            &seat::local_hhmm(now() + cfg.timeout.as_secs()),
-        );
     let pane = Pane {
         target: cfg.seat_target.clone(),
         role: Role::Impl,

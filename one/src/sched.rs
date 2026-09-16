@@ -147,6 +147,19 @@ fn issue_eligible(i: &IssueView, owner_only: bool, reviewed: &BTreeSet<u64>) -> 
         && (is_fast_track(i) || reviewed.contains(&i.number))
 }
 
+/// The plan with no refusal history behind it — what every test written
+/// before #656's tie-break means by "the plan".
+#[cfg(test)]
+pub fn plan_fifo(
+    snapshot: &Snapshot,
+    seats: &[SeatSlot],
+    owner_only: bool,
+    reviewed: &BTreeSet<u64>,
+    now: u64,
+) -> Plan {
+    plan(snapshot, seats, owner_only, reviewed, &BTreeSet::new(), now)
+}
+
 /// Every issue in a snapshot, as a reviewed set. Tests written before #630
 /// were about seats, claims and PR flow; this says "all of these were signed
 /// off" so they keep testing what they were testing.
@@ -215,7 +228,8 @@ fn pr_qa_eligible(p: &PrView) -> bool {
 /// - a PR with changes requested at its head is rework for the idle impl seat
 ///   its branch names (#576), so a refused PR never parks its seat;
 /// - eligible items are served FIFO by number to idle seats of the matching
-///   role, one job per seat, one action per item;
+///   role, one job per seat, one action per item — except that an issue that
+///   just refused goes to the back of that queue (#656);
 /// - an Unknown snapshot plans nothing (empty, not even `Nothing`).
 pub fn plan(
     snapshot: &Snapshot,
@@ -223,6 +237,8 @@ pub fn plan(
     owner_only: bool,
     // Issues the run record says were signed off (#630).
     reviewed: &BTreeSet<u64>,
+    // Issues that refused a cycle within the last poll interval (#656).
+    refused: &BTreeSet<u64>,
     now: u64,
 ) -> Plan {
     if !snapshot.known {
@@ -280,7 +296,11 @@ pub fn plan(
         .filter(|i| !closed_by_open_pr.contains(&i.number))
         .filter(|i| !busy_issues.contains(&i.number))
         .collect();
-    issues.sort_by_key(|i| i.number);
+    // FIFO by number, except that an issue whose last cycle refused waits
+    // behind every other eligible one (#656). Not a skip and not a cap: with
+    // nothing else eligible it is still served this tick, and one bad ticket
+    // can no longer hold the floor's only seat against all the good ones.
+    issues.sort_by_key(|i| (refused.contains(&i.number), i.number));
     for i in issues {
         if !touched_issues.insert(i.number) {
             continue;

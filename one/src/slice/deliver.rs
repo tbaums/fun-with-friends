@@ -74,6 +74,61 @@ pub(super) fn claim(
     Ok(mirror.create_claim_ref(cfg.issue, base, push_tok)?)
 }
 
+/// Hand the claim back before returning an error (#656).
+///
+/// Every step between taking `refs/claims/<n>` and waking the seat used to
+/// `?` straight out: a dirty seat worktree, a checkout that would not align,
+/// an issue GitHub would not hand back. The ref stayed upstream, the record's
+/// next word was nothing, and after a restart `claim`'s reuse path could not
+/// prove the claim was this floor's — so every later tick refused with
+/// `refs/claims/<n> exists upstream and this floor's record does not own it`,
+/// wedged until somebody deleted the ref by hand. That is what happened to
+/// #653 and #655 on 2026-09-15.
+///
+/// The release is what makes the retry clean, so it decides what the record
+/// says next: released, and the issue is `Ready` again with the claim gone;
+/// refused by upstream, and the `Claimed` event stands, which is exactly what
+/// [`claim`]'s reuse path needs to adopt the ref next tick instead of walking
+/// into `ClaimTaken`.
+pub(super) fn release_and_refuse(
+    log: &mut Log,
+    repo: &str,
+    cfg: &SliceConfig,
+    mirror: &Mirror,
+    fence: &Fence,
+    push_tok: &str,
+    why: String,
+) -> SliceError {
+    let freed = mirror.release_claim_ref(cfg.issue, fence, push_tok);
+    let _ = record(
+        log,
+        repo,
+        Kind::Refused {
+            what: format!("#{}", cfg.issue),
+            why: why.clone(),
+        },
+    );
+    match freed {
+        Ok(()) => {
+            let _ = record(
+                log,
+                repo,
+                Kind::Issue {
+                    issue: cfg.issue,
+                    to: crate::types::IssueState::Ready,
+                },
+            );
+            SliceError(format!("{why}; claim released"))
+        }
+        // The record keeps the claim on purpose: the ref is still up there,
+        // and only a record that owns it can take it back.
+        Err(e) => SliceError(format!(
+            "{why}; the claim on #{} could NOT be released ({e}) — the record keeps it so the next cycle can reuse that fence",
+            cfg.issue
+        )),
+    }
+}
+
 /// Steps 7 and 8 of a cycle: sync the seat's branch from the mirror up to
 /// GitHub, then open the draft PR under the impl App. Shared by the cycle
 /// that produced the verdict and by the per-tick retry below.

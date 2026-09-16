@@ -4,6 +4,7 @@
 //! (T-30).
 
 use super::*;
+use crate::sched::plan_fifo;
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -273,11 +274,11 @@ fn a_legacy_impl_branch_no_longer_makes_the_slice_refuse_what_run_planned() {
     }];
     // what `run` plans…
     assert!(
-        plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 1)
+        plan_fifo(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 1)
             .actions
             .contains(&Action::WakeImpl { seat: 1, issue }),
         "{:?}",
-        plan(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 1).actions
+        plan_fifo(&snap, &seats, true, &crate::sched::all_reviewed(&snap), 1).actions
     );
     // …and what the slice makes of it, over the one issue it was given
     snap.issues.retain(|i| i.number == issue);
@@ -443,4 +444,74 @@ fn a_fence_never_leaves_the_supervisor_in_the_job_text() {
     for ph in ["{{SEAT}}", "{{ISSUE}}", "{{REPO}}", "{{BRANCH}}"] {
         assert!(t.contains(ph), "template lacks {ph}");
     }
+}
+
+/// #656, fwf floor 2026-09-15: a dirty seat worktree refused the cycle
+/// *after* `refs/claims/653` was taken, and the `?` walked straight out
+/// without giving it back. The record's next word was nothing, so after a
+/// restart `claim`'s reuse path could not prove the ref was this floor's and
+/// every later tick refused with "exists upstream and this floor's record
+/// does not own it" — wedged until somebody deleted the ref by hand.
+#[test]
+fn a_refusal_after_the_claim_gives_the_claim_ref_back() {
+    let (root, url, work, _wt) = floor();
+    let fence_sha = advance(&work, &url, "later.txt");
+    // the mirror clones a default branch; the floor harness only publishes
+    // `staging`, so give this throwaway upstream one to land on
+    git(&work, &["push", "-q", &url, "HEAD:refs/heads/main"]);
+    let m = crate::mirror::Mirror::init(&root.join("mirror-clone"), &url).unwrap();
+    let base = crate::types::Sha::parse(&fence_sha).unwrap();
+    let fence = m.create_claim_ref(653, &base, "").unwrap();
+    assert_eq!(m.upstream_claim_ref(653, "").unwrap(), Some(base.clone()));
+
+    let run_log = root.join("run.jsonl");
+    let mut log = Log::open(&run_log).unwrap();
+    let mut cfg = cfg_for(653, 1);
+    cfg.run_log = run_log.clone();
+    let e = super::deliver::release_and_refuse(
+        &mut log,
+        "o/r",
+        &cfg,
+        &m,
+        &fence,
+        "",
+        "seat worktree is dirty".into(),
+    );
+    assert!(e.0.contains("claim released"), "{}", e.0);
+    assert_eq!(
+        m.upstream_claim_ref(653, "").unwrap(),
+        None,
+        "the ref is still upstream after a refusal"
+    );
+    // and the record says both halves: why it refused, and that the issue is
+    // no longer claimed — so the next tick plans it clean
+    let evs = crate::log::read_all(&run_log).unwrap();
+    assert!(evs.iter().any(
+        |e| matches!(&e.kind, Kind::Refused { what, why } if what == "#653" && why.contains("dirty"))
+    ));
+    assert!(!crate::log::claimed_issues(&evs).contains_key(&653));
+
+    // A leak from before the fix (or a crash between the two) is still
+    // adoptable: the record owns that fence, so `claim` reuses it rather than
+    // walking into ClaimTaken.
+    let again = m.create_claim_ref(653, &base, "").unwrap();
+    crate::slice::record(
+        &mut log,
+        "o/r",
+        Kind::Issue {
+            issue: 653,
+            to: IssueState::Claimed {
+                seat: 1,
+                fence: again.clone(),
+            },
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        m.create_claim_ref(653, &base, ""),
+        Err(crate::mirror::MirrorError::ClaimTaken(653))
+    ));
+    let reused = super::deliver::claim(&mut log, "o/r", &cfg, &m, &base, "").unwrap();
+    assert_eq!(reused, again, "the floor's own fence, adopted not refused");
+    let _ = std::fs::remove_dir_all(root);
 }
