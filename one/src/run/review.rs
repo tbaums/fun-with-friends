@@ -7,18 +7,29 @@ use super::{note_issue, Action, RunConfig};
 use crate::types::IssueState;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The record's last word on each issue. A sign-off is not a fact about the
-/// past that stays true forever (#656): the record is a sequence, and only its
-/// latest `Issue` event says where an issue stands now.
-pub fn latest_issue_state(events: &[crate::log::Event]) -> BTreeMap<u64, IssueState> {
+/// The record's last word on each issue, and when it was said. A sign-off is
+/// not a fact about the past that stays true forever (#656): the record is a
+/// sequence, and only its latest `Issue` event says where an issue stands now.
+///
+/// The timestamp is what #664 needs: a snapshot polled before that event was
+/// written cannot speak to what the issue looks like after it.
+pub fn latest_issue_state_at(events: &[crate::log::Event]) -> BTreeMap<u64, (IssueState, u64)> {
     use crate::log::Kind;
     let mut out = BTreeMap::new();
     for e in events {
         if let Kind::Issue { issue, to } = &e.kind {
-            out.insert(*issue, to.clone());
+            out.insert(*issue, (to.clone(), e.ts));
         }
     }
     out
+}
+
+/// [`latest_issue_state_at`] without the timestamps.
+pub fn latest_issue_state(events: &[crate::log::Event]) -> BTreeMap<u64, IssueState> {
+    latest_issue_state_at(events)
+        .into_iter()
+        .map(|(n, (to, _))| (n, to))
+        .collect()
 }
 
 /// Issues the record says a human signed off: an `IssueState::Ready` event,
@@ -52,16 +63,32 @@ pub fn regated_note(issue: u64) -> String {
 ///
 /// Returns the issues re-gated this tick — already excluded from the plan,
 /// because [`reviewed_issues`] reads the event this just wrote.
+///
+/// A snapshot only gets to report a re-gate for an issue it was polled *after*
+/// (#664). The tick polls once and reuses that `Snapshot` all tick, so with
+/// `delegate_ungate` set the loop's own un-gate — a real label removal, and a
+/// `Ready` event — lands after the poll, and the payload still shows the label
+/// the loop just took off. That looked like a human re-gating the issue
+/// seconds after sign-off, and the loop undid its own un-gate. A payload read
+/// at or before the sign-off cannot speak to what happened after it, so it is
+/// not evidence of anything; the next tick's poll postdates the `Ready` event
+/// and catches a real re-gate exactly as before, one tick later.
 pub fn reconcile_regated(cfg: &RunConfig, snap: &crate::poll::Snapshot) -> BTreeSet<u64> {
-    let last = latest_issue_state(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
+    let last = latest_issue_state_at(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
     let mut out = BTreeSet::new();
     for i in &snap.issues {
         let gated_now = i.state == "open" && i.labels.contains(&cfg.gate_label);
-        let signed_off = matches!(
-            last.get(&i.number),
-            Some(IssueState::Ready | IssueState::Claimed { .. })
-        );
+        let Some((state, since)) = last.get(&i.number) else {
+            continue;
+        };
+        let signed_off = matches!(state, IssueState::Ready | IssueState::Claimed { .. });
         if !(gated_now && signed_off) {
+            continue;
+        }
+        // `fetched_at == 0` is a snapshot with no fetch time to compare
+        // against ([`crate::poll::Snapshot::unknown`], and test fixtures); a
+        // real poll stamps unix seconds.
+        if snap.fetched_at > 0 && *since >= snap.fetched_at {
             continue;
         }
         let Ok(mut log) = crate::log::Log::open(&cfg.run_log) else {

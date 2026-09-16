@@ -44,7 +44,7 @@ fn the_record_is_what_makes_an_issue_claimable() {
     assert!(!reviewed_issues(&evs).contains(&11));
 }
 
-fn issue(n: u64, labels: &[&str], claimed: bool) -> IssueView {
+pub(super) fn issue(n: u64, labels: &[&str], claimed: bool) -> IssueView {
     IssueView {
         number: n,
         title: format!("issue {n}"),
@@ -395,7 +395,7 @@ fn the_loop_writes_one_skip_note_per_issue_however_many_ticks_run() {
 
 /// A `RunConfig` with nothing in it that matters: the fields a test cares
 /// about are the ones it overrides.
-fn test_config() -> RunConfig {
+pub(super) fn test_config() -> RunConfig {
     RunConfig {
         owner: "tbaums".into(),
         repo: "transom".into(),
