@@ -45,6 +45,10 @@ pub struct RunConfig {
     /// wake and one PM wake, budgeted apart from the impl/QA seats.
     pub auto_spec: bool,
     pub pm_seat: Option<String>,
+    /// How far that cycle reaches (manifest `review_scope`, #652): every open
+    /// gated issue, or only the ones in `allow_issues`. `skip_labels` parks an
+    /// issue under either.
+    pub review_scope: ReviewScope,
     /// When set, the loop un-gates under this name once a spec lands instead
     /// of waiting for a human `fwf ungate` (manifest `delegate_ungate`).
     pub delegate_ungate: Option<String>,
@@ -136,68 +140,6 @@ pub fn specced_issues(events: &[crate::log::Event]) -> std::collections::BTreeSe
         .collect()
 }
 
-/// A skip label parks an issue — except on a `discovery` ticket, whose
-/// deliverable is a proposal and which therefore gets the same GV→PM path as
-/// anything else (#629).
-fn parked(labels: &[String], skip_labels: &[String]) -> bool {
-    !labels.iter().any(|l| l == crate::spec::DISCOVERY_LABEL)
-        && labels.iter().any(|l| skip_labels.contains(l))
-}
-
-/// Open, gated, not parked. The two halves of the spec cycle share this and
-/// then differ only in what the record must (not) already say.
-fn gated_open<'a>(
-    snap: &'a crate::poll::Snapshot,
-    gate_label: &str,
-    skip_labels: &[String],
-) -> Vec<&'a crate::poll::IssueView> {
-    let mut v: Vec<&crate::poll::IssueView> = snap
-        .issues
-        .iter()
-        .filter(|i| {
-            i.state == "open"
-                && i.labels.iter().any(|l| l == gate_label)
-                && !parked(&i.labels, skip_labels)
-        })
-        .collect();
-    v.sort_unstable_by_key(|i| i.number);
-    v
-}
-
-/// Gated issues GV has never judged, oldest first. These are the tickets the
-/// operator's convention files with the gate label already on: before #629
-/// nothing ever looked at them, because the in-loop `triage_new` filter only
-/// ever considered issues *without* the gate.
-pub fn gv_gated_candidates(
-    snap: &crate::poll::Snapshot,
-    gate_label: &str,
-    skip_labels: &[String],
-    judged: &BTreeMap<u64, bool>,
-) -> Vec<u64> {
-    gated_open(snap, gate_label, skip_labels)
-        .into_iter()
-        .filter(|i| !judged.contains_key(&i.number))
-        .map(|i| i.number)
-        .collect()
-}
-
-/// Gated issues GV judged ready and PM has not specced, oldest first. A
-/// not-ready verdict keeps an issue out of here until a human edits it and a
-/// fresh GV verdict lands: the loop never re-triages its own refusal.
-pub fn pm_candidates(
-    snap: &crate::poll::Snapshot,
-    gate_label: &str,
-    skip_labels: &[String],
-    judged: &BTreeMap<u64, bool>,
-    specced: &std::collections::BTreeSet<u64>,
-) -> Vec<u64> {
-    gated_open(snap, gate_label, skip_labels)
-        .into_iter()
-        .filter(|i| judged.get(&i.number) == Some(&true) && !specced.contains(&i.number))
-        .map(|i| i.number)
-        .collect()
-}
-
 /// Open, un-gated, not parked by a `skip_labels` tag, never-triaged, and not
 /// already carrying work (a claim or an assignee means a human or a seat is
 /// past the question). Oldest first.
@@ -265,23 +207,24 @@ pub fn unpushed_issues(events: &[crate::log::Event]) -> std::collections::BTreeS
 /// PM specs one gated issue GV called ready. At most one wake of each per
 /// tick, budgeted apart from the impl/QA seats.
 ///
-/// It runs before the allow-list narrows the snapshot, for the same reason
-/// `triage_new` does: a specced ticket is how an issue becomes worth
-/// allow-listing in the first place. The gate label is never removed here —
-/// the outcome is "specced, awaiting un-gate" — unless `delegate_ungate` names
-/// the approver who stands in for the human.
+/// It runs before the allow-list narrows the snapshot, because by default it
+/// is not scoped by the allow-list at all, for the same reason `triage_new` is
+/// not: a specced ticket is how an issue becomes worth allow-listing in the
+/// first place. `ReviewFilter` is what it *is* scoped by (#652). The gate label
+/// is never removed here — the outcome is "specced, awaiting un-gate" — unless
+/// `delegate_ungate` names the approver who stands in for the human.
 fn spec_cycle(
     cfg: &RunConfig,
     ops: Option<&crate::github::AppEntry>,
     snap: &crate::poll::Snapshot,
 ) {
     let Some(ops) = ops else { return };
+    let filter = ReviewFilter::of(cfg);
+    note_gated_skips(cfg, snap);
     let events = || crate::log::read_all(&cfg.run_log).unwrap_or_default();
     if let Some(gv) = &cfg.gv_seat {
         let judged = gv_verdicts(&events());
-        if let Some(&n) =
-            gv_gated_candidates(snap, &cfg.gate_label, &cfg.skip_labels, &judged).first()
-        {
+        if let Some(&n) = gv_gated_candidates(snap, &filter, &judged).first() {
             let tcfg = crate::triage::TriageConfig {
                 owner: cfg.owner.clone(),
                 repo: cfg.repo.clone(),
@@ -314,9 +257,7 @@ fn spec_cycle(
     // it in this same tick.
     let evs = events();
     let (judged, specced) = (gv_verdicts(&evs), specced_issues(&evs));
-    let Some(&n) =
-        pm_candidates(snap, &cfg.gate_label, &cfg.skip_labels, &judged, &specced).first()
-    else {
+    let Some(&n) = pm_candidates(snap, &filter, &judged, &specced).first() else {
         return;
     };
     let scfg = crate::spec::SpecConfig {
@@ -991,6 +932,9 @@ fn local_stamp_to_epoch(when: &str) -> Option<u64> {
 fn last_meter_reading() -> Option<(u8, String)> {
     last_meter().map(|(w, _, when)| (w, when))
 }
+
+mod gated;
+pub use gated::*;
 
 mod review;
 pub use review::*;

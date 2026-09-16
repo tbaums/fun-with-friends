@@ -89,6 +89,12 @@ pub struct Manifest {
     /// warning at startup.
     #[serde(default = "default_true")]
     pub auto_spec: bool,
+    /// How far that spec cycle reaches (#652): `"all-gated"` (the default)
+    /// reviews every open gated issue, `"allow-list"` narrows it to `issues`
+    /// so a single-ticket floor spends no GV/PM cycles repo-wide. `skip_labels`
+    /// parks an issue under either value.
+    #[serde(default = "default_review_scope")]
+    pub review_scope: String,
     /// Who un-gates on the floor's behalf once a spec lands. Unset (the
     /// default) leaves the sign-off to a human running `fwf ungate`; set to a
     /// name and `fwf run` removes the gate label itself and records that name
@@ -147,6 +153,13 @@ fn default_skip_labels() -> Vec<String> {
 }
 fn default_template() -> String {
     "dev".into()
+}
+/// The two spellings `review_scope` accepts. `run` reads them back into its
+/// own enum; the manifest is where an unknown one is refused.
+pub const REVIEW_SCOPE_ALL_GATED: &str = "all-gated";
+pub const REVIEW_SCOPE_ALLOW_LIST: &str = "allow-list";
+fn default_review_scope() -> String {
+    REVIEW_SCOPE_ALL_GATED.into()
 }
 
 #[derive(Debug, PartialEq)]
@@ -231,6 +244,13 @@ impl Manifest {
                 )));
             }
         }
+        if ![REVIEW_SCOPE_ALL_GATED, REVIEW_SCOPE_ALLOW_LIST].contains(&self.review_scope.as_str())
+        {
+            return Err(ManifestError::Invalid(format!(
+                "review_scope {:?} is not {REVIEW_SCOPE_ALL_GATED}|{REVIEW_SCOPE_ALLOW_LIST}",
+                self.review_scope
+            )));
+        }
         if self.park_at_weekly_pct > 98 {
             return Err(ManifestError::Invalid(
                 "park_at_weekly_pct must be ≤ 98".into(),
@@ -304,6 +324,9 @@ triage_new = false
 # GV triage + PM spec of gated issues, inside the loop. Set delegate_ungate to
 # a name to let the loop un-gate after a spec instead of waiting on a human.
 auto_spec = true
+# Which gated issues that cycle may spend a GV/PM wake on: every one
+# ("all-gated"), or only the `issues` allow-list below ("allow-list").
+review_scope = "all-gated"
 skip_labels = ["idea", "release-hold", "tracking", "build-epic"]
 # Only these issues may be worked while 1.0 is new. Remove to allow any eligible issue.
 issues = [564]
@@ -347,6 +370,29 @@ mod tests {
         assert!(!m.auto_spec);
         assert_eq!(m.delegate_ungate.as_deref(), Some("tbaums"));
         assert!(Manifest::parse(EXAMPLE).unwrap().auto_spec);
+    }
+
+    /// #652: the review cycle reviews every gated issue unless a manifest
+    /// asks for the allow-list, and an unknown scope is refused at load —
+    /// a typo must not silently widen what GV and PM are woken on.
+    #[test]
+    fn review_scope_defaults_to_all_gated_and_refuses_an_unknown_value() {
+        let bare = Manifest::parse("repo = \"a/b\"\n[suites]\nfast=\"x\"\n").unwrap();
+        assert_eq!(bare.review_scope, REVIEW_SCOPE_ALL_GATED);
+        let m = Manifest::parse(
+            "repo = \"a/b\"\nreview_scope = \"allow-list\"\n[suites]\nfast=\"x\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.review_scope, REVIEW_SCOPE_ALLOW_LIST);
+        assert!(matches!(
+            Manifest::parse("repo = \"a/b\"\nreview_scope = \"allowlist\"\n[suites]\nfast=\"x\"\n")
+                .unwrap_err(),
+            ManifestError::Invalid(_)
+        ));
+        assert_eq!(
+            Manifest::parse(EXAMPLE).unwrap().review_scope,
+            REVIEW_SCOPE_ALL_GATED
+        );
     }
 
     #[test]
