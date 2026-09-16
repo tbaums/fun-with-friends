@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.8 — 2026-09-16
+
+The run loop no longer re-gates an issue it just un-gated.
+
+- **Delegated un-gate re-gated the issue from a stale payload in the same tick** (#664, PR #666) — `reconcile_regated` now ignores a Snapshot polled at or before the issue's latest Ready/Claimed event, so a same-tick delegated un-gate is no longer read as "the gate label is back" and the issue is planned in the tick that signed it off. Observed on the transom floor 2026-09-16 (every signed-off ticket sat for 6+ ticks until a manual `fwf ungate`). Tests split into `run/tests_regate.rs` to respect the 1,000-line rule.
+
 ## 1.0.7 — 2026-09-15
 
 Scheduler hardening after the first day of automated GV→PM→GV, plus the devbox latest-release check.
