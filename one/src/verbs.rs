@@ -763,8 +763,8 @@ pub fn up(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    println!("manifest {} ok: repo {} · {} → {} · gate label {:?} · {} pair(s) · session {} · venue {} ({} GB, {} s) · suites {:?}",
-        path.display(), m.repo, m.base_branch, m.release_branch, m.gate_label, m.pairs, m.session, m.gate_venue, m.gate_memory_gb, m.gate_timeout_secs, m.suites.keys().collect::<Vec<_>>());
+    println!("manifest {} ok: repo {} · {} → {} · gate label {:?} · {} pair(s) · session {} · venue {} ({} GB, {} s) · suites {:?}{}",
+        path.display(), m.repo, m.base_branch, m.release_branch, m.gate_label, m.pairs, m.session, m.gate_venue, m.gate_memory_gb, m.gate_timeout_secs, m.suites.keys().collect::<Vec<_>>(), m.delegate_ungate.as_deref().map(|d| format!(" · delegate_ungate {d}")).unwrap_or_default());
     println!("  floor: {}", m.floor().display());
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,

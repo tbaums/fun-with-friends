@@ -177,11 +177,13 @@ fn ungate_or_await(cfg: &RunConfig, ops: &AppEntry, n: u64) {
         &cfg.repo,
         n,
         &cfg.gate_label,
-        actor,
+        // Marked as what it is (#645): the loop typed this, standing in for a
+        // name, and a reader of the issue or the record must be able to tell.
+        crate::triage::Ungate::Delegated(actor),
         &cfg.run_log,
         ops,
     ) {
-        Ok(()) => println!("fwf run: #{n} un-gated on {actor}'s behalf; now eligible"),
+        Ok(()) => println!("fwf run: #{n} un-gated on {actor}'s behalf (delegated); now eligible"),
         Err(e) => eprintln!(
             "fwf run: #{n} is specced and signed off but the delegated un-gate failed: {}",
             e.0
