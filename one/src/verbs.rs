@@ -733,6 +733,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         gv_seat: m.models.contains_key("gv").then(|| m.seat_target("gv", 1)),
         auto_spec: m.auto_spec,
         pm_seat: m.models.contains_key("pm").then(|| m.seat_target("pm", 1)),
+        review_scope: run::ReviewScope::from_manifest(&m.review_scope),
         delegate_ungate: m.delegate_ungate.clone(),
         park_at_weekly_pct: m.park_at_weekly_pct,
         rework_cap: m.rework_cap,

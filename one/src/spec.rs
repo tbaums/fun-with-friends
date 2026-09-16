@@ -13,9 +13,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// The label PM applies to a ticket whose deliverable is a proposal. It is
-/// also the one label a `skip_labels` list never parks: a `discovery` ticket is
-/// exactly what the PM cycle is for (#629).
+/// The label PM applies to a ticket whose deliverable is a proposal. It gets
+/// no exemption from `skip_labels`: a floor that lists `discovery` there has
+/// said those tickets are its owner's to decide, and the spec cycle honours
+/// that like any other skip label (#652).
 pub const DISCOVERY_LABEL: &str = "discovery";
 
 /// Every "PM specced this" note starts with this; the run loop reads the issue

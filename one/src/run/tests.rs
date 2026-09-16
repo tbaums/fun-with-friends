@@ -178,8 +178,6 @@ fn the_spec_cycle_offers_unjudged_gated_issues_then_the_ones_gv_called_ready() {
             issue(12, &[], false),
             issue(13, &["product-wip", "idea"], false),
             issue(14, &["product-wip", "needs-human"], false),
-            // parked by `tracking`, yet a discovery ticket is exactly what
-            // PM turns into a proposal: never skipped here
             issue(15, &["product-wip", "tracking", "discovery"], false),
             issue(16, &["product-wip"], false),
         ],
@@ -188,21 +186,15 @@ fn the_spec_cycle_offers_unjudged_gated_issues_then_the_ones_gv_called_ready() {
         known: true,
     };
     let skip = skip_labels();
+    let f = ReviewFilter::all_gated("product-wip", &skip);
     let mut evs: Vec<Event> = vec![];
     assert_eq!(
-        gv_gated_candidates(&snap, "product-wip", &skip, &gv_verdicts(&evs)),
-        vec![10, 11, 15, 16],
+        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)),
+        vec![10, 11, 16],
         "every gated, unparked, unjudged issue — oldest first"
     );
     assert!(
-        pm_candidates(
-            &snap,
-            "product-wip",
-            &skip,
-            &gv_verdicts(&evs),
-            &specced_issues(&evs)
-        )
-        .is_empty(),
+        pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty(),
         "PM waits for a GV verdict"
     );
     // GV gates #10 ("not ready") and judges #11 ready — the two shapes
@@ -218,25 +210,222 @@ fn the_spec_cycle_offers_unjudged_gated_issues_then_the_ones_gv_called_ready() {
     evs.push(note(crate::triage::ready_note(11)));
     let judged = gv_verdicts(&evs);
     assert_eq!(
-        gv_gated_candidates(&snap, "product-wip", &skip, &judged),
-        vec![15, 16],
+        gv_gated_candidates(&snap, &f, &judged),
+        vec![16],
         "a judged issue is never re-triaged, ready or not"
     );
     assert_eq!(
-        pm_candidates(&snap, "product-wip", &skip, &judged, &specced_issues(&evs)),
+        pm_candidates(&snap, &f, &judged, &specced_issues(&evs)),
         vec![11],
         "only the ready one; #10 waits for a human edit"
     );
     // and once PM has written the spec, nobody is offered it again
     evs.push(note(crate::spec::spec_note(11, 900, false, 2)));
-    assert!(pm_candidates(
-        &snap,
-        "product-wip",
-        &skip,
-        &gv_verdicts(&evs),
-        &specced_issues(&evs)
-    )
-    .is_empty());
+    assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
+}
+
+/// #652, fwf floor 2026-09-15: a floor allow-listed to a single ticket woke
+/// GV and then PM on transom's #1371 — `discovery`-labelled, parked by its
+/// owner, not on the list — because this cycle read neither the skip labels
+/// nor the allow-list. A skip label parks a gated issue under either scope;
+/// the allow-list narrows the rest only when the manifest opts in.
+#[test]
+fn the_spec_cycle_honours_skip_labels_always_and_the_allow_list_when_scoped() {
+    let snap = Snapshot {
+        issues: vec![
+            issue(1123, &["product-wip", "needs-human"], false),
+            // the #1371 shape: parked as `discovery`, and off the list
+            issue(1371, &["product-wip", "discovery"], false),
+            issue(1381, &["product-wip"], false),
+            issue(1400, &["product-wip"], false),
+        ],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    let mut skip = skip_labels();
+    skip.push("discovery".into());
+    let none: BTreeMap<u64, bool> = BTreeMap::new();
+    let ready: BTreeMap<u64, bool> = snap.issues.iter().map(|i| (i.number, true)).collect();
+    let specced = std::collections::BTreeSet::new();
+
+    // (2) default scope: every gated issue no skip label parks, list or no list
+    let all = ReviewFilter {
+        gate_label: "product-wip",
+        skip_labels: &skip,
+        scope: ReviewScope::AllGated,
+        allow_issues: &[1381],
+    };
+    assert_eq!(
+        gv_gated_candidates(&snap, &all, &none),
+        vec![1381, 1400],
+        "#629's default is preserved: an off-list ticket is still reviewed"
+    );
+    // (3) opt-in scope: the allow-list decides, for GV and for PM alike
+    let scoped = ReviewFilter {
+        scope: ReviewScope::AllowList,
+        ..all
+    };
+    assert_eq!(gv_gated_candidates(&snap, &scoped, &none), vec![1381]);
+    assert_eq!(
+        pm_candidates(&snap, &scoped, &ready, &specced),
+        vec![1381],
+        "a skip label added between GV's verdict and PM's wake still blocks it"
+    );
+    // an empty allow-list means unrestricted here, as it does on the impl path
+    let unrestricted = ReviewFilter {
+        allow_issues: &[],
+        ..scoped
+    };
+    assert_eq!(
+        gv_gated_candidates(&snap, &unrestricted, &none),
+        vec![1381, 1400]
+    );
+    // (1) and under no scope is a parked ticket ever woken
+    for f in [&all, &scoped, &unrestricted] {
+        for n in [1123, 1371] {
+            assert!(
+                !gv_gated_candidates(&snap, f, &none).contains(&n)
+                    && !pm_candidates(&snap, f, &ready, &specced).contains(&n),
+                "#{n} is parked by a skip label and was offered anyway"
+            );
+        }
+    }
+    // each skipped issue is named once, with the first matching label
+    let seen = std::collections::BTreeSet::new();
+    assert_eq!(
+        gated_skips(&snap, &scoped, &seen),
+        vec![
+            (1123, SkipReason::Label("needs-human".into())),
+            (1371, SkipReason::Label("discovery".into())),
+            (1400, SkipReason::NotAllowListed),
+        ]
+    );
+    assert_eq!(
+        gated_skips(&snap, &all, &seen),
+        vec![
+            (1123, SkipReason::Label("needs-human".into())),
+            (1371, SkipReason::Label("discovery".into())),
+        ],
+        "nothing is `not in allow-list` under the default scope"
+    );
+}
+
+/// The reason is said once, not once per tick: an operator needs to know why
+/// a gated ticket is sitting there, and a line every minute is how that gets
+/// tuned out. The dedup is the run log's seen-set, as triage's is.
+#[test]
+fn a_skipped_gated_issue_is_named_once_and_not_again_next_tick() {
+    let why = SkipReason::Label("discovery".into());
+    let evs = vec![note(skip_note(1371, &why))];
+    assert_eq!(
+        skip_noted(&evs).into_iter().collect::<Vec<_>>(),
+        vec![1371],
+        "{}",
+        skip_note(1371, &why)
+    );
+    let snap = Snapshot {
+        issues: vec![
+            issue(1371, &["product-wip", "discovery"], false),
+            issue(1372, &["product-wip", "idea"], false),
+        ],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    let mut skip = skip_labels();
+    skip.push("discovery".into());
+    let f = ReviewFilter::all_gated("product-wip", &skip);
+    assert_eq!(
+        gated_skips(&snap, &f, &skip_noted(&evs)),
+        vec![(1372, SkipReason::Label("idea".into()))],
+        "only the one the record has not named yet"
+    );
+    assert!(skip_note(1371, &SkipReason::NotAllowListed).contains("not in allow-list"));
+}
+
+/// The same, through the loop's own writer: two ticks over an unchanged
+/// snapshot leave one note per skipped issue in `run.jsonl`, naming it and
+/// the reason.
+#[test]
+fn the_loop_writes_one_skip_note_per_issue_however_many_ticks_run() {
+    let dir = std::env::temp_dir().join(format!("fwfd-skipnote-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run_log = dir.join("run.jsonl");
+    let _ = std::fs::remove_file(&run_log);
+    let cfg = RunConfig {
+        run_log: run_log.clone(),
+        skip_labels: skip_labels(),
+        allow_issues: vec![1381],
+        review_scope: ReviewScope::AllowList,
+        ..test_config()
+    };
+    let snap = Snapshot {
+        issues: vec![
+            issue(1371, &["product-wip", "needs-human"], false),
+            issue(1381, &["product-wip"], false),
+            issue(1400, &["product-wip"], false),
+        ],
+        prs: vec![],
+        fetched_at: 0,
+        known: true,
+    };
+    note_gated_skips(&cfg, &snap);
+    note_gated_skips(&cfg, &snap);
+    let notes: Vec<String> = crate::log::read_all(&run_log)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            Kind::Note { text } if text.starts_with(SKIP_NOTE_PREFIX) => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notes,
+        vec![
+            skip_note(1371, &SkipReason::Label("needs-human".into())),
+            skip_note(1400, &SkipReason::NotAllowListed),
+        ],
+        "one line each, and nothing about the allow-listed #1381"
+    );
+    let _ = std::fs::remove_file(&run_log);
+}
+
+/// A `RunConfig` with nothing in it that matters: the fields a test cares
+/// about are the ones it overrides.
+fn test_config() -> RunConfig {
+    RunConfig {
+        owner: "tbaums".into(),
+        repo: "transom".into(),
+        base_branch: "staging".into(),
+        gate_label: "product-wip".into(),
+        floor_dir: PathBuf::new(),
+        mirror_dir: PathBuf::new(),
+        run_log: PathBuf::new(),
+        impl_seats: vec![],
+        qa_seats: vec![],
+        seat_expect_cmd: "claude".into(),
+        interval: Duration::from_secs(60),
+        job_timeout: Duration::from_secs(60),
+        once: true,
+        prompts_dir: PathBuf::new(),
+        template: "dev".into(),
+        allow_issues: vec![],
+        skip_labels: vec![],
+        triage_new: false,
+        gv_seat: None,
+        auto_spec: true,
+        pm_seat: None,
+        review_scope: ReviewScope::AllGated,
+        delegate_ungate: None,
+        park_at_weekly_pct: 85,
+        rework_cap: 2,
+        gate_suite: "fast".into(),
+        gate_cmd: String::new(),
+        gate_venue: "local".into(),
+        gate_memory_gb: 8,
+        gate_timeout: Duration::from_secs(60),
+    }
 }
 
 /// `delegate_ungate = "name"`: the loop un-gates after the spec, and what
@@ -264,15 +453,10 @@ fn a_delegated_ungate_records_the_actor_and_ends_the_cycle() {
         known: true,
     };
     let judged = gv_verdicts(&evs);
-    assert!(gv_gated_candidates(&snap, "product-wip", &skip_labels(), &judged).is_empty());
-    assert!(pm_candidates(
-        &snap,
-        "product-wip",
-        &skip_labels(),
-        &judged,
-        &specced_issues(&evs)
-    )
-    .is_empty());
+    let skip = skip_labels();
+    let f = ReviewFilter::all_gated("product-wip", &skip);
+    assert!(gv_gated_candidates(&snap, &f, &judged).is_empty());
+    assert!(pm_candidates(&snap, &f, &judged, &specced_issues(&evs)).is_empty());
 }
 
 /// The #629 walk, against a real (fake) GitHub: an operator files a gated
@@ -309,20 +493,11 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     };
 
     // tick 1: the gated ticket is GV's, and only GV's
+    let f = ReviewFilter::all_gated("product-wip", &skip);
     let snap = poller.poll(10).unwrap();
     let evs = read();
-    assert_eq!(
-        gv_gated_candidates(&snap, "product-wip", &skip, &gv_verdicts(&evs)),
-        vec![n]
-    );
-    assert!(pm_candidates(
-        &snap,
-        "product-wip",
-        &skip,
-        &gv_verdicts(&evs),
-        &specced_issues(&evs)
-    )
-    .is_empty());
+    assert_eq!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)), vec![n]);
+    assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
     // GV says ready; `triage::run` writes exactly this note
     append(Kind::Note {
         text: crate::triage::ready_note(n),
@@ -331,15 +506,9 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     // tick 2: GV is done with it, PM is not
     let snap = poller.poll(11).unwrap();
     let evs = read();
-    assert!(gv_gated_candidates(&snap, "product-wip", &skip, &gv_verdicts(&evs)).is_empty());
+    assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
     assert_eq!(
-        pm_candidates(
-            &snap,
-            "product-wip",
-            &skip,
-            &gv_verdicts(&evs),
-            &specced_issues(&evs)
-        ),
+        pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)),
         vec![n]
     );
     append(Kind::Note {
@@ -349,15 +518,8 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     // tick 3: nothing owed, and the ticket is still gated
     let snap = poller.poll(12).unwrap();
     let evs = read();
-    assert!(gv_gated_candidates(&snap, "product-wip", &skip, &gv_verdicts(&evs)).is_empty());
-    assert!(pm_candidates(
-        &snap,
-        "product-wip",
-        &skip,
-        &gv_verdicts(&evs),
-        &specced_issues(&evs)
-    )
-    .is_empty());
+    assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
+    assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
     let labels: Vec<String> = fake.issue_json(O, R, n).unwrap()["labels"]
         .as_array()
         .unwrap()
