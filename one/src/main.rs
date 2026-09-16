@@ -31,6 +31,7 @@ mod spec;
 mod status;
 mod triage;
 mod types;
+mod upgrade;
 mod verbs;
 
 use std::path::{Path, PathBuf};
@@ -51,7 +52,8 @@ pub const USAGE: &str = "usage:
   fwf ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
   fwf release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
   fwf dash [--manifest PATH] [--log PATH] [--watch SECS] [--once] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; on a terminal it watches (default every 5s, taking 1-5/j/k/g/G/r/q), --watch SECS sets the interval, --once prints a single frame labelled as a snapshot, and a pipe gets that single frame without asking (T-27, #574, #626)
-  fwf doctor [--manifest PATH]   what the floor can do: each App's token minted narrow, and what every seat worktree commits as
+  fwf doctor [--manifest PATH]   what the floor can do: each App's token minted narrow, what every seat worktree commits as, and installed vs latest release
+  fwf self-upgrade [--to X.Y.Z] [--force]   replace this binary with the published release asset for this host (checksum verified, atomic); `up` refuses to start a floor on a stale fwf unless FWF_ALLOW_STALE=1
   fwf probe <role> <api-path> GET an API path with that App's token; prints the status
   fwf mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL
   fwf review --repo o/r --pr N --by qa|impl|ops [--changes] [--body TEXT]   PR review anchored to the current head, under that App
@@ -245,6 +247,7 @@ fn main() -> ExitCode {
         Some("ready") => verbs::ready(&args),
         Some("up") => verbs::up(&args),
         Some("doctor") => verbs::doctor(&args),
+        Some("self-upgrade") => upgrade::self_upgrade(&args),
         Some("probe") => {
             let (Some(role), Some(api_path)) = (args.get(1), args.get(2)) else {
                 eprintln!("{USAGE}");

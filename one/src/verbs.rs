@@ -1,16 +1,19 @@
 //! Verb bodies moved out of main.rs (the size ratchet): spec, triage,
 //! release-check, dash. Each takes the raw argv and returns the exit code.
 
+use crate::USAGE;
 use crate::{
-    dash, github, log, manifest, mirror, profile, prompts, run, seat, slice, spec, triage,
+    dash, github, log, manifest, mirror, profile, prompts, run, seat, slice, spec, triage, upgrade,
 };
-use crate::{default_log, USAGE};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-fn get(args: &[String], flag: &str) -> Option<String> {
+mod doctor;
+pub use doctor::*;
+
+pub(crate) fn get(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
         .and_then(|i| args.get(i + 1).cloned())
@@ -460,76 +463,6 @@ fn seat_live(cmd: &str) -> bool {
     cmd == "claude" || cmd.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
-/// `fwf doctor [--manifest PATH]`: what this floor can and cannot do right
-/// now. Every App's token is minted narrow (metadata:read) to prove the keys
-/// work, and every worktree the manifest names is asked what it commits as
-/// (#590). Read-only: a wrong identity is fixed by `fwf seats --up`.
-/// Non-zero when an App is unusable or a worktree commits as the wrong seat.
-pub fn doctor(args: &[String]) -> ExitCode {
-    println!("fwf {}", env!("CARGO_PKG_VERSION"));
-    println!(
-        "  event log  : append+fsync JSONL, read, `why <pr>` at {}",
-        default_log().display()
-    );
-    let mut bad = 0;
-    let path = get(args, "--manifest")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
-    match manifest::Manifest::load(&path) {
-        Ok(m) => {
-            let floor = m.floor();
-            println!("  floor      : {} ({})", floor.display(), m.repo);
-            println!("seat identity");
-            let (lines, wrong) = identity_report(&floor, &m.seats());
-            for l in lines {
-                println!("{l}");
-            }
-            bad += wrong;
-        }
-        // No manifest is not a failure here: the Apps are still worth checking.
-        Err(e) => println!("  floor      : no manifest ({e}); skipping seat identity"),
-    }
-    let apps = match github::load_apps(&github::apps_path()) {
-        Ok(a) => a,
-        Err(e) => {
-            println!("  apps       : {e}");
-            return ExitCode::from(1);
-        }
-    };
-    println!("apps");
-    for (name, entry) in &apps.0 {
-        let narrow = std::collections::BTreeMap::from([("metadata", "read")]);
-        match github::mint(entry, Some(&narrow)) {
-            Ok(t) => println!(
-                "  {name:<10} token minted (app {}, installation {}), expires {}, scopes {:?}",
-                entry.app_id,
-                entry.installation_id,
-                t.expires_at,
-                t.permissions.keys().collect::<Vec<_>>()
-            ),
-            Err(e) => {
-                bad += 1;
-                println!("  {name:<10} NOT USABLE — {e}");
-            }
-        }
-        // A token minted for a permission the installation lacks is refused, so
-        // this asks without writing (#602); a repo with no workflows can ignore it.
-        if name == "impl" || name == "ops" {
-            let wf = [("workflows", "write"), ("metadata", "read")];
-            if let Err(e) = github::mint(entry, Some(&wf.into_iter().collect())) {
-                println!(
-                    "  {name:<10} WARNING no `workflows: write` — a branch touching .github/workflows/ cannot be pushed ({e}); add the permission in the App's settings and re-accept it on the installation"
-                );
-            }
-        }
-    }
-    if bad == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    }
-}
-
 /// `fwf seats [--up|--down] [--manifest PATH]`: bring every seat the
 /// manifest names up (mirror, worktree clone, warm pane) or take them down.
 /// Up is idempotent: a live pane is left alone. Down refuses while the run
@@ -753,6 +686,17 @@ pub fn run_loop(args: &[String]) -> ExitCode {
 }
 
 pub fn up(args: &[String]) -> ExitCode {
+    // A box restored from a hibernate snapshot runs whatever fwf it was
+    // snapshotted with (#653). It does not get to start a floor on that
+    // quietly — but an unreachable GitHub is a warning, never a refusal.
+    match upgrade::up_gate(&upgrade::check_release(), upgrade::allow_stale()) {
+        upgrade::UpGate::Go => {}
+        upgrade::UpGate::Warn(m) => eprintln!("fwf up: {m}"),
+        upgrade::UpGate::Refuse(m) => {
+            eprintln!("fwf up: {m}");
+            return ExitCode::from(1);
+        }
+    }
     let path = get(args, "--manifest")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
