@@ -80,8 +80,8 @@ fn versions_compare_as_numbers_and_tags_lose_their_prefix() {
 
 /// The tag in the download path is the one the remote actually carries.
 /// `git ls-remote --tags origin` lists `v1.0.4`, `v1.0.5`, `v1.0.6`, and
-/// `release-publish.sh` tags `v$VERSION`; `install.sh` still writes
-/// `one-v<version>`, which is a 404 and is what this asserts we did not copy.
+/// `release-publish.sh` tags `v$VERSION`. `install.sh` wrote `one-v<version>`
+/// until #660 — a 404 on every clean box — which is what this asserts against.
 #[test]
 fn the_download_url_carries_the_v_tag_the_remote_actually_has() {
     let url = asset_url("tbaums/fun-with-friends", "1.0.6", "linux-x86_64");
@@ -276,4 +276,77 @@ fn the_host_slug_is_the_one_install_sh_uses() {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         assert_eq!(host_slug(), Some("linux-x86_64"));
     }
+}
+
+/// #660 — the three places that spell a release tag must spell it the same.
+///
+/// `install.sh` built `releases/download/one-v<version>` long after #641 moved
+/// the tags to `v<version>`, so every clean-box install without cargo 404'd —
+/// and exited 0 while it did. Nothing caught it because nothing compared the
+/// script to the script that does the tagging. This does: `release-publish.sh`
+/// is the authority (it creates the tag), and `install.sh` and [`asset_url`]
+/// both have to agree with it.
+#[test]
+fn install_sh_and_release_publish_sh_agree_with_asset_url_on_the_tag() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |p: &std::path::Path| {
+        std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    let publish = read(&root.join("scripts/release-publish.sh"));
+    let install = read(&root.join("../install.sh"));
+
+    // the authority: `gh release create "$TAG"` tags exactly this
+    assert!(
+        publish.contains(r#"TAG="v$VERSION""#),
+        "release-publish.sh no longer tags v$VERSION; every downloader below follows it"
+    );
+    // the downloader in bash
+    assert!(
+        install.contains("/releases/download/v${VERSION}"),
+        "install.sh's download URL is not built from the v<version> tag"
+    );
+    // and the downloader in Rust, on the same version
+    assert!(
+        asset_url("tbaums/fun-with-friends", "1.0.6", "linux-x86_64")
+            .contains("/releases/download/v1.0.6/"),
+        "self-upgrade and install.sh have drifted apart"
+    );
+    // the pre-#641 spelling is gone from the paths that fetch (comments about
+    // the old releases are history and may keep saying it)
+    for line in install.lines() {
+        let code = line.split('#').next().unwrap_or_default();
+        assert!(
+            !code.contains("one-v"),
+            "install.sh still fetches the pre-#641 tag: {line}"
+        );
+    }
+    // and the asset names agree too: `fwf-<version>-<slug>.tar.gz`
+    assert!(
+        install.contains(r#"ASSET="fwf-${VERSION}-${SLUG}.tar.gz""#),
+        "install.sh's asset name is not <bin>-<version>-<slug>.tar.gz"
+    );
+    assert_eq!(
+        asset_stem("1.0.6", "linux-x86_64"),
+        "fwf-1.0.6-linux-x86_64"
+    );
+}
+
+/// The other half of #660: an install that produces no `fwf` has to say so in
+/// the one place a scripted install reads. It printed the failure and exited 0.
+#[test]
+fn install_sh_exits_non_zero_when_no_binary_lands() {
+    let install = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../install.sh"),
+    )
+    .expect("install.sh");
+    assert!(install.contains("exit \"$FAILED\""), "no failing exit path");
+    assert!(
+        install.contains("FAILED=1"),
+        "nothing ever sets the failure flag"
+    );
+    // and the version it fetches is overridable without touching the tree
+    assert!(
+        install.contains(r#"VERSION="${FWF_VERSION:-$ONE_VERSION}""#),
+        "FWF_VERSION does not override the checked-out version"
+    );
 }
