@@ -1,6 +1,18 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.7 — 2026-09-15
+
+Scheduler hardening after the first day of automated GV→PM→GV, plus the devbox latest-release check.
+
+- **Gated-issue review honours `skip_labels`; new `review_scope`** (#652, PR #654) — skip-labelled issues are never woken; `review_scope = "all-gated" | "allow-list"` (default all-gated) lets a single-ticket floor stay scoped.
+- **A first-pass GV READY no longer skips the post-spec sign-off** (#655, PR #657) — sequence is now triage → spec → sign-off → un-gate; a spec nobody reviewed can no longer be un-gated.
+- **Delegated un-gates are attributed** (#645, PR #658) — `delegate_ungate` un-gates carry a `(delegated)` marker in the issue comment and run record; `fwf up` prints the delegate.
+- **`fwf doctor` shows installed vs latest; new `fwf self-upgrade`** (#653, PR #659) — checksum-verified atomic install of the matching release asset; `fwf up` refuses on a known-stale binary (`FWF_ALLOW_STALE=1` to override); unreachable GitHub is a warning, never a hang.
+- **Re-gate reconciliation, refusal back-off, claim-ref release** (#656, PR #661) — a `product-wip` re-applied after a Ready record gates the issue again; a refusing slice releases its claim ref and no longer starves the allow-list.
+- **install.sh downloads `v<version>` assets** (#660, PR #662) — the pre-#641 `one-v` URL 404'd on every fresh install; install.sh and `self-upgrade` now share the tag spelling.
+- Closed by decision: #646 (discovery tickets do reach PM/GV — keep `discovery` out of `skip_labels`), #107, #166, #161, #611.
+
 ## 1.0.6 — 2026-09-15
 
 Core-9 burn-down, every ticket through GV triage → PM spec → GV sign-off.
