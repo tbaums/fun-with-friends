@@ -41,16 +41,18 @@ pub struct RunConfig {
     /// GV triage of new issues each tick (manifest `triage_new`); needs a GV seat.
     pub triage_new: bool,
     pub gv_seat: Option<String>,
-    /// The spec cycle for gated issues each tick (manifest `auto_spec`): one GV
-    /// wake and one PM wake, budgeted apart from the impl/QA seats.
+    /// The spec cycle for gated issues each tick (manifest `auto_spec`): a GV
+    /// wake, a PM wake and the GV sign-off wake (#655), budgeted apart from the
+    /// impl/QA seats.
     pub auto_spec: bool,
     pub pm_seat: Option<String>,
     /// How far that cycle reaches (manifest `review_scope`, #652): every open
     /// gated issue, or only the ones in `allow_issues`. `skip_labels` parks an
     /// issue under either.
     pub review_scope: ReviewScope,
-    /// When set, the loop un-gates under this name once a spec lands instead
-    /// of waiting for a human `fwf ungate` (manifest `delegate_ungate`).
+    /// When set, the loop un-gates under this name once a spec lands *and GV
+    /// has signed it off* (#655), instead of waiting for a human `fwf ungate`
+    /// (manifest `delegate_ungate`).
     pub delegate_ungate: Option<String>,
     /// Park the floor while the last logged weekly meter % is at or above this.
     pub park_at_weekly_pct: u8,
@@ -203,104 +205,6 @@ pub fn unpushed_issues(events: &[crate::log::Event]) -> std::collections::BTreeS
     crate::log::pending_pushes(events).into_keys().collect()
 }
 
-/// The spec cycle (#629): GV judges one gated issue it has never judged, then
-/// PM specs one gated issue GV called ready. At most one wake of each per
-/// tick, budgeted apart from the impl/QA seats.
-///
-/// It runs before the allow-list narrows the snapshot, because by default it
-/// is not scoped by the allow-list at all, for the same reason `triage_new` is
-/// not: a specced ticket is how an issue becomes worth allow-listing in the
-/// first place. `ReviewFilter` is what it *is* scoped by (#652). The gate label
-/// is never removed here — the outcome is "specced, awaiting un-gate" — unless
-/// `delegate_ungate` names the approver who stands in for the human.
-fn spec_cycle(
-    cfg: &RunConfig,
-    ops: Option<&crate::github::AppEntry>,
-    snap: &crate::poll::Snapshot,
-) {
-    let Some(ops) = ops else { return };
-    let filter = ReviewFilter::of(cfg);
-    note_gated_skips(cfg, snap);
-    let events = || crate::log::read_all(&cfg.run_log).unwrap_or_default();
-    if let Some(gv) = &cfg.gv_seat {
-        let judged = gv_verdicts(&events());
-        if let Some(&n) = gv_gated_candidates(snap, &filter, &judged).first() {
-            let tcfg = crate::triage::TriageConfig {
-                owner: cfg.owner.clone(),
-                repo: cfg.repo.clone(),
-                issue: n,
-                gate_label: cfg.gate_label.clone(),
-                seat_target: gv.clone(),
-                seat_expect_cmd: cfg.seat_expect_cmd.clone(),
-                floor_dir: cfg.floor_dir.clone(),
-                job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "gv"),
-                run_log: cfg.run_log.clone(),
-                timeout: cfg.job_timeout,
-            };
-            match crate::triage::run(&tcfg, ops) {
-                Ok((ready, reason)) => println!(
-                    "fwf run: GV judged gated #{n}: {} — {reason}",
-                    if ready {
-                        "ready (PM specs it next)"
-                    } else {
-                        "not ready (still gated, reason posted)"
-                    }
-                ),
-                // A stalled or refused seat records as such and leaves no
-                // verdict, so the issue is offered again next tick.
-                Err(e) => eprintln!("fwf run: GV cycle for #{n} failed: {}", e.0),
-            }
-        }
-    }
-    let Some(pm) = &cfg.pm_seat else { return };
-    // Re-read: GV may have judged an issue ready moments ago, and PM may take
-    // it in this same tick.
-    let evs = events();
-    let (judged, specced) = (gv_verdicts(&evs), specced_issues(&evs));
-    let Some(&n) = pm_candidates(snap, &filter, &judged, &specced).first() else {
-        return;
-    };
-    let scfg = crate::spec::SpecConfig {
-        owner: cfg.owner.clone(),
-        repo: cfg.repo.clone(),
-        issue: n,
-        gate_label: cfg.gate_label.clone(),
-        discovery_label: crate::spec::DISCOVERY_LABEL.into(),
-        seat_target: pm.clone(),
-        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
-        floor_dir: cfg.floor_dir.clone(),
-        job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "pm"),
-        run_log: cfg.run_log.clone(),
-        timeout: cfg.job_timeout,
-    };
-    match crate::spec::run(&scfg, ops) {
-        Ok((title, questions)) => {
-            println!(
-                "fwf run: PM specced #{n} — {title} ({} open question(s)); specced, awaiting un-gate",
-                questions.len()
-            );
-            if let Some(actor) = &cfg.delegate_ungate {
-                match crate::triage::ungate(
-                    &cfg.owner,
-                    &cfg.repo,
-                    n,
-                    &cfg.gate_label,
-                    actor,
-                    &cfg.run_log,
-                    ops,
-                ) {
-                    Ok(()) => println!("fwf run: #{n} un-gated on {actor}'s behalf; now eligible"),
-                    Err(e) => eprintln!(
-                        "fwf run: #{n} is specced but the delegated un-gate failed: {}",
-                        e.0
-                    ),
-                }
-            }
-        }
-        Err(e) => eprintln!("fwf run: PM cycle for #{n} failed: {}", e.0),
-    }
-}
-
 fn ready_or_gated_in_record(run_log: &std::path::Path, issue: u64) -> bool {
     crate::log::read_all(run_log)
         .map(|evs| triaged_issues(&evs).contains(&issue))
@@ -335,7 +239,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
             eprintln!("run: auto_spec is on but there is no [ops] app; no gated issue will be triaged or specced");
         }
         if cfg.gv_seat.is_none() {
-            eprintln!("run: auto_spec is on but no GV seat is configured (`gv` in [models]); gated issues will not be triaged");
+            eprintln!("run: auto_spec is on but no GV seat is configured (`gv` in [models]); gated issues will not be triaged, and a written spec will never be signed off");
         }
         if cfg.pm_seat.is_none() {
             eprintln!("run: auto_spec is on but no PM seat is configured (`pm` in [models]); gated issues will not be specced");
@@ -503,8 +407,9 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
             }
         }
         // The gated half of the same question (#629): GV on a gated issue it
-        // has never judged, PM on one GV called ready. Like triage above, this
-        // runs before the allow-list narrows the snapshot.
+        // has never judged, PM on one GV called ready, GV again on the spec PM
+        // wrote (#655). Like triage above, this runs before the allow-list
+        // narrows the snapshot.
         if cfg.auto_spec {
             spec_cycle(cfg, ops_app, &snap);
         }
@@ -932,6 +837,9 @@ fn local_stamp_to_epoch(when: &str) -> Option<u64> {
 fn last_meter_reading() -> Option<(u8, String)> {
     last_meter().map(|(w, _, when)| (w, when))
 }
+
+mod cycle;
+use cycle::spec_cycle;
 
 mod gated;
 pub use gated::*;

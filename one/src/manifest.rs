@@ -95,10 +95,11 @@ pub struct Manifest {
     /// parks an issue under either value.
     #[serde(default = "default_review_scope")]
     pub review_scope: String,
-    /// Who un-gates on the floor's behalf once a spec lands. Unset (the
-    /// default) leaves the sign-off to a human running `fwf ungate`; set to a
-    /// name and `fwf run` removes the gate label itself and records that name
-    /// as the actor, so the decision stays attributable either way.
+    /// Who un-gates on the floor's behalf once a spec lands *and GV has signed
+    /// it off* (#655 — never on the spec alone). Unset (the default) leaves
+    /// the un-gate to a human running `fwf ungate`; set to a name and `fwf
+    /// run` removes the gate label itself and records that name as the actor,
+    /// so the decision stays attributable either way.
     #[serde(default)]
     pub delegate_ungate: Option<String>,
 }
