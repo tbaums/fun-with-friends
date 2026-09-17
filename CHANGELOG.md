@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.10 — 2026-09-16
+
+Stall means "no progress", not "40 minutes passed".
+
+- **Activity-based stall detection** (#668, PR #671) — a Working seat is judged by whether it is still doing anything: two signals, the seat worktree's HEAD/index and the pane's captured text (last 40 lines, hashed). A seat is marked Stalled only after both have been unchanged for `stall_quiet_secs` (new manifest knob, default 900); `job_timeout_secs` stays as the absolute ceiling. The stall note names the last-changed signal and when; `fwf status` shows `quiet Ns` for Working seats. Sampling errors (pane gone, worktree missing) fail open. Motivated by a transom impl seat being declared stalled mid-`cargo test --workspace` on 2026-09-16.
+
 ## 1.0.9 — 2026-09-16
 
 A seat that finishes after its stall verdict is no longer orphaned.
