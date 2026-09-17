@@ -10,7 +10,8 @@ use crate::github::{self, AppEntry};
 use crate::log::{Kind, Log};
 use crate::mirror::{Mirror, MirrorError};
 use crate::poll::Poller;
-use crate::types::{Fence, PrState, Sha};
+use crate::seat::Verdict;
+use crate::types::{Fence, IssueState, JobRef, PrState, Role, SeatState, Sha};
 use std::collections::BTreeMap;
 
 /// The claim for this cycle. Normally a fresh `refs/claims/<n>` at the base.
@@ -284,5 +285,215 @@ pub fn retry_pending_push(
         &fence,
         &title,
         "the seat's verdict; the push upstream was refused when it was written",
+    )
+}
+
+/// A verdict that arrived after its seat was already called Stalled (#669).
+pub(super) enum Late {
+    /// Nothing usable on that path yet — `wait_verdict`'s own "not yet", and
+    /// the loop asks again next tick.
+    Wait,
+    Implemented {
+        branch: String,
+        head: Sha,
+        summary: String,
+    },
+    Blocked {
+        reason: String,
+    },
+}
+
+/// What the loop did with one stalled seat's verdict path this tick.
+#[derive(Debug)]
+pub enum Adopted {
+    /// No verdict there (yet); the claim, the seat and the record stand.
+    Nothing,
+    /// Delivered as the cycle would have: the PR's URL, or `None` when
+    /// upstream refused the push and the #602 retry owns it from here.
+    Delivered(Option<String>),
+    /// A late `blocked`: the claim is back and the issue is `Ready` again.
+    Released(String),
+}
+
+/// Re-read the verdict path the wake pointed the seat at.
+pub(super) fn late_verdict(cfg: &SliceConfig) -> Late {
+    match crate::seat::read_verdict(&super::verdict_path(cfg)) {
+        Ok(Some(Verdict::Implemented {
+            branch,
+            head,
+            summary,
+        })) => match Sha::parse(&head) {
+            Ok(head) => Late::Implemented {
+                branch,
+                head,
+                summary,
+            },
+            // A verdict whose head is not a sha is not a verdict yet, the same
+            // way half-written JSON is not: say nothing, look again next tick.
+            Err(_) => Late::Wait,
+        },
+        Ok(Some(Verdict::Blocked { reason })) => Late::Blocked { reason },
+        // Some other role's verdict on this path, no file at all, or a file
+        // that does not parse: all "not yet".
+        Ok(Some(_)) | Ok(None) | Err(_) => Late::Wait,
+    }
+}
+
+/// The record half of adopting a late verdict, with the two things that need
+/// GitHub — the push/PR and the claim release — handed in, so the order of
+/// events is exactly what a test can drive.
+///
+/// `Stalled` is not a verdict on the work: the pane was never killed, so a
+/// seat past its deadline that finishes anyway has produced a real cycle. The
+/// record says so — `Reported`, then whatever the verdict earned — and from
+/// there QA and merge run as if it had been on time.
+pub(super) fn adopt_with(
+    log: &mut Log,
+    repo: &str,
+    cfg: &SliceConfig,
+    seat_no: u8,
+    late: Late,
+    deliver: impl FnOnce(&mut Log, &str, &Sha, &str) -> Result<Option<String>, SliceError>,
+    release: impl FnOnce() -> Result<(), SliceError>,
+) -> Result<Adopted, SliceError> {
+    let (branch, head, summary) = match late {
+        Late::Wait => return Ok(Adopted::Nothing),
+        Late::Implemented {
+            branch,
+            head,
+            summary,
+        } => (branch, head, summary),
+        Late::Blocked { reason } => {
+            reported(log, repo, cfg, seat_no)?;
+            release()?;
+            record(
+                log,
+                repo,
+                Kind::Issue {
+                    issue: cfg.issue,
+                    to: IssueState::Ready,
+                },
+            )?;
+            return Ok(Adopted::Released(reason));
+        }
+    };
+    // Checked before the record says `Reported`, because that word is what
+    // takes the issue out of `stalled_claims`: a verdict this stage refuses
+    // must still be there to refuse again next tick.
+    let expected = format!("impl{seat_no}/issue-{}-thin-slice", cfg.issue);
+    if branch != expected {
+        return Err(SliceError(format!(
+            "the late verdict for #{} names branch {branch}, expected {expected}",
+            cfg.issue
+        )));
+    }
+    reported(log, repo, cfg, seat_no)?;
+    Ok(Adopted::Delivered(deliver(log, &branch, &head, &summary)?))
+}
+
+/// The seat reported after all — said once, with the note that explains why
+/// the record shows `Stalled` immediately before it.
+fn reported(log: &mut Log, repo: &str, cfg: &SliceConfig, seat_no: u8) -> Result<(), SliceError> {
+    record(
+        log,
+        repo,
+        Kind::Seat {
+            seat: seat_no,
+            role: Role::Impl,
+            to: SeatState::Reported {
+                job: JobRef {
+                    role: Role::Impl,
+                    issue: Some(cfg.issue),
+                    pr: None,
+                },
+            },
+            tokens_in: None,
+            tokens_out: None,
+        },
+    )?;
+    record(
+        log,
+        repo,
+        Kind::Note {
+            text: format!(
+                "adopted impl{seat_no}'s late verdict for #{}: it finished after the wait gave up",
+                cfg.issue
+            ),
+        },
+    )
+}
+
+/// Deliver the verdict a stalled seat wrote after its deadline (#669).
+///
+/// Run every tick for every claim [`crate::log::stalled_claims`] names, beside
+/// the #602 push retry: no seat is woken and no claim is taken, because the
+/// cycle already happened — this is only the write it never got. `Nothing`
+/// costs no token: the path is read before anything is minted.
+pub fn adopt_stalled_verdict(
+    cfg: &SliceConfig,
+    app: &AppEntry,
+    ops: Option<&AppEntry>,
+) -> Result<Adopted, SliceError> {
+    let Some((seat_no, fence)) = crate::log::stalled_claims(&events(cfg))
+        .get(&cfg.issue)
+        .cloned()
+    else {
+        return Ok(Adopted::Nothing);
+    };
+    let late = late_verdict(cfg);
+    if matches!(late, Late::Wait) {
+        return Ok(Adopted::Nothing);
+    }
+    let repo = format!("{}/{}", cfg.owner, cfg.repo);
+    let perms = BTreeMap::from([
+        ("contents", "read"),
+        ("pull_requests", "write"),
+        ("issues", "read"),
+        ("metadata", "read"),
+    ]);
+    let tok = github::mint(app, Some(&perms))?;
+    let (push_app, push_perms) = super::push_token_mint(app, ops);
+    let push_tok = github::mint(push_app, Some(&push_perms))?;
+    let mirror = Mirror::init_with(
+        &cfg.mirror_dir,
+        &format!("https://github.com/{repo}.git"),
+        &tok.token,
+    )?;
+    let poller = Poller::new("https://api.github.com", &tok.token, &cfg.owner, &cfg.repo);
+    let title = poller
+        .get(&format!(
+            "https://api.github.com/repos/{repo}/issues/{}",
+            cfg.issue
+        ))?
+        .and_then(|j| j["title"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let mut log = Log::open(&cfg.run_log)?;
+    adopt_with(
+        &mut log,
+        &repo,
+        cfg,
+        seat_no,
+        late,
+        |log, branch, head, summary| {
+            push_and_open_pr(
+                log,
+                &repo,
+                cfg,
+                &mirror,
+                &tok.token,
+                &push_tok.token,
+                seat_no,
+                branch,
+                head,
+                &fence,
+                &title,
+                summary,
+            )
+        },
+        || {
+            mirror
+                .release_claim_ref(cfg.issue, &fence, &push_tok.token)
+                .map_err(SliceError::from)
+        },
     )
 }

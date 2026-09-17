@@ -515,3 +515,281 @@ fn a_refusal_after_the_claim_gives_the_claim_ref_back() {
     assert_eq!(reused, again, "the floor's own fence, adopted not refused");
     let _ = std::fs::remove_dir_all(root);
 }
+
+use super::deliver::{adopt_with, late_verdict, Adopted, Late};
+use crate::types::PrState;
+
+/// The record as the tick that stalled left it: the issue claimed by seat 1,
+/// which was woken and then called Stalled when the wait gave up.
+fn a_stalled_cycle(cfg: &SliceConfig, fence: &crate::types::Fence) -> Log {
+    let mut log = Log::open(&cfg.run_log).unwrap();
+    let job = JobRef {
+        role: Role::Impl,
+        issue: Some(cfg.issue),
+        pr: None,
+    };
+    for k in [
+        Kind::Issue {
+            issue: cfg.issue,
+            to: IssueState::Ready,
+        },
+        Kind::Issue {
+            issue: cfg.issue,
+            to: IssueState::Claimed {
+                seat: 1,
+                fence: fence.clone(),
+            },
+        },
+        Kind::Seat {
+            seat: 1,
+            role: Role::Impl,
+            to: SeatState::Stalled { job: job.clone() },
+            tokens_in: None,
+            tokens_out: None,
+        },
+    ] {
+        crate::slice::record(&mut log, "o/r", k).unwrap();
+    }
+    log
+}
+
+/// #669, fwf floor 2026-09-16: `wait_verdict` gave up on transom #1383 and
+/// #1387 at the deadline, but it never killed the pane and never moved the
+/// verdict path — both seats finished minutes later, and an operator pushed
+/// the branches and opened PR #1388 and #1399 by hand. The loop re-reads that
+/// path every tick now: Claimed → Stalled → Reported → PR, no hands.
+#[test]
+fn a_verdict_written_after_the_stall_is_delivered_on_the_next_tick() {
+    let floor = std::env::temp_dir().join(format!(
+        "fwfd-slice-late-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&floor);
+    std::fs::create_dir_all(&floor).unwrap();
+    let mut cfg = cfg_for(1383, 1);
+    cfg.floor_dir = floor.clone();
+    cfg.run_log = floor.join("run.jsonl");
+    let fence = crate::types::Fence("f".repeat(40));
+    let mut log = a_stalled_cycle(&cfg, &fence);
+    let read = || crate::log::read_all(&cfg.run_log).unwrap();
+    let kinds = || read().into_iter().map(|e| e.kind).collect::<Vec<_>>();
+
+    // Nothing on that path yet: the stage does not touch the record, and the
+    // claim stands — the tick after, it asks again.
+    let stalled = || crate::log::stalled_claims(&read());
+    assert_eq!(stalled().get(&1383), Some(&(1, fence.clone())));
+    let before = kinds();
+    let never = |_: &mut Log, _: &str, _: &Sha, _: &str| unreachable!("nothing to deliver");
+    assert!(matches!(
+        adopt_with(&mut log, "o/r", &cfg, 1, late_verdict(&cfg), never, || {
+            unreachable!("nothing to release")
+        })
+        .unwrap(),
+        Adopted::Nothing
+    ));
+    assert_eq!(kinds(), before, "no verdict, no word");
+
+    // the seat finishes, late
+    let head = Sha::parse(&"a".repeat(40)).unwrap();
+    std::fs::write(
+        super::verdict_path(&cfg),
+        serde_json::to_string(&Verdict::Implemented {
+            branch: "impl1/issue-1383-thin-slice".into(),
+            head: head.to_string(),
+            summary: "the thin slice".into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    // the deliver step, as `push_and_open_pr` records it on a push that lands
+    let deliver = |log: &mut Log, branch: &str, head: &Sha, summary: &str| {
+        assert_eq!(branch, "impl1/issue-1383-thin-slice");
+        assert_eq!(summary, "the thin slice");
+        crate::slice::record(
+            log,
+            "o/r",
+            Kind::Promote {
+                branch: branch.to_string(),
+                from: "".into(),
+                to: head.to_string(),
+            },
+        )?;
+        crate::slice::record(
+            log,
+            "o/r",
+            Kind::Pr {
+                pr: 1388,
+                issue: Some(1383),
+                to: PrState::Draft { head: head.clone() },
+            },
+        )?;
+        Ok(Some("https://github.com/tbaums/transom/pull/1388".into()))
+    };
+    let got = adopt_with(
+        &mut log,
+        "o/r",
+        &cfg,
+        1,
+        late_verdict(&cfg),
+        deliver,
+        || unreachable!("an implemented verdict keeps its claim"),
+    )
+    .unwrap();
+    assert!(
+        matches!(&got, Adopted::Delivered(Some(url)) if url.ends_with("/1388")),
+        "the PR the operator had to open by hand"
+    );
+    // Claimed → Stalled → Reported → PR, in the record, in that order
+    let after = kinds();
+    let seat_states: Vec<&SeatState> = after
+        .iter()
+        .filter_map(|k| match k {
+            Kind::Seat { to, .. } => Some(to),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        matches!(
+            seat_states[..],
+            [SeatState::Stalled { .. }, SeatState::Reported { .. }]
+        ),
+        "{seat_states:?}"
+    );
+    let tail: Vec<&Kind> = after.iter().skip(before.len()).collect();
+    assert!(
+        matches!(
+            tail[..],
+            [
+                Kind::Seat {
+                    to: SeatState::Reported { .. },
+                    ..
+                },
+                Kind::Note { .. },
+                Kind::Promote { .. },
+                Kind::Pr {
+                    to: PrState::Draft { .. },
+                    ..
+                },
+            ]
+        ),
+        "{tail:?}"
+    );
+    // and it is adopted exactly once: the seat's last word is Reported now
+    assert!(stalled().is_empty());
+    let _ = std::fs::remove_dir_all(&floor);
+}
+
+/// The other verdict a late seat can write. A `blocked` that arrives after
+/// the stall is the same answer it would have been on time: the claim goes
+/// back and the issue is plannable again, not orphaned under a dead claim.
+#[test]
+fn a_late_blocked_verdict_hands_the_claim_back() {
+    let (root, url, work, _wt) = floor();
+    let fence_sha = advance(&work, &url, "later.txt");
+    git(&work, &["push", "-q", &url, "HEAD:refs/heads/main"]);
+    let m = crate::mirror::Mirror::init(&root.join("mirror-clone"), &url).unwrap();
+    let base = Sha::parse(&fence_sha).unwrap();
+    let fence = m.create_claim_ref(1387, &base, "").unwrap();
+    let mut cfg = cfg_for(1387, 1);
+    cfg.floor_dir = root.clone();
+    cfg.run_log = root.join("run.jsonl");
+    let mut log = a_stalled_cycle(&cfg, &fence);
+    std::fs::write(
+        super::verdict_path(&cfg),
+        serde_json::to_string(&Verdict::Blocked {
+            reason: "the check never passed".into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let got = adopt_with(
+        &mut log,
+        "o/r",
+        &cfg,
+        1,
+        late_verdict(&cfg),
+        |_: &mut Log, _: &str, _: &Sha, _: &str| unreachable!("nothing to push"),
+        || {
+            m.release_claim_ref(1387, &fence, "")
+                .map_err(SliceError::from)
+        },
+    )
+    .unwrap();
+    assert!(matches!(&got, Adopted::Released(why) if why.contains("never passed")));
+    assert_eq!(
+        m.upstream_claim_ref(1387, "").unwrap(),
+        None,
+        "the claim ref is still upstream"
+    );
+    let evs = crate::log::read_all(&cfg.run_log).unwrap();
+    assert!(!crate::log::claimed_issues(&evs).contains_key(&1387));
+    assert!(crate::log::stalled_claims(&evs).is_empty());
+    assert!(
+        crate::run::reviewed_issues(&evs).contains(&1387),
+        "signed off and un-claimed: the next tick can plan it"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A late verdict is still the seat's own branch. Anything else is a verdict
+/// for some other cycle and is refused rather than pushed.
+#[test]
+fn a_late_verdict_naming_another_branch_is_refused() {
+    let floor = std::env::temp_dir().join(format!(
+        "fwfd-slice-late-branch-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&floor);
+    std::fs::create_dir_all(&floor).unwrap();
+    let mut cfg = cfg_for(1383, 1);
+    cfg.floor_dir = floor.clone();
+    cfg.run_log = floor.join("run.jsonl");
+    let fence = crate::types::Fence("f".repeat(40));
+    let mut log = a_stalled_cycle(&cfg, &fence);
+    std::fs::write(
+        super::verdict_path(&cfg),
+        serde_json::to_string(&Verdict::Implemented {
+            branch: "impl2/issue-1383-thin-slice".into(),
+            head: "a".repeat(40),
+            summary: "s".into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let e = adopt_with(
+        &mut log,
+        "o/r",
+        &cfg,
+        1,
+        late_verdict(&cfg),
+        |_: &mut Log, _: &str, _: &Sha, _: &str| unreachable!("nothing to push"),
+        || unreachable!("nothing to release"),
+    )
+    .unwrap_err();
+    assert!(
+        e.0.contains("expected impl1/issue-1383-thin-slice"),
+        "{}",
+        e.0
+    );
+    // and the record does not say `Reported`, so the claim is still one this
+    // stage looks at — a refusal is not an adoption
+    let evs = crate::log::read_all(&cfg.run_log).unwrap();
+    assert!(!evs.iter().any(|e| matches!(
+        &e.kind,
+        Kind::Seat {
+            to: SeatState::Reported { .. },
+            ..
+        }
+    )));
+    assert_eq!(
+        crate::log::stalled_claims(&evs).get(&1383),
+        Some(&(1, fence))
+    );
+    // a half-written file is not a verdict yet, and never an error
+    std::fs::write(super::verdict_path(&cfg), "{\"verdict\":\"imple").unwrap();
+    assert!(matches!(late_verdict(&cfg), Late::Wait));
+    let _ = std::fs::remove_dir_all(&floor);
+}
