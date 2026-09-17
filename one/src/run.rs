@@ -29,6 +29,10 @@ pub struct RunConfig {
     pub seat_expect_cmd: String,
     pub interval: Duration,
     pub job_timeout: Duration,
+    /// How long an impl seat may be quiet on both liveness signals before the
+    /// cycle calls it Stalled (manifest `stall_quiet_secs`, #668). The
+    /// `job_timeout` above is still the ceiling.
+    pub stall_quiet: Duration,
     pub once: bool,
     pub prompts_dir: PathBuf,
     /// Prompt family under prompts_dir (manifest `template`).
@@ -191,6 +195,7 @@ fn slice_config(cfg: &RunConfig, issue: u64, seat: u8, target: &str) -> SliceCon
         job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "impl"),
         run_log: cfg.run_log.clone(),
         timeout: cfg.job_timeout,
+        stall_quiet: cfg.stall_quiet,
         dry_run: false,
         check_cmd: cfg.gate_cmd.clone(),
     }

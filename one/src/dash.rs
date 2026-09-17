@@ -54,6 +54,21 @@ pub struct SeatLive {
     pub stalls: u32,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// When this seat's liveness last moved (#668), from the newest `progress:`
+    /// note of the current state. `None` until one lands, and cleared by every
+    /// transition: quiet is measured within one cycle, never across two.
+    pub last_progress: Option<u64>,
+}
+
+/// The seat an impl `progress:`/`stalled:` note is about (#668). The notes are
+/// the record's only trace of a seat's liveness, and the dash reads them back
+/// rather than re-sampling anything itself.
+pub fn progress_seat(text: &str) -> Option<u8> {
+    let rest = text.strip_prefix("progress: impl")?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -324,9 +339,11 @@ pub fn fold(events: &[Event]) -> Board {
                         stalls: 0,
                         tokens_in: 0,
                         tokens_out: 0,
+                        last_progress: None,
                     });
                 s.state = to.clone();
                 s.since = e.ts;
+                s.last_progress = None;
                 match to {
                     SeatState::Reported { .. } => {
                         s.cycles += 1;
@@ -429,7 +446,14 @@ pub fn fold(events: &[Event]) -> Board {
                 }
             }
             Kind::Promote { branch, to, .. } => promotes.push((e.ts, branch.clone(), to.clone())),
-            Kind::Note { .. } => {}
+            Kind::Note { text } => {
+                // A seat's own liveness, as the wait wrote it down (#668).
+                if let Some(n) = progress_seat(text) {
+                    if let Some(s) = b.seats.get_mut(&(role_rank(Role::Impl), n)) {
+                        s.last_progress = Some(e.ts);
+                    }
+                }
+            }
         }
     }
     b.open_prs = open.into_keys().collect();

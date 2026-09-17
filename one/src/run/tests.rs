@@ -409,6 +409,7 @@ pub(super) fn test_config() -> RunConfig {
         seat_expect_cmd: "claude".into(),
         interval: Duration::from_secs(60),
         job_timeout: Duration::from_secs(60),
+        stall_quiet: Duration::from_secs(900),
         once: true,
         prompts_dir: PathBuf::new(),
         template: "dev".into(),

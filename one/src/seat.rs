@@ -272,6 +272,10 @@ pub(crate) fn read_verdict(path: &Path) -> Result<Option<Verdict>, SeatError> {
     })
 }
 
+pub mod watch;
+
+pub use watch::{pane_signal, worktree_signal, Watch, SAMPLE_EVERY};
+
 /// Wait for the verdict file. Returns Reported (with the verdict) or Stalled.
 /// Never kills anything; the caller decides.
 ///
@@ -287,8 +291,23 @@ pub fn wait_verdict(
     deadline: u64,
     poll: Duration,
 ) -> Result<(SeatState, Option<Verdict>), SeatError> {
+    wait_verdict_watched(job, verdict_path, deadline, poll, None)
+}
+
+/// [`wait_verdict`], with a seat's liveness watched as well as the clock
+/// (#668). `deadline` is still the ceiling and a parsed verdict still wins
+/// immediately; `watch`, when given, can end the wait early once the seat has
+/// been quiet on both signals for its limit.
+pub fn wait_verdict_watched(
+    job: &JobRef,
+    verdict_path: &Path,
+    deadline: u64,
+    poll: Duration,
+    mut watch: Option<&mut Watch>,
+) -> Result<(SeatState, Option<Verdict>), SeatError> {
     let start = Instant::now();
     let mut last_bad: Option<SeatError> = None;
+    let mut next_sample = now().saturating_add(SAMPLE_EVERY);
     loop {
         match read_verdict(verdict_path) {
             Ok(Some(v)) => return Ok((SeatState::Reported { job: job.clone() }, Some(v))),
@@ -297,6 +316,17 @@ pub fn wait_verdict(
         }
         if now() >= deadline {
             break;
+        }
+        // Sampled on its own cadence, well apart from the verdict poll: the
+        // verdict above is read first every time, so one that lands in the
+        // same window as a quiet stall still wins.
+        if let Some(w) = watch.as_deref_mut() {
+            if now() >= next_sample {
+                next_sample = now().saturating_add(SAMPLE_EVERY);
+                if w.sample(now()) {
+                    break;
+                }
+            }
         }
         std::thread::sleep(poll);
         if start.elapsed()

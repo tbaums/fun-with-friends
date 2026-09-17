@@ -190,6 +190,7 @@ fn cfg_for(issue: u64, seat: u8) -> SliceConfig {
         job_template: PathBuf::from("job.md"),
         run_log: PathBuf::from("/tmp/floor/run.jsonl"),
         timeout: Duration::from_secs(60),
+        stall_quiet: Duration::from_secs(900),
         dry_run: false,
         check_cmd: "cargo test".into(),
     }
@@ -791,5 +792,56 @@ fn a_late_verdict_naming_another_branch_is_refused() {
     // a half-written file is not a verdict yet, and never an error
     std::fs::write(super::verdict_path(&cfg), "{\"verdict\":\"imple").unwrap();
     assert!(matches!(late_verdict(&cfg), Late::Wait));
+    let _ = std::fs::remove_dir_all(&floor);
+}
+
+/// #668: a stall verdict has to be explainable from the record afterwards.
+/// The cycle's watch writes its notes through the same run log every other
+/// step writes to, so `fwf why` reads the seat's last movement and the quiet
+/// that followed it in one timeline.
+#[test]
+fn the_record_carries_what_the_seat_last_moved_and_when_it_went_quiet() {
+    let floor = std::env::temp_dir().join(format!(
+        "fwfd-slice-quiet-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&floor);
+    std::fs::create_dir_all(&floor).unwrap();
+    let run_log = floor.join("run.jsonl");
+    let pane = std::cell::RefCell::new("cargo test: running 218 tests".to_string());
+    let mut watch = crate::seat::Watch::new(
+        "impl1 #1383".into(),
+        900,
+        1_000,
+        || Some("the worktree never moved".into()),
+        || Some(pane.borrow().clone()),
+        |text| crate::slice::liveness_note(&run_log, "tbaums/transom", text),
+    );
+    // the last thing the seat ever printed, two minutes in
+    *pane.borrow_mut() = "test seat::tests::the_last_one ... ok".to_string();
+    assert!(!watch.sample(1_120));
+    assert!(!watch.sample(1_600));
+    assert!(watch.sample(1_120 + 900), "quiet for the whole limit");
+
+    let notes: Vec<String> = crate::log::read_all(&run_log)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            Kind::Note { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notes,
+        vec![
+            "progress: impl1 #1383 pane changed at 1120".to_string(),
+            "stalled: impl1 #1383 quiet 900s (last change: pane at 1120)".to_string(),
+        ],
+        "one note per observed change, then the verdict's own reason"
+    );
+    // and the dash reads the seat back out of that note (#668)
+    assert_eq!(crate::dash::progress_seat(&notes[0]), Some(1));
+    assert_eq!(crate::dash::progress_seat(&notes[1]), None);
     let _ = std::fs::remove_dir_all(&floor);
 }

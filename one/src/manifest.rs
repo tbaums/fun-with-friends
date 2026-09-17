@@ -51,6 +51,13 @@ pub struct Manifest {
     pub gate_timeout_secs: u64,
     #[serde(default = "default_job_timeout")]
     pub job_timeout_secs: u64,
+    /// How long an impl seat may be quiet on BOTH liveness signals — its
+    /// worktree and its pane — before the loop calls it Stalled (#668).
+    /// `job_timeout_secs` stays the absolute ceiling; this only ends the wait
+    /// *early*, and only for a seat that has genuinely stopped moving. 0 turns
+    /// the early stall off and leaves the ceiling alone.
+    #[serde(default = "default_stall_quiet")]
+    pub stall_quiet_secs: u64,
     #[serde(default = "default_poll")]
     pub poll_interval_secs: u64,
     /// Model per role, e.g. impl = "opus", pm = "haiku". Unset = the seat's default.
@@ -141,6 +148,13 @@ fn default_gate_timeout() -> u64 {
 }
 fn default_job_timeout() -> u64 {
     1800
+}
+/// 15 minutes of no worktree change and no pane output. Long enough for a
+/// model's own thinking and a slow suite, short enough that a seat that has
+/// really stopped is not held to the full `job_timeout_secs`.
+pub const STALL_QUIET_DEFAULT: u64 = 900;
+fn default_stall_quiet() -> u64 {
+    STALL_QUIET_DEFAULT
 }
 fn default_poll() -> u64 {
     60
@@ -322,6 +336,9 @@ gate_venue = "local"
 gate_memory_gb = 8
 gate_timeout_secs = 1800
 job_timeout_secs = 1800
+# An impl seat is called Stalled early only after this long with no worktree
+# change AND no pane output; job_timeout_secs is still the ceiling.
+stall_quiet_secs = 900
 poll_interval_secs = 60
 park_at_weekly_pct = 85
 rework_cap = 2
@@ -428,6 +445,22 @@ mod tests {
             Manifest::parse(venue).unwrap_err(),
             ManifestError::Invalid(_)
         ));
+    }
+
+    /// #668: the quiet limit is a manifest knob with a default, read exactly
+    /// like `job_timeout_secs` beside it — a floor that says nothing gets 900s.
+    #[test]
+    fn stall_quiet_secs_parses_and_defaults_to_fifteen_minutes() {
+        let bare = Manifest::parse("repo = \"a/b\"\n[suites]\nfast=\"x\"\n").unwrap();
+        assert_eq!(bare.stall_quiet_secs, 900);
+        assert_eq!(bare.job_timeout_secs, 1800);
+        let m = Manifest::parse(
+            "repo = \"a/b\"\nstall_quiet_secs = 1200\njob_timeout_secs = 2400\n[suites]\nfast=\"x\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.stall_quiet_secs, 1200);
+        assert_eq!(m.job_timeout_secs, 2400);
+        assert_eq!(Manifest::parse(EXAMPLE).unwrap().stall_quiet_secs, 900);
     }
 
     #[test]

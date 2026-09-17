@@ -847,6 +847,9 @@ fn main() -> ExitCode {
                     .map(|h| PathBuf::from(h).join(".fwf/floors").join(name))
                     .unwrap_or_else(|| PathBuf::from("floor"))
             });
+            let secs = |flag: &str, d: u64| {
+                Duration::from_secs(get(flag).and_then(|s| s.parse().ok()).unwrap_or(d))
+            };
             let (run_log, mirror_dir) = slice::defaults(&floor);
             let cfg = slice::SliceConfig {
                 owner: owner.to_string(),
@@ -865,11 +868,8 @@ fn main() -> ExitCode {
                 ),
                 run_log,
                 check_cmd: get("--check").unwrap_or_default(),
-                timeout: Duration::from_secs(
-                    get("--timeout")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(1800),
-                ),
+                timeout: secs("--timeout", 1800),
+                stall_quiet: secs("--stall-quiet", manifest::STALL_QUIET_DEFAULT),
                 dry_run: args.iter().any(|a| a == "--dry-run"),
             };
             let apps = match github::load_apps(&github::apps_path()) {
