@@ -112,6 +112,12 @@ pub struct Manifest {
     /// run record both say the loop typed it, and `fwf up` names the delegate
     /// in its floor plan — a floor that approves its own specced tickets says
     /// so before it starts, not only afterwards in the record.
+    ///
+    /// The delegated un-gate never widens beyond the allow-list (#663): with
+    /// `issues` set, a signed-off ticket outside it keeps its gate label and
+    /// waits for a human `fwf ungate`, whatever `review_scope` says. Looking
+    /// wide is GV and PM's business; making an issue claimable is the
+    /// operator's rail.
     #[serde(default)]
     pub delegate_ungate: Option<String>,
 }
