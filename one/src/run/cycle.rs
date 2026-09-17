@@ -158,19 +158,77 @@ fn sign_off(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFil
     }
 }
 
-/// What a signed-off spec earns: the delegated un-gate when a manifest names
-/// the approver, and otherwise the wait for a human's `fwf ungate`.
-fn ungate_or_await(cfg: &RunConfig, ops: &AppEntry, n: u64) {
+/// Every "signed off, but the loop is not the one to un-gate it" note starts
+/// with this (#663). The phrase is the record's, not a prefix to parse around:
+/// the issue number follows it so a reader knows which ticket is waiting.
+pub(super) const OUTSIDE_ALLOW_LIST_NOTE: &str =
+    "sign-off ok — awaiting human un-gate (outside allow-list)";
+
+pub(super) fn outside_allow_list_note(issue: u64) -> String {
+    format!("{OUTSIDE_ALLOW_LIST_NOTE}: #{issue}")
+}
+
+/// What a signed-off spec earns, decided before anything is written or called.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum AfterSignOff<'a> {
+    /// A human un-gated it between the spec and the sign-off.
+    AlreadyUngated,
+    /// The manifest names an approver and this issue is the loop's to un-gate.
+    Delegate(&'a str),
+    /// The gate label stays on, and a human's `fwf ungate` is owed. `Some` is
+    /// the line the record owes about why the loop held off.
+    Await(Option<String>),
+}
+
+/// The decision itself (#663).
+///
+/// `review_scope` says how far GV and PM may *look* — repo-wide by default,
+/// which is the point of #629 — and that is a different question from which
+/// issues the loop may make claimable. An allow-list is the operator's own
+/// rail: transom #1123, #1313 and #1371 were each signed off, delegated-un-
+/// gated and claimable on 2026-09-16 while sitting outside it, and the
+/// operator re-gated all three by hand. So the delegated un-gate never widens
+/// beyond the allow-list; the human `fwf ungate` path is untouched, and an
+/// empty allow-list still means "any eligible issue", as it does everywhere.
+pub(super) fn after_sign_off<'a>(
+    cfg: &'a RunConfig,
+    events: &[crate::log::Event],
+    n: u64,
+) -> AfterSignOff<'a> {
     // A human may have un-gated between the spec and the sign-off. The record
     // says so, and un-gating twice would comment twice and record a second
     // approval nobody gave.
-    if reviewed_issues(&events(cfg)).contains(&n) {
-        println!("fwf run: #{n} was already un-gated by a human; the sign-off is recorded, nothing else to do");
-        return;
+    if reviewed_issues(events).contains(&n) {
+        return AfterSignOff::AlreadyUngated;
     }
     let Some(actor) = &cfg.delegate_ungate else {
-        println!("fwf run: #{n} is specced and signed off; awaiting the human un-gate (`fwf ungate --repo {}/{} --issue {n} --by NAME`)", cfg.owner, cfg.repo);
-        return;
+        return AfterSignOff::Await(None);
+    };
+    if !cfg.allow_issues.is_empty() && !cfg.allow_issues.contains(&n) {
+        return AfterSignOff::Await(Some(outside_allow_list_note(n)));
+    }
+    AfterSignOff::Delegate(actor)
+}
+
+/// What a signed-off spec earns: the delegated un-gate when a manifest names
+/// the approver and the allow-list (if any) covers the issue, and otherwise
+/// the wait for a human's `fwf ungate`.
+fn ungate_or_await(cfg: &RunConfig, ops: &AppEntry, n: u64) {
+    let actor = match after_sign_off(cfg, &events(cfg), n) {
+        AfterSignOff::AlreadyUngated => {
+            println!("fwf run: #{n} was already un-gated by a human; the sign-off is recorded, nothing else to do");
+            return;
+        }
+        AfterSignOff::Await(why) => {
+            if let Some(text) = why {
+                note(cfg, text);
+                println!("fwf run: #{n} is specced and signed off, but it is outside the `issues` allow-list, so the delegated un-gate does not apply; un-gate it yourself (`fwf ungate --repo {}/{} --issue {n} --by NAME`) or add it to `issues`", cfg.owner, cfg.repo);
+            } else {
+                println!("fwf run: #{n} is specced and signed off; awaiting the human un-gate (`fwf ungate --repo {}/{} --issue {n} --by NAME`)", cfg.owner, cfg.repo);
+            }
+            return;
+        }
+        AfterSignOff::Delegate(actor) => actor,
     };
     match crate::triage::ungate(
         &cfg.owner,
@@ -188,5 +246,108 @@ fn ungate_or_await(cfg: &RunConfig, ops: &AppEntry, n: u64) {
             "fwf run: #{n} is specced and signed off but the delegated un-gate failed: {}",
             e.0
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::test_config;
+    use super::*;
+    use crate::log::Event;
+
+    fn cfg(delegate: Option<&str>, allow: &[u64], scope: super::super::ReviewScope) -> RunConfig {
+        RunConfig {
+            delegate_ungate: delegate.map(str::to_string),
+            allow_issues: allow.to_vec(),
+            review_scope: scope,
+            ..test_config()
+        }
+    }
+
+    /// The record after a human ran `fwf ungate` on this issue.
+    fn ungated_by_hand(n: u64) -> Vec<Event> {
+        crate::triage::ungate_events("tbaums/transom", n, crate::triage::Ungate::Manual("t"), 1)
+            .to_vec()
+    }
+
+    /// #663, fwf floor 2026-09-16: `review_scope` defaults to all-gated on
+    /// purpose — GV and PM are meant to read the whole repo — but the loop
+    /// then *un-gated* everything it signed off. Transom #1123, #1313 and
+    /// #1371 came off `product-wip` and went claimable while sitting outside
+    /// the allow-list their operator had parked them behind; all three were
+    /// re-gated by hand. Looking wide and acting wide are different questions.
+    #[test]
+    fn the_delegated_ungate_never_widens_beyond_the_allow_list() {
+        // AC1: the allow-list covers it — un-gated on the delegate's behalf,
+        // exactly as before.
+        let inside = cfg(Some("jamie-proxy"), &[1123], Default::default());
+        assert_eq!(
+            after_sign_off(&inside, &[], 1123),
+            AfterSignOff::Delegate("jamie-proxy")
+        );
+
+        // AC2: outside it — the label stays on, and the record says why.
+        let outside = cfg(Some("jamie-proxy"), &[1300], Default::default());
+        assert_eq!(
+            after_sign_off(&outside, &[], 1123),
+            AfterSignOff::Await(Some(
+                "sign-off ok — awaiting human un-gate (outside allow-list): #1123".into()
+            )),
+            "an issue the operator parked outside the rail is not the loop's to free"
+        );
+
+        // AC3: no allow-list at all is still "any eligible issue", under
+        // either scope — this changes nothing for a floor that sets none.
+        for scope in [
+            super::super::ReviewScope::AllGated,
+            super::super::ReviewScope::AllowList,
+        ] {
+            assert_eq!(
+                after_sign_off(&cfg(Some("jamie-proxy"), &[], scope), &[], 1123),
+                AfterSignOff::Delegate("jamie-proxy"),
+                "{scope:?}"
+            );
+            // and the allow-list narrows the un-gate under both scopes: with
+            // `allow-list` the filter already kept it from ever being signed
+            // off, so this is belt and braces there, never a change.
+            assert!(matches!(
+                after_sign_off(&cfg(Some("jamie-proxy"), &[1300], scope), &[], 1123),
+                AfterSignOff::Await(Some(_)),
+            ));
+        }
+    }
+
+    /// The two answers that never reached the allow-list question: no
+    /// delegate configured, and a human who got there first.
+    #[test]
+    fn a_floor_with_no_delegate_and_an_issue_already_freed_are_unchanged() {
+        // No `delegate_ungate`: the wait, with nothing to say about scope —
+        // the loop was never going to un-gate this.
+        for allow in [&[][..], &[1123][..], &[1300][..]] {
+            assert_eq!(
+                after_sign_off(&cfg(None, allow, Default::default()), &[], 1123),
+                AfterSignOff::Await(None)
+            );
+        }
+        // A human un-gated it between the spec and the sign-off: still the
+        // one answer that comes before everything, allow-list or not (#655).
+        let c = cfg(Some("jamie-proxy"), &[1300], Default::default());
+        assert_eq!(
+            after_sign_off(&c, &ungated_by_hand(1123), 1123),
+            AfterSignOff::AlreadyUngated,
+            "the human path is never constrained by the allow-list"
+        );
+    }
+
+    /// The note is one line an operator can grep for, and it names the ticket
+    /// that is waiting on them.
+    #[test]
+    fn the_outside_allow_list_note_says_the_phrase_and_the_issue() {
+        let text = outside_allow_list_note(1371);
+        assert!(text.starts_with(OUTSIDE_ALLOW_LIST_NOTE), "{text}");
+        assert_eq!(
+            super::super::note_issue(&text, &format!("{OUTSIDE_ALLOW_LIST_NOTE}: #")),
+            Some(1371)
+        );
     }
 }

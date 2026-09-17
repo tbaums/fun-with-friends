@@ -1,12 +1,15 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## Unreleased
+
+- **Delegated un-gate never widens beyond the allow-list** (#663) — `review_scope` still says how far GV and PM may *look* (repo-wide by default, as intended), but with `issues` set the loop no longer removes the gate label from a signed-off ticket outside it: the record says `sign-off ok — awaiting human un-gate (outside allow-list)` and the ticket waits for a human `fwf ungate`. Transom #1123, #1313 and #1371 were each un-gated and claimable on 2026-09-16 while parked outside the allow-list, and re-gated by hand.
+
 ## 1.0.10 — 2026-09-16
 
 Stall means "no progress", not "40 minutes passed".
 
 - **Activity-based stall detection** (#668, PR #671) — a Working seat is judged by whether it is still doing anything: two signals, the seat worktree's HEAD/index and the pane's captured text (last 40 lines, hashed). A seat is marked Stalled only after both have been unchanged for `stall_quiet_secs` (new manifest knob, default 900); `job_timeout_secs` stays as the absolute ceiling. The stall note names the last-changed signal and when; `fwf status` shows `quiet Ns` for Working seats. Sampling errors (pane gone, worktree missing) fail open. Motivated by a transom impl seat being declared stalled mid-`cargo test --workspace` on 2026-09-16.
-
 ## 1.0.9 — 2026-09-16
 
 A seat that finishes after its stall verdict is no longer orphaned.
