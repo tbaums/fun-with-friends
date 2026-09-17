@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.9 — 2026-09-16
+
+A seat that finishes after its stall verdict is no longer orphaned.
+
+- **Adopt a stalled seat's late verdict/PR** (#669, PR #670) — `wait_verdict` gave up at the deadline but never killed the pane or moved the verdict path, so a seat past its deadline could (and did) finish with nobody reading the result: transom #1383 and #1387 had to be pushed, PR'd and driven through `fwf qa`/`fwf merge` by hand on 2026-09-16. A per-tick stage beside the #602 push retry now re-reads the verdict for every stalled claim (`log::stalled_claims` + `slice::adopt_stalled_verdict`), delivers it (push upstream, open the PR) and routes it through QA → merge; the record shows Claimed → Stalled → Reported → PR.
+
 ## 1.0.8 — 2026-09-16
 
 The run loop no longer re-gates an issue it just un-gated.
