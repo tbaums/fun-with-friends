@@ -36,6 +36,9 @@ pub struct SliceConfig {
     pub job_template: PathBuf,
     pub run_log: PathBuf,
     pub timeout: Duration,
+    /// The quiet limit for this cycle's liveness watch (#668); 0 turns the
+    /// early stall off and leaves `timeout` as the only bound.
+    pub stall_quiet: Duration,
     pub dry_run: bool,
     /// The repo's own fast check (manifest `[suites] fast`), shown to the seat.
     pub check_cmd: String,
@@ -266,6 +269,16 @@ pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
 pub(super) fn verdict_path(cfg: &SliceConfig) -> PathBuf {
     cfg.floor_dir
         .join(format!("verdict-issue-{}.json", cfg.issue))
+}
+
+/// Where a seat's liveness notes go (#668): into the run record, on their own
+/// handle, because the wait that produces them holds none. A note that cannot
+/// be written is not worth failing a cycle over — the seat is working either
+/// way, and the `Seat` event still lands.
+pub(crate) fn liveness_note(run_log: &Path, repo: &str, text: String) {
+    if let Ok(mut l) = Log::open(run_log) {
+        let _ = record(&mut l, repo, Kind::Note { text });
+    }
 }
 
 /// Everything between the claim and the wake: realign the seat's worktree to
@@ -514,8 +527,31 @@ pub fn run_with(
         },
     )?;
 
-    // 6. Wait for the verdict; never kill.
-    let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
+    // 6. Wait for the verdict; never kill. The clock is the ceiling, but it is
+    // not the only thing watched (#668): a seat that has stopped moving on
+    // both signals is called Stalled before it, and a seat mid-`cargo test`
+    // is not called Stalled at all. Every note this writes goes through the
+    // same log, so the record explains the verdict afterwards.
+    let (st, verdict) = {
+        let seat_wt = cfg.floor_dir.join(format!("wt-impl{seat_no}"));
+        let target = cfg.seat_target.clone();
+        let who = format!("impl{seat_no} #{}", cfg.issue);
+        let mut watch = seat::Watch::new(
+            who,
+            cfg.stall_quiet.as_secs(),
+            deadline.saturating_sub(cfg.timeout.as_secs()),
+            move || seat::worktree_signal(&seat_wt),
+            move || seat::pane_signal(&target),
+            |text| liveness_note(&cfg.run_log, &repo, text),
+        );
+        seat::wait_verdict_watched(
+            &job,
+            &verdict_path,
+            deadline,
+            Duration::from_secs(2),
+            Some(&mut watch),
+        )?
+    };
     // Measured cost of this cycle: the seat's own transcript since the wake.
     record_cycle(&mut log, &repo, cfg, seat_no, &st, deadline)?;
     let (v_branch, v_head, summary) = match verdict {

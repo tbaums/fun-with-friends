@@ -657,6 +657,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         seat_expect_cmd: "claude".into(),
         interval: Duration::from_secs(m.poll_interval_secs),
         job_timeout: Duration::from_secs(m.job_timeout_secs),
+        stall_quiet: Duration::from_secs(m.stall_quiet_secs),
         once: args.iter().any(|a| a == "--once"),
         prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
         template: m.template.clone(),

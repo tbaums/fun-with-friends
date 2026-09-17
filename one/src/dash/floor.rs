@@ -119,6 +119,9 @@ pub struct SeatRow<'a> {
     pub stalls: u32,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// When this seat's liveness last moved (#668); `None` until a `progress:`
+    /// note lands in the cycle it is working.
+    pub last_progress: Option<u64>,
     pub key: String,
     pub trail: &'a [(u64, String)],
 }
@@ -158,6 +161,7 @@ pub fn seat_rows<'a>(b: &'a Board, f: &Floor) -> Vec<SeatRow<'a>> {
                 stalls: l.map(|s| s.stalls).unwrap_or(0),
                 tokens_in: l.map(|s| s.tokens_in).unwrap_or(0),
                 tokens_out: l.map(|s| s.tokens_out).unwrap_or(0),
+                last_progress: l.and_then(|s| s.last_progress),
                 key: seat_key(*role, *n),
                 trail: b.trail_of(&seat_key(*role, *n)),
             }
@@ -169,13 +173,17 @@ pub fn seat_rows<'a>(b: &'a Board, f: &Floor) -> Vec<SeatRow<'a>> {
 pub fn seat_phrase(row: &SeatRow, now: u64) -> (&'static str, String) {
     let ago = |t: u64| fmt_secs(now.saturating_sub(t));
     match &row.state {
+        // How long since anything moved (#668): the operator's own read on
+        // whether a long cycle is working or has stopped. Measured from the
+        // last `progress:` note, or from the wake while none has landed.
         SeatState::Working { job, deadline } => (
             "WORKING",
             format!(
-                "{} · {} in, {} left",
+                "{} · {} in, {} left, quiet {}",
                 job_name(job),
                 ago(row.since),
-                fmt_secs(deadline.saturating_sub(now.min(*deadline)))
+                fmt_secs(deadline.saturating_sub(now.min(*deadline))),
+                ago(row.last_progress.unwrap_or(row.since))
             ),
         ),
         SeatState::Reported { job } => (
@@ -701,6 +709,77 @@ mod tests {
             loop_state(Some(true), Some(&unparseable), 85),
             LoopState::Parked(w) if w.contains("unparseable")
         ));
+    }
+
+    /// #668: a WORKING seat says how long since anything moved, so an operator
+    /// can tell a long cycle from a stopped one without reading the record.
+    /// The number comes from the seat's own `progress:` notes, and a cycle
+    /// that has produced none yet is quiet since its wake.
+    #[test]
+    fn a_working_seat_says_how_long_it_has_been_quiet() {
+        let job = crate::types::JobRef {
+            role: Role::Impl,
+            issue: Some(1383),
+            pr: None,
+        };
+        let evs = vec![
+            ev(
+                1_000,
+                Kind::Seat {
+                    seat: 1,
+                    role: Role::Impl,
+                    to: SeatState::Working {
+                        job: job.clone(),
+                        deadline: 3_400,
+                    },
+                    tokens_in: None,
+                    tokens_out: None,
+                },
+            ),
+            ev(
+                1_600,
+                Kind::Note {
+                    text: crate::seat::watch::progress_note("impl1 #1383", "pane", 1_600),
+                },
+            ),
+        ];
+        let f = Floor {
+            slots: vec![Slot {
+                role: Role::Impl,
+                seat: 1,
+                target: "fwf-one:impl1".into(),
+                pane: Some("claude".into()),
+            }],
+            ..Default::default()
+        };
+        let quiet_at = |evs: &[crate::log::Event], now: u64| {
+            let b = fold(evs);
+            let rows = seat_rows(&b, &f);
+            seat_phrase(&rows[0], now)
+        };
+        let (word, what) = quiet_at(&evs, 1_900);
+        assert_eq!(word, "WORKING");
+        assert!(what.ends_with(", quiet 5m 00s"), "{what}");
+        // no progress note yet: quiet since the wake, not since nothing
+        let (_, what) = quiet_at(&evs[..1], 1_900);
+        assert!(what.ends_with(", quiet 15m 00s"), "{what}");
+        // and the next cycle does not inherit the last one's progress
+        let mut next = evs.clone();
+        next.push(ev(
+            2_000,
+            Kind::Seat {
+                seat: 1,
+                role: Role::Impl,
+                to: SeatState::Working {
+                    job,
+                    deadline: 4_400,
+                },
+                tokens_in: None,
+                tokens_out: None,
+            },
+        ));
+        let (_, what) = quiet_at(&next, 2_300);
+        assert!(what.ends_with(", quiet 5m 00s"), "{what}");
     }
 
     #[test]
