@@ -39,7 +39,9 @@ impl fmt::Display for Sha {
 
 /// Seat roles. PM/GV/captain are cheap verdict roles; impl/qa do the work;
 /// the conductor is code in 1.0 and is deliberately not a seat role.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// `Ord` so the record's seat states can be keyed by (seat, role) (#667); the
+// order itself is the declaration order and means nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Pm,

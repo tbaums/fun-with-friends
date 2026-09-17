@@ -8,7 +8,7 @@ use proptest::prelude::*;
 
 const GATE: &str = "product-wip";
 
-fn issue(n: u64, labels: &[&str], assoc: &str) -> IssueView {
+pub(super) fn issue(n: u64, labels: &[&str], assoc: &str) -> IssueView {
     IssueView {
         number: n,
         title: format!("issue {n}"),
@@ -40,7 +40,7 @@ fn pr(n: u64, closes: Option<u64>, draft: bool, reviewed_head: bool) -> PrView {
     }
 }
 
-fn snap(issues: Vec<IssueView>, prs: Vec<PrView>) -> Snapshot {
+pub(super) fn snap(issues: Vec<IssueView>, prs: Vec<PrView>) -> Snapshot {
     Snapshot {
         issues,
         prs,
@@ -49,11 +49,11 @@ fn snap(issues: Vec<IssueView>, prs: Vec<PrView>) -> Snapshot {
     }
 }
 
-fn seat(seat: u8, role: Role, state: SeatState) -> SeatSlot {
+pub(super) fn seat(seat: u8, role: Role, state: SeatState) -> SeatSlot {
     SeatSlot { seat, role, state }
 }
 
-fn job(issue: Option<u64>, pr: Option<u64>) -> JobRef {
+pub(super) fn job(issue: Option<u64>, pr: Option<u64>) -> JobRef {
     JobRef {
         role: Role::Impl,
         issue,

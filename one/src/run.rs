@@ -11,7 +11,7 @@ use crate::poll::Poller;
 use crate::qa::{self, QaConfig};
 use crate::sched::{Action, SeatSlot};
 use crate::slice::{self, SliceConfig};
-use crate::types::{Role, SeatState};
+use crate::types::Role;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -474,23 +474,28 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                     .is_some_and(|n| cfg.allow_issues.contains(&n))
             });
         }
-        // Every configured seat is presented as Idle: a pane whose foreground
-        // command is not claude is refused by wake() and logged, which is the
-        // liveness check — no tick files.
+        // Every configured seat, in whatever state the record last left it
+        // (#667). Presenting them all as Idle is what offered a Working or
+        // Stalled seat's issue again every tick, and the re-dispatch wrote
+        // `Ready` over the live claim. A pane whose foreground command is not
+        // claude is still refused by wake() and logged — that is the liveness
+        // check on top of this one, and there are still no tick files.
+        let recorded =
+            crate::log::seat_states(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
         let mut seats: Vec<SeatSlot> = Vec::new();
         for (n, _) in &cfg.impl_seats {
-            seats.push(SeatSlot {
-                seat: *n,
-                role: Role::Impl,
-                state: SeatState::Idle,
-            });
+            seats.push(SeatSlot::from_record(
+                *n,
+                Role::Impl,
+                recorded.get(&(*n, Role::Impl)),
+            ));
         }
         for (n, _) in &cfg.qa_seats {
-            seats.push(SeatSlot {
-                seat: *n,
-                role: Role::Qa,
-                state: SeatState::Idle,
-            });
+            seats.push(SeatSlot::from_record(
+                *n,
+                Role::Qa,
+                recorded.get(&(*n, Role::Qa)),
+            ));
         }
         let p = review::planned_after_review(cfg, &snap, &seats, now);
         let mut acted = 0;

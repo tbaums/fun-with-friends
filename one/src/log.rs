@@ -224,14 +224,22 @@ pub fn pending_pushes(events: &[Event]) -> std::collections::BTreeMap<u64, Pendi
 
 /// The timeline of one PR: every event that names it, or names the issue it
 /// closes, or is a gate/promote event for its merge sha.
-/// The last `Seat` event for each (seat, role): where the record says every
-/// seat stands now. Both [`stale_working`] and [`stalled_claims`] are
-/// questions about that last word and nothing earlier.
-fn latest_seat_kinds(events: &[Event]) -> std::collections::BTreeMap<(u8, String), &Kind> {
-    let mut last: std::collections::BTreeMap<(u8, String), &Kind> = Default::default();
+/// Where the record says every seat stands now: the latest `Kind::Seat` event
+/// per (seat, role), replayed like [`claimed_issues`]. Nothing earlier counts.
+///
+/// Nobody asked the record this before (#667). Every `SeatSlot` the planner
+/// saw was built `Idle` by hand — in the loop's tick and in `slice::recheck`
+/// alike — so a seat still Working or Stalled on an issue was offered that
+/// same issue again, and the re-dispatch wrote `Ready` over the live claim.
+/// After that the re-claim could not prove the claim was this floor's, and
+/// every later tick refused with `refs/claims/<n> exists upstream and this
+/// floor's record does not own it`: transom #1383 after a stall, fwf #669
+/// after a bare supervisor restart mid-slice.
+pub fn seat_states(events: &[Event]) -> std::collections::BTreeMap<(u8, Role), SeatState> {
+    let mut last: std::collections::BTreeMap<(u8, Role), SeatState> = Default::default();
     for e in events {
-        if let Kind::Seat { seat, role, .. } = &e.kind {
-            last.insert((*seat, format!("{role:?}")), &e.kind);
+        if let Kind::Seat { seat, role, to, .. } = &e.kind {
+            last.insert((*seat, *role), to.clone());
         }
     }
     last
@@ -251,16 +259,13 @@ fn latest_seat_kinds(events: &[Event]) -> std::collections::BTreeMap<(u8, String
 pub fn stalled_claims(
     events: &[Event],
 ) -> std::collections::BTreeMap<u64, (u8, crate::types::Fence)> {
-    let last = latest_seat_kinds(events);
+    let last = seat_states(events);
     claimed_issues(events)
         .into_iter()
         .filter(|(issue, (seat, _))| {
             matches!(
-                last.get(&(*seat, format!("{:?}", Role::Impl))),
-                Some(Kind::Seat {
-                    to: SeatState::Stalled { job },
-                    ..
-                }) if job.issue == Some(*issue)
+                last.get(&(*seat, Role::Impl)),
+                Some(SeatState::Stalled { job }) if job.issue == Some(*issue)
             )
         })
         .collect()
@@ -270,21 +275,13 @@ pub fn stalled_claims(
 /// a supervisor that was interrupted mid-wait never wrote the terminal
 /// event. The record must say so before anything else is planned.
 pub fn stale_working(events: &[Event], now: u64) -> Vec<(u8, Role, crate::types::JobRef)> {
-    let mut out = Vec::new();
-    for k in latest_seat_kinds(events).into_values() {
-        if let Kind::Seat {
-            seat,
-            role,
-            to: SeatState::Working { job, deadline },
-            ..
-        } = k
-        {
-            if *deadline < now {
-                out.push((*seat, *role, job.clone()));
-            }
-        }
-    }
-    out
+    seat_states(events)
+        .into_iter()
+        .filter_map(|((seat, role), to)| match to {
+            SeatState::Working { job, deadline } if deadline < now => Some((seat, role, job)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Append a Stalled event for every stale Working seat; returns how many.
