@@ -364,6 +364,44 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 Err(e) => eprintln!("fwf run: push retry for #{issue} failed: {}", e.0),
             }
         }
+        // A seat called Stalled can still finish (#669): the wait gave up at
+        // the deadline but nothing killed the pane or moved the verdict path,
+        // so a late verdict just sits there — transom #1383 and #1387 were
+        // pushed and PR'd by hand on 2026-09-16. Re-read that path, for every
+        // claim whose seat is stalled on it, and deliver what it says.
+        let mut adopted: std::collections::BTreeSet<u64> = Default::default();
+        for (issue, (seat, _)) in
+            crate::log::stalled_claims(&crate::log::read_all(&cfg.run_log).unwrap_or_default())
+        {
+            let target = cfg
+                .impl_seats
+                .iter()
+                .find(|(n, _)| *n == seat)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_default();
+            let sc = slice_config(cfg, issue, seat, &target);
+            match slice::adopt_stalled_verdict(&sc, impl_app, ops_app) {
+                Ok(slice::Adopted::Nothing) => {}
+                Ok(slice::Adopted::Delivered(url)) => {
+                    adopted.insert(issue);
+                    match url {
+                        Some(url) => println!(
+                            "fwf run: impl seat {seat} finished #{issue} after it was called stalled → {url}"
+                        ),
+                        None => eprintln!(
+                            "fwf run: #{issue} came in late from impl seat {seat} but upstream refused the push; retrying each tick"
+                        ),
+                    }
+                }
+                Ok(slice::Adopted::Released(why)) => eprintln!(
+                    "fwf run: #{issue} came back blocked from stalled impl seat {seat} ({why}); the claim is released and it is plannable again"
+                ),
+                Err(e) => eprintln!("fwf run: #{issue}'s late verdict was not adopted: {}", e.0),
+            }
+        }
+        // The PR just opened is not in this tick's snapshot, and an issue is
+        // not re-sliced the moment its own cycle lands.
+        snap.issues.retain(|i| !adopted.contains(&i.number));
         let owed = unpushed_issues(&crate::log::read_all(&cfg.run_log).unwrap_or_default());
         snap.issues.retain(|i| !owed.contains(&i.number));
         // GV triage (T-23 inside the loop): before the allow-list narrows the

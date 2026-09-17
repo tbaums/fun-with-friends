@@ -256,8 +256,9 @@ pub fn wake(
 /// `Err(_)` — a file that is not a verdict *yet*: half-written by a seat that
 /// redirected straight into `<path>` instead of writing `<path>.tmp` and
 /// renaming, or JSON the seat typed by hand with an unescaped quote in it.
-/// Both are "not yet" to [`wait_verdict`], never its answer.
-fn read_verdict(path: &Path) -> Result<Option<Verdict>, SeatError> {
+/// Both are "not yet" to [`wait_verdict`], never its answer — and the same
+/// two answers the loop's late re-read wants after a stall (#669).
+pub(crate) fn read_verdict(path: &Path) -> Result<Option<Verdict>, SeatError> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

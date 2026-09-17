@@ -224,18 +224,54 @@ pub fn pending_pushes(events: &[Event]) -> std::collections::BTreeMap<u64, Pendi
 
 /// The timeline of one PR: every event that names it, or names the issue it
 /// closes, or is a gate/promote event for its merge sha.
-/// Seats whose LAST recorded state is Working with a deadline already past:
-/// a supervisor that was interrupted mid-wait never wrote the terminal
-/// event. The record must say so before anything else is planned.
-pub fn stale_working(events: &[Event], now: u64) -> Vec<(u8, Role, crate::types::JobRef)> {
+/// The last `Seat` event for each (seat, role): where the record says every
+/// seat stands now. Both [`stale_working`] and [`stalled_claims`] are
+/// questions about that last word and nothing earlier.
+fn latest_seat_kinds(events: &[Event]) -> std::collections::BTreeMap<(u8, String), &Kind> {
     let mut last: std::collections::BTreeMap<(u8, String), &Kind> = Default::default();
     for e in events {
         if let Kind::Seat { seat, role, .. } = &e.kind {
             last.insert((*seat, format!("{role:?}")), &e.kind);
         }
     }
+    last
+}
+
+/// Claims whose seat stalled on that very issue (#669): the record still holds
+/// `Claimed{seat,fence}` and that seat's latest `Seat` event is `Stalled`
+/// naming the same issue.
+///
+/// `wait_verdict` gives up at the deadline but never kills the pane and never
+/// moves the verdict path, so the seat can still finish afterwards — transom
+/// #1383 and #1387 did, and an operator had to push and open both PRs by hand.
+/// These are the claims the loop re-checks that path for every tick.
+///
+/// A seat that has since reported (its verdict adopted, or a later cycle) is
+/// gone from this list, which is what makes the adoption happen once.
+pub fn stalled_claims(
+    events: &[Event],
+) -> std::collections::BTreeMap<u64, (u8, crate::types::Fence)> {
+    let last = latest_seat_kinds(events);
+    claimed_issues(events)
+        .into_iter()
+        .filter(|(issue, (seat, _))| {
+            matches!(
+                last.get(&(*seat, format!("{:?}", Role::Impl))),
+                Some(Kind::Seat {
+                    to: SeatState::Stalled { job },
+                    ..
+                }) if job.issue == Some(*issue)
+            )
+        })
+        .collect()
+}
+
+/// Seats whose LAST recorded state is Working with a deadline already past:
+/// a supervisor that was interrupted mid-wait never wrote the terminal
+/// event. The record must say so before anything else is planned.
+pub fn stale_working(events: &[Event], now: u64) -> Vec<(u8, Role, crate::types::JobRef)> {
     let mut out = Vec::new();
-    for k in last.into_values() {
+    for k in latest_seat_kinds(events).into_values() {
         if let Kind::Seat {
             seat,
             role,
@@ -824,6 +860,94 @@ mod tests {
             }
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #669, fwf floor 2026-09-16: transom #1383 and #1387 were called
+    /// Stalled and then finished anyway — the pane was never killed. These
+    /// are the claims the loop must keep re-reading a verdict path for, and
+    /// they stop being that the moment the seat's word is `Reported`.
+    #[test]
+    fn a_stalled_claim_is_a_claim_whose_seat_stopped_on_that_very_issue() {
+        use crate::types::{Fence, JobRef};
+        let fence = Fence("f".repeat(40));
+        let job = |issue: u64| JobRef {
+            role: Role::Impl,
+            issue: Some(issue),
+            pr: None,
+        };
+        let seat_ev = |seat: u8, role: Role, to: SeatState| Event {
+            ts: 1,
+            repo: "o/r".into(),
+            kind: Kind::Seat {
+                seat,
+                role,
+                to,
+                tokens_in: None,
+                tokens_out: None,
+            },
+        };
+        let issue_ev = |issue: u64, to: IssueState| Event {
+            ts: 1,
+            repo: "o/r".into(),
+            kind: Kind::Issue { issue, to },
+        };
+        let mut evs = vec![
+            issue_ev(1383, IssueState::Ready),
+            issue_ev(
+                1383,
+                IssueState::Claimed {
+                    seat: 1,
+                    fence: fence.clone(),
+                },
+            ),
+            seat_ev(
+                1,
+                Role::Impl,
+                SeatState::Working {
+                    job: job(1383),
+                    deadline: 100,
+                },
+            ),
+        ];
+        assert!(
+            stalled_claims(&evs).is_empty(),
+            "a seat still working owes nothing"
+        );
+        evs.push(seat_ev(
+            1,
+            Role::Impl,
+            SeatState::Stalled { job: job(1383) },
+        ));
+        assert_eq!(
+            stalled_claims(&evs).get(&1383),
+            Some(&(1, fence.clone())),
+            "the claim and the fence the adoption delivers under"
+        );
+        // the QA seat of the same number is not the claiming seat
+        let mut other_role = evs.clone();
+        other_role.push(seat_ev(1, Role::Qa, SeatState::Reported { job: job(1383) }));
+        assert_eq!(stalled_claims(&other_role).len(), 1);
+        // a seat stalled on some *other* job says nothing about this claim
+        let mut moved_on = evs.clone();
+        moved_on.push(seat_ev(
+            1,
+            Role::Impl,
+            SeatState::Stalled { job: job(1385) },
+        ));
+        assert!(stalled_claims(&moved_on).is_empty());
+        // adopted: the seat's last word is Reported, so it is never adopted twice
+        let mut adopted = evs.clone();
+        adopted.push(seat_ev(
+            1,
+            Role::Impl,
+            SeatState::Reported { job: job(1383) },
+        ));
+        assert!(stalled_claims(&adopted).is_empty());
+        // and a claim handed back is nobody's to adopt
+        let mut released = evs.clone();
+        released.push(issue_ev(1383, IssueState::Ready));
+        assert!(stalled_claims(&released).is_empty());
+        assert!(stalled_claims(&[]).is_empty());
     }
 
     #[test]

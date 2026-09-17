@@ -253,12 +253,19 @@ pub fn run(cfg: &SliceConfig, app: &AppEntry) -> Result<String, SliceError> {
 
 mod deliver;
 
-pub use deliver::retry_pending_push;
+pub use deliver::{adopt_stalled_verdict, retry_pending_push, Adopted};
 use deliver::{claim, push_and_open_pr};
 
 /// Read the run record, or an empty record if it cannot be read.
 pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
     crate::log::read_all(&cfg.run_log).unwrap_or_default()
+}
+
+/// Where this cycle's seat writes its verdict. Deterministic from the issue,
+/// so the loop can re-read it long after the wait gave up (#669).
+pub(super) fn verdict_path(cfg: &SliceConfig) -> PathBuf {
+    cfg.floor_dir
+        .join(format!("verdict-issue-{}.json", cfg.issue))
 }
 
 /// Everything between the claim and the wake: realign the seat's worktree to
@@ -313,7 +320,7 @@ fn stage_cycle(
     Ok((job_text, title))
 }
 /// Branch-push token: always the impl App with `contents`+`workflows` write — a push under `.github/workflows/` needs `workflows`, which `ops` is not granted (#636). `ops` stays a param (it still backs merges/labels/check-runs).
-fn push_token_mint<'a>(
+pub(super) fn push_token_mint<'a>(
     app: &'a AppEntry,
     _ops: Option<&AppEntry>,
 ) -> (&'a AppEntry, BTreeMap<&'static str, &'static str>) {
@@ -468,9 +475,7 @@ pub fn run_with(
         issue: Some(cfg.issue),
         pr: None,
     };
-    let verdict_path = cfg
-        .floor_dir
-        .join(format!("verdict-issue-{}.json", cfg.issue));
+    let verdict_path = verdict_path(cfg);
     let st = match seat::wake(
         &pane,
         &cfg.seat_expect_cmd,
