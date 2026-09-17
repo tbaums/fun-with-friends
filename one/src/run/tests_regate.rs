@@ -7,7 +7,7 @@ use super::*;
 use crate::log::{Event, Kind};
 use crate::poll::Snapshot;
 use crate::triage::Ungate::Delegated;
-use crate::types::IssueState;
+use crate::types::{IssueState, SeatState};
 use std::path::Path;
 
 /// A run log of its own, so these tests never read each other's events.

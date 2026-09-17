@@ -8,9 +8,9 @@ use crate::sched::plan_fifo;
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-static N: AtomicU32 = AtomicU32::new(0);
+pub(super) static N: AtomicU32 = AtomicU32::new(0);
 
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(super) fn git(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -41,7 +41,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// A floor stand-in: a bare mirror with `staging` at one commit, a work
 /// clone that can advance it (as a merge to staging would), and the seat
 /// worktree `seats --up` would have cloned — at that first commit.
-fn floor() -> (PathBuf, String, PathBuf, PathBuf) {
+pub(super) fn floor() -> (PathBuf, String, PathBuf, PathBuf) {
     let root = std::env::temp_dir().join(format!(
         "fwfd-slice-{}-{}",
         std::process::id(),
@@ -66,7 +66,7 @@ fn floor() -> (PathBuf, String, PathBuf, PathBuf) {
 
 /// Land another commit on the mirror's `staging` and return it as the fence
 /// the supervisor would claim.
-fn advance(work: &Path, url: &str, name: &str) -> String {
+pub(super) fn advance(work: &Path, url: &str, name: &str) -> String {
     std::fs::write(work.join(name), name).unwrap();
     git(work, &["add", "."]);
     git(work, &["commit", "-q", "-m", name]);
@@ -171,11 +171,11 @@ fn a_seat_that_was_never_brought_up_is_refused_not_panicked_on() {
 }
 
 /// #630: the sign-off these fixtures are about.
-fn ok(n: u64) -> std::collections::BTreeSet<u64> {
+pub(super) fn ok(n: u64) -> std::collections::BTreeSet<u64> {
     std::collections::BTreeSet::from([n])
 }
 
-fn cfg_for(issue: u64, seat: u8) -> SliceConfig {
+pub(super) fn cfg_for(issue: u64, seat: u8) -> SliceConfig {
     SliceConfig {
         owner: "tbaums".into(),
         repo: "fun-with-friends".into(),

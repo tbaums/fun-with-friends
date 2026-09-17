@@ -173,11 +173,15 @@ fn recheck(
     reviewed: &std::collections::BTreeSet<u64>,
     now: u64,
 ) -> Result<u8, String> {
-    let seats = [SeatSlot {
-        seat: cfg.seat,
-        role: Role::Impl,
-        state: SeatState::Idle,
-    }];
+    // The seat as the record last left it, not a hardcoded Idle (#667): a
+    // slice dispatched at the same issue a seat is still Working or Stalled on
+    // refuses here instead of re-claiming it.
+    let recorded = crate::log::seat_states(&events(cfg));
+    let seats = [SeatSlot::from_record(
+        cfg.seat,
+        Role::Impl,
+        recorded.get(&(cfg.seat, Role::Impl)),
+    )];
     // A targeted slice plans over the one issue it was pointed at, so there
     // is nothing for #656's refusal tie-break to reorder here.
     let p = plan(
@@ -269,6 +273,21 @@ pub(super) fn events(cfg: &SliceConfig) -> Vec<crate::log::Event> {
 pub(super) fn verdict_path(cfg: &SliceConfig) -> PathBuf {
     cfg.floor_dir
         .join(format!("verdict-issue-{}.json", cfg.issue))
+}
+
+/// Is this cycle re-entering a claim this floor already holds (#667), rather
+/// than taking a fresh one?
+///
+/// Both halves have to agree: the record says this floor claimed the issue,
+/// and `refs/claims/<n>` upstream is still standing at exactly that fence. A
+/// record with no claim is a fresh cycle, and a fence that no longer matches
+/// upstream is a stale record — either way the claim below is a new one and
+/// the `Ready` above is this cycle's to write.
+pub(crate) fn reentering_claim(
+    held: Option<&(u8, crate::types::Fence)>,
+    upstream: Option<&Sha>,
+) -> bool {
+    matches!((held, upstream), (Some((_, f)), Some(up)) if f.0 == up.as_str())
 }
 
 /// Where a seat's liveness notes go (#668): into the run record, on their own
@@ -414,14 +433,6 @@ pub fn run_with(
             )));
         }
     };
-    record(
-        &mut log,
-        &repo,
-        Kind::Issue {
-            issue: cfg.issue,
-            to: IssueState::Ready,
-        },
-    )?;
     if cfg.dry_run {
         return Ok(format!(
             "dry run: would wake seat {seat_no} for #{}",
@@ -446,6 +457,27 @@ pub fn run_with(
     let base = mirror
         .upstream_head(&cfg.base_branch)?
         .ok_or_else(|| SliceError(format!("no upstream {}", cfg.base_branch)))?;
+    // `Ready` is this cycle's own word that the issue is free to claim — and
+    // it is exactly the word that used to erase a claim this floor still held
+    // (#667). `claimed_issues` reads it as a release, so writing it ahead of a
+    // re-entry left `claim`'s reuse path unable to prove the upstream ref was
+    // ours, and every later tick refused with "does not own it". Say it only
+    // for a claim that really is fresh; re-entering our own live claim says
+    // nothing and reuses the fence (the #602 path).
+    let held = crate::log::claimed_issues(&events(cfg))
+        .get(&cfg.issue)
+        .cloned();
+    let upstream = mirror.upstream_claim_ref(cfg.issue, &push_tok.token)?;
+    if !reentering_claim(held.as_ref(), upstream.as_ref()) {
+        record(
+            &mut log,
+            &repo,
+            Kind::Issue {
+                issue: cfg.issue,
+                to: IssueState::Ready,
+            },
+        )?;
+    }
     let fence = claim(&mut log, &repo, cfg, &mirror, &base, &push_tok.token)?;
     record(
         &mut log,
@@ -652,3 +684,5 @@ pub fn defaults(floor: &Path) -> (PathBuf, PathBuf) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_claim;

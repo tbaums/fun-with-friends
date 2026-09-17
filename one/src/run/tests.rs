@@ -8,7 +8,7 @@ use crate::log::{Event, Kind};
 use crate::poll::{IssueView, Snapshot};
 use crate::sched::plan_fifo;
 use crate::triage::Ungate::{Delegated, Manual};
-use crate::types::IssueState;
+use crate::types::{IssueState, SeatState};
 
 /// #630: what makes an issue claimable is the `Ready` event `fwf ungate`
 /// writes — the same pair the delegated un-gate writes — and the fast-track

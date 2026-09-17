@@ -14,6 +14,25 @@ pub struct SeatSlot {
     pub state: SeatState,
 }
 
+impl SeatSlot {
+    /// The slot to plan this seat with, given the record's last word about it
+    /// (`log::seat_states`) — which is the only place a seat's state is
+    /// written down (#667).
+    ///
+    /// `None` is a seat the record has never seen, and `Reported` is a cycle
+    /// that is over: both are Idle, because the verdict is in and the pane is
+    /// free again, and nothing ever writes an `Idle` event to say so. Working,
+    /// Stalled, Gone and Unknown are taken exactly as they stand — a job the
+    /// supervisor never killed is still typed into that pane.
+    pub fn from_record(seat: u8, role: Role, recorded: Option<&SeatState>) -> SeatSlot {
+        let state = match recorded {
+            None | Some(SeatState::Reported { .. }) => SeatState::Idle,
+            Some(s) => s.clone(),
+        };
+        SeatSlot { seat, role, state }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     WakeImpl {
@@ -94,15 +113,22 @@ fn idle_seats(seats: &[SeatSlot], role: Role) -> std::vec::IntoIter<u8> {
     ids.into_iter().collect::<Vec<_>>().into_iter()
 }
 
-/// The issue/PR numbers some live seat is currently occupied with. A seat
-/// Working past its deadline is treated as Stalled: its job is *not* live.
+/// The issue/PR numbers some live seat is currently occupied with.
+///
+/// A Stalled seat's job counts (#667): the supervisor is the only thing that
+/// ever kills a pane, so a seat past its deadline may well still be running
+/// that job — transom #1383 finished minutes after its stall verdict — and its
+/// issue is nobody else's to take meanwhile. A seat left Working past its
+/// deadline with no Stalled event yet is an interrupted supervisor's leftover,
+/// not a live seat: `log::reconcile_stale_working` says so at startup, and
+/// until then the stale-claim release below is what answers for it.
 fn live_jobs(seats: &[SeatSlot], now: u64) -> (BTreeSet<u64>, BTreeSet<u64>) {
     let mut issues = BTreeSet::new();
     let mut prs = BTreeSet::new();
     for s in seats {
         let job = match &s.state {
             SeatState::Working { job, deadline } if *deadline >= now => job,
-            SeatState::Reported { job } => job,
+            SeatState::Reported { job } | SeatState::Stalled { job } => job,
             _ => continue,
         };
         issues.extend(job.issue);
@@ -376,3 +402,5 @@ pub fn plan(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_seat_state;
