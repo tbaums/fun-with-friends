@@ -1,7 +1,10 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
-## Unreleased
+## 1.0.11 — 2026-09-16
+
+The delegated un-gate never widens beyond the allow-list.
+
 
 - **Delegated un-gate never widens beyond the allow-list** (#663) — `review_scope` still says how far GV and PM may *look* (repo-wide by default, as intended), but with `issues` set the loop no longer removes the gate label from a signed-off ticket outside it: the record says `sign-off ok — awaiting human un-gate (outside allow-list)` and the ticket waits for a human `fwf ungate`. Transom #1123, #1313 and #1371 were each un-gated and claimable on 2026-09-16 while parked outside the allow-list, and re-gated by hand.
 
