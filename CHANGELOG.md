@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.12 — 2026-09-16
+
+The planner finally sees which seats are busy.
+
+- **A stalled seat's issue re-entered planning and `slice::run` wrote Ready over the live claim** (#667, PR #673) — the run loop and `slice::recheck` now build their seat list from the record (Working/Reported/Stalled replayed from `Kind::Seat`), so a busy or stalled seat's issue is never re-sliced; `slice::run` no longer writes `Ready` over a Claimed record whose fence still matches upstream `refs/claims/<n>`, reusing the fence instead. Ends the "exists upstream and this floor's record does not own it" wedge seen on transom #1383 and fwf #669 (stall and supervisor restart).
+
 ## 1.0.11 — 2026-09-16
 
 The delegated un-gate never widens beyond the allow-list.
