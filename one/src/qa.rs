@@ -150,7 +150,13 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
             tokens_out: None,
         },
     )?;
-    let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
+    let (st, verdict) = seat::wait_verdict(
+        &job,
+        cfg.seat_no,
+        &verdict_path,
+        deadline,
+        Duration::from_secs(2),
+    )?;
     // Measured cost of this cycle: the seat's own transcript since the wake.
     let seat_home = cfg.floor_dir.join("home");
     let seat_wt = cfg.floor_dir.join(format!("wt-qa{}", cfg.seat_no));

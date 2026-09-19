@@ -17,6 +17,9 @@ pub struct StatusInput<'a> {
     pub owner_only: bool,
     pub seats: Vec<(String, String)>, // (target, foreground command)
     pub run_log: &'a Path,
+    /// The floor's `run.pid`, so the screen can say whether a loop is running
+    /// it at all (#675).
+    pub pidfile: &'a Path,
     pub now: u64,
     /// Manifest `rework_cap`: how many rounds the loop gives a refused PR
     /// before it becomes a human's decision (#576).
@@ -63,6 +66,16 @@ fn pr_line(p: &PrView) -> String {
             .unwrap_or_else(|| "-".into()),
         review
     )
+}
+
+/// How long ago the run record last moved. A floor whose loop is working is
+/// never silent here for long: every wake, verdict, claim and refusal lands
+/// in it. `no events` is a record that has never been written, not a stall.
+fn record_age_line(evs: &[log::Event], now: u64) -> String {
+    match evs.iter().map(|e| e.ts).max() {
+        Some(ts) => format!("record age {}s", now.saturating_sub(ts)),
+        None => "record age: no events".to_string(),
+    }
 }
 
 /// The newest merge refusal recorded against a PR, and how many times it was
@@ -140,6 +153,18 @@ pub fn render(inp: &StatusInput) -> String {
     }
     let mut needs_you: Vec<String> = Vec::new();
     let evs = log::read_all(inp.run_log).unwrap_or_default();
+
+    // The two lines an operator over ssh needs first (#675). Stdout going
+    // quiet is not a stalled floor — a seat wait is routinely 30+ minutes —
+    // so the record's own age is the liveness signal, and the pidfile says
+    // whether there is a loop behind it at all. Restarting a loop that was
+    // merely mid-wait cost a day's work once; these two lines are the answer
+    // to "is it alive?" that `pkill` used to be.
+    out.push_str(&format!("{}\n", record_age_line(&evs, inp.now)));
+    out.push_str(&format!(
+        "{}\n",
+        crate::verbs::pidfile::status_line_at(inp.pidfile)
+    ));
 
     out.push_str("seats\n");
     for (target, cmd) in &inp.seats {
@@ -404,6 +429,7 @@ mod tests {
                 owner_only: true,
                 seats: vec![],
                 run_log,
+                pidfile: Path::new("/nonexistent/run.pid"),
                 now: 5,
                 rework_cap: 2,
             })
@@ -476,6 +502,7 @@ mod tests {
                 .map(|t| (t.clone(), "claude".into()))
                 .collect(),
             run_log: Path::new("/nonexistent"),
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 5,
             rework_cap: 2,
         });
@@ -540,6 +567,7 @@ mod tests {
             owner_only: true,
             seats: vec![],
             run_log: &run_log,
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 5,
             rework_cap: 2,
         });
@@ -650,6 +678,7 @@ mod tests {
             owner_only: true,
             seats: vec![],
             run_log: &run_log,
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 200,
             rework_cap: 2,
         });
@@ -674,6 +703,7 @@ mod tests {
             owner_only: true,
             seats: vec![],
             run_log: Path::new("/nonexistent"),
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 0,
             rework_cap: 2,
         };
@@ -727,6 +757,7 @@ mod tests {
             owner_only: true,
             seats: vec![("fwf-one:impl1".into(), "bash".into())],
             run_log: Path::new("/nonexistent"),
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 5,
             rework_cap: 2,
         };
@@ -774,6 +805,7 @@ mod tests {
             owner_only: true,
             seats: vec![],
             run_log: &run_log,
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 5,
             rework_cap: 2,
         };
@@ -843,6 +875,7 @@ mod tests {
             owner_only: true,
             seats: vec![],
             run_log: &run_log,
+            pidfile: Path::new("/nonexistent/run.pid"),
             now: 5,
             rework_cap: 2,
         };
@@ -871,6 +904,79 @@ mod tests {
             1,
             "{r}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #675: over ssh the two questions are "is the floor moving?" and "is
+    /// there a loop at all?", and neither had an answer on this screen — the
+    /// operator read stdout instead, which is silent for the whole of a seat
+    /// wait, and restarted a healthy loop. Both answers are now the first two
+    /// lines, before anything that needs GitHub.
+    #[test]
+    fn the_first_two_lines_are_the_record_age_and_the_loop_pid() {
+        let dir = std::env::temp_dir().join(format!("fwfd-status-pid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_log = dir.join("run.jsonl");
+        let pidfile = dir.join("run.pid");
+        let s = Snapshot {
+            issues: vec![],
+            prs: vec![],
+            fetched_at: 1,
+            known: true,
+        };
+        let head = |now: u64| -> Vec<String> {
+            render(&StatusInput {
+                snapshot: &s,
+                gate_label: "product-wip",
+                owner_only: true,
+                seats: vec![],
+                run_log: &run_log,
+                pidfile: &pidfile,
+                now,
+                rework_cap: 2,
+            })
+            .lines()
+            .take(2)
+            .map(str::to_string)
+            .collect()
+        };
+        // an empty record and no pidfile: both say so rather than guessing
+        assert_eq!(head(500), vec!["record age: no events", "loop: no pidfile"]);
+
+        let mut l = log::Log::open(&run_log).unwrap();
+        l.append(&refused(100, "#574", "nothing")).unwrap();
+        l.append(&refused(440, "#574", "nothing")).unwrap();
+        assert_eq!(
+            head(500)[0],
+            "record age 60s",
+            "the NEWEST event is the age"
+        );
+
+        // a live loop, then one that is gone: the pidfile alone cannot tell
+        let mut live = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        std::fs::write(&pidfile, format!("{}\n", live.id())).unwrap();
+        assert_eq!(head(500)[1], format!("loop: pid {} (alive)", live.id()));
+        live.kill().unwrap();
+        live.wait().unwrap();
+        assert_eq!(head(500)[1], format!("loop: pid {} (missing)", live.id()));
+
+        // an unknown snapshot still says only that: nothing below it is true
+        let unknown = Snapshot::unknown();
+        let r = render(&StatusInput {
+            snapshot: &unknown,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: vec![],
+            run_log: &run_log,
+            pidfile: &pidfile,
+            now: 500,
+            rework_cap: 2,
+        });
+        assert!(r.starts_with("snapshot: UNKNOWN"), "{r}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

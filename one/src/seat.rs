@@ -274,7 +274,7 @@ pub(crate) fn read_verdict(path: &Path) -> Result<Option<Verdict>, SeatError> {
 
 pub mod watch;
 
-pub use watch::{pane_signal, worktree_signal, Watch, SAMPLE_EVERY};
+pub use watch::{pane_signal, worktree_signal, Waiting, Watch, SAMPLE_EVERY};
 
 /// Wait for the verdict file. Returns Reported (with the verdict) or Stalled.
 /// Never kills anything; the caller decides.
@@ -287,11 +287,12 @@ pub use watch::{pane_signal, worktree_signal, Watch, SAMPLE_EVERY};
 /// seat that hand-typed its JSON can be seen doing it.
 pub fn wait_verdict(
     job: &JobRef,
+    seat: u8,
     verdict_path: &Path,
     deadline: u64,
     poll: Duration,
 ) -> Result<(SeatState, Option<Verdict>), SeatError> {
-    wait_verdict_watched(job, verdict_path, deadline, poll, None)
+    wait_verdict_watched(job, seat, verdict_path, deadline, poll, None)
 }
 
 /// [`wait_verdict`], with a seat's liveness watched as well as the clock
@@ -300,6 +301,7 @@ pub fn wait_verdict(
 /// been quiet on both signals for its limit.
 pub fn wait_verdict_watched(
     job: &JobRef,
+    seat: u8,
     verdict_path: &Path,
     deadline: u64,
     poll: Duration,
@@ -308,6 +310,7 @@ pub fn wait_verdict_watched(
     let start = Instant::now();
     let mut last_bad: Option<SeatError> = None;
     let mut next_sample = now().saturating_add(SAMPLE_EVERY);
+    let mut say = Waiting::start(now());
     loop {
         match read_verdict(verdict_path) {
             Ok(Some(v)) => return Ok((SeatState::Reported { job: job.clone() }, Some(v))),
@@ -316,6 +319,11 @@ pub fn wait_verdict_watched(
         }
         if now() >= deadline {
             break;
+        }
+        // Say so, about once a minute: a silent stdout is what made a live
+        // wait look like a hung loop (#675).
+        if let Some(line) = say.due(now(), job, seat, deadline) {
+            println!("{line}");
         }
         // Sampled on its own cadence, well apart from the verdict poll: the
         // verdict above is read first every time, so one that lands in the
@@ -466,7 +474,7 @@ mod tests {
         .to_string();
         let w = sloppy_writer(out.clone(), text, true);
         // polls much faster than the writer's pause, so the partial file IS seen
-        let (st, v) = wait_verdict(&job(), &out, now() + 10, Duration::from_millis(20))
+        let (st, v) = wait_verdict(&job(), 1, &out, now() + 10, Duration::from_millis(20))
             .expect("a partial read is not an error");
         w.join().unwrap();
         assert!(matches!(st, SeatState::Reported { .. }), "{st:?}");
@@ -489,7 +497,7 @@ mod tests {
             serde_json::json!({"verdict": "triaged", "ready": true, "reason": "ok"}).to_string(),
             false,
         );
-        let (st, v) = wait_verdict(&job(), &out, now() + 1, Duration::from_millis(20))
+        let (st, v) = wait_verdict(&job(), 1, &out, now() + 1, Duration::from_millis(20))
             .expect("an unfinished write is not an error");
         w.join().unwrap();
         assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
@@ -502,13 +510,15 @@ mod tests {
             "{\"verdict\":\"triaged\",\"ready\":true,\"reason\":\"it[\"user\"][\"login\"] is empty\"}",
         )
         .unwrap();
-        let (st, v) = wait_verdict(&job(), &typed, now() + 1, Duration::from_millis(20)).unwrap();
+        let (st, v) =
+            wait_verdict(&job(), 1, &typed, now() + 1, Duration::from_millis(20)).unwrap();
         assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
         assert!(v.is_none(), "a tolerant read must not invent a verdict");
         // syntactically valid JSON that is not a verdict is also not one
         let empty = dir.join("verdict-empty.json");
         std::fs::write(&empty, "{}").unwrap();
-        let (st, v) = wait_verdict(&job(), &empty, now() + 1, Duration::from_millis(20)).unwrap();
+        let (st, v) =
+            wait_verdict(&job(), 1, &empty, now() + 1, Duration::from_millis(20)).unwrap();
         assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
         assert!(v.is_none());
         // a file that disappears between polls is "not yet", not a failure
@@ -519,7 +529,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             std::fs::remove_file(&g).unwrap();
         });
-        let (st, v) = wait_verdict(&job(), &gone, now() + 1, Duration::from_millis(20)).unwrap();
+        let (st, v) = wait_verdict(&job(), 1, &gone, now() + 1, Duration::from_millis(20)).unwrap();
         rm.join().unwrap();
         assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
         assert!(v.is_none());
@@ -592,7 +602,7 @@ mod tests {
                     SeatState::Working { deadline, .. } => deadline,
                     other => panic!("expected Working, got {other:?}"),
                 };
-                wait_verdict(&job(), &out, deadline, Duration::from_millis(100))
+                wait_verdict(&job(), 1, &out, deadline, Duration::from_millis(100))
             }
         };
         let (a, b) = std::thread::scope(|s| {
@@ -670,7 +680,7 @@ mod tests {
             SeatState::Working { deadline, .. } => deadline,
             other => panic!("expected Working, got {other:?}"),
         };
-        let (st, v) = wait_verdict(&job(), &out, deadline, Duration::from_millis(100)).unwrap();
+        let (st, v) = wait_verdict(&job(), 1, &out, deadline, Duration::from_millis(100)).unwrap();
         assert!(matches!(st, SeatState::Reported { .. }), "{st:?}");
         assert!(
             matches!(v, Some(Verdict::Implemented { ref branch, .. }) if branch == "impl1/issue-41")
@@ -700,7 +710,7 @@ mod tests {
             SeatState::Working { deadline, .. } => deadline,
             _ => unreachable!(),
         };
-        let (st, v) = wait_verdict(&job(), &out, deadline, Duration::from_millis(100)).unwrap();
+        let (st, v) = wait_verdict(&job(), 1, &out, deadline, Duration::from_millis(100)).unwrap();
         assert!(matches!(st, SeatState::Stalled { .. }), "{st:?}");
         assert!(v.is_none());
         // the pane is still there: stalled is a verdict about the job, not the seat

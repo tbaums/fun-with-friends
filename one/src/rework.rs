@@ -337,7 +337,13 @@ pub fn cycle(
             tokens_out: None,
         },
     )?;
-    let (st, verdict) = seat::wait_verdict(&jref, &verdict_path, deadline, Duration::from_secs(2))?;
+    let (st, verdict) = seat::wait_verdict(
+        &jref,
+        cfg.seat_no,
+        &verdict_path,
+        deadline,
+        Duration::from_secs(2),
+    )?;
     let usage = crate::cost::cycle_usage(
         &cfg.floor_dir.join("home"),
         &wt,

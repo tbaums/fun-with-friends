@@ -10,6 +10,7 @@
 //! the same way `run/cycle.rs` and `slice/tests.rs` are.
 
 use super::tmux;
+use crate::types::JobRef;
 use std::path::Path;
 
 /// How often the progress signals are sampled while a seat works (#668).
@@ -151,9 +152,53 @@ pub fn stalled_note(who: &str, quiet: u64, signal: &str, at: u64) -> String {
     format!("stalled: {who} quiet {quiet}s (last change: {signal} at {at})")
 }
 
+/// The `waiting:` line a long wait says out loud (#675), and the cadence it
+/// says it on.
+///
+/// `fwf run` printed nothing for the whole of a seat wait — a QA or impl
+/// cycle is routinely 30+ minutes — so a healthy loop looked hung, and the
+/// operator restarted one that was mid-wait. The record was always the truth;
+/// this makes stdout agree with it. The cadence is [`SAMPLE_EVERY`], the same
+/// one the liveness watch samples on, and nothing in the manifest turns it.
+pub struct Waiting {
+    started: u64,
+    next: u64,
+}
+
+impl Waiting {
+    pub fn start(now: u64) -> Waiting {
+        Waiting {
+            started: now,
+            next: now.saturating_add(SAMPLE_EVERY),
+        }
+    }
+
+    /// The line to print at `now`, or `None` while it is not due yet. Reading
+    /// it marks the next one due one interval later, so a wait that runs long
+    /// says so once a minute and never twice for the same minute.
+    pub fn due(&mut self, now: u64, job: &JobRef, seat: u8, deadline: u64) -> Option<String> {
+        if now < self.next {
+            return None;
+        }
+        self.next = now.saturating_add(SAMPLE_EVERY);
+        let what = job
+            .pr
+            .or(job.issue)
+            .map(|n| format!("#{n}"))
+            .unwrap_or_else(|| "-".into());
+        Some(format!(
+            "waiting: {} seat {seat} on {what} ({}s elapsed, deadline in {}s)",
+            crate::dash::role_name(job.role),
+            now.saturating_sub(self.started),
+            deadline.saturating_sub(now)
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Role;
 
     /// The two signal values a fake seat shows, and the notes it produces.
     fn cells() -> (
@@ -258,5 +303,70 @@ mod tests {
         let (wt, pane, notes2) = cells();
         let mut off = watched(0, &wt, &pane, &notes2);
         assert!(!off.sample(1_000 + 86_400), "0 turns the early stall off");
+    }
+
+    /// #675: `fwf run` printed nothing for the whole of a seat wait, so a
+    /// 30-minute QA cycle looked like a hung loop and was restarted. A wait
+    /// that spans several sample intervals now says so once per interval,
+    /// with an elapsed count that only goes forwards.
+    #[test]
+    fn a_long_wait_says_so_once_per_interval_and_never_goes_backwards() {
+        let t0 = 1_000_000;
+        let deadline = t0 + 1800;
+        let job = JobRef {
+            role: Role::Qa,
+            issue: Some(1411),
+            pr: Some(1419),
+        };
+        let mut say = Waiting::start(t0);
+        let mut lines = Vec::new();
+        // three intervals' worth of verdict polls, two seconds apart
+        let mut t = t0;
+        while t <= t0 + 3 * SAMPLE_EVERY {
+            if let Some(l) = say.due(t, &job, 3, deadline) {
+                lines.push(l);
+            }
+            t += 2;
+        }
+        assert!(lines.len() >= 2, "a three-interval wait said {lines:?}");
+        assert_eq!(lines.len(), 3, "one line per interval, not one per poll");
+        let elapsed: Vec<u64> = lines
+            .iter()
+            .map(|l| {
+                l.split(" (")
+                    .nth(1)
+                    .unwrap()
+                    .split('s')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            })
+            .collect();
+        assert!(elapsed.windows(2).all(|w| w[1] >= w[0]), "{elapsed:?}");
+        assert_eq!(elapsed[0], SAMPLE_EVERY, "the first is due one interval in");
+        // the PR is what a QA wait is about; the deadline counts down
+        assert_eq!(
+            lines[0],
+            format!(
+                "waiting: qa seat 3 on #1419 ({SAMPLE_EVERY}s elapsed, deadline in {}s)",
+                deadline - t0 - SAMPLE_EVERY
+            )
+        );
+        // an impl wait with no PR yet names its issue instead
+        let mut say = Waiting::start(t0);
+        let slice_job = JobRef {
+            role: Role::Impl,
+            issue: Some(1411),
+            pr: None,
+        };
+        assert!(
+            say.due(t0, &slice_job, 1, deadline).is_none(),
+            "not yet due"
+        );
+        assert!(say
+            .due(t0 + SAMPLE_EVERY, &slice_job, 1, deadline)
+            .unwrap()
+            .contains("impl seat 1 on #1411"));
     }
 }

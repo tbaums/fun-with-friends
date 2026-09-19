@@ -46,7 +46,8 @@ pub const USAGE: &str = "usage:
   fwf init-manifest [--from-profile profiles/x.sh --repo o/r [--session S]]   print an example fwf.toml, or convert a v0.42 profile (T-29)
   fwf cost --floor DIR --seat impl1 [--since EPOCH]   measured tokens for a seat since a time, from its own transcript
   fwf status [--manifest PATH]   one screen: seats, eligible/claimed issues, PRs with review state, recent events, needs-you
-  fwf run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list
+  fwf run [--manifest PATH] [--once]   the supervisor loop: poll → plan → act; only issues in the manifest's allow-list; writes <floor>/run.pid and refuses to start beside a live one
+  fwf stop [--manifest PATH]   SIGTERM the loop named by <floor>/run.pid, and nothing else — never a sibling `fwf gate`/`fwf qa` (#675)
   fwf spec --repo o/r --issue N --seat tmux-target [--timeout SECS] [--template F]   wake the PM pane on a GATED issue; its spec is written into the issue under ops, gate untouched (T-26)
   fwf triage --repo o/r --issue N --seat tmux-target [--timeout SECS]   wake the GV pane; a not-ready verdict gates the issue under ops
   fwf ungate --repo o/r --issue N --by NAME   the human un-gate: remove the gate label under ops, record who
@@ -121,12 +122,7 @@ fn main() -> ExitCode {
             }
         }
         Some("status") => {
-            let get = |flag: &str| {
-                args.iter()
-                    .position(|a| a == flag)
-                    .and_then(|i| args.get(i + 1).cloned())
-            };
-            let path = get("--manifest")
+            let path = verbs::get(&args, "--manifest")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
             let m = match manifest::Manifest::load(&path) {
@@ -179,6 +175,7 @@ fn main() -> ExitCode {
                 owner_only: m.owner_only,
                 seats: status::seat_commands(&targets),
                 run_log: &run_log,
+                pidfile: &verbs::pidfile::path(&m.floor()),
                 now,
                 rework_cap: m.rework_cap,
             };
@@ -186,6 +183,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("run") => verbs::run_loop(&args),
+        Some("stop") => verbs::stop(&args),
         Some("spec") => verbs::spec(&args),
         Some("triage") => verbs::triage(&args),
         Some("ungate") => {
