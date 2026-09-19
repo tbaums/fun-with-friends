@@ -684,6 +684,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         delegate_ungate: m.delegate_ungate.clone(),
         park_at_weekly_pct: m.park_at_weekly_pct,
         rework_cap: m.rework_cap,
+        reviewers: m.review_logins(),
         gate_suite: m.fast_suite.clone(),
         gate_cmd: m.suites.get(&m.fast_suite).cloned().unwrap_or_default(),
         gate_venue: m.gate_venue.clone(),

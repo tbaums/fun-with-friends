@@ -70,6 +70,12 @@ pub struct Manifest {
     /// for changes (#576). Past it the PR waits for a human; nothing is closed.
     #[serde(default = "default_rework_cap")]
     pub rework_cap: u32,
+    /// Logins besides the QA App whose `CHANGES_REQUESTED` review the loop
+    /// answers with a rework round (#677). The repo owner always counts —
+    /// their review is what dismissed QA's approval — so this names anyone
+    /// else. Empty by default: a stranger's review still plans nothing.
+    #[serde(default)]
+    pub reviewers: Vec<String>,
     /// Prompt family under `prompts/` (dev, refactor, validate, ideation,
     /// consulting, defect-report, user-testing). Missing roles fall back to dev.
     #[serde(default = "default_template")]
@@ -288,6 +294,17 @@ impl Manifest {
     pub fn owner(&self) -> &str {
         self.repo.split_once('/').map(|(o, _)| o).unwrap_or("")
     }
+    /// Whose `CHANGES_REQUESTED` the loop treats like the QA App's (#677):
+    /// the repo owner, plus every login in `reviewers`. A human review
+    /// dismisses QA's approval, so without this the PR could neither merge
+    /// nor be reworked and the seat sat idle (transom PR #1419).
+    pub fn review_logins(&self) -> std::collections::BTreeSet<String> {
+        let mut v: std::collections::BTreeSet<String> = self.reviewers.iter().cloned().collect();
+        if !self.owner().is_empty() {
+            v.insert(self.owner().to_string());
+        }
+        v
+    }
     pub fn name(&self) -> &str {
         self.repo.split_once('/').map(|(_, n)| n).unwrap_or("")
     }
@@ -348,6 +365,10 @@ stall_quiet_secs = 900
 poll_interval_secs = 60
 park_at_weekly_pct = 85
 rework_cap = 2
+# Logins besides the QA App whose changes-requested review earns a rework
+# round; the repo owner always counts. Left commented because this example
+# already sits on MAX_KEYS — a floor that needs it adds the key itself.
+# reviewers = ["someone-else"]
 template = "dev"
 triage_new = false
 # GV triage + PM spec of gated issues, inside the loop. Set delegate_ungate to
@@ -481,5 +502,33 @@ mod tests {
             Manifest::parse(&s).unwrap_err(),
             ManifestError::TooManyKeys(_)
         ));
+    }
+
+    /// #677: whose changes-requested the loop answers. The owner always
+    /// counts; `reviewers` names anyone else. The key stays optional because
+    /// the example manifest already sits exactly on `MAX_KEYS` — a floor that
+    /// wants it adds the key to its own manifest, which has room.
+    #[test]
+    fn reviewers_default_to_the_owner_alone_and_fit_inside_the_key_limit() {
+        let bare = Manifest::parse("repo = \"tbaums/transom\"\n[suites]\nfast=\"x\"\n").unwrap();
+        assert!(bare.reviewers.is_empty());
+        assert_eq!(
+            bare.review_logins(),
+            std::collections::BTreeSet::from(["tbaums".to_string()])
+        );
+        let text = "repo = \"tbaums/transom\"\nreviewers = [\"a-colleague\", \"tbaums\"]\n[suites]\nfast=\"x\"\n";
+        let m = Manifest::parse(text).unwrap();
+        assert_eq!(m.reviewers, vec!["a-colleague", "tbaums"]);
+        assert_eq!(
+            m.review_logins(),
+            std::collections::BTreeSet::from(["a-colleague".to_string(), "tbaums".to_string()]),
+            "the owner overlapping a reviewers entry is harmless"
+        );
+        let raw: toml::Value = toml::from_str(text).unwrap();
+        assert!(raw.as_table().unwrap().len() <= MAX_KEYS);
+        // the example is documentation, not a ceiling to grow: it stays put
+        let ex: toml::Value = toml::from_str(EXAMPLE).unwrap();
+        assert_eq!(ex.as_table().unwrap().len(), MAX_KEYS);
+        assert!(EXAMPLE.contains("# reviewers = "), "the key is documented");
     }
 }

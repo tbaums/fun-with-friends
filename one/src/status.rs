@@ -65,6 +65,23 @@ fn pr_line(p: &PrView) -> String {
     )
 }
 
+/// The newest merge refusal recorded against a PR, and how many times it was
+/// refused (#677). `merge_pr` records every refusal as `Kind::Refused` with
+/// `what == "merge #<PR>"`; before this the operator had to read the run
+/// record to find out why an approved PR never landed.
+fn merge_refusal(evs: &[log::Event], pr: u64) -> Option<(String, usize)> {
+    let mine = format!("merge #{pr}");
+    let why = evs.iter().rev().find_map(|e| match &e.kind {
+        Kind::Refused { what, why } if *what == mine => Some(why.clone()),
+        _ => None,
+    })?;
+    let times = evs
+        .iter()
+        .filter(|e| matches!(&e.kind, Kind::Refused { what, .. } if *what == mine))
+        .count();
+    Some((why, times))
+}
+
 /// Refusals a human still has to look at: per issue that is *still* open and
 /// unclaimed in the snapshot, the newest `Kind::Refused` naming it that no
 /// later claim or ship has overtaken, with how many times it was refused.
@@ -197,6 +214,15 @@ pub fn render(inp: &StatusInput) -> String {
     for p in &s.prs {
         out.push_str(&pr_line(p));
         out.push('\n');
+        // Why an approved PR is still sitting there, without reading the run
+        // record (#677). The loop answers a "not mergeable" with a rebase
+        // round now, so a line that keeps coming back is one to look at.
+        if let Some((why, times)) = merge_refusal(&evs, p.number) {
+            out.push_str(&format!(
+                "    merge refused ×{times} ({} rework round(s)): {why}\n",
+                crate::rework::rounds_in(inp.run_log, p.number)
+            ));
+        }
         let approved = p
             .reviews
             .iter()
@@ -778,6 +804,71 @@ mod tests {
         let r = render(&inp());
         assert!(
             r.contains("PR #1270 hit the rework cap (2): close it or push a fix yourself"),
+            "{r}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #677: an approved PR GitHub will not merge used to leave no trace on
+    /// this screen — the operator had to read the run record to find out that
+    /// `merge #1419` was refused as not mergeable, three ticks running. The
+    /// PR's own line now carries the newest refusal and how often it happened,
+    /// beside the rework rounds the loop has spent answering it.
+    #[test]
+    fn a_pr_whose_merge_was_refused_says_so_on_its_own_line() {
+        let head = "c".repeat(40);
+        let s = Snapshot {
+            issues: vec![],
+            prs: vec![PrView {
+                number: 1419,
+                head_sha: head.clone(),
+                head_ref: "impl3/issue-1411-thin-slice".into(),
+                base_ref: "staging".into(),
+                draft: false,
+                state: "open".into(),
+                author: "fwf-impl[bot]".into(),
+                closes_issue: Some(1411),
+                reviews: vec![("fwf-qa[bot]".into(), "APPROVED".into(), head.clone())],
+            }],
+            fetched_at: 1,
+            known: true,
+        };
+        let dir = std::env::temp_dir().join(format!("fwfd-status-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_log = dir.join("run.jsonl");
+        let mut l = log::Log::open(&run_log).unwrap();
+        let inp = || StatusInput {
+            snapshot: &s,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: vec![],
+            run_log: &run_log,
+            now: 5,
+            rework_cap: 2,
+        };
+        assert!(
+            !render(&inp()).contains("merge refused"),
+            "nothing has been refused yet"
+        );
+        // what `merge_pr` records when the PUT comes back 405
+        let why = "PUT pulls/1419/merge: HTTP 405: Pull Request is not mergeable";
+        l.append(&refused(10, "merge #1419", why)).unwrap();
+        l.append(&refused(70, "merge #1419", why)).unwrap();
+        // and one belonging to another PR, which must not be counted here
+        l.append(&refused(71, "merge #1420", "something else"))
+            .unwrap();
+        let r = render(&inp());
+        assert!(r.contains(why), "the refusal text is missing from\n{r}");
+        assert!(r.contains("merge refused ×2 (0 rework round(s))"), "{r}");
+        // another PR's refusal is not counted into this one's line
+        let line = r
+            .lines()
+            .find(|l| l.contains("merge refused"))
+            .unwrap_or_default();
+        assert!(!line.contains("something else"), "{line}");
+        assert_eq!(
+            r.lines().filter(|l| l.contains("merge refused")).count(),
+            1,
             "{r}"
         );
         let _ = std::fs::remove_dir_all(&dir);

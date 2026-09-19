@@ -96,7 +96,16 @@ fn a_stalled_seats_issue_counts_busy_and_is_not_offered_to_another_seat() {
     assert!(busy.contains(&1383), "{busy:?}");
     // the free seat takes the other issue and nothing is offered #1383
     assert_eq!(
-        plan(&s, &seats, true, &all_reviewed(&s), &BTreeSet::new(), 100).actions,
+        plan(
+            &s,
+            &seats,
+            true,
+            &all_reviewed(&s),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            100
+        )
+        .actions,
         vec![Action::WakeImpl {
             seat: 2,
             issue: 1385
@@ -149,7 +158,15 @@ fn a_claimed_issue_whose_seat_stalled_is_never_offered_again() {
     // idea a seat holds it (`refs/claims/<n>` is only read for `claimed`-
     // labelled issues, and nothing applies that label)
     let s = snap(vec![issue(1383, &[], "OWNER")], vec![]);
-    let p = plan(&s, &seats, true, &all_reviewed(&s), &BTreeSet::new(), 300);
+    let p = plan(
+        &s,
+        &seats,
+        true,
+        &all_reviewed(&s),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        300,
+    );
     assert!(
         !p.actions.iter().any(|a| a.issue() == Some(1383)),
         "the stalled seat's own issue was offered again: {:?}",
@@ -200,7 +217,16 @@ fn a_seat_left_working_by_a_restart_still_holds_its_issue() {
     )];
     let s = snap(vec![issue(669, &[], "OWNER")], vec![]);
     assert_eq!(
-        plan(&s, &seats, true, &all_reviewed(&s), &BTreeSet::new(), 900).actions,
+        plan(
+            &s,
+            &seats,
+            true,
+            &all_reviewed(&s),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            900
+        )
+        .actions,
         vec![Action::Nothing],
         "the seat is busy and its issue is taken"
     );

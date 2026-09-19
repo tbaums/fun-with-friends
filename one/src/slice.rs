@@ -184,11 +184,14 @@ fn recheck(
     )];
     // A targeted slice plans over the one issue it was pointed at, so there
     // is nothing for #656's refusal tie-break to reorder here.
+    // No reviewer set either: a slice is looking for its own WakeImpl, and
+    // whose CHANGES_REQUESTED counts (#677) decides nothing about that.
     let p = plan(
         snap,
         &seats,
         true,
         reviewed,
+        &std::collections::BTreeSet::new(),
         &std::collections::BTreeSet::new(),
         now,
     );
