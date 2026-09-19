@@ -278,6 +278,8 @@ mod tests {
             "fwf stop",
             "run.pid",
             "pkill",
+            // #678: the one sentence the incident came down to
+            "`pkill -x fwf` is never correct — use `fwf stop`.",
             "record age",
             "waiting:",
             "tmux new-session",

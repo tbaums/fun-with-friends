@@ -18,6 +18,7 @@ mod manifest;
 mod merge;
 mod mirror;
 mod poll;
+mod proctitle;
 mod profile;
 mod promote;
 mod prompts;
@@ -442,6 +443,7 @@ fn main() -> ExitCode {
             }
         }
         Some("qa") => {
+            proctitle::retitle("qa");
             let get = |flag: &str| {
                 args.iter()
                     .position(|a| a == flag)
@@ -619,6 +621,7 @@ fn main() -> ExitCode {
             }
         }
         Some("gate") => {
+            proctitle::retitle("gate");
             let get = |flag: &str| {
                 args.iter()
                     .position(|a| a == flag)

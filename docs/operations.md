@@ -20,7 +20,15 @@ what generalises, not the flag.
    `pkill` forms are traps: `pkill -f "fwf run"` matches the command line of
    the shell you typed it in — over ssh that is your own session — and
    `pkill -x fwf` kills every in-flight `fwf gate` and `fwf qa`, because they
-   are the same binary. If you must do it by hand, do it by pid:
+   are the same binary. **`pkill -x fwf` is never correct — use `fwf stop`.**
+
+   The three long-running verbs now re-exec themselves under their own names
+   (`fwf-run`, `fwf-gate`, `fwf-qa`, via `~/.fwf/bin/`), so `ps -o comm=` tells
+   them apart and a signal aimed at one cannot reach another (#678). That is a
+   safety net, not a new habit: `pkill -x fwf-run` still matches every floor's
+   loop on the host, and `fwf stop` matches exactly one.
+
+   If you must do it by hand, do it by pid:
 
    ```bash
    kill "$(cat /path/to/floor/run.pid)"

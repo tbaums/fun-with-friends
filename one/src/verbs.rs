@@ -633,6 +633,9 @@ pub fn seats(args: &[String]) -> ExitCode {
 }
 
 pub fn run_loop(args: &[String]) -> ExitCode {
+    // Before anything else has happened, so the loop the operator will have to
+    // signal is called `fwf-run` and not `fwf` (#678).
+    crate::proctitle::retitle("run");
     let path = get(args, "--manifest")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest::Manifest::default_path(Path::new(".")));
