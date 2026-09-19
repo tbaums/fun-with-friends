@@ -128,7 +128,13 @@ pub fn run(cfg: &TriageConfig, ops: &AppEntry) -> Result<(bool, String), TriageE
             tokens_out: None,
         },
     )?;
-    let (st, verdict) = seat::wait_verdict(&job, &verdict_path, deadline, Duration::from_secs(2))?;
+    let (st, verdict) = seat::wait_verdict(
+        &job,
+        pane.seat,
+        &verdict_path,
+        deadline,
+        Duration::from_secs(2),
+    )?;
     let usage = crate::cost::cycle_usage(
         &cfg.floor_dir.join("home"),
         &cfg.floor_dir.join("wt-gv1"),

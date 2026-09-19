@@ -11,6 +11,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 mod doctor;
+pub mod pidfile;
+pub use pidfile::verb as stop;
 pub mod scripts;
 pub use doctor::*;
 
@@ -653,6 +655,15 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         }
     };
     let floor = m.floor();
+    // One loop per floor, and one the operator can name (#675): two would
+    // both plan, both claim and both wake the same panes.
+    match pidfile::claim(&floor, std::process::id()) {
+        Ok(p) => println!("fwf run: pid {} ({})", std::process::id(), p.display()),
+        Err(e) => {
+            eprintln!("fwf run: {e}");
+            return ExitCode::from(1);
+        }
+    }
     let (run_log, mirror_dir) = slice::defaults(&floor);
     let seats = |role: &str| -> Vec<(u8, String)> {
         (1..=m.pairs).map(|n| (n, m.seat_target(role, n))).collect()

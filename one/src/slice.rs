@@ -581,6 +581,7 @@ pub fn run_with(
         );
         seat::wait_verdict_watched(
             &job,
+            seat_no,
             &verdict_path,
             deadline,
             Duration::from_secs(2),
