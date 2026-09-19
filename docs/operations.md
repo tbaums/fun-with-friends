@@ -87,6 +87,13 @@ what generalises, not the flag.
 
    An abbreviated sha is refused, not resolved.
 
+   `fwf gate --venue systemd-run` fails fast when polkit denies the scope
+   (#684): it passes `--no-ask-password`, so a box where the venue is not
+   usable says so in milliseconds instead of registering a tty password agent
+   and waiting forever, and the check has its own 5s bound on top. A
+   `systemd-run … true` child alive for minutes is itself the symptom of a
+   regression here — that hang cost 17 minutes and a hand-killed child once.
+
 6. **A hand-pushed branch must be fetched into the floor's mirror.**
 
    The seats' only remote is the local mirror, so a branch pushed to GitHub by
