@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.14 — 2026-09-18
+
+A slice that falls behind its base is rebased, and a human's review counts.
+
+- **Slices delivered against a stale base and never rebased; a human `CHANGES_REQUESTED` never triggered rework** (#677, PR #680) — before delivering and again before merging, the loop compares the claim's fence with the current base tip and rebases the seat branch; a conflict becomes a rework job for the same seat ("rebase onto <base>; resolve X"), then re-gate/re-QA. A `CHANGES_REQUESTED` review by the repo owner (or a manifest `reviewers` entry) is treated exactly like the QA seat's: a rework round with the review body as the brief. `fwf status` shows "PR #N: base moved (K behind)". Motivated by three unmergeable transom PRs on 2026-09-18 (#1418, #1419 and the first #1424 head).
+
 ## 1.0.13 — 2026-09-18
 
 Release installs can bring a floor up.
