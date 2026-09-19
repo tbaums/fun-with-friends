@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.15 — 2026-09-18
+
+The loop says which process it is and whether it is alive.
+
+- **Operators killed the wrong fwf processes and restarted healthy loops** (#675, PR #681) — `fwf run` writes `<floor>/run.pid` and refuses to start beside a live loop; `fwf stop [--manifest]` SIGTERMs exactly that pid (a dead pid is reclaimed, "not running" exits 0). A seat wait prints `waiting: <role> seat N on #M (Ks elapsed, deadline in Ks)` about once a minute instead of nothing. `fwf status` opens with `record age Ns` and `loop: pid N (alive|missing)`. `docs/operations.md` carries the seven operator rules, the hand-driving verb sequence and a test that guards it against stub text, hostnames and drift. Motivated by three self-inflicted outages on 2026-09-18 (`pkill -f "fwf run"`, `pkill -x fwf`, a silent wait mistaken for a hang).
+
 ## 1.0.14 — 2026-09-18
 
 A slice that falls behind its base is rebased, and a human's review counts.
