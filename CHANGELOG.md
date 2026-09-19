@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.16 — 2026-09-18
+
+A seat that finished, or was reclaimed, is free again.
+
+- **Stalled / ghost-Working impl seats never returned to Idle after their issue shipped or was reclaimed** (#676, PR #683) — `log::seat_states` replays an impl seat left Stalled or Working on an issue it once claimed but no longer holds (shipped, closed, released or re-claimed) as Idle, so the planner gets that capacity back instead of leaking a pair per stuck slice; `fwf status` prints a `ghost:` line for each seat it frees. Motivated by the devbox floors on 2026-09-18, where a hand-appended `idle` record event was the only way to re-dispatch impl1.
+
 ## 1.0.15 — 2026-09-18
 
 The loop says which process it is and whether it is alive.
