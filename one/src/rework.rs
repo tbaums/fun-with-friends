@@ -15,7 +15,7 @@ use crate::log::{Event, Kind, Log};
 use crate::mirror::Mirror;
 use crate::seat::{self, Pane, Verdict};
 use crate::types::{JobRef, PrState, Role, SeatState, Sha};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -36,6 +36,9 @@ pub struct ReworkConfig {
     pub check_cmd: String,
     /// How many rounds one PR may have (manifest `rework_cap`).
     pub cap: u32,
+    /// Logins besides the QA App whose CHANGES_REQUESTED is a brief the seat
+    /// must answer: the repo owner and the manifest's `reviewers` (#677).
+    pub reviewers: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -95,9 +98,15 @@ pub fn rounds_in(run_log: &std::path::Path, pr: u64) -> u32 {
         .unwrap_or(0)
 }
 
-/// The review the seat has to answer: the newest CHANGES_REQUESTED body the QA
-/// App left on `head`. Reviews arrive oldest first, so the last one wins.
-pub fn latest_refusal(reviews: &serde_json::Value, head: &str) -> Option<String> {
+/// The review the seat has to answer: the newest CHANGES_REQUESTED body left
+/// on `head` by the QA App or by one of `humans` — the repo owner and the
+/// manifest's `reviewers` (#677). Reviews arrive oldest first, so the last one
+/// wins, and a login outside that set is not a brief for anyone.
+pub fn latest_refusal(
+    reviews: &serde_json::Value,
+    head: &str,
+    humans: &BTreeSet<String>,
+) -> Option<String> {
     reviews
         .as_array()?
         .iter()
@@ -106,7 +115,7 @@ pub fn latest_refusal(reviews: &serde_json::Value, head: &str) -> Option<String>
                 && r["commit_id"].as_str() == Some(head)
                 && r["user"]["login"]
                     .as_str()
-                    .is_some_and(|l| l.ends_with("-qa[bot]"))
+                    .is_some_and(|l| l.ends_with("-qa[bot]") || humans.contains(l))
         })
         .filter_map(|r| r["body"].as_str().map(str::to_string))
         .next_back()
@@ -175,6 +184,21 @@ pub fn run(
     app: &AppEntry,
     ops: Option<&AppEntry>,
 ) -> Result<Outcome, ReworkError> {
+    run_with_brief(cfg, app, ops, None)
+}
+
+/// [`run`], with the brief the loop wrote instead of the one a reviewer left
+/// (#677). `Some(brief)` is for the round nobody reviewed: GitHub refused the
+/// merge as not mergeable, so the seat is told to rebase rather than asked to
+/// answer a review that does not exist. Everything else is identical —
+/// notably the cap, so a PR that conflicts on every tick still lands in a
+/// human's lap after `rework_cap` rounds instead of spinning forever.
+pub fn run_with_brief(
+    cfg: &ReworkConfig,
+    app: &AppEntry,
+    ops: Option<&AppEntry>,
+    brief: Option<&str>,
+) -> Result<Outcome, ReworkError> {
     // The cap is a record question, so it is answered before any token is
     // minted: at the cap this cycle costs nothing and wakes nobody.
     let rounds = rounds_in(&cfg.run_log, cfg.pr);
@@ -206,23 +230,29 @@ pub fn run(
             cfg.pr, cfg.seat_no
         )));
     }
-    let (code, body) = github::get_status(
-        &rtok.token,
-        &format!("/repos/{repo}/pulls/{}/reviews", cfg.pr),
-    )?;
-    if code != 200 {
-        return Err(ReworkError(format!(
-            "cannot read the reviews of #{} ({code})",
-            cfg.pr
-        )));
-    }
-    let review = latest_refusal(&serde_json::from_str(&body)?, head.as_str()).ok_or_else(|| {
-        ReworkError(format!(
-            "#{} has no CHANGES_REQUESTED review at {}",
-            cfg.pr,
-            head.short()
-        ))
-    })?;
+    let review = match brief {
+        Some(b) => b.to_string(),
+        None => {
+            let (code, body) = github::get_status(
+                &rtok.token,
+                &format!("/repos/{repo}/pulls/{}/reviews", cfg.pr),
+            )?;
+            if code != 200 {
+                return Err(ReworkError(format!(
+                    "cannot read the reviews of #{} ({code})",
+                    cfg.pr
+                )));
+            }
+            latest_refusal(&serde_json::from_str(&body)?, head.as_str(), &cfg.reviewers)
+                .ok_or_else(|| {
+                    ReworkError(format!(
+                        "#{} has no CHANGES_REQUESTED review at {}",
+                        cfg.pr,
+                        head.short()
+                    ))
+                })?
+        }
+    };
     let job = ReworkJob {
         issue: crate::poll::closes_issue(pr["body"].as_str().unwrap_or("")),
         branch,
@@ -494,6 +524,7 @@ mod tests {
             timeout: Duration::from_secs(20),
             check_cmd: "cargo test".into(),
             cap,
+            reviewers: BTreeSet::new(),
         }
     }
 
@@ -787,9 +818,79 @@ mod tests {
             {"state":"CHANGES_REQUESTED","commit_id":head,"user":{"login":"jamie"},"body":"a human"},
             {"state":"CHANGES_REQUESTED","commit_id":head,"user":{"login":"fwf-qa[bot]"},"body":"second round"},
         ]);
-        assert_eq!(latest_refusal(&reviews, &head).unwrap(), "second round");
-        assert_eq!(latest_refusal(&reviews, &"c".repeat(40)), None);
-        assert_eq!(latest_refusal(&serde_json::json!([]), &head), None);
-        assert_eq!(latest_refusal(&serde_json::json!({}), &head), None);
+        let nobody = BTreeSet::new();
+        assert_eq!(
+            latest_refusal(&reviews, &head, &nobody).unwrap(),
+            "second round"
+        );
+        assert_eq!(latest_refusal(&reviews, &"c".repeat(40), &nobody), None);
+        assert_eq!(latest_refusal(&serde_json::json!([]), &head, &nobody), None);
+        assert_eq!(latest_refusal(&serde_json::json!({}), &head, &nobody), None);
+    }
+
+    /// #677: the operator's own changes-requested is a brief too — theirs is
+    /// the review that dismissed QA's approval, so a loop that cannot read it
+    /// leaves the PR unmergeable and the seat idle (transom PR #1419). A
+    /// login in neither set is still nobody's instruction.
+    #[test]
+    fn a_human_reviewers_refusal_is_a_brief_when_the_manifest_names_them() {
+        let head = "a".repeat(40);
+        let reviews = serde_json::json!([
+            {"state":"CHANGES_REQUESTED","commit_id":head,"user":{"login":"fwf-qa[bot]"},"body":"qa round"},
+            {"state":"CHANGES_REQUESTED","commit_id":head,"user":{"login":"a-stranger"},"body":"drive-by"},
+            {"state":"CHANGES_REQUESTED","commit_id":head,"user":{"login":"tbaums"},"body":"rebase it onto staging"},
+        ]);
+        let humans = BTreeSet::from(["tbaums".to_string()]);
+        assert_eq!(
+            latest_refusal(&reviews, &head, &humans).unwrap(),
+            "rebase it onto staging"
+        );
+        // with nobody named, the owner's review is invisible and QA's stands
+        assert_eq!(
+            latest_refusal(&reviews, &head, &BTreeSet::new()).unwrap(),
+            "qa round"
+        );
+        // and the stranger is never the brief, whoever else is named
+        let only_stranger = serde_json::json!([
+            {"state":"CHANGES_REQUESTED","commit_id":head,"user":{"login":"a-stranger"},"body":"drive-by"},
+        ]);
+        assert_eq!(latest_refusal(&only_stranger, &head, &humans), None);
+    }
+
+    /// #677: the rebase round the loop asks for after a 405 is a rework round
+    /// like any other — same counter, same cap. A PR that conflicts on every
+    /// tick is a human's decision after `rework_cap` rounds, not a seat woken
+    /// forever. (The brief also means no reviews call: at the cap nothing is
+    /// read, minted or woken at all.)
+    #[test]
+    fn a_loop_authored_rebase_round_draws_on_the_same_cap_as_qa_rework() {
+        let floor = tmp();
+        let mut log = Log::open(&floor.join("run.jsonl")).unwrap();
+        let brief = crate::run::rebase_brief("impl1/issue-575-thin-slice", "staging", 1270);
+        // A key that cannot be read and a target that is no pane: anything
+        // past the cap check would fail loudly.
+        let app = AppEntry {
+            app_id: 1,
+            installation_id: 2,
+            key: "/nonexistent/key.pem".into(),
+        };
+        for round in 1..=2 {
+            let c = cfg(&floor, "no-such-session:impl1", 2);
+            // under the cap it gets as far as the token, and fails there —
+            // never AtCap, and never a verdict file
+            assert!(
+                run_with_brief(&c, &app, None, Some(&brief)).is_err(),
+                "round {round} was refused before the cap"
+            );
+            log.append(&seat_ev(Role::Impl, Some(1270), Some(575), true))
+                .unwrap();
+        }
+        let c = cfg(&floor, "no-such-session:impl1", 2);
+        assert_eq!(
+            run_with_brief(&c, &app, None, Some(&brief)).unwrap(),
+            Outcome::AtCap { rounds: 2 }
+        );
+        assert!(!floor.join("verdict-rework-pr-1270.json").exists());
+        let _ = std::fs::remove_dir_all(floor);
     }
 }

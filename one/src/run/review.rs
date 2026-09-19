@@ -173,7 +173,7 @@ pub fn planned_after_review(
     let evs = crate::log::read_all(&cfg.run_log).unwrap_or_default();
     let reviewed = reviewed_issues(&evs);
     let refused = refused_recently(&evs, now, cfg.interval.as_secs());
-    let p = crate::sched::plan(snap, seats, true, &reviewed, &refused, now);
+    let p = crate::sched::plan(snap, seats, true, &reviewed, &refused, &cfg.reviewers, now);
     note_fast_tracks(cfg, snap, &p, &reviewed, &evs);
     p
 }

@@ -475,7 +475,8 @@ fn a_refused_pr_read_back_through_the_api_plans_one_rework() {
     // the review body the rework job quotes comes off the same endpoint
     let reviews = fake.reviews(O, R, pr);
     assert_eq!(
-        crate::rework::latest_refusal(&serde_json::Value::Array(reviews), &head).as_deref(),
+        crate::rework::latest_refusal(&serde_json::Value::Array(reviews), &head, &BTreeSet::new())
+            .as_deref(),
         Some("the base is two merges behind")
     );
 }
@@ -659,7 +660,7 @@ proptest! {
         for a in &p.actions {
             let Action::Rework { seat, pr, issue } = a else { continue };
             let v = s.prs.iter().find(|x| x.number == *pr).unwrap();
-            prop_assert!(pr_changes_requested_at_head(v), "{v:?}");
+            prop_assert!(pr_changes_requested_at_head(v, &BTreeSet::new()), "{v:?}");
             prop_assert_eq!(impl_seat_of(&v.head_ref), Some(*seat));
             prop_assert_eq!(*issue, v.closes_issue);
             // and never beside another action for the same PR

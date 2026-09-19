@@ -183,7 +183,15 @@ pub fn plan_fifo(
     reviewed: &BTreeSet<u64>,
     now: u64,
 ) -> Plan {
-    plan(snapshot, seats, owner_only, reviewed, &BTreeSet::new(), now)
+    plan(
+        snapshot,
+        seats,
+        owner_only,
+        reviewed,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        now,
+    )
 }
 
 /// Every issue in a snapshot, as a reviewed set. Tests written before #630
@@ -197,21 +205,40 @@ pub fn all_reviewed(s: &Snapshot) -> BTreeSet<u64> {
 /// Approved at the current head by someone other than the PR's own App.
 /// The author's login is not in the view; the QA App's login ends in
 /// `-qa[bot]`, which is the only reviewer whose approval counts here.
-fn pr_approved_at_head(p: &PrView) -> bool {
+///
+/// A changes-requested at the same head by one of `humans` takes it away
+/// again (#677) — `merge::verdict` gives that review precedence too, so a
+/// planner that still called such a PR "approved" would plan a merge GitHub
+/// refuses as "not approved", every tick, forever (transom PR #1419). QA's
+/// own refusal is left alone: it never leaves both at one head, and the
+/// planner has always preferred finishing there.
+fn pr_approved_at_head(p: &PrView, humans: &BTreeSet<String>) -> bool {
     p.state == "open"
+        && !p.reviews.iter().any(|(login, state, commit)| {
+            state == "CHANGES_REQUESTED" && *commit == p.head_sha && humans.contains(login)
+        })
         && p.reviews.iter().any(|(login, state, commit)| {
             state == "APPROVED" && *commit == p.head_sha && login.ends_with("-qa[bot]")
         })
 }
 
-/// Changes requested at the current head by the QA App: the PR's own impl
-/// seat owes it another round. Read exactly like [`pr_approved_at_head`], and
-/// an approval at the same head wins (the planner prefers finishing).
-fn pr_changes_requested_at_head(p: &PrView) -> bool {
+/// Changes requested at the current head by a reviewer the loop answers to:
+/// the QA App, or one of `humans` — the repo owner and the manifest's
+/// `reviewers` (#677). The PR's own impl seat owes it another round. Read
+/// exactly like [`pr_approved_at_head`], and a QA approval at the same head
+/// still wins over QA's own refusal (the planner prefers finishing).
+///
+/// A human's changes-requested is not decoration: `merge_pr` lets it outrank
+/// the QA approval, so before this the loop could neither merge the PR ("no
+/// approval anchored to head") nor rework it, and the seat sat idle (transom
+/// PR #1419). A login outside {`-qa[bot]`} ∪ `humans` still plans nothing.
+fn pr_changes_requested_at_head(p: &PrView, humans: &BTreeSet<String>) -> bool {
     p.state == "open"
-        && !pr_approved_at_head(p)
+        && !pr_approved_at_head(p, humans)
         && p.reviews.iter().any(|(login, state, commit)| {
-            state == "CHANGES_REQUESTED" && *commit == p.head_sha && login.ends_with("-qa[bot]")
+            state == "CHANGES_REQUESTED"
+                && *commit == p.head_sha
+                && (login.ends_with("-qa[bot]") || humans.contains(login))
         })
 }
 
@@ -224,7 +251,7 @@ fn is_floor_pr(p: &PrView) -> bool {
 }
 
 /// The impl seat a branch belongs to: `impl<n>/…` → `n`.
-fn impl_seat_of(head_ref: &str) -> Option<u8> {
+pub fn impl_seat_of(head_ref: &str) -> Option<u8> {
     head_ref
         .strip_prefix("impl")?
         .split('/')
@@ -251,8 +278,9 @@ fn pr_qa_eligible(p: &PrView) -> bool {
 ///   and not the live job of some seat;
 /// - a PR is QA-eligible when open (drafts included), with no review anchored to
 ///   its head and not the live job of some seat;
-/// - a PR with changes requested at its head is rework for the idle impl seat
-///   its branch names (#576), so a refused PR never parks its seat;
+/// - a PR with changes requested at its head — by the QA App or by one of
+///   `humans` (#677) — is rework for the idle impl seat its branch names
+///   (#576), so a refused PR never parks its seat;
 /// - eligible items are served FIFO by number to idle seats of the matching
 ///   role, one job per seat, one action per item — except that an issue that
 ///   just refused goes to the back of that queue (#656);
@@ -265,6 +293,9 @@ pub fn plan(
     reviewed: &BTreeSet<u64>,
     // Issues that refused a cycle within the last poll interval (#656).
     refused: &BTreeSet<u64>,
+    // Logins whose CHANGES_REQUESTED counts like QA's: the repo owner and the
+    // manifest's `reviewers` (#677).
+    humans: &BTreeSet<String>,
     now: u64,
 ) -> Plan {
     if !snapshot.known {
@@ -348,7 +379,7 @@ pub fn plan(
     let mut refused: Vec<&PrView> = snapshot
         .prs
         .iter()
-        .filter(|p| pr_changes_requested_at_head(p))
+        .filter(|p| pr_changes_requested_at_head(p, humans))
         .filter(|p| !busy_prs.contains(&p.number))
         .collect();
     refused.sort_by_key(|p| p.number);
@@ -373,7 +404,11 @@ pub fn plan(
     }
     let mut qa_seats = idle_seats(seats, Role::Qa).filter(|s| !used.contains(s));
 
-    for p in snapshot.prs.iter().filter(|p| pr_approved_at_head(p)) {
+    for p in snapshot
+        .prs
+        .iter()
+        .filter(|p| pr_approved_at_head(p, humans))
+    {
         if !busy_prs.contains(&p.number) && touched_prs_pre(&actions, p.number) {
             actions.push(Action::FinishPr { pr: p.number });
         }
@@ -402,5 +437,7 @@ pub fn plan(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_reviewers;
 #[cfg(test)]
 mod tests_seat_state;

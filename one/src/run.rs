@@ -12,7 +12,7 @@ use crate::qa::{self, QaConfig};
 use crate::sched::{Action, SeatSlot};
 use crate::slice::{self, SliceConfig};
 use crate::types::Role;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -61,8 +61,13 @@ pub struct RunConfig {
     /// Park the floor while the last logged weekly meter % is at or above this.
     pub park_at_weekly_pct: u8,
     /// How many rework rounds one PR may have before it becomes a human's
-    /// decision (manifest `rework_cap`).
+    /// decision (manifest `rework_cap`). A merge GitHub refuses as not
+    /// mergeable draws on the same cap (#677).
     pub rework_cap: u32,
+    /// Logins whose CHANGES_REQUESTED the loop answers with a rework round,
+    /// besides the QA App: the repo owner and the manifest's `reviewers`
+    /// (#677).
+    pub reviewers: BTreeSet<String>,
     /// Conductor-as-code: after every merge, run this suite on the new base
     /// tip in the floor's gate worktree and post a check-run under ops.
     pub gate_suite: String,
@@ -552,9 +557,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                                             ),
                                         }
                                     }
-                                    Err(e) => {
-                                        eprintln!("fwf run: #{pr} approved but not merged: {e}")
-                                    }
+                                    Err(e) => after_failed_merge(cfg, apps, &snap, *pr, &e),
                                 }
                             }
                         }
@@ -580,50 +583,12 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                                 }
                             }
                         }
-                        Err(e) => eprintln!("fwf run: #{pr} approved but not merged: {e}"),
+                        Err(e) => after_failed_merge(cfg, apps, &snap, *pr, &e),
                     }
                     acted += 1;
                 }
                 Action::Rework { seat, pr, issue } => {
-                    let Some((_, target)) = cfg.impl_seats.iter().find(|(n, _)| n == seat) else {
-                        continue;
-                    };
-                    let rc = crate::rework::ReworkConfig {
-                        owner: cfg.owner.clone(),
-                        repo: cfg.repo.clone(),
-                        pr: *pr,
-                        seat_no: *seat,
-                        seat_target: target.clone(),
-                        seat_expect_cmd: cfg.seat_expect_cmd.clone(),
-                        base_branch: cfg.base_branch.clone(),
-                        floor_dir: cfg.floor_dir.clone(),
-                        mirror_dir: cfg.mirror_dir.clone(),
-                        job_template: crate::prompts::rework_path(&cfg.prompts_dir, &cfg.template),
-                        run_log: cfg.run_log.clone(),
-                        timeout: cfg.job_timeout,
-                        check_cmd: cfg.gate_cmd.clone(),
-                        cap: cfg.rework_cap,
-                    };
-                    match crate::rework::run(&rc, impl_app, ops_app) {
-                        Ok(crate::rework::Outcome::Pushed { head, round }) => println!(
-                            "fwf run: impl seat {seat} reworked #{pr} (round {round}) → {}",
-                            head.short()
-                        ),
-                        // Past the cap nothing is closed and no issue released:
-                        // two passes that did not convince QA are a human's call.
-                        Ok(crate::rework::Outcome::AtCap { rounds }) => eprintln!(
-                            "fwf run: #{pr} has had {rounds} rework round(s) (cap {}); close it or push it yourself — the loop will not wake the seat again",
-                            cfg.rework_cap
-                        ),
-                        Ok(crate::rework::Outcome::Gone) => {
-                            println!("fwf run: #{pr} is no longer open; nothing to rework")
-                        }
-                        Err(e) => eprintln!(
-                            "fwf run: rework of #{pr}{} failed: {}",
-                            issue.map(|i| format!(" (#{i})")).unwrap_or_default(),
-                            e.0
-                        ),
-                    }
+                    rework_round(cfg, apps, *seat, *pr, *issue, None);
                     acted += 1;
                 }
                 Action::ReleaseClaim { issue, fence } => {
@@ -649,7 +614,7 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
 }
 
 /// Ready-for-review (author App) + typed merge (ops). Returns the merge sha.
-fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha, String> {
+fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha, FinishError> {
     let repo = format!("{}/{}", cfg.owner, cfg.repo);
     let impl_app = apps.0.get("impl").ok_or("no [impl] app")?;
     let ops_app = apps.0.get("ops").ok_or("no [ops] app")?;
@@ -662,7 +627,7 @@ fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha,
     let (code, body) = crate::github::get_status(&itok.token, &format!("/repos/{repo}/pulls/{pr}"))
         .map_err(|e| e.to_string())?;
     if code != 200 {
-        return Err(format!("cannot read PR ({code})"));
+        return Err(format!("cannot read PR ({code})").into());
     }
     let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if v["draft"].as_bool() == Some(true) {
@@ -681,7 +646,7 @@ fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha,
             Ok(false) => {
                 return Err("could not mark ready: still a draft after the mutation".into())
             }
-            Err(e) => return Err(format!("could not mark ready: {e}")),
+            Err(e) => return Err(format!("could not mark ready: {e}").into()),
         }
     }
     let issue = v["body"]
@@ -702,7 +667,7 @@ fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha,
     )
     .map_err(|e| e.to_string())?;
     if code != 200 {
-        return Err(format!("no live claim ref for #{issue}"));
+        return Err(format!("no live claim ref for #{issue}").into());
     }
     let fence = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
@@ -717,7 +682,9 @@ fn finish_pr(cfg: &RunConfig, apps: &Apps, pr: u64) -> Result<crate::types::Sha,
         token: otok.token.clone(),
     };
     let mut log = crate::log::Log::open(&cfg.run_log).map_err(|e| e.to_string())?;
-    crate::merge::merge_pr(&client, &repo, pr, &fence, &mut log).map_err(|e| e.to_string())
+    // The one refusal the loop can act on rather than only report: a merge
+    // GitHub calls not mergeable becomes a rebase round on the seat (#677).
+    crate::merge::merge_pr(&client, &repo, pr, &fence, &mut log).map_err(FinishError::from_merge)
 }
 
 /// The conductor, as code: check out the merge sha in the floor's gate
@@ -894,6 +861,9 @@ pub use gated::*;
 
 mod review;
 pub use review::*;
+
+mod merge_refusal;
+pub use merge_refusal::*;
 
 #[cfg(test)]
 mod tests;

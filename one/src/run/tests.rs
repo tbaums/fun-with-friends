@@ -423,6 +423,7 @@ pub(super) fn test_config() -> RunConfig {
         delegate_ungate: None,
         park_at_weekly_pct: 85,
         rework_cap: 2,
+        reviewers: Default::default(),
         gate_suite: "fast".into(),
         gate_cmd: String::new(),
         gate_venue: "local".into(),
@@ -903,13 +904,21 @@ fn an_issue_that_just_refused_waits_behind_the_ones_that_have_not() {
     }];
     let reviewed = crate::sched::all_reviewed(&snap);
     let wake = |refused: &std::collections::BTreeSet<u64>| {
-        crate::sched::plan(&snap, &seats, true, &reviewed, refused, 10)
-            .actions
-            .iter()
-            .find_map(|a| match a {
-                Action::WakeImpl { issue, .. } => Some(*issue),
-                _ => None,
-            })
+        crate::sched::plan(
+            &snap,
+            &seats,
+            true,
+            &reviewed,
+            refused,
+            &Default::default(),
+            10,
+        )
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            Action::WakeImpl { issue, .. } => Some(*issue),
+            _ => None,
+        })
     };
     // FIFO while nothing has refused: the lower number takes the seat
     assert_eq!(wake(&Default::default()), Some(653));
@@ -931,6 +940,7 @@ fn an_issue_that_just_refused_waits_behind_the_ones_that_have_not() {
             true,
             &crate::sched::all_reviewed(&solo),
             &[653].into(),
+            &Default::default(),
             10
         )
         .actions
