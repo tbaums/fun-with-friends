@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 mod doctor;
+pub mod scripts;
 pub use doctor::*;
 
 pub(crate) fn get(args: &[String], flag: &str) -> Option<String> {
@@ -539,8 +540,20 @@ pub fn seats(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/seat-up.sh");
     let home = floor.join("home");
+    // The scripts ride inside the binary and are laid down on the floor every
+    // run (#674): the build-time manifest dir they used to be read from does
+    // not exist on a host that installed a release.
+    let script = match scripts::install(&home) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "fwf seats: seat scripts: {} ({e})",
+                home.join(".fwf").display()
+            );
+            return ExitCode::from(1);
+        }
+    };
     let mut failures = 0;
     for (role, n) in &roles {
         let target = m.seat_target(role, *n);
@@ -582,7 +595,7 @@ pub fn seats(args: &[String]) -> ExitCode {
             .get(role.as_str())
             .cloned()
             .unwrap_or_else(|| "opus".into());
-        let st = std::process::Command::new(script)
+        let st = std::process::Command::new(&script)
             .arg(&home)
             .arg(&wt)
             .arg(&m.session)
