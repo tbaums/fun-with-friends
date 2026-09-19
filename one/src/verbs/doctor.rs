@@ -2,7 +2,7 @@
 //! `verbs.rs` to keep that file inside the 1,000-line rule (T-30) when #653
 //! gave doctor the release line.
 
-use super::{get, identity_report};
+use super::{get, identity_report, scripts};
 use crate::{default_log, github, manifest, upgrade};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,6 +23,9 @@ pub fn doctor(args: &[String]) -> ExitCode {
         "  event log  : append+fsync JSONL, read, `why <pr>` at {}",
         default_log().display()
     );
+    // #674: a release binary carries the seat scripts, so an absent or stale
+    // `one/scripts/` on this host says nothing about whether seats can come up.
+    println!("{}", scripts::doctor_line());
     let mut bad = 0;
     let path = get(args, "--manifest")
         .map(PathBuf::from)
