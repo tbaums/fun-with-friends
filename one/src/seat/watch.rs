@@ -186,11 +186,18 @@ impl Waiting {
             .or(job.issue)
             .map(|n| format!("#{n}"))
             .unwrap_or_else(|| "-".into());
+        // Past the deadline the countdown would read "deadline in 0s"
+        // forever; say how far past instead (#682), which is the number an
+        // operator deciding whether to intervene actually wants.
+        let clock = if now >= deadline {
+            format!("past deadline by {}s", now - deadline)
+        } else {
+            format!("deadline in {}s", deadline - now)
+        };
         Some(format!(
-            "waiting: {} seat {seat} on {what} ({}s elapsed, deadline in {}s)",
+            "waiting: {} seat {seat} on {what} ({}s elapsed, {clock})",
             crate::dash::role_name(job.role),
             now.saturating_sub(self.started),
-            deadline.saturating_sub(now)
         ))
     }
 }
@@ -368,5 +375,10 @@ mod tests {
             .due(t0 + SAMPLE_EVERY, &slice_job, 1, deadline)
             .unwrap()
             .contains("impl seat 1 on #1411"));
+        // #682: past the deadline the countdown would sit at "deadline in 0s"
+        // for as long as the wait ran; it says how far past instead.
+        let late = say.due(deadline + 42, &slice_job, 1, deadline).unwrap();
+        assert!(late.ends_with("past deadline by 42s)"), "{late}");
+        assert!(!late.contains("deadline in"), "{late}");
     }
 }
