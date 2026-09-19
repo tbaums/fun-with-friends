@@ -1,6 +1,14 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.17 — 2026-09-18
+
+Verbs carry their own names, stale seats reconcile every tick, and a denied scope fails fast.
+
+- **Operators killed the wrong fwf processes: verbs shared one process name** (#678, PR #685) — `fwf run`, `fwf gate` and `fwf qa` re-exec themselves once through a verb-named symlink in `~/.fwf/bin`, so `ps -o comm=` reads `fwf-run` / `fwf-gate` / `fwf-qa` and `pkill -x fwf` matches none of them (guarded against recursion); `docs/operations.md` states `pkill -x fwf` is never correct.
+- **A Working seat past its deadline stayed Working until the next restart** (#682, PR #686) — the run loop calls `reconcile_stale_working` at the top of every tick, so a seat past its deadline is marked Stalled within one interval and picked up by the #669 adoption path; `fwf status` and the `waiting:` line report `past deadline by Ks`. Motivated by #675's slice on the devbox, which finished and pushed but sat invisible for 70 min.
+- **gate: systemd-run preflight hung for minutes under a tty as non-root** (#684, PR #687) — both `systemd-run` invocations (venue preflight and the gate command) pass `--no-ask-password`; the preflight runs under its own 5 s bound with refusal and timeout as distinct Killed reasons; `docs/operations.md` records the regression signature (a long-lived `systemd-run … true` child). Verified under tmux: old form hung past 25 s, new form refuses in 0.1 s.
+
 ## 1.0.16 — 2026-09-18
 
 A seat that finished, or was reclaimed, is free again.
