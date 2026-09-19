@@ -140,6 +140,7 @@ impl Gate {
                 let mut c = Command::new("systemd-run");
                 c.arg("--scope")
                     .arg("--quiet")
+                    .arg(NO_ASK_PASSWORD)
                     .arg("-p")
                     .arg(format!("MemoryMax={}G", self.memory_gb))
                     .arg("-p")
@@ -162,17 +163,15 @@ impl Gate {
         match self.venue {
             Venue::Local => Ok(()),
             Venue::SystemdRun => {
-                let out = Command::new("systemd-run")
-                    .args(["--scope", "--quiet", "-p", "MemoryMax=1G", "true"])
-                    .output()
-                    .map_err(|e| format!("systemd-run: {e}"))?;
-                if out.status.success() {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "systemd-run --scope refused: {}",
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    ))
+                let mut c = Command::new("systemd-run");
+                c.args(SYSTEMD_PREFLIGHT_ARGS);
+                match bounded_check(c, PREFLIGHT_TIMEOUT)? {
+                    Check::Ok => Ok(()),
+                    Check::Refused(why) => Err(format!("systemd-run --scope refused: {why}")),
+                    Check::TimedOut => Err(format!(
+                        "systemd-run preflight timed out after {}s",
+                        PREFLIGHT_TIMEOUT.as_secs()
+                    )),
                 }
             }
             Venue::AppleContainer { .. } => {
@@ -242,6 +241,69 @@ impl Gate {
                 },
                 None => killed(format!("killed by signal {}", status.signal().unwrap_or(0))),
             },
+        }
+    }
+}
+
+/// Never let a venue check ask a human anything (#684).
+///
+/// As a non-root user, `systemd-run --scope` needs polkit authorization; with
+/// a controlling tty it registers a tty password agent and waits for a
+/// password nobody is going to type. On a floor under tmux that is not a
+/// slow failure, it is no failure at all: the operator measured 17+ minutes
+/// before killing the child by hand, and `stdin=/dev/null` did not help —
+/// the agent keys off the ctty, not stdin. With this flag the same denial
+/// comes back as a refusal in milliseconds; where the action is already
+/// permitted (root, or a polkit rule that allows it) the flag does nothing.
+const NO_ASK_PASSWORD: &str = "--no-ask-password";
+
+/// The venue check: can this box run a trivial scope at all?
+const SYSTEMD_PREFLIGHT_ARGS: [&str; 6] = [
+    "--scope",
+    "--quiet",
+    NO_ASK_PASSWORD,
+    "-p",
+    "MemoryMax=1G",
+    "true",
+];
+
+/// How long a venue check may take before the venue is called unusable.
+/// Its own clock, deliberately far shorter than the suite's: `true` under an
+/// authorized scope returns in well under a second, and a check that has not
+/// answered in five is the thing this bound exists for — whatever the reason,
+/// not only the polkit one above.
+const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What a venue check came to.
+enum Check {
+    Ok,
+    /// It answered, and the answer was no. Carries the child's stderr.
+    Refused(String),
+    /// It did not answer inside the bound, and has been killed.
+    TimedOut,
+}
+
+/// Run one venue check under its own clock: its own process group (so the
+/// kill reaches whatever it spawned), no stdin to read, stderr kept for the
+/// refusal. `Err` is a check that could not be started at all.
+fn bounded_check(mut cmd: Command, timeout: Duration) -> Result<Check, String> {
+    use std::io::Read as _;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    match wait_or_kill(&mut child, timeout, None) {
+        Outcome::TimedOut => Ok(Check::TimedOut),
+        Outcome::Exited(status) if status.success() => Ok(Check::Ok),
+        Outcome::Exited(_) => {
+            let mut why = String::new();
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_string(&mut why);
+            }
+            Ok(Check::Refused(why.trim().to_string()))
         }
     }
 }
@@ -627,5 +689,119 @@ mod tests {
         let real = Sha::parse(&head).unwrap();
         let v = g.run(&real, "fast", "echo ok", &d.join("g.log"));
         assert!(matches!(v, GateState::Green { .. }), "{v:?}");
+    }
+
+    /// #684, AC2: the flag that keeps a polkit-denied scope from registering a
+    /// tty password agent has to be on BOTH systemd-run invocations — the
+    /// preflight and the suite itself. Only the preflight is reached today
+    /// (it fails first), which is exactly how the real run's identical gap
+    /// went unnoticed.
+    #[test]
+    fn every_systemd_run_invocation_refuses_to_ask_for_a_password() {
+        let d = scratch("noask");
+        let g = Gate {
+            venue: Venue::SystemdRun,
+            memory_gb: 1,
+            timeout: Duration::from_secs(30),
+            workdir: d.clone(),
+        };
+        let (cmd, _) = g.command(&sha('9'), "fast", "echo ok");
+        assert_eq!(cmd.get_program(), "systemd-run");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&NO_ASK_PASSWORD.to_string()), "{args:?}");
+        assert!(
+            SYSTEMD_PREFLIGHT_ARGS.contains(&NO_ASK_PASSWORD),
+            "preflight"
+        );
+        // and the flag is where systemd-run takes it: before the command
+        let flag = args.iter().position(|a| a == NO_ASK_PASSWORD).unwrap();
+        let bash = args.iter().position(|a| a == "bash").unwrap();
+        assert!(flag < bash, "{args:?}");
+        // the other venues are untouched by this
+        let local = Gate {
+            venue: Venue::Local,
+            ..g
+        };
+        assert_eq!(
+            local.command(&sha('9'), "fast", "echo ok").0.get_program(),
+            "bash"
+        );
+    }
+
+    /// #684, AC3: a venue check that never answers is killed on its own clock,
+    /// far short of the suite's. The polkit hang is one way for that to
+    /// happen; the bound does not care which.
+    #[test]
+    fn a_venue_check_that_never_answers_is_killed_on_its_own_clock() {
+        // Stands in for a systemd-run waiting on a password nobody will type.
+        let mut hang = Command::new("sleep");
+        hang.arg("600");
+        let started = Instant::now();
+        let out = bounded_check(hang, Duration::from_millis(400)).unwrap();
+        assert!(matches!(out, Check::TimedOut), "the check was not bounded");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+
+        // an answer inside the bound is the answer, either way
+        let mut yes = Command::new("true");
+        yes.arg0("true");
+        assert!(matches!(
+            bounded_check(yes, Duration::from_secs(5)).unwrap(),
+            Check::Ok
+        ));
+        let mut no = Command::new("bash");
+        no.args(["-c", "echo 'Access denied' >&2; exit 1"]);
+        match bounded_check(no, Duration::from_secs(5)).unwrap() {
+            Check::Refused(why) => assert_eq!(why, "Access denied"),
+            other => panic!("{}", matches!(other, Check::Ok)),
+        }
+        // a program that does not exist is not a verdict about the venue
+        assert!(bounded_check(Command::new("fwf-no-such-binary"), PREFLIGHT_TIMEOUT).is_err());
+
+        // the bound is the preflight's own, and nothing like a suite timeout
+        assert_eq!(PREFLIGHT_TIMEOUT, Duration::from_secs(5));
+    }
+
+    /// #684, AC1: whatever this box says about systemd-run, it says it fast.
+    /// The verdict is unchanged — a venue that cannot run `true` is `Killed`,
+    /// never a Red — but before this the answer could take 15–20 minutes, and
+    /// this very test is where the operator first hit it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_systemd_venue_answers_within_its_preflight_bound() {
+        let d = scratch("sd-fast");
+        let g = Gate {
+            venue: Venue::SystemdRun,
+            memory_gb: 1,
+            timeout: Duration::from_secs(600),
+            workdir: d.clone(),
+        };
+        let started = Instant::now();
+        let answer = g.venue_preflight();
+        let took = started.elapsed();
+        assert!(
+            took <= PREFLIGHT_TIMEOUT + Duration::from_secs(2),
+            "preflight took {took:?}: {answer:?}"
+        );
+        // a refusal and a timeout are different sentences in the record
+        if let Err(why) = &answer {
+            assert!(
+                why.starts_with("systemd-run --scope refused:")
+                    || why == "systemd-run preflight timed out after 5s",
+                "{why}"
+            );
+        }
+        // and the gate's own verdict is the venue's reason, not a Red
+        let v = g.run(&sha('8'), "fast", "echo ok", &d.join("sd.log"));
+        match answer {
+            Err(_) => assert!(matches!(v, GateState::Killed { .. }), "{v:?}"),
+            Ok(()) => assert!(matches!(v, GateState::Green { .. }), "{v:?}"),
+        }
     }
 }

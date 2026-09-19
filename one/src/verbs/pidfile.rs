@@ -285,6 +285,9 @@ mod tests {
             "tmux new-session",
             "date",
             "gate-wt",
+            // #684: the venue that used to hang, and how the hang looked
+            "`fwf gate --venue systemd-run` fails fast",
+            "`systemd-run … true` child alive for minutes",
             "refs/heads/impl1/*",
             "fwf ungate",
         ] {
