@@ -101,7 +101,7 @@ pub fn read_all(path: &Path) -> std::io::Result<Vec<Event>> {
 }
 
 pub mod seats;
-pub use seats::{ghost_seats, seat_states};
+pub use seats::{ghost_seats, past_deadline, seat_states};
 
 /// Issues a seat holds right now: the latest `Claimed` per issue that no later
 /// state for that issue has superseded. Replayed in record order, so a claim

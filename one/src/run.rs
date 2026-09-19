@@ -232,16 +232,6 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         ("metadata", "read"),
     ]);
     let mut cycles = 0u64;
-    // A previous supervisor interrupted mid-wait leaves a seat Working in the
-    // record with no terminal event; say so before planning anything.
-    match crate::log::reconcile_stale_working(
-        &cfg.run_log,
-        &format!("{}/{}", cfg.owner, cfg.repo),
-        crate::seat::now(),
-    ) {
-        Ok(0) | Err(_) => {}
-        Ok(n) => eprintln!("run: {n} stale Working seat(s) from an interrupted run marked Stalled"),
-    }
     // A stage with no seat is a stage that silently does nothing — the #629
     // failure exactly. Say so once, at startup, as `triage_new` does.
     if cfg.auto_spec {
@@ -256,6 +246,26 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
         }
     }
     loop {
+        // A `Working` entry past its deadline with no terminal event after it.
+        // At startup that is a supervisor interrupted mid-wait (#667) — but a
+        // cycle can also return to this loop without recording one, and then
+        // nothing ever re-read the deadline: the seat showed busy for the life
+        // of the process, its issue unplannable and its finished work
+        // invisible (#682, fwf #675's own slice, 70 minutes). So it is asked
+        // every tick, not once. Idempotent by construction: `stale_working`
+        // matches `Working{deadline < now}` only, and this writes `Stalled`.
+        // Delivery is unchanged — `stalled_claims`/`adopt_stalled_verdict`
+        // below pick a late verdict up on the next tick (#669).
+        match crate::log::reconcile_stale_working(
+            &cfg.run_log,
+            &format!("{}/{}", cfg.owner, cfg.repo),
+            crate::seat::now(),
+        ) {
+            Ok(0) | Err(_) => {}
+            Ok(n) => eprintln!(
+                "fwf run: {n} seat(s) past deadline with no terminal event; marked Stalled"
+            ),
+        }
         // Meter brake (T-28): the operator's meter log is the only source of
         // subscription usage; park while the last logged weekly % is at or
         // above the manifest threshold, re-reading every interval.

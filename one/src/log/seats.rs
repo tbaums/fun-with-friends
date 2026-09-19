@@ -118,6 +118,39 @@ fn ghosts_in(last: &BTreeMap<(u8, Role), SeatState>, events: &[Event]) -> Vec<Gh
         .collect()
 }
 
+/// A seat still on a job whose deadline has passed, and by how long (#682).
+///
+/// The deadline lives on the `Working` event, so a seat marked `Stalled`
+/// afterwards is measured against the deadline of the `Working` it came from —
+/// the same job, the same clock. A seat the replay freed (a ghost, above) is
+/// not one of these: it is not on that job any more.
+///
+/// `fwf status` prints these because the alternative was a blank line: fwf's
+/// own #675 slice sat delivered-but-invisible for 70 minutes behind a seat the
+/// screen described as simply working.
+pub fn past_deadline(events: &[Event], now: u64) -> Vec<(u8, Role, u64)> {
+    let mut deadlines: BTreeMap<(u8, Role), u64> = Default::default();
+    for e in events {
+        if let Kind::Seat {
+            seat,
+            role,
+            to: SeatState::Working { deadline, .. },
+            ..
+        } = &e.kind
+        {
+            deadlines.insert((*seat, *role), *deadline);
+        }
+    }
+    seat_states(events)
+        .into_iter()
+        .filter(|(_, to)| matches!(to, SeatState::Working { .. } | SeatState::Stalled { .. }))
+        .filter_map(|((seat, role), _)| {
+            let deadline = *deadlines.get(&(seat, role))?;
+            (now > deadline).then(|| (seat, role, now - deadline))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +373,118 @@ mod tests {
             .line(),
             "ghost: impl1 was stalled on #1412 (now resolved) — idle"
         );
+    }
+
+    /// #682: the loop kept ticking, the seat's deadline came and went, and
+    /// nothing said so — not the record, not the screen. Both states count,
+    /// measured against the deadline of the `Working` event the job started
+    /// with; a seat the replay already freed is not on that job any more.
+    #[test]
+    fn a_seat_past_the_deadline_of_the_job_it_is_still_on_is_reported_with_the_overrun() {
+        let deadline = SeatState::Working {
+            job: job(675),
+            deadline: 1_000,
+        };
+        let evs = vec![claimed(675, 1), seat_ev(1, deadline.clone())];
+        assert!(past_deadline(&evs, 999).is_empty(), "not yet");
+        assert!(past_deadline(&evs, 1_000).is_empty(), "not yet, exactly");
+        assert_eq!(past_deadline(&evs, 1_600), vec![(1, Role::Impl, 600)]);
+
+        // marked Stalled by the tick that noticed: same job, same deadline
+        let mut stalled_now = evs.clone();
+        stalled_now.push(seat_ev(1, stalled(675)));
+        assert_eq!(
+            past_deadline(&stalled_now, 1_600),
+            vec![(1, Role::Impl, 600)]
+        );
+
+        // a cycle that ended is nobody's overrun
+        let mut reported = evs.clone();
+        reported.push(seat_ev(1, SeatState::Reported { job: job(675) }));
+        assert!(past_deadline(&reported, 1_600).is_empty());
+
+        // nor is a seat the ghost replay already freed (#676)
+        let mut shipped = stalled_now.clone();
+        shipped.push(issue_ev(
+            675,
+            IssueState::Shipped {
+                pr: 681,
+                sha: Sha::parse(&"a".repeat(40)).unwrap(),
+            },
+        ));
+        assert!(past_deadline(&shipped, 1_600).is_empty());
+
+        // and a seat that never had a Working event has no deadline to miss
+        assert!(past_deadline(&[seat_ev(2, stalled(999))], 9_999).is_empty());
+    }
+
+    /// #682: the loop asks for this every tick now, not only at startup, so a
+    /// `Working` entry whose cycle returned without a terminal event is marked
+    /// within one interval. Which means it runs against records that already
+    /// hold the answer — it must write nothing the second time — and against
+    /// seats that are simply not late yet.
+    #[test]
+    fn reconciling_every_tick_marks_a_late_seat_once_and_leaves_the_rest_alone() {
+        use crate::log::{read_all, reconcile_stale_working, Log};
+        let dir = std::env::temp_dir().join(format!("fwfd-tick-recon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("run.jsonl");
+        let late = SeatState::Working {
+            job: job(675),
+            deadline: 1_000,
+        };
+        let healthy = SeatState::Working {
+            job: job(676),
+            deadline: 9_000,
+        };
+        {
+            let mut l = Log::open(&p).unwrap();
+            // seat 1 is the #682 shape: Working, deadline gone, nothing after
+            l.append(&claimed(675, 1)).unwrap();
+            l.append(&seat_ev(1, late)).unwrap();
+            // seat 2 is healthy, still inside its own deadline
+            l.append(&claimed(676, 2)).unwrap();
+            l.append(&seat_ev(2, healthy.clone())).unwrap();
+        }
+
+        // the tick that notices: one seat marked, in the two event shapes
+        // startup reconciliation has always written
+        assert_eq!(reconcile_stale_working(&p, "o/r", 2_000).unwrap(), 1);
+        let all = read_all(&p).unwrap();
+        assert!(matches!(
+            &all[4].kind,
+            Kind::Seat {
+                seat: 1,
+                to: SeatState::Stalled { .. },
+                ..
+            }
+        ));
+        assert!(matches!(&all[5].kind, Kind::Note { .. }));
+        assert_eq!(
+            seat_states(&all).get(&(2, Role::Impl)),
+            Some(&healthy),
+            "a seat inside its deadline is untouched"
+        );
+        // the claim is left standing for #669's adoption to find
+        assert_eq!(
+            crate::log::stalled_claims(&all).get(&675).map(|(s, _)| *s),
+            Some(1)
+        );
+
+        // every later tick, while nothing else is late: nothing to say
+        for now in [2_001, 5_000, 8_999] {
+            assert_eq!(
+                reconcile_stale_working(&p, "o/r", now).unwrap(),
+                0,
+                "re-stamped at {now}"
+            );
+        }
+        assert_eq!(read_all(&p).unwrap().len(), all.len());
+
+        // and seat 2 is marked by the tick after ITS deadline, not before
+        assert_eq!(reconcile_stale_working(&p, "o/r", 9_001).unwrap(), 1);
+        assert_eq!(reconcile_stale_working(&p, "o/r", 9_002).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

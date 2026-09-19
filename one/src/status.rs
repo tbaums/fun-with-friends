@@ -181,6 +181,16 @@ pub fn render(inp: &StatusInput) -> String {
             needs_you.push(format!("seat {target} is gone: `one/scripts/seat-up.sh …`"));
         }
     }
+    // A seat still on a job whose deadline has gone by (#682). The loop marks
+    // it Stalled within a tick now, but the screen has to say how far past it
+    // is either way — a seat described as simply working is what hid fwf's own
+    // #675 slice, delivered, for 70 minutes.
+    for (seat, role, over) in log::past_deadline(&evs, inp.now) {
+        out.push_str(&format!(
+            "  {}{seat} past deadline by {over}s\n",
+            crate::dash::role_name(role)
+        ));
+    }
     // Capacity the replay just handed back (#676): a seat left Stalled or
     // Working on an issue that has since shipped, closed or been re-claimed
     // is idle, and nothing ever wrote that down. Informational — the leak was

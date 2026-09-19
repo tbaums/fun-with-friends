@@ -684,3 +684,83 @@ fn a_seat_freed_by_the_replay_says_so_under_seats() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #682, AC4: a seat whose deadline has gone by says so here. Before this
+/// the screen showed the seat live and nothing else — fwf's own #675 slice
+/// sat finished-and-invisible for 70 minutes behind exactly that line.
+#[test]
+fn a_seat_past_its_deadline_says_how_far_past_on_this_screen() {
+    let dir = std::env::temp_dir().join(format!("fwfd-status-late-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let run_log = dir.join("run.jsonl");
+    let mut l = log::Log::open(&run_log).unwrap();
+    let s = Snapshot {
+        issues: vec![],
+        prs: vec![],
+        fetched_at: 1,
+        known: true,
+    };
+    let render_at = |now: u64| {
+        render(&StatusInput {
+            snapshot: &s,
+            gate_label: "product-wip",
+            owner_only: true,
+            seats: vec![("fwf-one:impl1".into(), "claude".into())],
+            run_log: &run_log,
+            pidfile: Path::new("/nonexistent/run.pid"),
+            now,
+            rework_cap: 2,
+        })
+    };
+    let job = crate::types::JobRef {
+        role: crate::types::Role::Impl,
+        issue: Some(675),
+        pr: None,
+    };
+    l.append(&log::Event {
+        ts: 100,
+        repo: "o/r".into(),
+        kind: Kind::Seat {
+            seat: 1,
+            role: crate::types::Role::Impl,
+            to: crate::types::SeatState::Working {
+                job: job.clone(),
+                deadline: 1_000,
+            },
+            tokens_in: None,
+            tokens_out: None,
+        },
+    })
+    .unwrap();
+    assert!(
+        !render_at(900).contains("past deadline"),
+        "{}",
+        render_at(900)
+    );
+    let r = render_at(2_374);
+    assert!(
+        r.contains("  impl1 past deadline by 1374s"),
+        "no overrun line in\n{r}"
+    );
+    // and it stays there once the tick marks it Stalled: same job, same
+    // deadline, and the operator still has to decide about it
+    l.append(&log::Event {
+        ts: 1_100,
+        repo: "o/r".into(),
+        kind: Kind::Seat {
+            seat: 1,
+            role: crate::types::Role::Impl,
+            to: crate::types::SeatState::Stalled { job },
+            tokens_in: None,
+            tokens_out: None,
+        },
+    })
+    .unwrap();
+    assert!(
+        render_at(2_374).contains("  impl1 past deadline by 1374s"),
+        "{}",
+        render_at(2_374)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
