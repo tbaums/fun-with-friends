@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.13 — 2026-09-18
+
+Release installs can bring a floor up.
+
+- **`seats --up` failed on release installs: seat scripts and prompts were read from the build runner's `CARGO_MANIFEST_DIR` at runtime** (#674, PR #679) — the published binary looked for `one/scripts/seat-up.sh`, `seat-push-guard.sh`, `one/prompts` and `prompts` under `/home/runner/work/…`, so every non-source install failed each seat with `No such file or directory` and the GV cycle with the same. The scripts and prompt files are now embedded in the binary and materialised into the floor at `seats --up`; `fwf doctor` reports "seat scripts: embedded". Found bringing up the devbox floor on 2026-09-18 (operator workaround was copying the tree to the runner path).
+
 ## 1.0.12 — 2026-09-16
 
 The planner finally sees which seats are busy.
