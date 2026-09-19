@@ -231,3 +231,147 @@ fn a_seat_left_working_by_a_restart_still_holds_its_issue() {
         "the seat is busy and its issue is taken"
     );
 }
+
+/// #676, the transom floor on 2026-09-18: one restart, and two of three impl
+/// pairs stopped being plannable. Seat 1's last word was `Stalled{#1412}` —
+/// written by `reconcile_stale_working` at startup, for an issue that had
+/// since SHIPPED — and seat 2's was `Working{#1411}`, whose issue had been
+/// re-sliced onto seat 3. Nothing ever writes a later `Idle`, so `plan()`
+/// called both seats busy forever: four eligible issues, eight live panes,
+/// and one working pair. The replay now hands that capacity back.
+#[test]
+fn seats_left_on_issues_that_moved_on_are_plannable_again() {
+    let fence = Fence("f".repeat(40));
+    let claimed = |issue: u64, seat: u8| {
+        ev(
+            100,
+            Kind::Issue {
+                issue,
+                to: IssueState::Claimed {
+                    seat,
+                    fence: fence.clone(),
+                },
+            },
+        )
+    };
+    let evs = vec![
+        // seat 1 claimed #1412, worked it, was marked Stalled by the restart,
+        // and #1412 shipped anyway
+        claimed(1412, 1),
+        seat_ev(
+            1,
+            Role::Impl,
+            SeatState::Working {
+                job: job(Some(1412), None),
+                deadline: 200,
+            },
+        ),
+        seat_ev(
+            1,
+            Role::Impl,
+            SeatState::Stalled {
+                job: job(Some(1412), None),
+            },
+        ),
+        ev(
+            300,
+            Kind::Issue {
+                issue: 1412,
+                to: IssueState::Shipped {
+                    pr: 1416,
+                    sha: crate::types::Sha::parse(&"a".repeat(40)).unwrap(),
+                },
+            },
+        ),
+        // seat 2 was left Working on #1411 by the interrupted supervisor;
+        // #1411 went back to the queue and was re-claimed by seat 3
+        claimed(1411, 2),
+        seat_ev(
+            2,
+            Role::Impl,
+            SeatState::Working {
+                job: job(Some(1411), None),
+                deadline: 200,
+            },
+        ),
+        ev(
+            310,
+            Kind::Issue {
+                issue: 1411,
+                to: IssueState::Ready,
+            },
+        ),
+        claimed(1411, 3),
+        seat_ev(
+            3,
+            Role::Impl,
+            SeatState::Working {
+                job: job(Some(1411), None),
+                deadline: 9000,
+            },
+        ),
+    ];
+    let states = crate::log::seat_states(&evs);
+    let slot = |n: u8| SeatSlot::from_record(n, Role::Impl, states.get(&(n, Role::Impl)));
+    assert_eq!(slot(1).state, SeatState::Idle, "shipped out from under it");
+    assert_eq!(slot(2).state, SeatState::Idle, "re-claimed by seat 3");
+    assert_eq!(
+        slot(3).state,
+        SeatState::Working {
+            job: job(Some(1411), None),
+            deadline: 9000
+        },
+        "the seat that actually holds it is untouched"
+    );
+
+    // and the planner offers the freed seats the issues that were waiting
+    let s = snap(
+        vec![issue(1414, &[], "OWNER"), issue(1415, &[], "OWNER")],
+        vec![],
+    );
+    let seats = [
+        slot(1),
+        slot(2),
+        slot(3),
+        seat(1, Role::Qa, SeatState::Idle),
+    ];
+    let actions = plan(
+        &s,
+        &seats,
+        true,
+        &all_reviewed(&s),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        400,
+    )
+    .actions;
+    assert_eq!(
+        actions,
+        vec![
+            Action::WakeImpl {
+                seat: 1,
+                issue: 1414
+            },
+            Action::WakeImpl {
+                seat: 2,
+                issue: 1415
+            },
+        ],
+        "both freed seats are plannable, and #1411 is still seat 3's"
+    );
+    assert!(
+        !actions.iter().any(|a| a.issue() == Some(1411)),
+        "the live claim is nobody else's: {actions:?}"
+    );
+    // what `fwf status` says about the two it freed
+    assert_eq!(
+        crate::log::ghost_seats(&evs)
+            .iter()
+            .map(|g| g.line())
+            .collect::<Vec<_>>(),
+        vec![
+            "ghost: impl1 was stalled on #1412 (now resolved) — idle",
+            "ghost: impl2 was working on #1411 (now resolved) — idle",
+        ]
+    );
+}

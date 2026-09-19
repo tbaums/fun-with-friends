@@ -100,6 +100,9 @@ pub fn read_all(path: &Path) -> std::io::Result<Vec<Event>> {
     Ok(out)
 }
 
+pub mod seats;
+pub use seats::{ghost_seats, seat_states};
+
 /// Issues a seat holds right now: the latest `Claimed` per issue that no later
 /// state for that issue has superseded. Replayed in record order, so a claim
 /// released (`Ready`), shipped, re-gated or closed is gone, and a re-claim after
@@ -224,27 +227,6 @@ pub fn pending_pushes(events: &[Event]) -> std::collections::BTreeMap<u64, Pendi
 
 /// The timeline of one PR: every event that names it, or names the issue it
 /// closes, or is a gate/promote event for its merge sha.
-/// Where the record says every seat stands now: the latest `Kind::Seat` event
-/// per (seat, role), replayed like [`claimed_issues`]. Nothing earlier counts.
-///
-/// Nobody asked the record this before (#667). Every `SeatSlot` the planner
-/// saw was built `Idle` by hand — in the loop's tick and in `slice::recheck`
-/// alike — so a seat still Working or Stalled on an issue was offered that
-/// same issue again, and the re-dispatch wrote `Ready` over the live claim.
-/// After that the re-claim could not prove the claim was this floor's, and
-/// every later tick refused with `refs/claims/<n> exists upstream and this
-/// floor's record does not own it`: transom #1383 after a stall, fwf #669
-/// after a bare supervisor restart mid-slice.
-pub fn seat_states(events: &[Event]) -> std::collections::BTreeMap<(u8, Role), SeatState> {
-    let mut last: std::collections::BTreeMap<(u8, Role), SeatState> = Default::default();
-    for e in events {
-        if let Kind::Seat { seat, role, to, .. } = &e.kind {
-            last.insert((*seat, *role), to.clone());
-        }
-    }
-    last
-}
-
 /// Claims whose seat stalled on that very issue (#669): the record still holds
 /// `Claimed{seat,fence}` and that seat's latest `Seat` event is `Stalled`
 /// naming the same issue.
