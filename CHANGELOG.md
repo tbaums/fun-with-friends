@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.18 — 2026-09-19
+
+A stalled seat frees itself, and an operator can free it sooner.
+
+- **A stalled QA seat froze its whole pair forever: no adoption path, no release verb, and `idle_seats` blocked impl on the same seat id** (#688, PR #689) — a Stalled seat now gets a 20m cool-off that writes the Seat→Idle event, freeing its id for both roles; the new attributed `fwf release --seat N --role impl|qa` verb frees it early; the dash's Stalled line names that verb; and the `ungate` verb moved out of `main.rs` into `verbs/ungate.rs` to keep `main.rs` under its size ceiling.
+
 ## 1.0.17 — 2026-09-18
 
 Verbs carry their own names, stale seats reconcile every tick, and a denied scope fails fast.
