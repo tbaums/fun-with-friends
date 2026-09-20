@@ -1,5 +1,6 @@
-//! Verb bodies moved out of main.rs (the size ratchet): spec, triage,
-//! release-check, dash. Each takes the raw argv and returns the exit code.
+//! Verb bodies moved out of main.rs (the size ratchet): spec, triage, ungate,
+//! release, release-check, dash. Each takes the raw argv and returns the exit
+//! code.
 
 use crate::USAGE;
 use crate::{
@@ -12,7 +13,11 @@ use std::time::Duration;
 
 mod doctor;
 pub mod pidfile;
+pub mod release;
+pub mod ungate;
 pub use pidfile::verb as stop;
+pub use release::verb as release;
+pub use ungate::verb as ungate;
 pub mod scripts;
 pub use doctor::*;
 

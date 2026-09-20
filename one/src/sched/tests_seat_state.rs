@@ -12,6 +12,8 @@ use super::*;
 use crate::log::{Event, Kind};
 use crate::types::{Fence, IssueState, JobRef};
 
+mod stalls;
+
 fn ev(ts: u64, kind: Kind) -> Event {
     Event {
         ts,

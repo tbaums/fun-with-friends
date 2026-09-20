@@ -202,13 +202,7 @@ pub struct Board {
 }
 
 pub fn role_name(r: Role) -> &'static str {
-    match r {
-        Role::Impl => "impl",
-        Role::Qa => "qa",
-        Role::Pm => "pm",
-        Role::Gv => "gv",
-        Role::Captain => "captain",
-    }
+    r.name()
 }
 
 /// Display order: the seats that do the work first.
