@@ -202,44 +202,49 @@ pub fn all_reviewed(s: &Snapshot) -> BTreeSet<u64> {
     s.issues.iter().map(|i| i.number).collect()
 }
 
-/// Approved at the current head by someone other than the PR's own App.
-/// The author's login is not in the view; the QA App's login ends in
-/// `-qa[bot]`, which is the only reviewer whose approval counts here.
+/// What the reviewers have said about this PR's current head, by the one rule
+/// `merge_pr` enforces at the merge button (#690): latest review per login,
+/// the author's own never counted, CHANGES_REQUESTED at head beating APPROVED.
 ///
-/// A changes-requested at the same head by one of `humans` takes it away
-/// again (#677) — `merge::verdict` gives that review precedence too, so a
-/// planner that still called such a PR "approved" would plan a merge GitHub
-/// refuses as "not approved", every tick, forever (transom PR #1419). QA's
-/// own refusal is left alone: it never leaves both at one head, and the
-/// planner has always preferred finishing there.
-fn pr_approved_at_head(p: &PrView, humans: &BTreeSet<String>) -> bool {
+/// The planner used to have its own reading of that — any QA APPROVED at the
+/// head, whatever came after — and the two deadlocked the loop whenever they
+/// disagreed (PR #689: approved, then refused at the same head; every tick one
+/// merge attempt, one refusal, no rework, forever).
+fn head_verdict(p: &PrView) -> crate::review::Verdict {
+    crate::review::verdict(
+        p.reviews
+            .iter()
+            .map(|(l, s, c)| (l.as_str(), s.as_str(), c.as_str())),
+        &p.head_sha,
+        &p.author,
+    )
+}
+
+/// Approved at the current head by the QA App, whose login ends in `-qa[bot]`
+/// — the only reviewer whose approval starts a merge.
+///
+/// A changes-requested at that same head takes it away again, whoever left it:
+/// [`head_verdict`] never returns `Approved` while one stands, so the planner
+/// cannot ask for a merge GitHub would refuse as "not approved" (transom PR
+/// #1419, fwf PR #689). An approval by anyone else is not this loop's cue.
+fn pr_approved_at_head(p: &PrView) -> bool {
     p.state == "open"
-        && !p.reviews.iter().any(|(login, state, commit)| {
-            state == "CHANGES_REQUESTED" && *commit == p.head_sha && humans.contains(login)
-        })
-        && p.reviews.iter().any(|(login, state, commit)| {
-            state == "APPROVED" && *commit == p.head_sha && login.ends_with("-qa[bot]")
-        })
+        && matches!(head_verdict(p), crate::review::Verdict::Approved { by } if by.ends_with("-qa[bot]"))
 }
 
 /// Changes requested at the current head by a reviewer the loop answers to:
 /// the QA App, or one of `humans` — the repo owner and the manifest's
-/// `reviewers` (#677). The PR's own impl seat owes it another round. Read
-/// exactly like [`pr_approved_at_head`], and a QA approval at the same head
-/// still wins over QA's own refusal (the planner prefers finishing).
+/// `reviewers` (#677). The PR's own impl seat owes it another round.
 ///
-/// A human's changes-requested is not decoration: `merge_pr` lets it outrank
-/// the QA approval, so before this the loop could neither merge the PR ("no
-/// approval anchored to head") nor rework it, and the seat sat idle (transom
-/// PR #1419). A login outside {`-qa[bot]`} ∪ `humans` still plans nothing.
+/// The mirror of [`pr_approved_at_head`] over the same verdict, so the two can
+/// no longer both be false while a refusal stands at the head — which is how
+/// the loop used to lose PRs. A refusal by a login outside {`-qa[bot]`} ∪
+/// `humans` still plans nothing: not a merge either, since `merge_pr` honours
+/// it, but nothing this loop knows how to answer.
 fn pr_changes_requested_at_head(p: &PrView, humans: &BTreeSet<String>) -> bool {
     p.state == "open"
-        && !pr_approved_at_head(p, humans)
-        && p.reviews.iter().any(|(login, state, commit)| {
-            state == "CHANGES_REQUESTED"
-                && *commit == p.head_sha
-                && (login.ends_with("-qa[bot]") || humans.contains(login))
-        })
+        && matches!(head_verdict(p), crate::review::Verdict::ChangesRequested { by }
+            if by.ends_with("-qa[bot]") || humans.contains(&by))
 }
 
 /// Opened by this floor's impl App, whose login ends in `-impl[bot]` — the same
@@ -404,11 +409,7 @@ pub fn plan(
     }
     let mut qa_seats = idle_seats(seats, Role::Qa).filter(|s| !used.contains(s));
 
-    for p in snapshot
-        .prs
-        .iter()
-        .filter(|p| pr_approved_at_head(p, humans))
-    {
+    for p in snapshot.prs.iter().filter(|p| pr_approved_at_head(p)) {
         if !busy_prs.contains(&p.number) && touched_prs_pre(&actions, p.number) {
             actions.push(Action::FinishPr { pr: p.number });
         }
@@ -441,3 +442,5 @@ mod tests;
 mod tests_reviewers;
 #[cfg(test)]
 mod tests_seat_state;
+#[cfg(test)]
+mod tests_verdict;

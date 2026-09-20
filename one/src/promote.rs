@@ -468,7 +468,7 @@ mod tests {
         for gate in [&red, &killed, &other] {
             let e = g.go(gate, "e2e").unwrap_err();
             assert!(
-                matches!(e, PromoteError::Refused(Refusal::GateNotGreen { ref sha }) if *sha == c),
+                matches!(e, PromoteError::Refused(Refusal::GateNotGreen { ref sha, .. }) if *sha == c),
                 "{e}"
             );
         }
