@@ -260,6 +260,27 @@ pub fn pr_rows(b: &Board) -> Vec<&PrLive> {
     v
 }
 
+/// The verb that frees this seat now (#688). Named on the line rather than
+/// left to be discovered: before this the Decisions line said only "its
+/// verdict never arrived", and the sole recovery an operator could find was
+/// hand-running `fwf qa` on the same seat, which they had to read the
+/// scheduler to work out.
+pub fn release_command(row: &SeatRow) -> String {
+    format!(
+        "fwf release --seat {} --role {}",
+        row.seat,
+        crate::dash::role_name(row.role)
+    )
+}
+
+/// How long this stall has left before the loop clears it by itself.
+fn cooloff_phrase(row: &SeatRow, now: u64) -> String {
+    match crate::log::STALL_COOLOFF_SECS.saturating_sub(now.saturating_sub(row.since)) {
+        0 => "the next tick clears it".to_string(),
+        left => format!("auto-clears in {}", fmt_secs(left)),
+    }
+}
+
 /// Everything only a human can clear. The banner shows the first line; the
 /// Decisions tab shows them all.
 pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
@@ -274,11 +295,17 @@ pub fn needs_you(b: &Board, f: &Floor, now: u64) -> Vec<String> {
         v.push(format!("the loop is PARKED: {why}"));
     }
     for row in seat_rows(b, f) {
-        if matches!(row.state, SeatState::Stalled { .. }) {
+        // The command comes before the prose on purpose: this pane is narrow
+        // and every line in it is truncated to fit, so the half an operator
+        // can read has to be the half they can act on.
+        if let SeatState::Stalled { job } = &row.state {
             v.push(format!(
-                "seat {} STALLED on {} — its verdict never arrived",
+                "seat {} STALLED on {}: `{}` ({}) — its verdict never arrived, {} ago",
                 row.label,
-                seat_phrase(&row, now).1
+                job_name(job),
+                release_command(&row),
+                cooloff_phrase(&row, now),
+                fmt_secs(now.saturating_sub(row.since))
             ));
         }
         if row.live == Some(false) {
@@ -824,6 +851,20 @@ mod tests {
         assert_eq!(word, "IDLE");
         let needs = needs_you(&b, &f, 9000);
         assert!(needs.iter().any(|n| n.contains("qa1 STALLED")));
+        // #688: the line names the verb. Before this it said only "its verdict
+        // never arrived", and the one recovery an operator could find was to
+        // hand-run `fwf qa` on the same seat.
+        let stall = needs.iter().find(|n| n.contains("qa1 STALLED")).unwrap();
+        assert!(
+            stall.contains("`fwf release --seat 1 --role qa`"),
+            "{stall}"
+        );
+        // qa1 stalled at 7700, so by 9000 the cool-off has already run out
+        assert!(stall.contains("the next tick clears it"), "{stall}");
+        // and while it has not, the line says how long the operator has
+        let early = needs_you(&b, &f, 8000);
+        let stall = early.iter().find(|n| n.contains("qa1 STALLED")).unwrap();
+        assert!(stall.contains("(auto-clears in 15m 00s)"), "{stall}");
         assert!(needs.iter().any(|n| n.contains("pm1 pane is gone")));
         assert!(!needs.iter().any(|n| n.contains("gv1 pane is gone")));
         assert!(needs

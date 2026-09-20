@@ -12,7 +12,9 @@ use std::time::Duration;
 
 mod doctor;
 pub mod pidfile;
+pub mod release;
 pub use pidfile::verb as stop;
+pub use release::verb as release;
 pub mod scripts;
 pub use doctor::*;
 

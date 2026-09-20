@@ -5,8 +5,9 @@
 //! the same way `run/cycle.rs` and `slice/tests.rs` are.
 
 use super::{claimed_issues, Event, Kind};
-use crate::types::{IssueState, Role, SeatState};
+use crate::types::{IssueState, JobRef, Role, SeatState};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 /// The latest `Kind::Seat` event per (seat, role), with ghost seats (below)
 /// replayed as Idle. Nothing earlier counts.
@@ -151,10 +152,114 @@ pub fn past_deadline(events: &[Event], now: u64) -> Vec<(u8, Role, u64)> {
         .collect()
 }
 
+/// How long a `Stalled` seat may go on blocking its seat id before the loop
+/// frees it (#688). Twenty minutes: long enough for #669's late adoption to
+/// pick a verdict up over several ticks, short enough that a floor is not
+/// parked for an afternoon behind one pane that never answered.
+///
+/// No existing constant covers it — a job's own timeout is per-cycle and a
+/// stall is measured from the moment the cycle gave up — so this is its own
+/// number, tunable when a floor tells us it is wrong.
+pub const STALL_COOLOFF_SECS: u64 = 20 * 60;
+
+/// When each seat's current state was recorded: the ts of the last `Seat`
+/// event for that (seat, role).
+fn seat_since(events: &[Event]) -> BTreeMap<(u8, Role), u64> {
+    let mut since: BTreeMap<(u8, Role), u64> = Default::default();
+    for e in events {
+        if let Kind::Seat { seat, role, .. } = &e.kind {
+            since.insert((*seat, *role), e.ts);
+        }
+    }
+    since
+}
+
+/// Seats the record left `Stalled` longer than [`STALL_COOLOFF_SECS`] (#688).
+///
+/// A Stalled seat's job counts as live on purpose (#667/#669: the pane may
+/// still be running past its deadline), and `sched::idle_seats` disqualifies a
+/// seat id for BOTH roles while any slot on it is non-Idle. Nothing ever wrote
+/// a later `Idle` — `SeatSlot::from_record` folds only `None`/`Reported` — so
+/// one QA seat that never answered froze its whole pair, and its PR, forever:
+/// seen on the claude-concierge floor on 2026-09-19, every tick `0 actions`
+/// with an un-gated issue waiting and impl1 idle.
+///
+/// So the block is bounded rather than removed. Past the cool-off the seat is
+/// released whether or not the pane is really finished, which is the same risk
+/// `live_jobs`' doc comment already takes for Stalled jobs; a verdict that
+/// lands later is a stray `Note` and is ignored, and the work is re-planned
+/// from scratch.
+pub fn cold_stalls(events: &[Event], now: u64) -> Vec<(u8, Role, JobRef)> {
+    let since = seat_since(events);
+    seat_states(events)
+        .into_iter()
+        .filter_map(|((seat, role), to)| {
+            let SeatState::Stalled { job } = to else {
+                return None;
+            };
+            let stalled_at = *since.get(&(seat, role))?;
+            (now.saturating_sub(stalled_at) >= STALL_COOLOFF_SECS).then_some((seat, role, job))
+        })
+        .collect()
+}
+
+/// What a seat's job is called on a line a human reads: `PR #13`, `#688`.
+fn job_word(job: &JobRef) -> String {
+    match (job.pr, job.issue) {
+        (Some(pr), _) => format!("PR #{pr}"),
+        (None, Some(issue)) => format!("#{issue}"),
+        (None, None) => job.role.name().to_string(),
+    }
+}
+
+/// The `Seat` → `Idle` event that frees a seat id for both its roles. The one
+/// event `SeatSlot::from_record` reads as "assignable" and `live_jobs` reads as
+/// "this job is nobody's": written here by the cool-off below and by
+/// `fwf release`, and nowhere else.
+pub fn idle_event(repo: &str, seat: u8, role: Role, ts: u64) -> Event {
+    Event {
+        ts,
+        repo: repo.to_string(),
+        kind: Kind::Seat {
+            seat,
+            role,
+            to: SeatState::Idle,
+            tokens_in: None,
+            tokens_out: None,
+        },
+    }
+}
+
+/// Release every seat stalled past the cool-off; returns how many.
+///
+/// Idempotent by construction, exactly as `reconcile_stale_working` is: it
+/// matches `Stalled` only and writes `Idle`, so the tick after finds nothing.
+pub fn reconcile_cold_stalls(path: &Path, repo: &str, now: u64) -> std::io::Result<usize> {
+    let events = super::read_all(path)?;
+    let cold = cold_stalls(&events, now);
+    let mut log = super::Log::open(path)?;
+    for (seat, role, job) in &cold {
+        log.append(&idle_event(repo, *seat, *role, now))?;
+        log.append(&Event {
+            ts: now,
+            repo: repo.to_string(),
+            kind: Kind::Note {
+                text: format!(
+                    "seat {}{seat} was Stalled on {} for over {}m; released to Idle (cool-off) — the job is re-planned from scratch and a verdict arriving later is ignored",
+                    role.name(),
+                    job_word(job),
+                    STALL_COOLOFF_SECS / 60
+                ),
+            },
+        })?;
+    }
+    Ok(cold.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Fence, JobRef, Sha};
+    use crate::types::{Fence, Sha};
 
     fn ev(kind: Kind) -> Event {
         Event {
@@ -416,6 +521,95 @@ mod tests {
 
         // and a seat that never had a Working event has no deadline to miss
         assert!(past_deadline(&[seat_ev(2, stalled(999))], 9_999).is_empty());
+    }
+
+    /// #688: a stall is bounded. Both roles, measured from the `Stalled`
+    /// event's own timestamp, and only once — the `Idle` it writes is what
+    /// stops it writing a second.
+    #[test]
+    fn a_seat_stalled_past_the_cooloff_is_released_once_and_the_rest_are_left_alone() {
+        let qa = |seat: u8, ts: u64, pr: u64| Event {
+            ts,
+            repo: "tbaums/claude-concierge".into(),
+            kind: Kind::Seat {
+                seat,
+                role: Role::Qa,
+                to: SeatState::Stalled {
+                    job: JobRef {
+                        role: Role::Qa,
+                        issue: None,
+                        pr: Some(pr),
+                    },
+                },
+                tokens_in: None,
+                tokens_out: None,
+            },
+        };
+        let evs = vec![
+            claimed(688, 2),
+            seat_ev(2, working(688)),
+            seat_ev(2, stalled(688)),
+            qa(1, 10, 13),
+        ];
+        assert!(
+            cold_stalls(&evs, 10 + STALL_COOLOFF_SECS - 1).is_empty(),
+            "a stall inside the cool-off is still the seat's own business"
+        );
+        assert_eq!(
+            cold_stalls(&evs, 10 + STALL_COOLOFF_SECS)
+                .into_iter()
+                .map(|(s, r, _)| (s, r))
+                .collect::<Vec<_>>(),
+            vec![(1, Role::Qa), (2, Role::Impl)],
+            "impl and QA alike"
+        );
+        // a seat that is not Stalled at all is never one of these
+        assert!(cold_stalls(&[seat_ev(3, working(689))], 99_999).is_empty());
+        assert!(
+            cold_stalls(&[seat_ev(3, SeatState::Reported { job: job(689) })], 99_999).is_empty()
+        );
+
+        // on disk: the event pair per seat, then silence
+        let dir = std::env::temp_dir().join(format!("fwfd-cooloff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("run.jsonl");
+        {
+            let mut l = super::super::Log::open(&p).unwrap();
+            for e in &evs {
+                l.append(e).unwrap();
+            }
+        }
+        let now = 10 + STALL_COOLOFF_SECS;
+        assert_eq!(reconcile_cold_stalls(&p, "o/r", now).unwrap(), 2);
+        let all = super::super::read_all(&p).unwrap();
+        assert_eq!(all.len(), evs.len() + 4, "one Seat + one Note per seat");
+        let states = seat_states(&all);
+        assert_eq!(states.get(&(2, Role::Impl)), Some(&SeatState::Idle));
+        assert_eq!(states.get(&(1, Role::Qa)), Some(&SeatState::Idle));
+        // the note says which job was dropped and why the seat moved
+        let notes: Vec<&String> = all
+            .iter()
+            .filter_map(|e| match &e.kind {
+                Kind::Note { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(notes.iter().any(|t| t.contains("seat impl2")
+            && t.contains("#688")
+            && t.contains("cool-off")
+            && t.contains("20m")));
+        assert!(notes
+            .iter()
+            .any(|t| t.contains("seat qa1") && t.contains("PR #13")));
+        for later in [now, now + 1, now + 100_000] {
+            assert_eq!(
+                reconcile_cold_stalls(&p, "o/r", later).unwrap(),
+                0,
+                "re-released at {later}"
+            );
+        }
+        assert_eq!(super::super::read_all(&p).unwrap().len(), all.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #682: the loop asks for this every tick now, not only at startup, so a

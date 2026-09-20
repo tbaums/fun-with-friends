@@ -3,11 +3,11 @@
 The meter and its brake, `run.jsonl` as the only record, cost reporting, the dash, and the tmux layout.
 What you do to keep a floor running, and what to read when it stops.
 
-Everything below was learned by breaking a live floor. Three of the seven rules
+Everything below was learned by breaking a live floor. Four of the eight rules
 are now enforced by the product; they are kept here because the reasoning is
 what generalises, not the flag.
 
-## Seven rules
+## Eight rules
 
 1. **Stop the loop with `fwf stop`, never with `pkill`.**
 
@@ -115,6 +115,25 @@ what generalises, not the flag.
    fwf ungate --repo o/r --issue N --by NAME
    ```
 
+8. **A STALLED seat holds its seat id for both roles — briefly.**
+
+   A stall is not a dead job: the supervisor is the only thing that ever kills
+   a pane, so a seat past its deadline may still be finishing, and its issue or
+   PR stays nobody else's. Seat ids are shared across roles (impl1 and qa1 are
+   one worktree pair), so while qa1 is STALLED, impl1 is unassignable too.
+
+   The loop now ends that by itself twenty minutes after the stall: it records
+   an `Idle` event for the seat with a note saying why, which frees the id for
+   both roles and puts the job back in the queue. To call a stall dead sooner:
+
+   ```bash
+   fwf release --seat 1 --role qa --by NAME
+   ```
+
+   It refuses anything that is not STALLED — a WORKING seat's job is live. The
+   released job is re-planned from scratch; a verdict that lands after the
+   release is a stray note in the record and is ignored.
+
 ## Driving a floor by hand
 
 When the loop is stopped and you want one issue moved, the verbs are the same
@@ -128,6 +147,7 @@ fwf gate         --repo o/r --sha <40-char-sha> --suite fast --cmd '…' --workd
 fwf qa           --repo o/r --pr N --seat fwf-one:qa1
 fwf merge        --repo o/r --pr N
 fwf release-check --repo o/r --tag one-vX.Y.Z --expect 4
+fwf release      --seat 1 --role qa --by NAME            # free a STALLED seat now, instead of waiting out the cool-off
 ```
 
 `fwf status` between any two of them says what changed; `fwf why <pr>` replays

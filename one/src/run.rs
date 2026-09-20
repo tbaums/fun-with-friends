@@ -266,6 +266,23 @@ pub fn run(cfg: &RunConfig, apps: &Apps) -> Result<(), String> {
                 "fwf run: {n} seat(s) past deadline with no terminal event; marked Stalled"
             ),
         }
+        // And the other end of the same pass (#688): a seat left Stalled long
+        // enough is released. `Stalled` is deliberately still busy (#667), and
+        // `idle_seats` blocks a seat id for BOTH roles, so one QA seat that
+        // never answered parked its whole pair — and its PR — with nothing
+        // that could ever write the later `Idle`. The cool-off is that writer;
+        // `fwf release` is the operator's version of it.
+        match crate::log::reconcile_cold_stalls(
+            &cfg.run_log,
+            &format!("{}/{}", cfg.owner, cfg.repo),
+            crate::seat::now(),
+        ) {
+            Ok(0) | Err(_) => {}
+            Ok(n) => eprintln!(
+                "fwf run: {n} seat(s) Stalled past the {}m cool-off; released to Idle",
+                crate::log::STALL_COOLOFF_SECS / 60
+            ),
+        }
         // Meter brake (T-28): the operator's meter log is the only source of
         // subscription usage; park while the last logged weekly % is at or
         // above the manifest threshold, re-reading every interval.

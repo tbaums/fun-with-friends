@@ -51,6 +51,28 @@ pub enum Role {
     Qa,
 }
 
+impl Role {
+    /// The lowercase word this role goes by everywhere a human reads or types
+    /// one: the `qa` in `qa1`, in `seat:qa1`, and in `fwf release --role qa`.
+    /// Identical to the serde spelling, so the record and the CLI agree.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Role::Impl => "impl",
+            Role::Qa => "qa",
+            Role::Pm => "pm",
+            Role::Gv => "gv",
+            Role::Captain => "captain",
+        }
+    }
+
+    /// The role an operator named, or `None` for a word that is not one.
+    pub fn parse(s: &str) -> Option<Role> {
+        [Role::Impl, Role::Qa, Role::Pm, Role::Gv, Role::Captain]
+            .into_iter()
+            .find(|r| r.name() == s)
+    }
+}
+
 /// A fencing token for a claim: the id of the GitHub event (or the SHA of
 /// the `claim/<n>` ref) that recorded the claim. A merge whose fence does not
 /// match the live claim is refused.
