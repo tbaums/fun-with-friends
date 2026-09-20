@@ -194,10 +194,28 @@ pub enum GateState {
 pub enum Refusal {
     MalformedSha(String),
     NotReady(String),
-    FenceMismatch { expected: Fence, got: Fence },
-    NotApproved { head: Sha },
-    ApprovalStale { head: Sha, approved_head: Sha },
-    GateNotGreen { sha: Sha },
+    FenceMismatch {
+        expected: Fence,
+        got: Fence,
+    },
+    NotApproved {
+        head: Sha,
+    },
+    ApprovalStale {
+        head: Sha,
+        approved_head: Sha,
+    },
+    /// No green gate for this sha. `detail` names what was actually wrong
+    /// when the caller knows — a failed or unfinished check-run, say — so the
+    /// refusal says the thing the operator has to fix (#690). `merge_pr` used
+    /// to write that text to a `Note` beside the refusal and drop it from the
+    /// refusal itself, which left `refused: no green gate recorded for
+    /// e5716177` as the only line the dash and `fwf status` could show.
+    GateNotGreen {
+        sha: Sha,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     UnknownState(&'static str),
 }
 
@@ -225,8 +243,12 @@ impl fmt::Display for Refusal {
                 approved_head.short(),
                 head.short()
             ),
-            Refusal::GateNotGreen { sha } => {
-                write!(f, "no green gate recorded for {}", sha.short())
+            Refusal::GateNotGreen { sha, detail } => {
+                write!(f, "no green gate recorded for {}", sha.short())?;
+                match detail {
+                    Some(d) => write!(f, ": {d}"),
+                    None => Ok(()),
+                }
             }
             Refusal::UnknownState(what) => write!(f, "{what} is Unknown; holding (never guess)"),
         }
@@ -358,7 +380,12 @@ impl GateState {
                 sha: s, suite: u, ..
             } if s == sha && u == suite => Ok(()),
             GateState::Unknown => Err(Refusal::UnknownState("gate")),
-            _ => Err(Refusal::GateNotGreen { sha: sha.clone() }),
+            // The gate state IS the detail here, and the caller already has
+            // it; nothing to add that the sha does not say.
+            _ => Err(Refusal::GateNotGreen {
+                sha: sha.clone(),
+                detail: None,
+            }),
         }
     }
 }
@@ -457,6 +484,43 @@ mod tests {
             k.promotable(&sha('c'), "e2e"),
             Err(Refusal::GateNotGreen { .. })
         ));
+    }
+
+    /// #690 added `detail` to `GateNotGreen`, which says what was actually
+    /// wrong when the caller knows. A refusal with nothing to add must read
+    /// and serialise exactly as it always did — the record is append-only and
+    /// nobody should be able to date a line by this field appearing in it.
+    #[test]
+    fn a_gate_refusal_without_a_detail_is_the_line_and_the_json_it_always_was() {
+        let bare = Refusal::GateNotGreen {
+            sha: sha('a'),
+            detail: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            format!(
+                "{{\"refusal\":\"gate_not_green\",\"sha\":\"{}\"}}",
+                sha('a')
+            )
+        );
+        assert_eq!(
+            bare.to_string(),
+            format!("no green gate recorded for {}", sha('a').short())
+        );
+
+        // and with one, it is appended — the whole point of #690
+        let told = Refusal::GateNotGreen {
+            sha: sha('a'),
+            detail: Some("check-run \"no file > 1000 lines\" is completed/failure".into()),
+        };
+        assert_eq!(
+            told.to_string(),
+            format!(
+                "no green gate recorded for {}: check-run \"no file > 1000 lines\" is completed/failure",
+                sha('a').short()
+            )
+        );
+        assert!(serde_json::to_string(&told).unwrap().contains("detail"));
     }
 
     #[test]

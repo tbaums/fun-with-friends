@@ -23,6 +23,7 @@ mod profile;
 mod promote;
 mod prompts;
 mod qa;
+mod review;
 mod rework;
 mod run;
 mod sched;

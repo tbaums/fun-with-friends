@@ -129,11 +129,13 @@ fn a_human_refusal_outranks_the_qa_approval_it_landed_on_top_of() {
         }],
         "the human's refusal is the live verdict, as it is for merge_pr"
     );
-    // with nobody named it is the old behaviour: a merge that will be refused
-    assert_eq!(
-        actions(with(both), &BTreeSet::new()),
-        vec![Action::FinishPr { pr: 1419 }]
-    );
+    // With nobody named, that login is a stranger: the loop has no rework to
+    // plan for it. Before #690 this planned the merge anyway — the comment
+    // here read "the old behaviour: a merge that will be refused", and that is
+    // precisely the tick-forever loop #690 is about, since `merge_pr` honours
+    // a CHANGES_REQUESTED at head whoever left it. Planning nothing is the
+    // honest answer: the refusal is real, and clearing it is the stranger's.
+    assert_eq!(actions(with(both), &BTreeSet::new()), vec![Action::Nothing]);
     // and QA's own approval alone is still simply finished
     assert_eq!(
         actions(with(vec![("fwf-qa[bot]", "APPROVED")]), &humans),
