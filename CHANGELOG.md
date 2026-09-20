@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.19 — 2026-09-19
+
+Scheduler and merge agree on what "approved" means, and a failed check-run says its name.
+
+- **Loop deadlocked when a PR was APPROVED then CHANGES_REQUESTED on the same head: sched said approved, merge said not, and the PR was never routed to rework; a failed CI check-run was misreported as "no green gate"** (#690, PR #691) — the latest-review-per-login verdict now lives in a shared `src/review.rs` that both `sched` and `merge_pr` read, so an approval overturned at the same head routes to rework instead of deadlocking; `Refusal::GateNotGreen` carries the failing check-run's name so the refusal says what actually blocked the merge.
+
 ## 1.0.18 — 2026-09-19
 
 A stalled seat frees itself, and an operator can free it sooner.
