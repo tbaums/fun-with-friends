@@ -14,8 +14,8 @@
 //! keep that file inside the 1,000-line rule (T-30).
 
 use super::{
-    gv_gated_candidates, gv_verdicts, pm_candidates, reviewed_issues, signed_off,
-    signoff_candidates, signoff_note, specced_issues, ReviewFilter, RunConfig,
+    gv_gate_baselines, gv_gated_candidates, gv_verdicts, pm_candidates, reviewed_issues,
+    signed_off, signoff_candidates, signoff_note, specced_issues, ReviewFilter, RunConfig,
 };
 use crate::github::AppEntry;
 use crate::poll::Snapshot;
@@ -72,8 +72,9 @@ pub fn spec_cycle(cfg: &RunConfig, ops: Option<&AppEntry>, snap: &Snapshot) {
 /// approval of anything, because there is nothing yet to approve.
 fn first_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilter) {
     let Some(gv) = &cfg.gv_seat else { return };
-    let judged = gv_verdicts(&events(cfg));
-    let Some(&n) = gv_gated_candidates(snap, filter, &judged).first() else {
+    let evs = events(cfg);
+    let (judged, baselines) = (gv_verdicts(&evs), gv_gate_baselines(&evs));
+    let Some(&n) = gv_gated_candidates(snap, filter, &judged, &baselines).first() else {
         return;
     };
     match crate::triage::run(&gv_job(cfg, n, gv), ops) {

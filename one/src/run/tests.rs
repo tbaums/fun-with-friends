@@ -191,7 +191,7 @@ fn the_spec_cycle_offers_unjudged_gated_issues_then_the_ones_gv_called_ready() {
     let f = ReviewFilter::all_gated("product-wip", &skip);
     let mut evs: Vec<Event> = vec![];
     assert_eq!(
-        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)),
+        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)),
         vec![10, 11, 16],
         "every gated, unparked, unjudged issue — oldest first"
     );
@@ -212,7 +212,7 @@ fn the_spec_cycle_offers_unjudged_gated_issues_then_the_ones_gv_called_ready() {
     evs.push(note(crate::triage::ready_note(11)));
     let judged = gv_verdicts(&evs);
     assert_eq!(
-        gv_gated_candidates(&snap, &f, &judged),
+        gv_gated_candidates(&snap, &f, &judged, &gv_gate_baselines(&evs)),
         vec![16],
         "a judged issue is never re-triaged, ready or not"
     );
@@ -259,7 +259,7 @@ fn the_spec_cycle_honours_skip_labels_always_and_the_allow_list_when_scoped() {
         allow_issues: &[1381],
     };
     assert_eq!(
-        gv_gated_candidates(&snap, &all, &none),
+        gv_gated_candidates(&snap, &all, &none, &Default::default()),
         vec![1381, 1400],
         "#629's default is preserved: an off-list ticket is still reviewed"
     );
@@ -268,7 +268,10 @@ fn the_spec_cycle_honours_skip_labels_always_and_the_allow_list_when_scoped() {
         scope: ReviewScope::AllowList,
         ..all
     };
-    assert_eq!(gv_gated_candidates(&snap, &scoped, &none), vec![1381]);
+    assert_eq!(
+        gv_gated_candidates(&snap, &scoped, &none, &Default::default()),
+        vec![1381]
+    );
     assert_eq!(
         pm_candidates(&snap, &scoped, &ready, &specced),
         vec![1381],
@@ -280,14 +283,14 @@ fn the_spec_cycle_honours_skip_labels_always_and_the_allow_list_when_scoped() {
         ..scoped
     };
     assert_eq!(
-        gv_gated_candidates(&snap, &unrestricted, &none),
+        gv_gated_candidates(&snap, &unrestricted, &none, &Default::default()),
         vec![1381, 1400]
     );
     // (1) and under no scope is a parked ticket ever woken
     for f in [&all, &scoped, &unrestricted] {
         for n in [1123, 1371] {
             assert!(
-                !gv_gated_candidates(&snap, f, &none).contains(&n)
+                !gv_gated_candidates(&snap, f, &none, &Default::default()).contains(&n)
                     && !pm_candidates(&snap, f, &ready, &specced).contains(&n),
                 "#{n} is parked by a skip label and was offered anyway"
             );
@@ -436,7 +439,7 @@ pub(super) fn test_config() -> RunConfig {
 fn queues(snap: &Snapshot, f: &ReviewFilter, evs: &[Event]) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
     let (judged, specced, signed) = (gv_verdicts(evs), specced_issues(evs), signed_off(evs));
     (
-        gv_gated_candidates(snap, f, &judged),
+        gv_gated_candidates(snap, f, &judged, &gv_gate_baselines(evs)),
         pm_candidates(snap, f, &judged, &specced),
         signoff_candidates(snap, f, &specced, &signed),
     )
@@ -641,7 +644,7 @@ fn a_delegated_ungate_records_the_actor_and_ends_the_cycle() {
     let judged = gv_verdicts(&evs);
     let skip = skip_labels();
     let f = ReviewFilter::all_gated("product-wip", &skip);
-    assert!(gv_gated_candidates(&snap, &f, &judged).is_empty());
+    assert!(gv_gated_candidates(&snap, &f, &judged, &gv_gate_baselines(&evs)).is_empty());
     assert!(pm_candidates(&snap, &f, &judged, &specced_issues(&evs)).is_empty());
 }
 
@@ -683,7 +686,10 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     let f = ReviewFilter::all_gated("product-wip", &skip);
     let snap = poller.poll(10).unwrap();
     let evs = read();
-    assert_eq!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)), vec![n]);
+    assert_eq!(
+        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)),
+        vec![n]
+    );
     assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
     // GV says ready; `triage::run` writes exactly this note
     append(Kind::Note {
@@ -693,7 +699,9 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     // tick 2: GV is done with it, PM is not
     let snap = poller.poll(11).unwrap();
     let evs = read();
-    assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
+    assert!(
+        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)).is_empty()
+    );
     assert_eq!(
         pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)),
         vec![n]
@@ -706,7 +714,9 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     // body PM just wrote, and nobody else
     let snap = poller.poll(12).unwrap();
     let evs = read();
-    assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
+    assert!(
+        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)).is_empty()
+    );
     assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
     assert_eq!(
         signoff_candidates(&snap, &f, &specced_issues(&evs), &signed_off(&evs)),
@@ -720,7 +730,9 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
     // human's (or the delegate's), never the spec cycle's own doing
     let snap = poller.poll(13).unwrap();
     let evs = read();
-    assert!(gv_gated_candidates(&snap, &f, &gv_verdicts(&evs)).is_empty());
+    assert!(
+        gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)).is_empty()
+    );
     assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
     assert!(signoff_candidates(&snap, &f, &specced_issues(&evs), &signed_off(&evs)).is_empty());
     let labels: Vec<String> = fake.issue_json(O, R, n).unwrap()["labels"]
