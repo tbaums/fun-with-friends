@@ -95,3 +95,48 @@ fn a_ready_verdict_is_not_re_offered_by_an_edit() {
     }));
     assert!(gv_queue(&snap_at(1443, "2026-09-25T12:00:00Z"), &evs).is_empty());
 }
+
+/// QA on #694: once not ready, then edited, judged ready, specced, signed off,
+/// un-gated — and re-gated by a human. The re-gate's `Gated` event is not a
+/// GV verdict, and the old baseline must not wake GV on a parked issue.
+#[test]
+fn a_re_gate_after_sign_off_does_not_revive_an_old_baseline() {
+    const N: u64 = 1442;
+    let mut evs = gated_at(N, "2026-09-25T10:00:00Z").to_vec();
+    evs.push(ev(Kind::Note {
+        text: crate::triage::ready_note(N),
+    }));
+    evs.push(ev(Kind::Note {
+        text: crate::spec::spec_note(N, 900, false, 1),
+    }));
+    evs.push(ev(Kind::Note {
+        text: signoff_note(N, true),
+    }));
+    evs.extend(crate::triage::ungate_events(
+        "tbaums/transom",
+        N,
+        crate::triage::Ungate::Delegated("jamie-proxy"),
+        2,
+    ));
+    evs.push(ev(Kind::Issue {
+        issue: N,
+        to: IssueState::Gated,
+    }));
+    assert!(gv_gate_baselines(&evs).is_empty());
+    assert!(gv_queue(&snap_at(N, "2026-09-25T15:00:00Z"), &evs).is_empty());
+}
+
+/// A later not-ready verdict whose read-back failed leaves a `Gated` event and
+/// no baseline: the earlier baseline is dropped rather than re-offering the
+/// issue every tick.
+#[test]
+fn a_verdict_with_no_baseline_drops_the_earlier_one() {
+    const N: u64 = 1443;
+    let mut evs = gated_at(N, "2026-09-25T10:00:00Z").to_vec();
+    evs.push(ev(Kind::Issue {
+        issue: N,
+        to: IssueState::Gated,
+    }));
+    assert!(gv_gate_baselines(&evs).is_empty());
+    assert!(gv_queue(&snap_at(N, "2026-09-25T11:00:00Z"), &evs).is_empty());
+}

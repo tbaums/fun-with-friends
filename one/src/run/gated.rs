@@ -203,20 +203,35 @@ pub fn signoff_note(issue: u64, ready: bool) -> String {
 }
 
 /// The `updated_at` each not-ready issue had right after GV gated it (#693),
-/// replayed from the record. The latest note wins.
+/// replayed from the record. A baseline counts only for the verdict it
+/// follows: any later `Gated` event (a re-gate after sign-off, or a verdict
+/// whose read-back failed) or ready note drops it, so a stale one never
+/// re-offers an issue.
 pub fn gv_gate_baselines(events: &[crate::log::Event]) -> BTreeMap<u64, String> {
-    let prefix = crate::triage::GATE_BASELINE_NOTE_PREFIX;
-    events
-        .iter()
-        .filter_map(|e| match &e.kind {
-            crate::log::Kind::Note { text } => {
-                let n = note_issue(text, prefix)?;
-                let at = text.split_once(" updated_at ")?.1;
-                Some((n, at.to_string()))
+    use crate::log::Kind;
+    use crate::types::IssueState;
+    let mut out = BTreeMap::new();
+    for e in events {
+        match &e.kind {
+            Kind::Issue {
+                issue,
+                to: IssueState::Gated,
+            } => {
+                out.remove(issue);
             }
-            _ => None,
-        })
-        .collect()
+            Kind::Note { text } => {
+                if let Some(n) = note_issue(text, crate::triage::READY_NOTE_PREFIX) {
+                    out.remove(&n);
+                } else if let Some(n) = note_issue(text, crate::triage::GATE_BASELINE_NOTE_PREFIX) {
+                    if let Some((_, at)) = text.split_once(" updated_at ") {
+                        out.insert(n, at.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Issues whose spec GV has already read back.
