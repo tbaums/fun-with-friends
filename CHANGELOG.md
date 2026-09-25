@@ -1,6 +1,13 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.20 — 2026-09-25
+
+An edited ticket gets a second look without anyone driving it by hand.
+
+- **Loop never re-triaged a GV not-ready issue after it was edited: the drain stalled at 0 actions until someone ran `fwf triage` by hand** (#693, PR #694) — a not-ready verdict now records the issue's post-write `updated_at` as a baseline, and the triage pass re-offers the issue to GV once when it has been edited since then; an unchanged issue is never re-triaged, and a fresh verdict replaces the baseline so it never outlives the verdict it describes.
+- **#693's re-triage never fired for issues gated before the upgrade: no baseline note, so legacy not-ready verdicts stayed stuck** (#695, PR #696) — a gated-not-ready issue with no baseline falls back to the timestamp of its `Gated` record event, so it is re-offered once when edited since; the fresh verdict then writes a real baseline.
+
 ## 1.0.19 — 2026-09-19
 
 Scheduler and merge agree on what "approved" means, and a failed check-run says its name.
