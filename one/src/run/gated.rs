@@ -207,10 +207,21 @@ pub fn signoff_note(issue: u64, ready: bool) -> String {
 /// follows: any later `Gated` event (a re-gate after sign-off, or a verdict
 /// whose read-back failed) or ready note drops it, so a stale one never
 /// re-offers an issue.
+///
+/// A record from before #693 has `Gated` events and no GV note of either kind
+/// for the issue at all (#695). Its baseline falls back to the latest `Gated`
+/// event's own time, so an edit since then earns it one re-triage, whose
+/// verdict writes a real note and retires the fallback. The event time is
+/// ours, not GitHub's: clock skew against fwf's own label and comment write
+/// can re-offer a legacy issue nobody edited — accepted as a one-time cost.
+/// An issue with any ready or baseline note in its history never falls back,
+/// so the drops above still hold for everything written since #693.
 pub fn gv_gate_baselines(events: &[crate::log::Event]) -> BTreeMap<u64, String> {
     use crate::log::Kind;
     use crate::types::IssueState;
     let mut out = BTreeMap::new();
+    let mut last_gated = BTreeMap::new();
+    let mut noted = BTreeSet::new();
     for e in events {
         match &e.kind {
             Kind::Issue {
@@ -218,11 +229,14 @@ pub fn gv_gate_baselines(events: &[crate::log::Event]) -> BTreeMap<u64, String> 
                 to: IssueState::Gated,
             } => {
                 out.remove(issue);
+                last_gated.insert(*issue, e.ts);
             }
             Kind::Note { text } => {
                 if let Some(n) = note_issue(text, crate::triage::READY_NOTE_PREFIX) {
                     out.remove(&n);
+                    noted.insert(n);
                 } else if let Some(n) = note_issue(text, crate::triage::GATE_BASELINE_NOTE_PREFIX) {
+                    noted.insert(n);
                     if let Some((_, at)) = text.split_once(" updated_at ") {
                         out.insert(n, at.to_string());
                     }
@@ -231,7 +245,36 @@ pub fn gv_gate_baselines(events: &[crate::log::Event]) -> BTreeMap<u64, String> 
             _ => {}
         }
     }
+    for (n, ts) in last_gated {
+        if !noted.contains(&n) {
+            out.entry(n).or_insert_with(|| utc_rfc3339(ts));
+        }
+    }
     out
+}
+
+/// Unix seconds as GitHub's `updated_at` spelling, `2026-09-25T10:00:00Z`:
+/// fixed-width UTC, so it compares as a string against the real thing.
+/// Self-contained on purpose — a correctness comparison, not a display string
+/// (compare `seat::local_hhmm`). Howard Hinnant's civil_from_days.
+fn utc_rfc3339(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 /// Issues whose spec GV has already read back.

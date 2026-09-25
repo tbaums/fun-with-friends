@@ -75,15 +75,65 @@ fn a_not_ready_issue_is_re_offered_once_per_edit() {
     assert_eq!(gv_queue(&snap_at(N, "2026-09-25T12:00:00Z"), &evs), vec![N]);
 }
 
-/// A record written before #693 has a `Gated` event and no baseline: the loop
-/// keeps the old behavior and does not re-offer it, however it was edited.
+/// 2026-09-25T10:00:00Z in unix seconds.
+const GATED_TS: u64 = 1_790_330_400;
+
+fn legacy_gated(n: u64, ts: u64) -> Event {
+    Event {
+        ts,
+        repo: "tbaums/transom".into(),
+        kind: Kind::Issue {
+            issue: n,
+            to: IssueState::Gated,
+        },
+    }
+}
+
 #[test]
-fn a_legacy_verdict_with_no_baseline_is_never_re_offered() {
-    let evs = vec![ev(Kind::Issue {
-        issue: 1443,
-        to: IssueState::Gated,
-    })];
-    assert!(gv_queue(&snap_at(1443, "2026-09-25T12:00:00Z"), &evs).is_empty());
+fn the_fallback_spells_time_like_github() {
+    let evs = [legacy_gated(1443, GATED_TS), legacy_gated(1, 951_782_400)];
+    let b = gv_gate_baselines(&evs);
+    assert_eq!(b[&1443], "2026-09-25T10:00:00Z");
+    assert_eq!(b[&1], "2000-02-29T00:00:00Z");
+}
+
+/// transom #1442/#1443 (#695): gated not ready under 1.0.19, before #693
+/// wrote baselines, then edited. The `Gated` event's own time stands in for
+/// the missing baseline — one re-triage, whose note then takes over.
+#[test]
+fn a_legacy_verdict_is_re_offered_once_after_an_edit() {
+    const N: u64 = 1443;
+    let mut evs = vec![legacy_gated(N, GATED_TS)];
+    // untouched since gating → not a candidate
+    assert!(gv_queue(&snap_at(N, "2026-09-25T10:00:00Z"), &evs).is_empty());
+    // edited since → a candidate
+    assert_eq!(gv_queue(&snap_at(N, "2026-09-25T11:30:00Z"), &evs), vec![N]);
+    // GV re-triages it not ready and writes a real baseline: no loop
+    evs.extend(gated_at(N, "2026-09-25T11:31:00Z"));
+    assert!(gv_queue(&snap_at(N, "2026-09-25T11:31:00Z"), &evs).is_empty());
+}
+
+/// Several legacy `Gated` events: the latest one is the baseline.
+#[test]
+fn a_legacy_fallback_uses_the_latest_gated_event() {
+    const N: u64 = 1442;
+    let evs = [legacy_gated(N, GATED_TS), legacy_gated(N, GATED_TS + 7200)];
+    assert!(gv_queue(&snap_at(N, "2026-09-25T11:30:00Z"), &evs).is_empty());
+    assert_eq!(gv_queue(&snap_at(N, "2026-09-25T12:00:01Z"), &evs), vec![N]);
+}
+
+/// A baseline note wins over a `Gated` event with a different time.
+#[test]
+fn a_baseline_note_overrides_the_fallback() {
+    const N: u64 = 1442;
+    let evs = [
+        legacy_gated(N, GATED_TS),
+        ev(Kind::Note {
+            text: crate::triage::gate_baseline_note(N, "2026-09-25T12:00:00Z"),
+        }),
+    ];
+    assert!(gv_queue(&snap_at(N, "2026-09-25T11:00:00Z"), &evs).is_empty());
+    assert_eq!(gv_queue(&snap_at(N, "2026-09-25T12:00:01Z"), &evs), vec![N]);
 }
 
 /// A ready verdict is untouched: an edit never sends it back to GV.
