@@ -56,6 +56,18 @@ pub fn ready_note(issue: u64) -> String {
     format!("{READY_NOTE_PREFIX}{issue} judged ready — awaiting the human un-gate")
 }
 
+/// Every "the issue stood like this after GV gated it" note starts with this
+/// (#693). The loop re-offers a not-ready issue to GV once GitHub's
+/// `updated_at` moves past the baseline — an edit or a new comment.
+pub const GATE_BASELINE_NOTE_PREFIX: &str = "GV gate baseline: #";
+
+/// The record's baseline note for a not-ready verdict: the issue's
+/// `updated_at` read back *after* fwf's own label and comment, so fwf's write
+/// never looks like an edit. The run loop reads both halves back.
+pub fn gate_baseline_note(issue: u64, updated_at: &str) -> String {
+    format!("{GATE_BASELINE_NOTE_PREFIX}{issue} updated_at {updated_at}")
+}
+
 /// Wake the GV seat on one issue; apply the gate label with the reason if the
 /// verdict is not-ready. Returns (ready, reason).
 ///
@@ -201,6 +213,22 @@ pub fn run(cfg: &TriageConfig, ops: &AppEntry) -> Result<(bool, String), TriageE
                 to: IssueState::Gated,
             },
         )?;
+        // The re-triage baseline (#693). A failed read-back leaves no note,
+        // which is the pre-#693 behavior: the loop waits for a hand re-triage.
+        let (c3, after) =
+            github::get_status(&wtok.token, &format!("/repos/{repo}/issues/{}", cfg.issue))?;
+        let at = serde_json::from_str::<serde_json::Value>(&after)
+            .ok()
+            .and_then(|v| v["updated_at"].as_str().map(str::to_string));
+        if let (200, Some(at)) = (c3, at) {
+            record(
+                &mut log,
+                &repo,
+                Kind::Note {
+                    text: gate_baseline_note(cfg.issue, &at),
+                },
+            )?;
+        }
     } else {
         record(
             &mut log,

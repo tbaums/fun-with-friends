@@ -124,21 +124,34 @@ fn reviewable<'a>(snap: &'a Snapshot, f: &ReviewFilter) -> Vec<&'a IssueView> {
 /// operator's convention files with the gate label already on: before #629
 /// nothing ever looked at them, because the in-loop `triage_new` filter only
 /// ever considered issues *without* the gate.
+///
+/// A not-ready issue comes back once it has changed since the verdict (#693):
+/// its `updated_at` is later than the baseline recorded right after fwf's own
+/// gate write. A fresh verdict replaces the baseline, so it is one re-triage
+/// per edit. No baseline (a record older than #693) means no re-offer.
 pub fn gv_gated_candidates(
     snap: &Snapshot,
     f: &ReviewFilter,
     judged: &BTreeMap<u64, bool>,
+    baselines: &BTreeMap<u64, String>,
 ) -> Vec<u64> {
     reviewable(snap, f)
         .into_iter()
-        .filter(|i| !judged.contains_key(&i.number))
+        .filter(|i| match judged.get(&i.number) {
+            None => true,
+            Some(true) => false,
+            // Fixed-width ISO-8601, so the string order is the time order.
+            Some(false) => baselines
+                .get(&i.number)
+                .is_some_and(|b| i.updated_at.as_str() > b.as_str()),
+        })
         .map(|i| i.number)
         .collect()
 }
 
 /// Gated issues GV judged ready and PM has not specced, oldest first. A
-/// not-ready verdict keeps an issue out of here until a human edits it and a
-/// fresh GV verdict lands: the loop never re-triages its own refusal.
+/// not-ready verdict keeps an issue out of here until it is edited and a fresh
+/// GV verdict lands (the edit re-offers it to GV, #693).
 ///
 /// The filter is re-applied here, not inherited from GV's half: a skip label
 /// added after GV judged an issue ready still blocks the PM wake.
@@ -187,6 +200,23 @@ pub fn signoff_note(issue: u64, ready: bool) -> String {
         "{SIGNOFF_NOTE_PREFIX}{issue} {} the spec",
         if ready { "approved" } else { "refused" }
     )
+}
+
+/// The `updated_at` each not-ready issue had right after GV gated it (#693),
+/// replayed from the record. The latest note wins.
+pub fn gv_gate_baselines(events: &[crate::log::Event]) -> BTreeMap<u64, String> {
+    let prefix = crate::triage::GATE_BASELINE_NOTE_PREFIX;
+    events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            crate::log::Kind::Note { text } => {
+                let n = note_issue(text, prefix)?;
+                let at = text.split_once(" updated_at ")?.1;
+                Some((n, at.to_string()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Issues whose spec GV has already read back.
