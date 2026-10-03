@@ -176,15 +176,21 @@ pub fn pm_candidates(
 /// before anything un-gates it, and it stays here until that read is recorded.
 /// A sign-off that never finished (a stalled seat records no note) is offered
 /// again next tick, like every other cycle here.
+///
+/// A re-spec after a refusal (#697) puts the issue back here: what counts is
+/// whether the *latest* spec has been read, not whether any spec ever was.
 pub fn signoff_candidates(
     snap: &Snapshot,
     f: &ReviewFilter,
-    specced: &BTreeSet<u64>,
-    signed: &BTreeSet<u64>,
+    rounds: &BTreeMap<u64, SpecRounds>,
 ) -> Vec<u64> {
     reviewable(snap, f)
         .into_iter()
-        .filter(|i| specced.contains(&i.number) && !signed.contains(&i.number))
+        .filter(|i| {
+            rounds
+                .get(&i.number)
+                .is_some_and(SpecRounds::awaits_signoff)
+        })
         .map(|i| i.number)
         .collect()
 }
@@ -194,12 +200,136 @@ pub const SIGNOFF_NOTE_PREFIX: &str = "GV sign-off: #";
 
 /// The record's note for a sign-off verdict, either way it went. Written for a
 /// refusal too: the question "has GV read this spec" is answered once, and a
-/// refusal is an answer.
+/// refusal is an answer. A refusal also carries its round and GV's reason
+/// (#697), so a restart knows how many re-specs are spent and what PM must fix.
 pub fn signoff_note(issue: u64, ready: bool) -> String {
     format!(
         "{SIGNOFF_NOTE_PREFIX}{issue} {} the spec",
         if ready { "approved" } else { "refused" }
     )
+}
+
+/// The refusal note (#697): `signoff_note`'s spelling, then the round and the
+/// reason. One line, so the reason is flattened.
+pub fn signoff_refusal_note(issue: u64, round: u32, reason: &str) -> String {
+    format!(
+        "{} (round {round}){REFUSAL_REASON_SEP}{}",
+        signoff_note(issue, false),
+        reason.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+}
+
+const REFUSAL_REASON_SEP: &str = " — reason: ";
+
+/// Re-spec rounds a sign-off refusal may buy (#697): 2 rounds, 3 specs total.
+/// The refusal after that parks the issue for a human.
+pub const MAX_RESPEC_ROUNDS: u32 = 2;
+
+/// The label a parked issue carries (#697). Additive, like `discovery`.
+pub const NEEDS_HUMAN_LABEL: &str = "needs-human";
+
+/// Every "the re-spec budget is spent" note starts with this.
+pub const PARKED_NOTE_PREFIX: &str = "spec cycle parked: #";
+
+pub fn parked_note(issue: u64) -> String {
+    format!(
+        "{PARKED_NOTE_PREFIX}{issue} — GV refused {} specs; `{NEEDS_HUMAN_LABEL}` added, still gated",
+        MAX_RESPEC_ROUNDS + 1
+    )
+}
+
+/// Where one issue stands in the spec/sign-off cycle, replayed from the record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpecRounds {
+    /// PM specs written.
+    pub specs: u32,
+    /// GV sign-off reads recorded, either way.
+    pub reads: u32,
+    /// Of those, refusals.
+    pub refusals: u32,
+    pub approved: bool,
+    /// The latest refusal's reason, when its note carried one.
+    pub last_reason: Option<String>,
+    pub parked: bool,
+}
+
+impl SpecRounds {
+    /// The latest spec has no sign-off read yet.
+    pub fn awaits_signoff(&self) -> bool {
+        self.specs > self.reads
+    }
+
+    /// Refused, every spec read, and the budget not spent: PM revises.
+    pub fn awaits_respec(&self) -> bool {
+        !self.approved
+            && self.refusals >= 1
+            && self.refusals <= MAX_RESPEC_ROUNDS
+            && self.reads >= self.specs
+    }
+
+    /// Refused once more than the budget allows, and not yet parked.
+    pub fn owes_park(&self) -> bool {
+        !self.approved && self.refusals > MAX_RESPEC_ROUNDS && !self.parked
+    }
+}
+
+/// Every issue's `SpecRounds`, replayed in record order (#697).
+pub fn spec_rounds(events: &[crate::log::Event]) -> BTreeMap<u64, SpecRounds> {
+    let mut out: BTreeMap<u64, SpecRounds> = BTreeMap::new();
+    for e in events {
+        let crate::log::Kind::Note { text } = &e.kind else {
+            continue;
+        };
+        if let Some(n) = note_issue(text, crate::spec::SPEC_NOTE_PREFIX) {
+            out.entry(n).or_default().specs += 1;
+        } else if let Some(n) = note_issue(text, SIGNOFF_NOTE_PREFIX) {
+            let r = out.entry(n).or_default();
+            r.reads += 1;
+            if text.starts_with(&signoff_note(n, true)) {
+                r.approved = true;
+            } else {
+                r.refusals += 1;
+                r.last_reason = text
+                    .split_once(REFUSAL_REASON_SEP)
+                    .map(|(_, why)| why.to_string());
+            }
+        } else if let Some(n) = note_issue(text, PARKED_NOTE_PREFIX) {
+            out.entry(n).or_default().parked = true;
+        }
+    }
+    out
+}
+
+/// Gated issues a sign-off refusal sends back to PM, with the round the
+/// revision is and GV's reason, oldest first (#697). Filtered every round
+/// like the rest of the cycle. A parked issue is never here, edited or not:
+/// removing `needs-human` alone does not reopen it; un-gating does.
+pub fn respec_candidates(
+    snap: &Snapshot,
+    f: &ReviewFilter,
+    rounds: &BTreeMap<u64, SpecRounds>,
+) -> Vec<(u64, u32, Option<String>)> {
+    reviewable(snap, f)
+        .into_iter()
+        .filter_map(|i| {
+            let r = rounds.get(&i.number)?;
+            r.awaits_respec()
+                .then(|| (i.number, r.refusals, r.last_reason.clone()))
+        })
+        .collect()
+}
+
+/// Gated issues whose re-spec budget is spent and that are not parked yet.
+pub fn park_candidates(
+    snap: &Snapshot,
+    f: &ReviewFilter,
+    rounds: &BTreeMap<u64, SpecRounds>,
+) -> Vec<u64> {
+    reviewable(snap, f)
+        .into_iter()
+        .filter(|i| rounds.get(&i.number).is_some_and(SpecRounds::owes_park))
+        .map(|i| i.number)
+        .collect()
 }
 
 /// The `updated_at` each not-ready issue had right after GV gated it (#693),

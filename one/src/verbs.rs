@@ -150,6 +150,7 @@ pub fn spec(args: &[String]) -> ExitCode {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(900),
         ),
+        respec: None,
     };
     let apps = match github::load_apps(&github::apps_path()) {
         Ok(a) => a,
