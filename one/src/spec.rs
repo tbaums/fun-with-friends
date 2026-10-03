@@ -43,6 +43,14 @@ pub struct SpecConfig {
     pub job_template: PathBuf,
     pub run_log: PathBuf,
     pub timeout: Duration,
+    /// Set when this spec revises one GV refused at sign-off (#697).
+    pub respec: Option<Respec>,
+}
+
+/// A re-spec round: which one, and the refusal PM must answer.
+pub struct Respec {
+    pub round: u32,
+    pub reason: String,
 }
 
 #[derive(Debug)]
@@ -128,6 +136,12 @@ pub fn run(cfg: &SpecConfig, ops: &AppEntry) -> Result<(String, Vec<String>), Sp
         .replace("{{REPO}}", &repo)
         .replace("{{TITLE}}", &title)
         .replace("{{BODY}}", &issue_body)
+        .replace(
+            "{{GV_REFUSAL_REASON}}",
+            cfg.respec
+                .as_ref()
+                .map_or("none — this is the first spec", |r| r.reason.as_str()),
+        )
         // When this cycle ends, so a long proof can be cut short (#589).
         .replace(
             "{{DEADLINE}}",
@@ -283,7 +297,15 @@ pub fn run(cfg: &SpecConfig, ops: &AppEntry) -> Result<(String, Vec<String>), Sp
         &mut log,
         &repo,
         Kind::Note {
-            text: spec_note(cfg.issue, spec.len(), discovery, questions.len()),
+            text: match &cfg.respec {
+                Some(r) => format!(
+                    "{}; re-spec round {} after GV refusal: {}",
+                    spec_note(cfg.issue, spec.len(), discovery, questions.len()),
+                    r.round,
+                    r.reason
+                ),
+                None => spec_note(cfg.issue, spec.len(), discovery, questions.len()),
+            },
         },
     )?;
     Ok((title_final, questions))

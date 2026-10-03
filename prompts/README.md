@@ -90,6 +90,7 @@ seat as literal text.
 | `{{CHECK}}` | the repository's own check command, run before pushing |
 | `{{REVIEW}}` | the review text an impl seat must answer (rework only) |
 | `{{DEADLINE}}` | local `HH:MM` when this cycle ends |
+| `{{GV_REFUSAL_REASON}}` | GV's sign-off refusal PM must answer (PM re-spec only) |
 
 ## Roles
 

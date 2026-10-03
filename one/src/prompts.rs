@@ -27,6 +27,8 @@ pub const PLACEHOLDERS: &[&str] = &[
     // Local HH:MM when this cycle's deadline falls, so a seat can cut a long
     // proof short instead of parking on it (#589).
     "{{DEADLINE}}",
+    // GV's reason for refusing the previous spec at sign-off (#697); PM only.
+    "{{GV_REFUSAL_REASON}}",
 ];
 pub const ROLES: &[&str] = &["impl", "qa", "gv", "pm"];
 

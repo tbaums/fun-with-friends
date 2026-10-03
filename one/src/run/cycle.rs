@@ -14,8 +14,9 @@
 //! keep that file inside the 1,000-line rule (T-30).
 
 use super::{
-    gv_gate_baselines, gv_gated_candidates, gv_verdicts, pm_candidates, reviewed_issues,
-    signed_off, signoff_candidates, signoff_note, specced_issues, ReviewFilter, RunConfig,
+    gv_gate_baselines, gv_gated_candidates, gv_verdicts, park_candidates, parked_note,
+    pm_candidates, respec_candidates, reviewed_issues, signoff_candidates, signoff_note,
+    signoff_refusal_note, spec_rounds, specced_issues, ReviewFilter, RunConfig, NEEDS_HUMAN_LABEL,
 };
 use crate::github::AppEntry;
 use crate::poll::Snapshot;
@@ -65,6 +66,7 @@ pub fn spec_cycle(cfg: &RunConfig, ops: Option<&AppEntry>, snap: &Snapshot) {
     first_pass(cfg, ops, snap, &filter);
     pm_pass(cfg, ops, snap, &filter);
     sign_off(cfg, ops, snap, &filter);
+    park(cfg, ops, snap, &filter);
 }
 
 /// GV on a gated issue nobody has judged: a readiness read of the raw ticket.
@@ -74,7 +76,14 @@ fn first_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewF
     let Some(gv) = &cfg.gv_seat else { return };
     let evs = events(cfg);
     let (judged, baselines) = (gv_verdicts(&evs), gv_gate_baselines(&evs));
-    let Some(&n) = gv_gated_candidates(snap, filter, &judged, &baselines).first() else {
+    let rounds = spec_rounds(&evs);
+    // A sign-off refusal gates the issue too, so its own edits (PM's re-spec,
+    // #697) would read as a human edit to #693's re-triage. Those issues are
+    // the sign-off's to read, not the first pass's.
+    let Some(&n) = gv_gated_candidates(snap, filter, &judged, &baselines)
+        .iter()
+        .find(|n| rounds.get(n).is_none_or(|r| r.approved || r.specs == 0))
+    else {
         return;
     };
     match crate::triage::run(&gv_job(cfg, n, gv), ops) {
@@ -92,7 +101,8 @@ fn first_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewF
     }
 }
 
-/// PM writes the spec into a gated issue GV called ready. The gate label is
+/// PM writes the spec into a gated issue GV called ready, or revises it after
+/// a sign-off refusal (#697), with GV's reason as input. The gate label is
 /// never touched here, and neither is the un-gate: what a written spec earns
 /// is a reader, not eligibility.
 fn pm_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilter) {
@@ -101,7 +111,13 @@ fn pm_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilt
     // it in this same tick.
     let evs = events(cfg);
     let (judged, specced) = (gv_verdicts(&evs), specced_issues(&evs));
-    let Some(&n) = pm_candidates(snap, filter, &judged, &specced).first() else {
+    let first = pm_candidates(snap, filter, &judged, &specced)
+        .into_iter()
+        .map(|n| (n, 0, None));
+    let Some((n, round, reason)) = first
+        .chain(respec_candidates(snap, filter, &spec_rounds(&evs)))
+        .min_by_key(|(n, _, _)| *n)
+    else {
         return;
     };
     let scfg = crate::spec::SpecConfig {
@@ -116,7 +132,17 @@ fn pm_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilt
         job_template: crate::prompts::path(&cfg.prompts_dir, &cfg.template, "pm"),
         run_log: cfg.run_log.clone(),
         timeout: cfg.job_timeout,
+        respec: (round > 0).then(|| crate::spec::Respec {
+            round,
+            reason: reason.unwrap_or_else(|| "(not recorded)".into()),
+        }),
     };
+    if round > 0 {
+        println!(
+            "fwf run: PM re-specs #{n} (round {round} of {}) on GV's refusal",
+            super::MAX_RESPEC_ROUNDS
+        );
+    }
     match crate::spec::run(&scfg, ops) {
         Ok((title, questions)) => println!(
             "fwf run: PM specced #{n} — {title} ({} open question(s)); GV signs the spec off next",
@@ -127,26 +153,30 @@ fn pm_pass(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilt
 }
 
 /// The sign-off (#655): GV reads back the spec PM wrote, and only a ready
-/// verdict un-gates. A refusal leaves the issue gated with its reason posted —
-/// the same shape a first-pass refusal has — and nothing re-specs it: that is
-/// a human's call, via `fwf ungate` or an edit.
+/// verdict un-gates. A refusal leaves the issue gated with its reason posted
+/// and in the record, and buys a bounded re-spec (#697): PM revises on GV's
+/// reason next tick, up to `MAX_RESPEC_ROUNDS` times, then `park` hands it to
+/// a human.
 fn sign_off(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilter) {
     let Some(gv) = &cfg.gv_seat else { return };
     // Re-read: PM may have written the spec moments ago, in this same tick.
     let evs = events(cfg);
-    let (specced, signed) = (specced_issues(&evs), signed_off(&evs));
-    let Some(&n) = signoff_candidates(snap, filter, &specced, &signed).first() else {
+    let rounds = spec_rounds(&evs);
+    let Some(&n) = signoff_candidates(snap, filter, &rounds).first() else {
         return;
     };
     match crate::triage::run(&gv_job(cfg, n, gv), ops) {
         Ok((ready, reason)) => {
-            note(cfg, signoff_note(n, ready));
             if !ready {
+                let round = rounds.get(&n).map_or(0, |r| r.refusals) + 1;
+                note(cfg, signoff_refusal_note(n, round, &reason));
                 println!(
-                    "fwf run: GV sign-off refused #{n}'s spec — {reason}; still gated, not un-gated"
+                    "fwf run: GV sign-off refused #{n}'s spec (refusal {round}) — {reason}; still gated, {}",
+                    if round > super::MAX_RESPEC_ROUNDS { "re-spec budget spent" } else { "PM revises it next tick" }
                 );
                 return;
             }
+            note(cfg, signoff_note(n, ready));
             println!("fwf run: GV signed off #{n}'s spec — {reason}");
             ungate_or_await(cfg, ops, n);
         }
@@ -156,6 +186,39 @@ fn sign_off(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFil
             "fwf run: GV sign-off for #{n} failed: {}; it stays gated and is offered again next tick",
             e.0
         ),
+    }
+}
+
+/// The re-spec budget is spent (#697): add `needs-human`, keep the gate, and
+/// say so once. The note is what drops it from every later queue; a failed
+/// label write leaves no note and is tried again next tick.
+fn park(cfg: &RunConfig, ops: &AppEntry, snap: &Snapshot, filter: &ReviewFilter) {
+    let rounds = spec_rounds(&events(cfg));
+    for n in park_candidates(snap, filter, &rounds) {
+        match add_label(cfg, ops, n, NEEDS_HUMAN_LABEL) {
+            Ok(()) => {
+                note(cfg, parked_note(n));
+                println!("fwf run: #{n} parked — GV refused {} specs; `{NEEDS_HUMAN_LABEL}` added, still gated; a human decides from here", super::MAX_RESPEC_ROUNDS + 1);
+            }
+            Err(e) => eprintln!("fwf run: parking #{n} failed: {e}; tried again next tick"),
+        }
+    }
+}
+
+fn add_label(cfg: &RunConfig, ops: &AppEntry, n: u64, label: &str) -> Result<(), String> {
+    let write = std::collections::BTreeMap::from([("issues", "write"), ("metadata", "read")]);
+    let tok = crate::github::mint(ops, Some(&write)).map_err(|e| e.to_string())?;
+    let (code, _) = crate::github::send_json(
+        "POST",
+        &tok.token,
+        &format!("/repos/{}/{}/issues/{n}/labels", cfg.owner, cfg.repo),
+        &serde_json::json!({ "labels": [label] }),
+    )
+    .map_err(|e| e.to_string())?;
+    if code == 200 {
+        Ok(())
+    } else {
+        Err(format!("label write refused ({code})"))
     }
 }
 

@@ -151,14 +151,14 @@ fn meter_age_parses_a_local_stamp_and_rejects_garbage() {
     assert_eq!(meter_age_secs("not a date", now), None);
 }
 
-fn skip_labels() -> Vec<String> {
+pub(super) fn skip_labels() -> Vec<String> {
     ["idea", "release-hold", "tracking", "needs-human"]
         .iter()
         .map(|s| s.to_string())
         .collect()
 }
 
-fn note(text: String) -> Event {
+pub(super) fn note(text: String) -> Event {
     Event {
         ts: 1,
         repo: "o/r".into(),
@@ -436,16 +436,27 @@ pub(super) fn test_config() -> RunConfig {
 }
 
 /// Every pass's queue for one issue, as a tick would compute them.
-fn queues(snap: &Snapshot, f: &ReviewFilter, evs: &[Event]) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
-    let (judged, specced, signed) = (gv_verdicts(evs), specced_issues(evs), signed_off(evs));
+pub(super) fn queues(
+    snap: &Snapshot,
+    f: &ReviewFilter,
+    evs: &[Event],
+) -> (Vec<u64>, Vec<u64>, Vec<u64>) {
+    let (judged, specced) = (gv_verdicts(evs), specced_issues(evs));
     (
         gv_gated_candidates(snap, f, &judged, &gv_gate_baselines(evs)),
-        pm_candidates(snap, f, &judged, &specced),
-        signoff_candidates(snap, f, &specced, &signed),
+        pm_candidates(snap, f, &judged, &specced)
+            .into_iter()
+            .chain(
+                respec_candidates(snap, f, &spec_rounds(evs))
+                    .into_iter()
+                    .map(|c| c.0),
+            )
+            .collect(),
+        signoff_candidates(snap, f, &spec_rounds(evs)),
     )
 }
 
-fn one_gated(n: u64) -> Snapshot {
+pub(super) fn one_gated(n: u64) -> Snapshot {
     Snapshot {
         issues: vec![issue(n, &["product-wip"], false)],
         prs: vec![],
@@ -521,43 +532,6 @@ fn a_ready_first_pass_buys_a_spec_and_nothing_else_until_gv_reads_it_back() {
     assert!(note_at(crate::triage::READY_NOTE_PREFIX) < note_at(crate::spec::SPEC_NOTE_PREFIX));
     assert!(note_at(crate::spec::SPEC_NOTE_PREFIX) < note_at(SIGNOFF_NOTE_PREFIX));
     assert!(note_at(SIGNOFF_NOTE_PREFIX) < ungate_at);
-}
-
-/// A refused sign-off is a first-pass refusal in every way that matters: the
-/// gate stays on with the reason posted, nothing un-gates, and nothing re-specs
-/// it — rewriting the spec on GV's word alone is a loop, not a decision. A
-/// human's `fwf ungate` (or an edit and a fresh verdict) is the way out.
-#[test]
-fn a_refused_sign_off_leaves_it_gated_and_nothing_re_specs_it() {
-    let snap = one_gated(653);
-    let skip = skip_labels();
-    let f = ReviewFilter::all_gated("product-wip", &skip);
-    let mut evs = vec![
-        note(crate::triage::ready_note(653)),
-        note(crate::spec::spec_note(653, 900, false, 1)),
-    ];
-    assert_eq!(queues(&snap, &f, &evs), (vec![], vec![], vec![653]));
-    // what `triage::run` records for a not-ready verdict, then the loop's own
-    // answer to "has GV read this spec"
-    evs.push(Event {
-        ts: 4,
-        repo: "o/r".into(),
-        kind: Kind::Issue {
-            issue: 653,
-            to: IssueState::Gated,
-        },
-    });
-    evs.push(note(signoff_note(653, false)));
-    assert_eq!(
-        queues(&snap, &f, &evs),
-        (vec![], vec![], vec![]),
-        "no re-triage, no re-spec, no second sign-off"
-    );
-    assert_eq!(gv_verdicts(&evs).get(&653), Some(&false));
-    assert!(
-        reviewed_issues(&evs).is_empty(),
-        "a refused spec is never un-gated"
-    );
 }
 
 /// The first-pass refusal itself is untouched by #655: gated with its reason,
@@ -718,10 +692,7 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
         gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)).is_empty()
     );
     assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
-    assert_eq!(
-        signoff_candidates(&snap, &f, &specced_issues(&evs), &signed_off(&evs)),
-        vec![n]
-    );
+    assert_eq!(signoff_candidates(&snap, &f, &spec_rounds(&evs)), vec![n]);
     append(Kind::Note {
         text: signoff_note(n, true),
     });
@@ -734,7 +705,7 @@ fn a_filed_gated_issue_walks_to_specced_awaiting_ungate_with_no_manual_verb() {
         gv_gated_candidates(&snap, &f, &gv_verdicts(&evs), &gv_gate_baselines(&evs)).is_empty()
     );
     assert!(pm_candidates(&snap, &f, &gv_verdicts(&evs), &specced_issues(&evs)).is_empty());
-    assert!(signoff_candidates(&snap, &f, &specced_issues(&evs), &signed_off(&evs)).is_empty());
+    assert!(signoff_candidates(&snap, &f, &spec_rounds(&evs)).is_empty());
     let labels: Vec<String> = fake.issue_json(O, R, n).unwrap()["labels"]
         .as_array()
         .unwrap()

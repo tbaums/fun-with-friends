@@ -7,6 +7,9 @@ Issue title: {{TITLE}}
 Current issue body (may be a one-line stub, or a spec with feedback to fold in):
 {{BODY}}
 
+GV's refusal of the previous spec, if any — when there is one, revise the spec so this reason no longer holds, and keep what GV did not object to:
+{{GV_REFUSAL_REASON}}
+
 You have read access to the repository in your working directory (a worktree of the base branch) so you can check what exists today. You have no GitHub access: do not run `gh`, do not try to edit, label or comment on anything.
 
 Write the spec yourself; decide wherever you reasonably can and state each decision as an explicit assumption. Ask a question only when the answer materially changes WHAT gets built. Prefer small, independent scope; if the idea is really several deliverables, spec the first and name the rest under "Out of scope". If it is a "should we / how would we" question rather than a build, say so (`discovery: true`) and frame the acceptance criteria as proposal criteria. For UI or mobile work the acceptance criteria must verify APPEARANCE with real content on the real lane, not a proxy. When a constraint makes the obvious design bad, look for a third option that dissolves it, and spec that.
