@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.21 — 2026-10-03
+
+A refused spec gets revised instead of stranded.
+
+- **A GV sign-off refusal stranded the issue forever: the loop never re-specced it** (#697, PR #698) — a refusal now sends the issue back to PM on the next tick with GV's reason as explicit input, and GV reads the revision; after 2 re-spec rounds a third refusal parks it with `needs-human` instead of looping. Rounds replay from the record, so a restart resumes at the right round, and refusals recorded before this release are picked up too (their reason was not recorded, so PM is told so).
+
 ## 1.0.20 — 2026-09-25
 
 An edited ticket gets a second look without anyone driving it by hand.
