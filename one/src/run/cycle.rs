@@ -66,6 +66,7 @@ pub fn spec_cycle(cfg: &RunConfig, ops: Option<&AppEntry>, snap: &Snapshot) {
     first_pass(cfg, ops, snap, &filter);
     pm_pass(cfg, ops, snap, &filter);
     sign_off(cfg, ops, snap, &filter);
+    recheck_awaited_ungates(cfg, ops);
     park(cfg, ops, snap, &filter);
 }
 
@@ -294,6 +295,13 @@ fn ungate_or_await(cfg: &RunConfig, ops: &AppEntry, n: u64) {
         }
         AfterSignOff::Delegate(actor) => actor,
     };
+    delegated_ungate(cfg, ops, n, actor);
+}
+
+/// The un-gate itself, once [`after_sign_off`] has said it is the loop's to
+/// make. Its own function because two callers reach this answer: the sign-off
+/// (at once) and the re-check below (a tick later, after the allow-list moved).
+fn delegated_ungate(cfg: &RunConfig, ops: &AppEntry, n: u64, actor: &str) {
     match crate::triage::ungate(
         &cfg.owner,
         &cfg.repo,
@@ -310,6 +318,65 @@ fn ungate_or_await(cfg: &RunConfig, ops: &AppEntry, n: u64) {
             "fwf run: #{n} is specced and signed off but the delegated un-gate failed: {}",
             e.0
         ),
+    }
+}
+
+/// Issues the record says were signed off while outside the `issues`
+/// allow-list and that nothing has un-gated since (#699), oldest first.
+///
+/// The seen-set idiom [`super::note_gated_skips`] uses, read the other way
+/// round: there the note means "said already, say no more", here it means
+/// "still owed an answer". [`reviewed_issues`] is what takes an issue out —
+/// the same check [`after_sign_off`] calls `AlreadyUngated`, so a human's
+/// `fwf ungate` and the loop's own delegated one both end the wait.
+pub(super) fn awaiting_ungate(events: &[crate::log::Event]) -> Vec<u64> {
+    let ungated = reviewed_issues(events);
+    let prefix = format!("{OUTSIDE_ALLOW_LIST_NOTE}: #");
+    let mut v: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            crate::log::Kind::Note { text } => super::note_issue(text, &prefix),
+            _ => None,
+        })
+        .filter(|n| !ungated.contains(n))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Ask [`after_sign_off`] again, against today's manifest (#699).
+///
+/// The decision used to be made once, at the instant of sign-off, and never
+/// revisited: transom #1485 was signed off outside the allow-list on
+/// 2026-10-12, the operator did what the printed line told them to — added it
+/// to `issues`, restarted the loop — and it sat gated with `product-wip`
+/// anyway, because no later tick looked at it again.
+///
+/// Only the answer that *acts* is honoured here. A still-`Await` issue gets
+/// no second note and no second console line: the one from its sign-off
+/// already told the operator what is owed, and saying it every tick is how
+/// that line gets tuned out (the same reason `note_gated_skips` says its
+/// piece once).
+///
+/// `ReviewFilter` is deliberately not consulted, exactly as the un-gate at
+/// sign-off never consulted it: whether a signed-off spec comes off the gate
+/// is not a question about whether GV may read the issue today.
+fn recheck_awaited_ungates(cfg: &RunConfig, ops: &AppEntry) {
+    // Re-read: the sign-off above may have written this tick's note, and an
+    // issue whose allow-list entry predates it un-gates on the same tick.
+    let evs = events(cfg);
+    for n in awaiting_ungate(&evs) {
+        match after_sign_off(cfg, &evs, n) {
+            // `delegated_ungate` says it landed; the record's own note said
+            // what was owed. Nothing here needs a line of its own.
+            AfterSignOff::Delegate(actor) => delegated_ungate(cfg, ops, n, actor),
+            // Still outside the allow-list, or no delegate to stand in for:
+            // the wait is unchanged and already written down.
+            AfterSignOff::Await(_) => {}
+            // Unreachable: `awaiting_ungate` drops these.
+            AfterSignOff::AlreadyUngated => {}
+        }
     }
 }
 
@@ -332,6 +399,25 @@ mod tests {
     fn ungated_by_hand(n: u64) -> Vec<Event> {
         crate::triage::ungate_events("tbaums/transom", n, crate::triage::Ungate::Manual("t"), 1)
             .to_vec()
+    }
+
+    /// The record after the loop un-gated this issue on the delegate's behalf.
+    fn ungated_by_loop(n: u64) -> Vec<Event> {
+        crate::triage::ungate_events(
+            "tbaums/transom",
+            n,
+            crate::triage::Ungate::Delegated("jamie-proxy"),
+            2,
+        )
+        .to_vec()
+    }
+
+    fn note_event(text: String) -> Event {
+        Event {
+            ts: 1,
+            repo: "tbaums/transom".into(),
+            kind: crate::log::Kind::Note { text },
+        }
     }
 
     /// #663, fwf floor 2026-09-16: `review_scope` defaults to all-gated on
@@ -400,6 +486,99 @@ mod tests {
             after_sign_off(&c, &ungated_by_hand(1123), 1123),
             AfterSignOff::AlreadyUngated,
             "the human path is never constrained by the allow-list"
+        );
+    }
+
+    /// #699, transom devbox 2026-10-12: #1485 was triaged, specced and signed
+    /// off while outside the allow-list, so the loop printed "un-gate it
+    /// yourself or add it to `issues`". The operator added it to `issues` and
+    /// restarted the loop — and nothing happened, because the un-gate decision
+    /// was taken once, at sign-off, and never asked again. So the re-check
+    /// asks it again, every tick, against the manifest as it stands now.
+    #[test]
+    fn a_sign_off_held_outside_the_allow_list_un_gates_once_the_list_widens() {
+        let signed_off = vec![note_event(outside_allow_list_note(1485))];
+
+        // AC1: at sign-off the note is written once, and it is what puts the
+        // issue in front of the re-check at all.
+        let outside = cfg(Some("jamie-proxy"), &[1300], Default::default());
+        assert_eq!(
+            after_sign_off(&outside, &[], 1485),
+            AfterSignOff::Await(Some(outside_allow_list_note(1485))),
+            "unchanged: the sign-off itself still holds off and says why"
+        );
+        assert_eq!(awaiting_ungate(&signed_off), vec![1485]);
+
+        // AC4: the allow-list is left alone — the re-check re-asks and gets
+        // the same `Await`, which it acts on by doing nothing at all: no
+        // second note, so the issue is still a candidate and still gated.
+        assert!(matches!(
+            after_sign_off(&outside, &signed_off, 1485),
+            AfterSignOff::Await(Some(_))
+        ));
+        assert_eq!(
+            awaiting_ungate(&signed_off),
+            vec![1485],
+            "a no-op re-check leaves the record exactly as it found it"
+        );
+
+        // AC2: the operator adds it to `issues`. The next tick's re-check now
+        // gets `Delegate`, and that is the un-gate the loop owed.
+        let widened = cfg(Some("jamie-proxy"), &[1300, 1485], Default::default());
+        assert_eq!(
+            after_sign_off(&widened, &signed_off, 1485),
+            AfterSignOff::Delegate("jamie-proxy")
+        );
+        // ...and once that un-gate is recorded, the tick after is a no-op:
+        // the issue drops out of the candidate set, as a human un-gate would
+        // also have made it.
+        let mut un_gated = signed_off.clone();
+        un_gated.extend(ungated_by_loop(1485));
+        assert!(awaiting_ungate(&un_gated).is_empty());
+        assert_eq!(
+            after_sign_off(&widened, &un_gated, 1485),
+            AfterSignOff::AlreadyUngated,
+            "the delegated un-gate is not repeated on the next tick"
+        );
+
+        // AC3: a human un-gates it before the allow-list ever moves. The
+        // re-check's next pass has nothing to do, under either manifest.
+        let mut by_hand = signed_off.clone();
+        by_hand.extend(ungated_by_hand(1485));
+        assert!(awaiting_ungate(&by_hand).is_empty());
+        for c in [&outside, &widened] {
+            assert_eq!(
+                after_sign_off(c, &by_hand, 1485),
+                AfterSignOff::AlreadyUngated
+            );
+        }
+    }
+
+    /// The candidate set is the *outside-allow-list* note, not sign-off in
+    /// general: a floor with no `delegate_ungate` is owed a human un-gate and
+    /// was never the loop's to make, so it never enters the re-check and
+    /// cannot be nagged by it (`Await(None)` writes no note).
+    #[test]
+    fn the_re_check_only_reads_the_outside_allow_list_note() {
+        for text in [
+            super::super::signoff_note(1485, true),
+            super::super::signoff_note(1485, false),
+            super::super::parked_note(1485),
+            super::super::skip_note(1485, &super::super::SkipReason::NotAllowListed),
+        ] {
+            assert!(
+                awaiting_ungate(&[note_event(text.clone())]).is_empty(),
+                "{text}"
+            );
+        }
+        // And one issue's note never speaks for another's.
+        assert_eq!(
+            awaiting_ungate(&[
+                note_event(outside_allow_list_note(1371)),
+                note_event(outside_allow_list_note(1485)),
+                note_event(outside_allow_list_note(1371)),
+            ]),
+            vec![1371, 1485]
         );
     }
 
