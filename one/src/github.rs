@@ -7,7 +7,46 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// The agent every GitHub call in this process goes through — one place for
+/// the timeout and one place for the status policy.
+///
+/// ureq 3 turns 4xx/5xx into `Error::StatusCode(code)` and drops the response
+/// with it, but this system reads the *body* of a refusal (secondary
+/// rate-limit text, 422 reasons, the 409 that means "already merged"), so the
+/// status is left on the response instead and callers keep reading the
+/// `(status, body)` pair they always have. `timeout` is the whole-call
+/// ceiling; `None` is no ceiling, which is what these calls had under ureq 2.
+pub fn http_agent(timeout: Option<Duration>) -> ureq::Agent {
+    ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(timeout)
+            .build(),
+    )
+}
+
+/// The body of a reply, or `""` when it cannot be read — `into_string()`'s
+/// `unwrap_or_default()` under ureq 2.
+pub fn body_text(resp: &mut ureq::http::Response<ureq::Body>) -> String {
+    resp.body_mut().read_to_string().unwrap_or_default()
+}
+
+/// One response header, as ureq 2's `resp.header(name)` gave it.
+pub fn header(resp: &ureq::http::Response<ureq::Body>, name: &str) -> Option<String> {
+    resp.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+/// A refusal: exactly the 4xx/5xx that [`http_agent`] declines to raise as an
+/// error, so the handful of callers that branch on it say so themselves.
+fn refused(resp: &ureq::http::Response<ureq::Body>) -> bool {
+    let s = resp.status();
+    s.is_client_error() || s.is_server_error()
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppEntry {
@@ -120,20 +159,23 @@ pub fn mint(
         Some(p) => serde_json::json!({ "permissions": p }),
         None => serde_json::json!({}),
     };
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {jwt}"))
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "fwfd/0.1")
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .send_string(&body.to_string());
+    let resp = http_agent(None)
+        .post(&url)
+        .header("Authorization", format!("Bearer {jwt}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "fwfd/0.1")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send(body.to_string());
     match resp {
-        Ok(r) => r
-            .into_json::<InstallationToken>()
-            .map_err(|e| AuthError::Http(e.to_string())),
-        Err(ureq::Error::Status(code, r)) => {
-            let text = r.into_string().unwrap_or_default();
+        Ok(mut r) if refused(&r) => {
+            let code = r.status().as_u16();
+            let text = body_text(&mut r);
             Err(AuthError::Denied(code, text.chars().take(200).collect()))
         }
+        Ok(mut r) => r
+            .body_mut()
+            .read_json::<InstallationToken>()
+            .map_err(|e| AuthError::Http(e.to_string())),
         Err(e) => Err(AuthError::Http(e.to_string())),
     }
 }
@@ -141,18 +183,18 @@ pub fn mint(
 /// GET with an installation token; returns the HTTP status and body.
 pub fn get_status(token: &str, path: &str) -> Result<(u16, String), AuthError> {
     let url = format!("https://api.github.com{path}");
-    let resp = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "fwfd/0.1")
-        .set("X-GitHub-Api-Version", "2022-11-28")
+    let resp = http_agent(None)
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "fwfd/0.1")
+        .header("X-GitHub-Api-Version", "2022-11-28")
         .call();
     match resp {
-        Ok(r) => {
-            let code = r.status();
-            Ok((code, r.into_string().unwrap_or_default()))
+        Ok(mut r) => {
+            let code = r.status().as_u16();
+            Ok((code, body_text(&mut r)))
         }
-        Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
         Err(e) => Err(AuthError::Http(e.to_string())),
     }
 }
@@ -167,25 +209,25 @@ pub fn send_json(
     body: &serde_json::Value,
 ) -> Result<(u16, String), AuthError> {
     let url = format!("https://api.github.com{path}");
-    let req = match method {
-        "POST" => ureq::post(&url),
-        "PATCH" => ureq::patch(&url),
-        "PUT" => ureq::put(&url),
-        "DELETE" => ureq::delete(&url),
-        other => return Err(AuthError::Http(format!("unsupported method {other}"))),
-    };
-    let resp = req
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "fwfd/0.1")
-        .set("X-GitHub-Api-Version", "2022-11-28")
-        .send_string(&body.to_string());
-    match resp {
-        Ok(r) => {
-            let code = r.status();
-            Ok((code, r.into_string().unwrap_or_default()))
+    if !matches!(method, "POST" | "PATCH" | "PUT" | "DELETE") {
+        return Err(AuthError::Http(format!("unsupported method {method}")));
+    }
+    // The http-crate request shape, not a typed `post()`/`delete()` builder:
+    // the method is a runtime string, and DELETE carries a body here.
+    let req = ureq::http::Request::builder()
+        .method(method)
+        .uri(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "fwfd/0.1")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .body(body.to_string())
+        .map_err(|e| AuthError::Http(e.to_string()))?;
+    match http_agent(None).run(req) {
+        Ok(mut r) => {
+            let code = r.status().as_u16();
+            Ok((code, body_text(&mut r)))
         }
-        Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
         Err(e) => Err(AuthError::Http(e.to_string())),
     }
 }
@@ -195,13 +237,21 @@ pub fn send_json(
 /// App) can do it.
 pub fn mark_ready(token: &str, node_id: &str) -> Result<bool, AuthError> {
     let q = serde_json::json!({ "query": format!("mutation {{ markPullRequestReadyForReview(input:{{pullRequestId:\"{node_id}\"}}) {{ pullRequest {{ isDraft }} }} }}") });
-    let resp = ureq::post("https://api.github.com/graphql")
-        .set("Authorization", &format!("Bearer {token}"))
-        .set("User-Agent", "fwfd/0.1")
-        .send_string(&q.to_string());
+    let resp = http_agent(None)
+        .post("https://api.github.com/graphql")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("User-Agent", "fwfd/0.1")
+        .send(q.to_string());
     match resp {
-        Ok(r) => {
-            let v: serde_json::Value = r.into_json().map_err(|e| AuthError::Http(e.to_string()))?;
+        Ok(mut r) if refused(&r) => Err(AuthError::Denied(
+            r.status().as_u16(),
+            body_text(&mut r).chars().take(200).collect(),
+        )),
+        Ok(mut r) => {
+            let v: serde_json::Value = r
+                .body_mut()
+                .read_json()
+                .map_err(|e| AuthError::Http(e.to_string()))?;
             // GraphQL reports failures as 200 + `errors`; surface them, never
             // fold them into a bare `false`.
             if let Some(errs) = v["errors"].as_array() {
@@ -219,14 +269,6 @@ pub fn mark_ready(token: &str, node_id: &str) -> Result<bool, AuthError> {
                     == serde_json::Value::Bool(false),
             )
         }
-        Err(ureq::Error::Status(code, r)) => Err(AuthError::Denied(
-            code,
-            r.into_string()
-                .unwrap_or_default()
-                .chars()
-                .take(200)
-                .collect(),
-        )),
         Err(e) => Err(AuthError::Http(e.to_string())),
     }
 }

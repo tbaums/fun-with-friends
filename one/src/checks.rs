@@ -149,21 +149,24 @@ fn send(
     body: Option<&Value>,
 ) -> Result<(u16, String), CheckError> {
     let url = format!("{}{path}", client.base_url.trim_end_matches('/'));
-    let req = ureq::request(method, &url)
-        .set("Authorization", &format!("Bearer {}", client.token))
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "fwfd/0.1")
-        .set("X-GitHub-Api-Version", "2022-11-28");
+    let req = ureq::http::Request::builder()
+        .method(method)
+        .uri(&url)
+        .header("Authorization", format!("Bearer {}", client.token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "fwfd/0.1")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    let agent = crate::github::http_agent(None);
+    let bad = |e: ureq::http::Error| CheckError::Http(e.to_string());
     let resp = match body {
-        Some(b) => req.send_string(&b.to_string()),
-        None => req.call(),
+        Some(b) => agent.run(req.body(b.to_string()).map_err(bad)?),
+        None => agent.run(req.body(()).map_err(bad)?),
     };
     match resp {
-        Ok(r) => {
-            let code = r.status();
-            Ok((code, r.into_string().unwrap_or_default()))
+        Ok(mut r) => {
+            let code = r.status().as_u16();
+            Ok((code, crate::github::body_text(&mut r)))
         }
-        Err(ureq::Error::Status(code, r)) => Ok((code, r.into_string().unwrap_or_default())),
         Err(e) => Err(CheckError::Http(e.to_string())),
     }
 }

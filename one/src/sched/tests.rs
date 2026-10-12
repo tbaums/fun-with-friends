@@ -286,11 +286,12 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
     let gated = fake.seed_issue(O, R, "gated", O, &[GATE]);
     let foreign = fake.seed_issue(O, R, "not mine", "alice", &[]);
     let eligible = fake.seed_issue(O, R, "eligible", O, &[]);
-    let pr = ureq::post(&format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
-        .set("Authorization", &format!("Bearer {alice}"))
-        .send_string(&serde_json::json!({"title":"t","head":"feat","base":"staging"}).to_string())
+    let pr = ureq::post(format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
+        .header("Authorization", format!("Bearer {alice}"))
+        .send(serde_json::json!({"title":"t","head":"feat","base":"staging"}).to_string())
         .unwrap()
-        .into_json::<serde_json::Value>()
+        .body_mut()
+        .read_json::<serde_json::Value>()
         .unwrap()["number"]
         .as_u64()
         .unwrap();
@@ -357,11 +358,11 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
     );
 
     // un-gate the gated one: the list changes (200), PR URLs still 304
-    ureq::delete(&format!(
+    ureq::delete(format!(
         "{}/repos/{O}/{R}/issues/{gated}/labels/{GATE}",
         fake.base_url()
     ))
-    .set("Authorization", &format!("Bearer {ops}"))
+    .header("Authorization", format!("Bearer {ops}"))
     .call()
     .unwrap();
     let s3 = poller.poll(3).unwrap();
@@ -423,11 +424,12 @@ fn a_refused_pr_read_back_through_the_api_plans_one_rework() {
     fake.seed_ref(O, R, "heads/impl1/issue-575-thin-slice", &head);
     let issue = fake.seed_issue(O, R, "the stale worktree", O, &[]);
     let post = |tok: &str, path: &str, body: serde_json::Value| {
-        ureq::post(&format!("{}{path}", fake.base_url()))
-            .set("Authorization", &format!("Bearer {tok}"))
-            .send_string(&body.to_string())
+        ureq::post(format!("{}{path}", fake.base_url()))
+            .header("Authorization", format!("Bearer {tok}"))
+            .send(body.to_string())
             .unwrap()
-            .into_json::<serde_json::Value>()
+            .body_mut()
+            .read_json::<serde_json::Value>()
             .unwrap()
     };
     let pr = post(

@@ -130,24 +130,24 @@ pub struct Poller {
 
 fn ureq_transport(token: String) -> Transport {
     Arc::new(move |url: &str, inm: Option<&str>| {
-        let mut rq = ureq::get(url)
-            .set("Authorization", &format!("Bearer {token}"))
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "fwfd/0.1")
-            .set("X-GitHub-Api-Version", "2022-11-28")
-            .timeout(std::time::Duration::from_secs(30));
+        let mut rq = crate::github::http_agent(Some(std::time::Duration::from_secs(30)))
+            .get(url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fwfd/0.1")
+            .header("X-GitHub-Api-Version", "2022-11-28");
         if let Some(e) = inm {
-            rq = rq.set("If-None-Match", e);
+            rq = rq.header("If-None-Match", e);
         }
-        let r = match rq.call() {
+        let mut r = match rq.call() {
             Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
             Err(e) => return Err(PollError::Transport(e.to_string())),
         };
-        let status = r.status();
-        let etag = r.header("ETag").map(str::to_string);
+        let status = r.status().as_u16();
+        let etag = crate::github::header(&r, "ETag");
         let body = r
-            .into_string()
+            .body_mut()
+            .read_to_string()
             .map_err(|e| PollError::Transport(e.to_string()))?;
         Ok(Raw { status, etag, body })
     })
@@ -479,20 +479,22 @@ mod tests {
             &format!("{CLAIM_REF_PREFIX}/{n}"),
             &FakeGitHub::sha("claim"),
         );
-        let r = ureq::post(&format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
-            .set("Authorization", &format!("Bearer {alice}"))
-            .send_string(
-                &json!({"title":"t","head":"feat","base":"main","body":format!("Closes #{n}")})
+        let mut r = ureq::post(format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
+            .header("Authorization", format!("Bearer {alice}"))
+            .send(
+                json!({"title":"t","head":"feat","base":"main","body":format!("Closes #{n}")})
                     .to_string(),
             )
             .unwrap();
-        let pr = r.into_json::<Value>().unwrap()["number"].as_u64().unwrap();
-        ureq::post(&format!(
+        let pr = r.body_mut().read_json::<Value>().unwrap()["number"]
+            .as_u64()
+            .unwrap();
+        ureq::post(format!(
             "{}/repos/{O}/{R}/pulls/{pr}/reviews",
             fake.base_url()
         ))
-        .set("Authorization", &format!("Bearer {ops}"))
-        .send_string(&json!({"event":"APPROVE"}).to_string())
+        .header("Authorization", format!("Bearer {ops}"))
+        .send(json!({"event":"APPROVE"}).to_string())
         .unwrap();
         let p = Poller::new(fake.base_url(), &ops, O, R);
         let s = p.poll(5).unwrap();

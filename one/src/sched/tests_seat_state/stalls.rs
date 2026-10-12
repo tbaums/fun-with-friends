@@ -57,10 +57,10 @@ fn a_stalled_qa_seat_freezes_its_pair_until_the_record_says_idle() {
     );
     let built = fake.seed_issue(O, R, "the one impl2 built", O, &[]);
     let waiting = fake.seed_issue(O, R, "the one nobody could start", O, &[]);
-    let pr = ureq::post(&format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
-        .set("Authorization", &format!("Bearer {implr}"))
-        .send_string(
-            &serde_json::json!({
+    let pr = ureq::post(format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
+        .header("Authorization", format!("Bearer {implr}"))
+        .send(
+            serde_json::json!({
                 "title": "the one impl2 built",
                 "head": "impl2/issue-12-thin-slice",
                 "base": "staging",
@@ -70,7 +70,8 @@ fn a_stalled_qa_seat_freezes_its_pair_until_the_record_says_idle() {
             .to_string(),
         )
         .unwrap()
-        .into_json::<serde_json::Value>()
+        .body_mut()
+        .read_json::<serde_json::Value>()
         .unwrap()["number"]
         .as_u64()
         .unwrap();

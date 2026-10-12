@@ -121,28 +121,29 @@ impl Client {
         if !matches!(method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
             return Err(HttpError::UnsupportedMethod(method.to_string()));
         }
-        let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
-        let mut rq = agent
-            .request(method, &format!("{}{path}", self.base_url))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "fwfd/0.1")
-            .set("X-GitHub-Api-Version", "2022-11-28");
+        let agent = crate::github::http_agent(Some(HTTP_TIMEOUT));
+        let mut rq = ureq::http::Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fwfd/0.1")
+            .header("X-GitHub-Api-Version", "2022-11-28");
         for (k, v) in extra {
-            rq = rq.set(k, v);
+            rq = rq.header(*k, *v);
         }
+        let bad = |e: ureq::http::Error| HttpError::Transport(e.to_string());
         let res = match body {
-            Some(b) if !b.is_null() => rq.send_string(&b.to_string()),
-            _ if method == "GET" => rq.call(),
-            _ => rq.send_string(""),
+            Some(b) if !b.is_null() => agent.run(rq.body(b.to_string()).map_err(bad)?),
+            _ if method == "GET" => agent.run(rq.body(()).map_err(bad)?),
+            _ => agent.run(rq.body(String::new()).map_err(bad)?),
         };
-        let r = match res {
+        let mut r = match res {
             Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
             Err(e) => return Err(HttpError::Transport(e.to_string())),
         };
-        let status = r.status();
-        let text = r.into_string().unwrap_or_default();
+        let status = r.status().as_u16();
+        let text = crate::github::body_text(&mut r);
         let body = if text.trim().is_empty() {
             Value::Null
         } else {
@@ -530,27 +531,29 @@ pub(crate) mod shim {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Fwd {
-        let mut rq = ureq::request(method, &format!("{upstream}{url}"));
+        let mut rq = ureq::http::Request::builder()
+            .method(method)
+            .uri(format!("{upstream}{url}"));
         for (k, v) in headers {
             let kl = k.to_ascii_lowercase();
             if kl == "host" || kl == "content-length" || kl == "transfer-encoding" {
                 continue;
             }
-            rq = rq.set(k, v);
+            rq = rq.header(k, v);
         }
+        let agent = crate::github::http_agent(None);
         let res = if method == "GET" {
-            rq.call()
+            agent.run(rq.body(()).unwrap())
         } else {
-            rq.send_bytes(body)
+            agent.run(rq.body(body.to_vec()).unwrap())
         };
-        let r = match res {
+        let mut r = match res {
             Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
             Err(e) => panic!("shim → fake transport: {e}"),
         };
-        let status = r.status();
-        let etag = r.header("ETag").map(str::to_string);
-        let text = r.into_string().unwrap_or_default();
+        let status = r.status().as_u16();
+        let etag = crate::github::header(&r, "ETag");
+        let text = crate::github::body_text(&mut r);
         let body = if text.trim().is_empty() {
             Value::Null
         } else {
