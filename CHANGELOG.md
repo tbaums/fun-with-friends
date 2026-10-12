@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.23 — 2026-10-12
+
+Dependencies current: toml 1.1, jsonwebtoken 11, ureq 3.
+
+- **Dependabot #692's major bumps, ported** (#701, PR #702; supersedes #692) — `toml` 0.8 → 1.1, `jsonwebtoken` 9 → 11 and `ureq` 2 → 3. The ureq 3 API break (~60 call sites across `github.rs`, `merge.rs`, `upgrade.rs`, `poll.rs`, `checks.rs` and the fake GitHub) is absorbed behind one shared `http_agent` that keeps non-2xx statuses on the response, so every `(status, body)` outcome and control path — including the 404/409/422 handling in merge/checks/poll — is unchanged. Size-check, fmt, clippy `-D warnings` and all 296 tests pass.
+
 ## 1.0.22 — 2026-10-12
 
 Widening the allow-list releases specs that were already signed off.
