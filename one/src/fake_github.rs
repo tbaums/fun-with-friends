@@ -1019,17 +1019,17 @@ impl FakeGitHub {
             "{}/app/installations/{installation_id}/access_tokens",
             self.base
         );
-        let res = ureq::post(&url)
-            .set("Authorization", "Bearer fake.app.jwt")
-            .set("Accept", "application/vnd.github+json")
-            .send_string(&json!({ "permissions": perms }).to_string());
-        let r = match res {
+        let res = crate::github::http_agent(None)
+            .post(&url)
+            .header("Authorization", "Bearer fake.app.jwt")
+            .header("Accept", "application/vnd.github+json")
+            .send(json!({ "permissions": perms }).to_string());
+        let mut r = match res {
             Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
             Err(e) => panic!("transport: {e}"),
         };
-        let status = r.status();
-        let text = r.into_string().unwrap_or_default();
+        let status = r.status().as_u16();
+        let text = crate::github::body_text(&mut r);
         (status, serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
@@ -1178,25 +1178,25 @@ mod tests {
         body: Option<Value>,
         extra: &[(&str, &str)],
     ) -> Reply {
-        let mut rq = ureq::request(method, url).set("Accept", "application/vnd.github+json");
+        let mut rq = ureq::http::Request::builder()
+            .method(method)
+            .uri(url)
+            .header("Accept", "application/vnd.github+json");
         if let Some(t) = token {
-            rq = rq.set("Authorization", &format!("Bearer {t}"));
+            rq = rq.header("Authorization", format!("Bearer {t}"));
         }
         for (k, v) in extra {
-            rq = rq.set(k, v);
+            rq = rq.header(*k, *v);
         }
-        let res = match body {
-            Some(b) => rq.send_string(&b.to_string()),
-            None => rq.call(),
-        };
-        let r = match res {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, r)) => r,
-            Err(e) => panic!("transport: {e}"),
-        };
-        let status = r.status();
-        let etag = r.header("ETag").map(str::to_string);
-        let text = r.into_string().unwrap_or_default();
+        let agent = crate::github::http_agent(None);
+        let mut r = match body {
+            Some(b) => agent.run(rq.body(b.to_string()).unwrap()),
+            None => agent.run(rq.body(()).unwrap()),
+        }
+        .unwrap_or_else(|e| panic!("transport: {e}"));
+        let status = r.status().as_u16();
+        let etag = crate::github::header(&r, "ETag");
+        let text = crate::github::body_text(&mut r);
         let body = if text.is_empty() {
             Value::Null
         } else {

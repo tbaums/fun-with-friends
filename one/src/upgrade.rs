@@ -112,10 +112,12 @@ pub fn asset_url(repo: &str, version: &str, slug: &str) -> String {
 }
 
 fn agent(timeout: Duration) -> ureq::Agent {
-    ureq::builder()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout(timeout)
-        .build()
+    ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(3)))
+            .timeout_global(Some(timeout))
+            .build(),
+    )
 }
 
 /// `tag_name` of `GET /repos/<repo>/releases/latest` — the API's own answer to
@@ -128,15 +130,15 @@ pub fn latest_tag(api_base: &str, repo: &str, token: Option<&str>) -> Result<Str
     );
     let mut req = agent(LOOKUP_TIMEOUT)
         .get(&url)
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "fwfd/0.1")
-        .set("X-GitHub-Api-Version", "2022-11-28");
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "fwfd/0.1")
+        .header("X-GitHub-Api-Version", "2022-11-28");
     if let Some(t) = token {
-        req = req.set("Authorization", &format!("Bearer {t}"));
+        req = req.header("Authorization", format!("Bearer {t}"));
     }
     let body = match req.call() {
-        Ok(r) => r.into_string().map_err(|e| e.to_string())?,
-        Err(ureq::Error::Status(code, _)) => return Err(format!("github answered {code}")),
+        Ok(mut r) => r.body_mut().read_to_string().map_err(|e| e.to_string())?,
+        Err(ureq::Error::StatusCode(code)) => return Err(format!("github answered {code}")),
         Err(e) => return Err(e.to_string()),
     };
     let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -349,11 +351,11 @@ pub fn install_asset(
 fn download(url: &str, to: &Path) -> Result<(), String> {
     let resp = agent(DOWNLOAD_TIMEOUT)
         .get(url)
-        .set("User-Agent", "fwfd/0.1")
+        .header("User-Agent", "fwfd/0.1")
         .call()
         .map_err(|e| format!("{url}: {e}"))?;
     let mut f = std::fs::File::create(to).map_err(|e| format!("cannot write {to:?}: {e}"))?;
-    let mut r = std::io::Read::take(resp.into_reader(), MAX_ASSET_BYTES);
+    let mut r = std::io::Read::take(resp.into_body().into_reader(), MAX_ASSET_BYTES);
     std::io::copy(&mut r, &mut f).map_err(|e| format!("{url}: {e}"))?;
     Ok(())
 }
@@ -361,10 +363,11 @@ fn download(url: &str, to: &Path) -> Result<(), String> {
 fn download_string(url: &str) -> Result<String, String> {
     agent(DOWNLOAD_TIMEOUT)
         .get(url)
-        .set("User-Agent", "fwfd/0.1")
+        .header("User-Agent", "fwfd/0.1")
         .call()
         .map_err(|e| format!("{url}: {e}"))?
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| format!("{url}: {e}"))
 }
 

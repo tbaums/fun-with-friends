@@ -255,14 +255,15 @@ fn a_legacy_impl_branch_no_longer_makes_the_slice_refuse_what_run_planned() {
     fake.seed_ref(O, R, "heads/impl1/issue-473-old", &FakeGitHub::sha("old"));
     let issue = fake.seed_issue(O, R, "the dash is a board again", O, &[]);
     // #540: opened by a person in July, on the prefix the 0.x factory used
-    let legacy = ureq::post(&format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
-        .set("Authorization", &format!("Bearer {human}"))
-        .send_string(
-            &serde_json::json!({"title":"0.x leftover","head":"impl1/issue-473-old","base":"staging","draft":true})
+    let legacy = ureq::post(format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
+        .header("Authorization", format!("Bearer {human}"))
+        .send(
+            serde_json::json!({"title":"0.x leftover","head":"impl1/issue-473-old","base":"staging","draft":true})
                 .to_string(),
         )
         .unwrap()
-        .into_json::<serde_json::Value>()
+        .body_mut()
+        .read_json::<serde_json::Value>()
         .unwrap();
     assert_eq!(legacy["user"]["login"], "tbaums");
     let poller = Poller::new(fake.base_url(), &ops, O, R);

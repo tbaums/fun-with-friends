@@ -127,11 +127,12 @@ fn an_approval_overturned_at_the_same_head_plans_rework_and_a_new_head_merges() 
     fake.seed_ref(O, R, "heads/impl1/issue-688-thin-slice", &head1);
     let issue = fake.seed_issue(O, R, "the stalled QA seat", O, &[]);
     let post = |tok: &str, path: &str, body: serde_json::Value| {
-        ureq::post(&format!("{}{path}", fake.base_url()))
-            .set("Authorization", &format!("Bearer {tok}"))
-            .send_string(&body.to_string())
+        ureq::post(format!("{}{path}", fake.base_url()))
+            .header("Authorization", format!("Bearer {tok}"))
+            .send(body.to_string())
             .unwrap()
-            .into_json::<serde_json::Value>()
+            .body_mut()
+            .read_json::<serde_json::Value>()
             .unwrap()
     };
     let pr = post(
@@ -193,13 +194,13 @@ fn an_approval_overturned_at_the_same_head_plans_rework_and_a_new_head_merges() 
     // AC5: the seat pushes the fix. The head moves, which dismisses the
     // reviews anchored to the old one, and QA approves the new head.
     let head2 = FakeGitHub::sha("h2");
-    ureq::patch(&format!(
+    ureq::patch(format!(
         "{}/repos/{O}/{R}/git/refs/heads/impl1/issue-688-thin-slice",
         fake.base_url()
     ))
-    .set("Authorization", &format!("Bearer {implr}"))
-    .set("X-Fake-Expect-Sha", &head1)
-    .send_string(&serde_json::json!({ "sha": head2 }).to_string())
+    .header("Authorization", format!("Bearer {implr}"))
+    .header("X-Fake-Expect-Sha", &head1)
+    .send(serde_json::json!({ "sha": head2 }).to_string())
     .unwrap();
     post(
         &qa,
