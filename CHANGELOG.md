@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.22 — 2026-10-12
+
+Widening the allow-list releases specs that were already signed off.
+
+- **A spec signed off outside the allow-list never got the delegated un-gate after the allow-list was widened** (#699, PR #700) — `after_sign_off` ran exactly once, at sign-off, so an issue GV signed off while outside `issues` stayed gated forever even after the operator added it and restarted, despite the loop's own advice to do exactly that. The spec cycle now re-runs `after_sign_off` each tick for issues carrying the outside-allow-list note and not yet un-gated, and performs the delegated un-gate once the allow-list covers them (idempotent via the existing already-un-gated check). Motivated by transom #1485 on 2026-10-12, which needed a human `fwf ungate`.
+
 ## 1.0.21 — 2026-10-03
 
 A refused spec gets revised instead of stranded.
