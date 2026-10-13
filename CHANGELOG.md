@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.24 — 2026-10-12
+
+GitHub App tokens sign again; the dependency bumps from 1.0.23 now work.
+
+- **v1.0.23 panicked on GitHub App JWT signing** (#703, PR #704) — `jsonwebtoken` 11 (from #701) ships no crypto backend by default, so the first App-token mint hit its panicking stub provider; the fake-GitHub test suite never signed a real JWT. `jsonwebtoken` is now `default-features = false` with `rust_crypto` (pure Rust) plus `use_pem`, and a new test signs a real RS256 JWT through `app_jwt` with a throwaway key and verifies it. **v1.0.23 was withdrawn** (prerelease, not installable via `fwf self-upgrade`); this release carries #701's toml 1.1 / jsonwebtoken 11 / ureq 3 bumps working.
+
 ## 1.0.23 — 2026-10-12
 
 Dependencies current: toml 1.1, jsonwebtoken 11, ureq 3.
