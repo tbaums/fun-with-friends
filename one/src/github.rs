@@ -305,4 +305,76 @@ mod tests {
         };
         assert!(matches!(app_jwt(&e), Err(AuthError::KeyUnreadable(_, _))));
     }
+
+    /// A throwaway 1024-bit RSA key, generated for this test and used nowhere
+    /// else. Deliberately half the size GitHub issues: self-evidently not an
+    /// App private key, while taking the exact same signing path.
+    const TEST_KEY_PEM: &str = "\
+-----BEGIN RSA PRIVATE KEY-----
+MIICXQIBAAKBgQC3wsOzVSEl5T0GrdfwFAy0nopkJBJz0LTXcT0JtqAk0T1F3giF
+TA9YQ94YggOxNxf1VsFCC6oc48tDmgT3egy+cqP6JvP7rh4JMRJ9lUQlrMQ2Avj/
+5TdfVzLWqNV8+X/Hk7SdksdoHIHccRqW4AJJB4N2argjFVoayfULTWgPJQIDAQAB
+AoGAGREseQ4n02+N/5c/WbSidxEZd8ej7MCPqsP7u5N6DQut/BXpu6VAgp3fciBq
+OIZ3cjQ/cK7+qao5VCNygf/YNPdcjrsZO0Tm1MlF1CiMmchNwrwZ/znM6u0rBtAc
+qDij7f83FteVE9+Hr7teag9KJhrNDgxtn+ynx3bhwagGqoECQQDiK4iU15oU+bsz
+yYGu8VWlhxQA2hnyF5dFafcqjWqRzrohSupAluxUkGHjd7rJQHayRF6qDI1PPF6z
+D3N00YMJAkEAz/9QP8G2EZRHHSrRkNqXiJGxIbaR/yWaMXTqK5kLCYjF4g9Etk0F
+GUe/4LtUpvVwmhwiIieCPI94jGGgRWSmPQJBAOBkjMgP+SGifCdvX6kwa+ck06Xc
+vi1BVqZZ8g5X7EnpryXk6/FVS/jCnzxNyBZwTNOlnb5dYb4hiVtikwxt6fECQGkQ
+Pij2YFFg5MsG5fSVdhW2AhNVdUm8ZLa2p9J96+VVAR+/NqYfIYQzieiqt4feUpKF
+w3gdHNwaXHoMljh3LsECQQDbPHFvIudN7PYf58steDOnopq9+6ZcFVQyjFhniGBH
+yuBwL7pl8Hqbkz5QureOWGYbwAHMz69WxA32e9zm3ImP
+-----END RSA PRIVATE KEY-----
+";
+
+    /// The matching public half, for verifying what the signing path produced.
+    const TEST_PUB_PEM: &str = "\
+-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC3wsOzVSEl5T0GrdfwFAy0nopk
+JBJz0LTXcT0JtqAk0T1F3giFTA9YQ94YggOxNxf1VsFCC6oc48tDmgT3egy+cqP6
+JvP7rh4JMRJ9lUQlrMQ2Avj/5TdfVzLWqNV8+X/Hk7SdksdoHIHccRqW4AJJB4N2
+argjFVoayfULTWgPJQIDAQAB
+-----END PUBLIC KEY-----
+";
+
+    /// #703: the one thing the whole suite never did was sign. jsonwebtoken 10+
+    /// ships no crypto backend of its own and its stub provider *panics*
+    /// instead of signing, so v1.0.23 died on the first App-token mint while
+    /// 296 green tests — all of them talking to `fake_github` — said nothing.
+    /// This one signs for real, through `app_jwt` itself: drop `rust_crypto`
+    /// from `Cargo.toml` and it panics again; drop `use_pem` and
+    /// `from_rsa_pem` stops existing.
+    #[test]
+    fn app_jwt_really_signs_rs256_against_a_test_key() {
+        let dir = std::env::temp_dir().join(format!("fwfd-jwt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("test-app.pem");
+        std::fs::write(&key, TEST_KEY_PEM).unwrap();
+        let entry = AppEntry {
+            app_id: 1234,
+            installation_id: 5678,
+            key: key.to_string_lossy().into_owned(),
+        };
+
+        let jwt = app_jwt(&entry).expect("signing with a test RSA key");
+        assert!(!jwt.is_empty());
+        let parts: Vec<&str> = jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "not a three-part JWS: {jwt}");
+        assert!(parts.iter().all(|p| !p.is_empty()), "empty segment: {jwt}");
+
+        // A signature a stub provider cannot fake: verify it with the public
+        // half, which also pins the header to RS256 and the claims to what
+        // GitHub wants from an App JWT.
+        let decoded = jsonwebtoken::decode::<serde_json::Value>(
+            &jwt,
+            &jsonwebtoken::DecodingKey::from_rsa_pem(TEST_PUB_PEM.as_bytes()).unwrap(),
+            &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256),
+        )
+        .expect("the token we just signed verifies");
+        assert_eq!(decoded.header.alg, jsonwebtoken::Algorithm::RS256);
+        assert_eq!(decoded.claims["iss"], "1234");
+        assert!(decoded.claims["exp"].as_u64().unwrap() > decoded.claims["iat"].as_u64().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
