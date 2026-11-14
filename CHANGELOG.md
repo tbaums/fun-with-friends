@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.25 — 2026-11-14
+
+QA reviews against the spec, criterion by criterion.
+
+- **QA judged PRs against an issue it could not read** (#713, PR #714). The QA job's `{{BODY}}` was the PR body (`Closes #N` and provenance), and the seat has no token. Now the supervisor reads the issue body (the PM spec) at dispatch and injects it as `{{SPEC}}`, bounded at 20,000 characters. The floor's `verdict-spec-N.json` is used only when GitHub yields nothing. **It fails closed:** with no spec, or a PR that closes no issue, no seat is woken and a `Refused` event says why; the loop retries next tick. Every family's QA prompt now asks for a `criteria` list, one entry per acceptance criterion with `met` / `not_met` / `not_verifiable` and its evidence. **An approval without a well-formed list, or with any `not_met`, is refused:** no review is posted and QA is woken again. Request-changes verdicts are unchanged, and the checklist appears in the posted review. Docs: `prompts/README.md`, `docs/operations.md`.
+
 ## 1.0.24 — 2026-10-12
 
 GitHub App tokens sign again; the dependency bumps from 1.0.23 now work.
