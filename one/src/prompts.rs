@@ -29,6 +29,8 @@ pub const PLACEHOLDERS: &[&str] = &[
     "{{DEADLINE}}",
     // GV's reason for refusing the previous spec at sign-off (#697); PM only.
     "{{GV_REFUSAL_REASON}}",
+    // The issue's spec, read by the supervisor at QA dispatch (#713); QA only.
+    "{{SPEC}}",
 ];
 pub const ROLES: &[&str] = &["impl", "qa", "gv", "pm"];
 
@@ -210,6 +212,29 @@ mod tests {
                 src.contains("\"{{DEADLINE}}\""),
                 "{m}.rs renders a job without filling the deadline placeholder"
             );
+        }
+    }
+
+    /// #713: every family's QA job is given the spec and asks for the
+    /// per-criterion list `qa::check_verdict` requires on an approval — a
+    /// family whose prompt did not would have every approval refused.
+    #[test]
+    fn every_qa_job_carries_the_spec_and_asks_for_the_criteria() {
+        for e in std::fs::read_dir(ROOT).unwrap().flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            let f = e.file_name().to_string_lossy().into_owned();
+            let p = path(Path::new(ROOT), &f, "qa");
+            let text = std::fs::read_to_string(&p).unwrap();
+            for needle in [
+                "{{SPEC}}",
+                "EACH acceptance criterion",
+                "\"criteria\":[{\"criterion\"",
+                "met`, `not_met` or `not_verifiable`",
+            ] {
+                assert!(text.contains(needle), "{}: no {needle}", p.display());
+            }
         }
     }
 
