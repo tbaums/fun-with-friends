@@ -34,6 +34,10 @@ pub enum Verdict {
         head: String,
         approve: bool,
         notes: String,
+        /// One entry per acceptance criterion of the spec (#713). Required,
+        /// well-formed and free of `not_met` on an approval (`qa::check_verdict`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        criteria: Vec<crate::qa::Criterion>,
     },
     /// PM/GV: a triage verdict on an issue.
     Triaged { ready: bool, reason: String },
@@ -650,6 +654,7 @@ mod tests {
             head: "a".repeat(40),
             approve: true,
             notes: "ok".into(),
+            criteria: vec![],
         };
         let j = serde_json::to_string(&v).unwrap();
         assert!(j.contains("\"verdict\":\"reviewed\""));

@@ -7,9 +7,233 @@ use crate::log::{Event, Kind, Log};
 use crate::mirror::Mirror;
 use crate::seat::{self, Pane, Verdict};
 use crate::types::{JobRef, PrState, Role, SeatState, Sha};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[cfg(test)]
+mod tests;
+
+/// Where `run` reads the issue from; the fake GitHub in tests.
+const API: &str = "https://api.github.com";
+
+/// The most spec text one QA job carries (#713). A PM spec is a few thousand
+/// characters; GitHub caps an issue body at 65,536. The bound keeps one
+/// oversized issue from turning a wake into a paste the pane chokes on.
+pub const SPEC_MAX_CHARS: usize = 20_000;
+
+/// The statuses a criterion may carry, exactly as the prompt spells them.
+pub const STATUSES: &[&str] = &["met", "not_met", "not_verifiable"];
+
+/// One line of QA's per-acceptance-criterion review (#713). Every field
+/// defaults, so a seat that leaves one out gets a named refusal from
+/// [`check_verdict`] instead of a verdict that never parses and a stall.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Criterion {
+    #[serde(default)]
+    pub criterion: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub evidence: String,
+}
+
+/// Where the spec QA is held to came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecSource {
+    /// The issue body as GitHub serves it at dispatch: the PM spec as it
+    /// stands now, including any later edit.
+    Issue,
+    /// The PM seat's own `verdict-spec-N.json` on this floor, used only when
+    /// GitHub yields nothing.
+    LocalVerdict,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spec {
+    pub text: String,
+    pub source: SpecSource,
+}
+
+/// The body of issue `n`, read with `token` from `api`. `Err` names why there
+/// is none (an HTTP status, a transport error).
+pub fn issue_body(api: &str, token: &str, repo: &str, n: u64) -> Result<String, String> {
+    let url = format!("{api}/repos/{repo}/issues/{n}");
+    let mut r = github::http_agent(Some(Duration::from_secs(30)))
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "fwfd/0.1")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .call()
+        .map_err(|e| format!("GET issue #{n}: {e}"))?;
+    let code = r.status().as_u16();
+    let text = github::body_text(&mut r);
+    if code != 200 {
+        return Err(format!("GET issue #{n}: HTTP {code}"));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("GET issue #{n}: {e}"))?;
+    Ok(v["body"].as_str().unwrap_or("").to_string())
+}
+
+/// The spec body from the PM seat's verdict file on this floor, if one is there.
+pub fn local_spec(floor_dir: &Path, n: u64) -> Option<String> {
+    let p = floor_dir.join(format!("verdict-spec-{n}.json"));
+    match seat::read_verdict(&p) {
+        Ok(Some(Verdict::Specced { body, .. })) if !body.trim().is_empty() => Some(body),
+        _ => None,
+    }
+}
+
+/// The spec QA is held to, or a refusal (#713). Fail closed: with no issue,
+/// or no non-empty body on GitHub and no local spec verdict, the seat is never
+/// woken. A woken seat with no spec can only guess, and a forced
+/// request-changes would send impl to rework a PR nothing is known to be
+/// wrong with; refusing costs no tokens, and the loop re-reads next tick.
+pub fn resolve_spec(
+    issue: u64,
+    fetched: Result<String, String>,
+    floor_dir: &Path,
+) -> Result<Spec, QaError> {
+    if issue == 0 {
+        return Err(QaError(
+            "spec unavailable: the PR closes no issue, so there is no spec to review against; QA seat not woken".into(),
+        ));
+    }
+    let why = match fetched {
+        Ok(body) if !body.trim().is_empty() => {
+            return Ok(Spec {
+                text: body,
+                source: SpecSource::Issue,
+            })
+        }
+        Ok(_) => format!("issue #{issue} has an empty body"),
+        Err(e) => e,
+    };
+    match local_spec(floor_dir, issue) {
+        Some(text) => Ok(Spec {
+            text,
+            source: SpecSource::LocalVerdict,
+        }),
+        None => Err(QaError(format!(
+            "spec unavailable for #{issue}: {why}, and no verdict-spec-{issue}.json on this floor; QA seat not woken (fail closed; the loop retries next tick)"
+        ))),
+    }
+}
+
+/// What `{{SPEC}}` becomes: a source line, then the spec, cut at
+/// [`SPEC_MAX_CHARS`] with a note saying so.
+pub fn spec_block(issue: u64, spec: &Spec) -> String {
+    let source = match spec.source {
+        SpecSource::Issue => format!("Source: issue #{issue} as it reads on GitHub at dispatch."),
+        SpecSource::LocalVerdict => format!(
+            "Source: the PM seat's local spec verdict for #{issue}. GitHub's copy could not be read, so a later edit to the issue may be missing."
+        ),
+    };
+    let total = spec.text.chars().count();
+    let body: String = spec.text.chars().take(SPEC_MAX_CHARS).collect();
+    let cut = if total > SPEC_MAX_CHARS {
+        format!("\n\n[fwf: spec truncated at {SPEC_MAX_CHARS} of {total} characters. A criterion you cannot read in full is not_verifiable.]")
+    } else {
+        String::new()
+    };
+    format!("{source}\n\n{}{cut}", body.trim_end())
+}
+
+/// Everything a QA job template is filled with.
+pub struct Job<'a> {
+    pub seat_no: u8,
+    pub pr: u64,
+    pub repo: &'a str,
+    pub branch: &'a str,
+    pub head: &'a str,
+    pub issue: u64,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub base: &'a str,
+    pub check: &'a str,
+    pub deadline: &'a str,
+    pub spec: &'a str,
+}
+
+/// Fill a QA job template. `{{SPEC}}` goes last so a placeholder written
+/// inside an issue is never itself substituted.
+pub fn render(template: &str, j: &Job) -> String {
+    template
+        .replace("{{SEAT}}", &j.seat_no.to_string())
+        .replace("{{PR}}", &j.pr.to_string())
+        .replace("{{REPO}}", j.repo)
+        .replace("{{BRANCH}}", j.branch)
+        .replace("{{HEAD}}", j.head)
+        .replace("{{ISSUE}}", &j.issue.to_string())
+        .replace("{{TITLE}}", j.title)
+        .replace("{{BODY}}", j.body)
+        .replace("{{BASE}}", j.base)
+        .replace("{{CHECK}}", j.check)
+        // When this cycle ends, so a long proof can be cut short (#589).
+        .replace("{{DEADLINE}}", j.deadline)
+        .replace("{{SPEC}}", j.spec)
+}
+
+/// An approval must carry the per-criterion review (#713): a non-empty
+/// `criteria` list, each entry with text, a known status and evidence, and
+/// none `not_met`. A request for changes passes as it is.
+pub fn check_verdict(approve: bool, criteria: &[Criterion]) -> Result<(), String> {
+    if !approve {
+        return Ok(());
+    }
+    if criteria.is_empty() {
+        return Err("an approval needs a `criteria` list: one entry per acceptance criterion of the spec, each {criterion, status: met|not_met|not_verifiable, evidence}".into());
+    }
+    for (i, c) in criteria.iter().enumerate() {
+        let name = c.criterion.trim();
+        if name.is_empty() {
+            return Err(format!("criteria[{i}] has no `criterion` text"));
+        }
+        if !STATUSES.contains(&c.status.trim()) {
+            return Err(format!(
+                "criteria[{i}] (`{name}`) has status `{}`; it must be one of met, not_met, not_verifiable",
+                c.status
+            ));
+        }
+        if c.evidence.trim().is_empty() {
+            return Err(format!(
+                "criteria[{i}] (`{name}`) has no `evidence` (the test run or code path)"
+            ));
+        }
+        if c.status.trim() == "not_met" {
+            return Err(format!(
+                "criteria[{i}] (`{name}`) is not_met; an unmet criterion is a request for changes, not an approval"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The checklist as it appears in the posted review; empty when there is none.
+pub fn checklist(criteria: &[Criterion]) -> String {
+    if criteria.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("**Acceptance criteria**\n\n");
+    for c in criteria {
+        let (mark, said) = match c.status.trim() {
+            "met" => ("x", "met"),
+            "not_met" => (" ", "not met"),
+            "not_verifiable" => (" ", "not verifiable"),
+            other => (" ", other),
+        };
+        out.push_str(&format!(
+            "- [{mark}] {} — **{said}**: {}\n",
+            c.criterion.trim(),
+            c.evidence.trim()
+        ));
+    }
+    out.push('\n');
+    out
+}
 
 pub struct QaConfig {
     pub owner: String,
@@ -76,6 +300,32 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
         return Err(QaError(format!("PR #{} is not open", cfg.pr)));
     }
 
+    // The spec QA is held to (#713): the issue body as it stands now, read
+    // here because the seat has no token. Its own narrow token, so a refused
+    // mint lands on the local fallback rather than failing the whole read.
+    let fetched = if issue == 0 {
+        Err("no issue".to_string())
+    } else {
+        let issue_perms = BTreeMap::from([("issues", "read"), ("metadata", "read")]);
+        github::mint(qa_app, Some(&issue_perms))
+            .map_err(|e| format!("issue token: {e}"))
+            .and_then(|t| issue_body(API, &t.token, &repo, issue))
+    };
+    let spec = match resolve_spec(issue, fetched, &cfg.floor_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            record(
+                &mut log,
+                &repo,
+                Kind::Refused {
+                    what: format!("#{}", cfg.pr),
+                    why: e.0.clone(),
+                },
+            )?;
+            return Err(e);
+        }
+    };
+
     // Make sure the mirror has the branch at this head (the seat reads from the mirror only).
     let read_tok = github::mint(
         qa_app,
@@ -100,22 +350,24 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
     }
 
     // Render and wake.
-    let job_text = std::fs::read_to_string(&cfg.job_template)?
-        .replace("{{SEAT}}", &cfg.seat_no.to_string())
-        .replace("{{PR}}", &cfg.pr.to_string())
-        .replace("{{REPO}}", &repo)
-        .replace("{{BRANCH}}", &branch)
-        .replace("{{HEAD}}", head.as_str())
-        .replace("{{ISSUE}}", &issue.to_string())
-        .replace("{{TITLE}}", &title)
-        .replace("{{BODY}}", &pr_body)
-        .replace("{{BASE}}", &base)
-        .replace("{{CHECK}}", &cfg.check_cmd)
-        // When this cycle ends, so a long proof can be cut short (#589).
-        .replace(
-            "{{DEADLINE}}",
-            &seat::local_hhmm(now() + cfg.timeout.as_secs()),
-        );
+    // `"{{DEADLINE}}"` is filled inside `render` (#589).
+    let job_text = render(
+        &std::fs::read_to_string(&cfg.job_template)?,
+        &Job {
+            seat_no: cfg.seat_no,
+            pr: cfg.pr,
+            repo: &repo,
+            branch: &branch,
+            head: head.as_str(),
+            issue,
+            title: &title,
+            body: &pr_body,
+            base: &base,
+            check: &cfg.check_cmd,
+            deadline: &seat::local_hhmm(now() + cfg.timeout.as_secs()),
+            spec: &spec_block(issue, &spec),
+        },
+    );
     let pane = Pane {
         target: cfg.seat_target.clone(),
         role: Role::Qa,
@@ -180,12 +432,13 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
             tokens_out,
         },
     )?;
-    let (v_head, approve, notes) = match verdict {
+    let (v_head, approve, notes, criteria) = match verdict {
         Some(Verdict::Reviewed {
             head,
             approve,
             notes,
-        }) => (head, approve, notes),
+            criteria,
+        }) => (head, approve, notes, criteria),
         Some(Verdict::Blocked { reason }) => {
             return Err(QaError(format!("QA seat blocked: {reason}")))
         }
@@ -209,6 +462,20 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
             v_head.short(),
             head.short()
         )));
+    }
+    // An approval that skipped the per-criterion review posts nothing (#713).
+    // The PR stays un-reviewed, so the loop wakes QA on it again.
+    if let Err(why) = check_verdict(approve, &criteria) {
+        let why = format!("QA approval rejected: {why}; no review posted");
+        record(
+            &mut log,
+            &repo,
+            Kind::Refused {
+                what: format!("#{}", cfg.pr),
+                why: why.clone(),
+            },
+        )?;
+        return Err(QaError(why));
     }
     // Re-read the head right before posting: an approval must be anchored to
     // the commit that was reviewed, and GitHub will dismiss it if it moves.
@@ -237,7 +504,7 @@ pub fn run(cfg: &QaConfig, qa_app: &AppEntry) -> Result<(u64, String), QaError> 
     } else {
         "REQUEST_CHANGES"
     };
-    let text = format!("fwf QA seat {} reviewed {} — {}\n\n{notes}\n\nfwf-Provenance: fwf qa cycle · author {author}", cfg.seat_no, head.short(), if approve { "approved" } else { "changes requested" });
+    let text = format!("fwf QA seat {} reviewed {} — {}\n\n{notes}\n\n{}fwf-Provenance: fwf qa cycle · author {author}", cfg.seat_no, head.short(), if approve { "approved" } else { "changes requested" }, checklist(&criteria));
     let payload = serde_json::json!({ "commit_id": head.as_str(), "event": event, "body": text });
     let (code, body) = github::send_json(
         "POST",

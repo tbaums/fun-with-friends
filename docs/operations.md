@@ -134,6 +134,21 @@ what generalises, not the flag.
    released job is re-planned from scratch; a verdict that lands after the
    release is a stray note in the record and is ignored.
 
+9. **QA is held to the spec; without one it does not run.**
+
+   Since #713 the supervisor reads the PR's issue (the PM spec) at QA
+   dispatch and puts it in the QA job, falling back to the floor's
+   `verdict-spec-N.json`. If neither yields a spec, or the PR closes no issue,
+   `fwf qa` refuses with `spec unavailable …` and no seat is woken. The loop
+   retries every tick, so a transient GitHub failure heals by itself. A PR
+   that sits un-reviewed with that refusal in `fwf why <pr>` needs a spec:
+   give the issue a body, or run `fwf spec`.
+
+   An approval must list each acceptance criterion as `met`, `not_met` or
+   `not_verifiable`, with evidence. One that does not, or that lists a
+   `not_met`, is refused with `QA approval rejected: …`. No review is posted,
+   and QA is woken on the PR again. The checklist appears in the posted review.
+
 ## Driving a floor by hand
 
 When the loop is stopped and you want one issue moved, the verbs are the same

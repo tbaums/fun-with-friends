@@ -72,7 +72,7 @@ guide (`every_family_resolves_every_role_and_uses_only_known_placeholders` in
 
 ## What the supervisor fills in
 
-These are the twelve tokens in `PLACEHOLDERS`. A prompt may use only these; the
+These are the fourteen tokens in `PLACEHOLDERS`. A prompt may use only these; the
 test names any other as an unknown placeholder, so a typo can never reach a
 seat as literal text.
 
@@ -82,7 +82,7 @@ seat as literal text.
 | `{{REPO}}` | the `owner/name` being worked |
 | `{{ISSUE}}` | the issue number |
 | `{{TITLE}}` | the issue title |
-| `{{BODY}}` | the issue body, as written |
+| `{{BODY}}` | the issue body, as written; for `qa`, the PR body (the implementer's summary, not the requirement) |
 | `{{BRANCH}}` | the branch the seat must create and use |
 | `{{PR}}` | the pull request number under review |
 | `{{HEAD}}` | the exact commit sha being reviewed or reworked |
@@ -91,6 +91,7 @@ seat as literal text.
 | `{{REVIEW}}` | the review text an impl seat must answer (rework only) |
 | `{{DEADLINE}}` | local `HH:MM` when this cycle ends |
 | `{{GV_REFUSAL_REASON}}` | GV's sign-off refusal PM must answer (PM re-spec only) |
+| `{{SPEC}}` | the issue's spec, read by the supervisor at QA dispatch, with its source and a size bound (`qa` only) |
 
 ## Roles
 
@@ -136,14 +137,33 @@ under `fwf-qa`, anchored to that commit, so an approval of an older head is not
 an approval of this one.
 
 Given `{{SEAT}}`, `{{REPO}}`, `{{ISSUE}}`, `{{TITLE}}`, `{{BODY}}`, `{{PR}}`,
-`{{BRANCH}}`, `{{HEAD}}`, `{{BASE}}`, `{{CHECK}}`, `{{DEADLINE}}`.
+`{{BRANCH}}`, `{{HEAD}}`, `{{BASE}}`, `{{CHECK}}`, `{{DEADLINE}}`, `{{SPEC}}`.
 
 Must never: merge, label, push, or approve its own work.
 
 ```json
-{"verdict":"reviewed","head":"<the sha reviewed>","approve":true,"notes":"<what you checked>"}
+{"verdict":"reviewed","head":"<the sha reviewed>","approve":true,"notes":"<what you checked>","criteria":[{"criterion":"<one acceptance criterion>","status":"met","evidence":"<test run / code path>"}]}
 {"verdict":"blocked","reason":"<why you could not review>"}
 ```
+
+**QA is held to the spec (#713).** A seat has no token, so it cannot read the
+issue it is judging. `qa.rs` reads the issue body for it at dispatch (the PM
+spec as it stands now, acceptance criteria included) and fills `{{SPEC}}`
+with it, cut at `qa::SPEC_MAX_CHARS` characters with a note when longer. The
+PM's local `verdict-spec-N.json` is used only when GitHub yields nothing. With
+no spec from either, or a PR that closes no issue, the cycle **fails closed**:
+the seat is not woken, a `Refused` event names why, and the loop re-reads on
+its next tick. Waking a seat with no spec would buy a guess. Forcing a
+request-changes would send impl to rework a PR nothing is known to be wrong
+with.
+
+Every family's QA job asks for `criteria`: one entry per acceptance criterion,
+`status` exactly `met`, `not_met` or `not_verifiable`, with the evidence.
+`qa::check_verdict` enforces it on an **approval**. A missing or empty list, an
+entry without criterion, status or evidence, or any `not_met` entry is
+refused: no review is posted, a `Refused` event records the reason, and the
+still-unreviewed PR is planned for QA again. A request for changes needs no
+list. The checklist, when present, is rendered into the posted review.
 
 ### gv
 

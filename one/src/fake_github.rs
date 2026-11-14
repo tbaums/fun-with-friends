@@ -26,6 +26,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod seed;
+
 /// Seconds since the Unix epoch, produced on demand by the injected clock.
 pub type Clock = Box<dyn FnMut() -> u64 + Send>;
 
@@ -1033,30 +1035,7 @@ impl FakeGitHub {
         (status, serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
-    /// Create (or no-op) a repo.
-    pub fn add_repo(&self, owner: &str, repo: &str) {
-        self.lock().repo_mut(owner, repo);
-    }
-
-    pub fn seed_issue(
-        &self,
-        owner: &str,
-        repo: &str,
-        title: &str,
-        author: &str,
-        labels: &[&str],
-    ) -> u64 {
-        self.lock()
-            .create_issue(owner, repo, title, "", author, labels, None)
-    }
-
-    /// Set `refs/<name>` (e.g. `heads/main`) to `sha`, creating the repo.
-    pub fn seed_ref(&self, owner: &str, repo: &str, name: &str, sha: &str) {
-        self.lock()
-            .repo_mut(owner, repo)
-            .refs
-            .insert(format!("refs/{name}"), sha.to_string());
-    }
+    // `add_repo`, `seed_issue`, `seed_issue_with_body`, `seed_ref`: seed.rs.
 
     /// A deterministic 40-hex "sha" for a label, for tests that need one.
     pub fn sha(label: &str) -> String {

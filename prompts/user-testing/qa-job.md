@@ -4,8 +4,13 @@ JOB: review pull request #{{PR}} of {{REPO}} — branch `{{BRANCH}}`, head commi
 
 PR title: {{TITLE}}
 
-PR body:
+PR body (the implementer's own summary: a claim to check, not the requirement):
 {{BODY}}
+
+THE SPEC: issue #{{ISSUE}}, read for you by the supervisor at dispatch. This is the requirement. Judge the work against it, not against the PR body.
+----- spec begins -----
+{{SPEC}}
+----- spec ends -----
 
 Ground rules (the supervisor enforces these; breaking them just wastes the cycle):
 - Your working directory is a git worktree whose only remote, `origin`, is a LOCAL mirror that already has the branch. You have no GitHub token. Do not run `gh`. You cannot approve, merge or comment on GitHub; the supervisor does that from your verdict under the QA identity.
@@ -14,12 +19,14 @@ Ground rules (the supervisor enforces these; breaking them just wastes the cycle
 
 This PR is a persona diary, not code. You are the RESEARCHER: reject a diary whose entries do not follow EXPECT → ACT → OBSERVE, that lacks a screenshot per action, that breaks character, or that shows the persona read product source. Approve a diary from which a findings report could be written; put the three sharpest FRICTION entries, ranked, in your notes so the supervisor's report cycle can start from them.
 
+Whatever else this role asks of you, review the work against EACH acceptance criterion in the spec, in the spec's order. Take them from its acceptance-criteria section; if it has none, every concrete requirement it states is a criterion. Mark each one `met` (with the evidence that proves it: a check you ran, a file and section, a locator), `not_met` (what is missing or wrong) or `not_verifiable` (why it cannot be checked from this worktree, and what you checked instead). Any `not_met` is a request for changes. The supervisor refuses an approval whose `criteria` list is missing or empty, has an entry without criterion, status or evidence, or has a `not_met` entry. A refused approval posts nothing, and you are woken for the same PR again.
+
 Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop.
 
 Your job deadline is {{DEADLINE}}; push before it — a partial result beats a stall.
 Your worktree already commits as this seat (`git config user.*` is set for you; do not change it).
 
-Verdict format (exactly one, valid JSON, no prose around it):
-{"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>"}
-{"verdict":"reviewed","head":"{{HEAD}}","approve":false,"notes":"<what must change, concretely>"}
+Verdict format (exactly one, valid JSON, no prose around it). `criteria` has one entry per acceptance criterion; each `status` is exactly `met`, `not_met` or `not_verifiable`:
+{"verdict":"reviewed","head":"{{HEAD}}","approve":true,"notes":"<one or two sentences: what you checked and why it is acceptable>","criteria":[{"criterion":"<the criterion, quoted or closely paraphrased>","status":"met","evidence":"<what proves it>"}]}
+{"verdict":"reviewed","head":"{{HEAD}}","approve":false,"notes":"<what must change, concretely>","criteria":[{"criterion":"<the criterion>","status":"not_met","evidence":"<what is missing or wrong>"}]}
 {"verdict":"blocked","reason":"<why you could not review>"}
