@@ -3,11 +3,12 @@
 The meter and its brake, `run.jsonl` as the only record, cost reporting, the dash, and the tmux layout.
 What you do to keep a floor running, and what to read when it stops.
 
-Everything below was learned by breaking a live floor. Four of the eight rules
-are now enforced by the product; they are kept here because the reasoning is
-what generalises, not the flag.
+Everything below was learned by breaking a live floor. Some of these rules
+are now enforced by the product. They are kept here because the reasoning is
+what generalises, not the flag. Fixes for specific symptoms are in
+[`troubleshooting.md`](troubleshooting.md).
 
-## Eight rules
+## Four rules
 
 1. **Stop the loop with `fwf stop`, never with `pkill`.**
 
@@ -22,7 +23,7 @@ what generalises, not the flag.
    `pkill -x fwf` kills every in-flight `fwf gate` and `fwf qa`, because they
    are the same binary. **`pkill -x fwf` is never correct — use `fwf stop`.**
 
-   The three long-running verbs now re-exec themselves under their own names
+   The three long-running verbs re-exec themselves under their own names
    (`fwf-run`, `fwf-gate`, `fwf-qa`, via `~/.fwf/bin/`), so `ps -o comm=` tells
    them apart and a signal aimed at one cannot reach another (#678). That is a
    safety net, not a new habit: `pkill -x fwf-run` still matches every floor's
@@ -48,128 +49,178 @@ what generalises, not the flag.
    loop: pid 81234 (alive)
    ```
 
-   — and inside a wait the loop now prints a line about once a minute:
+   — and inside a wait the loop prints a line about once a minute:
 
    ```
    waiting: qa seat 1 on #1419 (120s elapsed, deadline in 1680s)
    ```
 
    `run.jsonl`'s newest event is the truth about a floor. A quiet stdout is
-   not a hung loop, and restarting one mid-wait throws away the cycle. (Rust's
-   stdout is line-buffered to a terminal; there is no buffering bug to chase.)
+   not a hung loop, and restarting one mid-wait throws away the cycle.
 
 3. **Start the loop inside tmux, not with `nohup`.**
 
    ```bash
-   tmux new-session -d -s fwf-run "fwf run --manifest /path/to/.fwf/fwf.toml"
+   tmux new-window -d -t fwf-one -n run "fwf run --manifest /path/to/.fwf/fwf.toml"
    ```
 
    `nohup … &` from a one-shot ssh command leaves the session hanging on
-   inherited file descriptors. A tmux session also gives you the loop's
-   scrollback later, which is where the `waiting:` lines are.
+   inherited file descriptors. A tmux window also gives you the loop's
+   scrollback later, which is where the `waiting:` lines are. Put it in the
+   floor's own session (`fwf-one` here, the manifest's `session`) in a window
+   named `run`: that window is how the dash tells whether the loop is up. If
+   the session does not exist yet, `tmux new-session -d -s fwf-one -n run "…"`
+   creates it with that window.
 
-4. **Stamp meter readings with the floor host's own clock.**
+4. **Stamp meter readings with the floor host's own clock.** See the next
+   section.
 
-   Meter log lines are parsed in the local time of the host reading them, so a
-   line stamped in another machine's timezone reads as hours old and the brake
-   parks the floor ("last meter reading is 420m old"). Generate the stamp with
-   `date` on the host the floor runs on, never by copying a line from
-   somewhere else.
+## The meter and its brake
 
-5. **`fwf gate --sha` needs the full 40-character sha and a gate worktree.**
+fwf never measures subscription usage itself. It reads the last line you
+logged, and it parks the loop when that line says to.
 
-   A fresh floor has no `gate-wt`; nothing creates one for you before the
-   loop's first merge:
+**The file** is `~/.fwf-meter-log` on the floor host. It sits beside `~/.fwf/`,
+not inside it, and only `$HOME` decides where it is. fwf only reads it; you, or
+a helper you run, append to it.
 
-   ```bash
-   git clone /path/to/floor/mirror/mirror.git /path/to/floor/gate-wt
-   ```
+**The line format.** Only lines that contain `weekly=` count, and the last such
+line wins. Its first two whitespace-separated fields are the timestamp
+`YYYY-MM-DD HH:MM:SS` in the **floor host's local time**. `weekly=NN` is the
+weekly usage percentage. `session=NN` is optional and only shown by the dash.
+Anything else on the line is ignored.
 
-   An abbreviated sha is refused, not resolved.
+```bash
+echo "$(date '+%Y-%m-%d %H:%M:%S') session=12 weekly=41" >> ~/.fwf-meter-log
+```
 
-   `fwf gate --venue systemd-run` fails fast when polkit denies the scope
-   (#684): it passes `--no-ask-password`, so a box where the venue is not
-   usable says so in milliseconds instead of registering a tty password agent
-   and waiting forever, and the check has its own 5s bound on top. A
-   `systemd-run … true` child alive for minutes is itself the symptom of a
-   regression here — that hang cost 17 minutes and a hand-killed child once.
+**What the brake does, every tick, before it polls GitHub:**
 
-6. **A hand-pushed branch must be fetched into the floor's mirror.**
+| The last `weekly=` line | The loop |
+|---|---|
+| younger than 45 minutes, and `weekly` below `park_at_weekly_pct` | runs normally |
+| younger than 45 minutes, and `weekly` at or above `park_at_weekly_pct` | `PARKED — weekly meter NN% ≥ PP%`: wakes no seat, re-reads after `poll_interval_secs` |
+| older than 45 minutes, or a stamp `date` cannot parse | `PARKED — last meter reading is Nm old`: wakes no seat. A loop that cannot see the meter must not spend. |
+| **no file, or no `weekly=` line at all** | **runs normally, with no brake.** |
 
-   The seats' only remote is the local mirror, so a branch pushed to GitHub by
-   hand does not exist for `fwf qa` until the mirror has it — the symptom is a
-   head that "does not exist after git fetch origin":
+The last row matters. The brake fails **open**: a floor with no meter log is
+never parked by the meter. If you want the brake, write the file before the
+first `fwf run`, and refresh it at least every 45 minutes for as long as the
+loop runs. Otherwise the floor parks itself as stale.
 
-   ```bash
-   git -C /path/to/floor/mirror/mirror.git \
-     fetch upstream "+refs/heads/impl1/*:refs/heads/impl1/*"
-   ```
+While parked, `fwf run --once` returns without waking anything. The brake
+writes nothing to `run.jsonl`; the `PARKED` lines are on the loop's stdout.
 
-7. **A re-run of `fwf triage` is not a sign-off.**
+**Stamp with the floor host's clock.** The stamp is turned into a time by that
+host's `date` (`date -j -f` on macOS, `date -d` on Linux), in its local zone. A
+line copied from a machine in another timezone reads as hours old, and the
+floor parks ("last meter reading is 420m old"). Generate the stamp with `date`
+on the host the floor runs on.
 
-   Triage records a GV verdict; the planner waits for the `Ready` event that
-   only an un-gate writes. Re-triaging an already-specced issue records a
-   second verdict and changes nothing:
+## The run record
 
-   ```bash
-   fwf ungate --repo o/r --issue N --by NAME
-   ```
+`<floor>/run.jsonl` is the floor's only record. It is one JSON object per line,
+appended and fsynced, and never edited by fwf. `fwf status`, `fwf dash` and
+`fwf why` are all folds over it, and so are the loop's own decisions about which
+issues are signed off, shipped, claimed or owed a push, and which seats are
+busy.
 
-8. **A STALLED seat holds its seat id for both roles — briefly.**
+Every line has `ts` (unix seconds), `repo` (`owner/name`) and `kind`. The other
+fields depend on `kind`:
 
-   A stall is not a dead job: the supervisor is the only thing that ever kills
-   a pane, so a seat past its deadline may still be finishing, and its issue or
-   PR stays nobody else's. Seat ids are shared across roles (impl1 and qa1 are
-   one worktree pair), so while qa1 is STALLED, impl1 is unassignable too.
+| `kind` | Fields |
+|---|---|
+| `issue` | `issue`, `to` (an issue state) |
+| `pr` | `pr`, `issue` (number or `null`), `to` (a PR state) |
+| `seat` | `seat` (number), `role`, `to` (a seat state), `tokens_in`, `tokens_out` (numbers or `null`) |
+| `gate` | `to` (a gate state) |
+| `promote` | `branch`, `from`, `to` (shas). The loop also writes one when it pushes a seat branch upstream. |
+| `human` | `actor`, `action`, `target`: an attributed human (or delegated) decision, e.g. `ungate`, `release` |
+| `refused` | `what`, `why`: a refusal, with its reason |
+| `note` | `text`: free text the loop also reads back by prefix (`GV triage: #`, `PM spec written into #`, `GV sign-off: #`, `fast-track: #`, `spec cycle parked: #`, …) |
 
-   The loop now ends that by itself twenty minutes after the stall: it records
-   an `Idle` event for the seat with a note saying why, which frees the id for
-   both roles and puts the job back in the queue. To call a stall dead sooner:
+`role` is one of `impl`, `qa`, `gv`, `pm`, `captain`. Each `to` is an object
+whose `state` field says which state it is. Some states carry more fields:
 
-   ```bash
-   fwf release --seat 1 --role qa --by NAME
-   ```
+| Machine | States (`state`), with their extra fields |
+|---|---|
+| issue | `gated`, `ready`, `claimed` {`seat`, `fence`}, `shipped` {`pr`, `sha`}, `closed`, `unknown` |
+| PR | `draft` {`head`}, `open` {`head`}, `approved` {`head`, `reviewer`}, `changes_requested` {`head`}, `stale` {`head`, `approved_head`}, `merged` {`sha`}, `closed_unmerged`, `unknown` |
+| seat | `idle`, `working` {`job`, `deadline`}, `reported` {`job`}, `stalled` {`job`}, `gone`, `unknown` |
+| gate | `queued` {`sha`, `suite`}, `running` {`sha`, `suite`, `started`}, `green` {`sha`, `suite`, `secs`}, `red` {`sha`, `suite`, `failed`}, `killed` {`sha`, `suite`, `reason`}, `unknown` |
 
-   It refuses anything that is not STALLED — a WORKING seat's job is live. The
-   released job is re-planned from scratch; a verdict that lands after the
-   release is a stray note in the record and is ignored.
+A `job` is `{"role", "issue", "pr"}`. Every sha is the full 40 hex characters.
 
-9. **QA is held to the spec; without one it does not run.**
+```json
+{"ts":1789844651,"repo":"o/r","kind":"issue","issue":3,"to":{"state":"claimed","seat":1,"fence":"f69ad087e29c8d6263ae3f8b85424b4f9a0a51b7"}}
+{"ts":1789844293,"repo":"o/r","kind":"seat","seat":1,"role":"gv","to":{"state":"working","job":{"role":"gv","issue":3,"pr":null},"deadline":1789846693},"tokens_in":null,"tokens_out":null}
+{"ts":1789850066,"repo":"o/r","kind":"gate","to":{"state":"green","sha":"ce67c42215b4f35b64fb25cace56f6bcfcfce0a3","suite":"fast","secs":1}}
+```
 
-   Since #713 the supervisor reads the PR's issue (the PM spec) at QA
-   dispatch and puts it in the QA job, falling back to the floor's
-   `verdict-spec-N.json`. If neither yields a spec, or the PR closes no issue,
-   `fwf qa` refuses with `spec unavailable …` and no seat is woken. The loop
-   retries every tick, so a transient GitHub failure heals by itself. A PR
-   that sits un-reviewed with that refusal in `fwf why <pr>` needs a spec:
-   give the issue a body, or run `fwf spec`.
+A line that does not parse is an error, never skipped. `fwf why`, `fwf dash`
+and `fwf release` refuse and name the line number. The loop, which re-reads the
+record every tick, then sees no history at all. Do not edit the file by hand.
 
-   An approval must list each acceptance criterion as `met`, `not_met` or
-   `not_verifiable`, with evidence. One that does not, or that lists a
-   `not_met`, is refused with `QA approval rejected: …`. No review is posted,
-   and QA is woken on the PR again. The checklist appears in the posted review.
+`fwf why <pr>` reads `~/.fwf/run.jsonl` (or `FWF_RUN_LOG`) unless you give it
+`--log`. For a floor, that is almost never the file you want:
+
+```bash
+fwf why 1419 --log /path/to/floor/run.jsonl
+```
+
+## Cost
+
+`fwf cost --floor DIR --seat impl1 [--since EPOCH]` reads the seat's own Claude
+transcript under `<floor>/home` and prints messages and tokens (input,
+cache-read, cache-create, output) since that time. A `seat` event that ends a
+job also carries `tokens_in` and `tokens_out`, and the dash's usage tab is a
+fold of those.
+
+## The dash
+
+`fwf dash --manifest /path/to/.fwf/fwf.toml` is the board: five tabs (seats,
+issues, PRs, decisions, usage), folded from the record, plus tmux pane
+liveness and the meter. It makes no GitHub calls. On a terminal it redraws
+every 5 seconds. Press `1`–`5` to switch tabs, `j`/`k` to move, `g`/`G` to jump
+to either end, `r` to refresh, `q` to quit. `--once`, or a pipe, prints one
+frame. Every flag is in [`verbs.md`](verbs.md).
+
+## The tmux layout
+
+One session per floor, named by the manifest's `session` (default `fwf-one`),
+with one window per seat: `impl1`, `qa1`, …, `gv1`, `pm1`. The dash looks for
+the loop in a window named `run` in the same session. Each seat window runs
+`claude` as its pane command, with no shell around it. A seat whose pane
+shows a shell as its foreground command is gone.
 
 ## Driving a floor by hand
 
 When the loop is stopped and you want one issue moved, the verbs are the same
 ones the loop calls, in the same order. Each refuses rather than guesses, so
-running one twice is safe.
+running one twice is safe. They record into `~/.fwf/floors/<repo-name>`
+whatever the manifest says (see
+[`configuration.md`](configuration.md#verbs-that-ignore-floor_dir)).
 
 ```bash
-fwf ungate       --repo o/r --issue N --by NAME          # the sign-off the planner waits for
-fwf slice        --repo o/r --issue N --seat fwf-one:impl1
-fwf gate         --repo o/r --sha <40-char-sha> --suite fast --cmd '…' --workdir /path/to/floor/gate-wt
-fwf qa           --repo o/r --pr N --seat fwf-one:qa1
-fwf merge        --repo o/r --pr N
-fwf release-check --repo o/r --tag one-vX.Y.Z --expect 4
-fwf release      --seat 1 --role qa --by NAME            # free a STALLED seat now, instead of waiting out the cool-off
+fwf triage        --repo o/r --issue N --seat fwf-one:gv1
+fwf spec          --repo o/r --issue N --seat fwf-one:pm1
+fwf ungate        --repo o/r --issue N --by NAME          # the sign-off the planner waits for
+fwf slice         --repo o/r --issue N --seat fwf-one:impl1 --check 'make test'
+fwf qa            --repo o/r --pr N --seat fwf-one:qa1 --check 'make test'
+fwf merge         --repo o/r --pr N
+fwf gate          --repo o/r --sha <40-char-sha> --suite fast --cmd '…' --workdir /path/to/floor/gate-wt
+fwf promote       --repo o/r --from staging --to main --suite fast
+fwf release       --seat 1 --role qa --by NAME            # free a STALLED seat now, instead of waiting out the cool-off
+fwf release-check --repo o/r --tag vX.Y.Z --expect 4
 ```
 
-`fwf status` between any two of them says what changed; `fwf why <pr>` replays
-one PR's whole timeline out of the record; `fwf dash` watches the floor.
+`fwf status` between any two of them says what changed; `fwf why <pr> --log
+<floor>/run.jsonl` replays one PR's whole timeline out of the record;
+`fwf dash` watches the floor.
 
 ## See also
 
+- [`troubleshooting.md`](troubleshooting.md) — symptoms and their fixes.
 - [`releasing.md`](releasing.md) — cutting a release, the Linux asset, `release-check`.
 - [`verbs.md`](verbs.md) — every verb, the App it acts under, and what it refuses.
 - [`index.md`](index.md) — the fwf 1.0 documentation index.

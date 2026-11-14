@@ -35,14 +35,24 @@ the factory is a fold over that file.
 
 ## Ten-minute start
 
-You need macOS or Linux with `tmux`, `git` and a stable Rust toolchain, a Claude
-subscription, and [three GitHub Apps](docs/github-apps.md) installed on the
-repository with their keys in `~/.fwf/keys/` and ids in `~/.fwf/apps.toml`.
+This is the short version; [`docs/getting-started.md`](docs/getting-started.md)
+is the full walk-through. You need macOS or Linux with `tmux`, `git`, `jq` and a
+stable Rust toolchain, Claude Code and a Claude subscription, and
+[three GitHub Apps](docs/github-apps.md) installed on the repository with their
+keys in `~/.fwf/keys/` and ids in `~/.fwf/apps.toml`.
 
 ```sh
 git clone https://github.com/tbaums/fun-with-friends && cd fun-with-friends
 ./install.sh                 # builds one/ and puts `fwf` on your PATH
-fwf version                  # fwf 1.0.2
+fwf version                  # prints fwf X.Y.Z
+```
+
+Keep the checkout: the binary reads the seat prompts from it at run time. Give
+the seats a long-lived Claude login of their own (each pane gets its own
+`HOME`):
+
+```sh
+claude setup-token           # save what it prints to ~/.fwf/seat-token, mode 0600
 ```
 
 Write the manifest — the only launch input — into the repository you want
@@ -50,7 +60,7 @@ worked, then validate it and mint every App:
 
 ```sh
 mkdir -p .fwf && fwf init-manifest > .fwf/fwf.toml
-$EDITOR .fwf/fwf.toml        # set repo, and list the issues you want worked
+$EDITOR .fwf/fwf.toml        # set repo, your own [suites], and the issues to work
 fwf up                       # validates, mints each App, prints the floor plan
 ```
 
@@ -63,7 +73,16 @@ manifest ./.fwf/fwf.toml ok: repo tbaums/fun-with-friends · staging → main
 fwf up: no apps config at ~/.fwf/apps.toml
 ```
 
-Then bring up the floor and run the loop:
+If you want the loop to park on high subscription usage, log a reading to
+`~/.fwf-meter-log` and keep it under 45 minutes old (with no log, nothing
+brakes; see [the meter](docs/operations.md#the-meter-and-its-brake)):
+
+```sh
+echo "$(date '+%Y-%m-%d %H:%M:%S') weekly=20" >> ~/.fwf-meter-log
+```
+
+Then bring up the floor and run the loop. The gate worktree needs no setup:
+the loop clones it at its first merge.
 
 ```sh
 fwf seats --up               # mirror, one worktree per seat, a warm pane each
@@ -73,6 +92,9 @@ fwf dash                     # the board: seats · issues · PRs · decisions ·
                              # (watches on a terminal; --watch SECS to change
                              #  the interval, --once for one labelled snapshot)
 ```
+
+Attach to the seat session (`tmux attach -t fwf-one`) once, to check each pane
+is at the Claude prompt and logged in.
 
 `fwf dash` has five tabs (`1`-`5`, or `--tab issues`), `j`/`k` to move the
 selection, `r` to refresh, `q` to quit. Every pane is folded from the run
@@ -89,7 +111,7 @@ Each is a contract rather than a conversation. It names what the seat is given
 (the issue, the branch to create, the commit to build on, the deadline), what
 it may not do, and the one verdict shape it must return. The supervisor fills
 only the placeholders it knows — `{{SEAT}}`, `{{REPO}}`, `{{ISSUE}}`, `{{TITLE}}`, `{{BODY}}`, `{{BRANCH}}`, `{{PR}}`, `{{HEAD}}`,
-`{{BASE}}`, `{{CHECK}}`, `{{REVIEW}}`, `{{DEADLINE}}` — and a test refuses any file
+`{{BASE}}`, `{{CHECK}}`, `{{REVIEW}}`, `{{DEADLINE}}`, `{{GV_REFUSAL_REASON}}`, `{{SPEC}}` — and a test refuses any file
 that uses one it does not fill, so a typo can never reach a seat as a literal
 placeholder. A verdict is data: `implemented` with a head sha becomes a pull
 request, `blocked` releases the claim, a QA verdict becomes a review under the
@@ -108,7 +130,7 @@ define falls back to `dev`.
 | `user-testing` | [impl](prompts/user-testing/impl-job.md) | [qa](prompts/user-testing/qa-job.md) | · | · | · |
 | `validate` | [impl](prompts/validate/impl-job.md) | [qa](prompts/validate/qa-job.md) | [gv](prompts/validate/gv-job.md) | · | · |
 
-[`one/prompts/README.md`](prompts/README.md) explains the families and the
+[`prompts/README.md`](prompts/README.md) explains the families and the
 fallback rule, and records which coordination the port removed rather than
 translated.
 
@@ -134,7 +156,8 @@ prints what it refused and why, and the refusal is recorded.
 - **Nothing is inferred from pane text.** A seat answers with one JSON verdict
   file, written atomically; a missing verdict is `Stalled`, never guessed.
 - **The meter brakes the floor.** `run` parks at `park_at_weekly_pct` from the
-  last real reading, and parks on a stale one.
+  last reading in `~/.fwf-meter-log`, and parks on one older than 45 minutes.
+  With no meter log at all there is nothing to read, and nothing brakes.
 - **The record is append-only.** `fwf` never edits `run.jsonl`; `why`, `status`,
   `dash` and cost are all folds over it.
 
@@ -146,19 +169,26 @@ prints what it refused and why, and the refusal is recorded.
 | `seats --up/--down` | mirror, worktree clones and warm panes; `--down` refuses while a seat is Working | - |
 | `init-manifest` | print an example manifest, or convert an existing profile | - |
 | `run [--once]` | the supervisor loop; GV triage and PM spec of gated issues (`auto_spec`), then impl/QA on allow-listed ones; parks on the meter brake | all three |
-| `spec --issue N` | wake the PM seat on a gated issue; its spec is written into the issue, gate untouched | ops |
-| `triage --issue N` | wake the GV seat; a not-ready verdict gates the issue | ops |
-| `ungate --issue N --by NAME` | the one human decision, made mechanical and recorded | ops |
-| `slice --issue N` | wake an impl seat, send its branch to the mirror, open the draft PR | ops, impl |
-| `qa --pr N` | wake a QA seat; post its verdict as a review anchored to the head | qa |
-| `review --pr N --by R` | a review under a named identity, anchored to the current head | any |
-| `merge --pr N` | typed squash-merge: approval at head by a non-author, fence, checks | ops |
-| `gate --sha S --suite X` | run a suite in a venue, record the verdict, post a check-run | ops |
-| `promote --from A --to B` | fast-forward by literal SHA, only on a recorded green | ops |
-| `release-check --tag T` | refuse unless the tag has a release object with the expected assets | ops |
+| `stop` | SIGTERM this floor's loop by its pidfile, and nothing else | - |
+| `release --seat N --role R` | free a STALLED seat now instead of waiting out the 20-minute cool-off | - |
+| `spec --repo o/r --issue N --seat T` | wake the PM seat on a gated issue; its spec is written into the issue, gate untouched | ops |
+| `triage --repo o/r --issue N --seat T` | wake the GV seat; a not-ready verdict gates the issue | ops |
+| `ungate --repo o/r --issue N --by NAME` | the one human decision, made mechanical and recorded | ops |
+| `slice --repo o/r --issue N --seat T` | wake an impl seat, send its branch to the mirror, open the draft PR | impl |
+| `qa --repo o/r --pr N --seat T` | wake a QA seat; post its verdict as a review anchored to the head | qa |
+| `review --repo o/r --pr N --by R` | a review under a named identity, anchored to the current head | any |
+| `merge --repo o/r --pr N` | typed squash-merge: approval at head by a non-author, fence, checks | ops |
+| `gate --repo o/r --sha S --suite X --cmd C --workdir D` | run a suite in a venue, record the verdict, post a check-run | ops |
+| `promote --repo o/r --from A --to B --suite X` | fast-forward by literal SHA, only on a recorded green | ops |
+| `release-check --repo o/r --tag T` | refuse unless the tag has a release object with the expected assets | ops |
+| `self-upgrade [--to X.Y.Z]` | replace this binary with the published release asset, checksum verified | - |
 | `mirror-init`, `probe`, `ready` | refresh the local mirror; GET an API path as one App; mark a draft PR ready | varies |
 
-`fwf <verb>` with no arguments prints the exact flags.
+**Verbs execute; there is no `--help`.** `fwf` alone prints the usage summary,
+but a verb ignores flags it does not know: `fwf run --help` starts the loop,
+`fwf seats --help` brings seats up, `fwf stop` stops the loop, and
+`fwf self-upgrade` upgrades. Read [`docs/verbs.md`](docs/verbs.md) for every
+flag, default and refusal before running a verb you have not used.
 
 ## Design
 
@@ -174,12 +204,14 @@ identities, fences and typed merges, the run record, and the meter.
 
 ## Documentation and license
 
-- [`one/README.md`](one/README.md) — the detailed guide: layout, every flag, the
-  full enforcement list.
-- [`one/docs/github-apps.md`](docs/github-apps.md) — registering the three
+- [`docs/index.md`](docs/index.md) — the documentation index.
+- [`docs/getting-started.md`](docs/getting-started.md) — install, first manifest, first run.
+- [`docs/verbs.md`](docs/verbs.md) — every verb, every flag, and what each refuses.
+- [`docs/manifest.md`](docs/manifest.md) — every manifest key.
+- [`docs/github-apps.md`](docs/github-apps.md) — registering the three
   Apps with their minimal permissions.
-- [`one/RELEASING.md`](docs/releasing.md) — cutting a release.
-- [`one/CHANGELOG.md`](CHANGELOG.md) — what shipped in each 1.0 version.
+- [`docs/releasing.md`](docs/releasing.md) — cutting a release.
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each 1.0 version.
 
 [MIT](LICENSE) © 2026 Jamie Tanenbaum. What the three App identities can and cannot do, and how to report a problem, is in [`SECURITY.md`](SECURITY.md).
 

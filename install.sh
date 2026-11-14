@@ -72,7 +72,7 @@ fi
 
 # No cargo (or the build failed): take the published tarball for this platform,
 # verify its sha256, and install the binary out of it. A download that cannot be
-# verified is never installed. The names are one/RELEASING.md's contract (#584):
+# verified is never installed. The names are docs/releasing.md's contract (#584):
 # `<bin>-<version>-<slug>.tar.gz` plus `<asset>.sha256`, built by
 # `release-publish.sh` (macos-arm64) and `one-release.yml` (linux-x86_64).
 if [ -z "$BUILT" ] && command -v curl >/dev/null 2>&1; then

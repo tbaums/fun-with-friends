@@ -14704,7 +14704,7 @@ assert_contains "AC(b): still reports check-diverged, never silently weakened" "
 
 # AC (c): the runbook no longer commits the bump directly to main -- the old
 # step's exact command is gone from the file, not just reworded near it.
-RELEASING_MD="$(cat "$ROOT/RELEASING.md")"
+RELEASING_MD="$(cat "$ROOT/docs/legacy/RELEASING-0.x.md")"
 assert_not_contains "AC(c): 'git commit -am \"Release' no longer appears anywhere in the runbook" \
   "$RELEASING_MD" 'git commit -am "Release'
 assert_contains "AC(c): the runbook states the bump rides staging -> integration -> main" "$RELEASING_MD" "never committed directly to"
@@ -14714,8 +14714,8 @@ assert_contains "AC(c): the runbook states the bump rides staging -> integration
 # Parsed positionally (line numbers), not just "both strings appear somewhere
 # in the file" -- the ordering is the point: a check nobody is obliged to
 # consult before tagging is decoration, not a guard.
-RELEASING_CHECK_LINE="$(grep -n '\./fwf-legacy reconcile --check' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
-RELEASING_TAG_LINE="$(grep -n '^   git tag vX\.Y\.Z' "$ROOT/RELEASING.md" | head -1 | cut -d: -f1)"
+RELEASING_CHECK_LINE="$(grep -n '\./fwf-legacy reconcile --check' "$ROOT/docs/legacy/RELEASING-0.x.md" | head -1 | cut -d: -f1)"
+RELEASING_TAG_LINE="$(grep -n '^   git tag vX\.Y\.Z' "$ROOT/docs/legacy/RELEASING-0.x.md" | head -1 | cut -d: -f1)"
 assert_contains "AC(a2): the runbook contains a pre-tag './fwf-legacy reconcile --check' step" "$RELEASING_MD" './fwf-legacy reconcile --check'
 { [ -n "$RELEASING_CHECK_LINE" ] && [ -n "$RELEASING_TAG_LINE" ] && [ "$RELEASING_CHECK_LINE" -lt "$RELEASING_TAG_LINE" ]; } \
   && ok "AC(a2): the check step PRECEDES the tag step (positionally, in the runbook)" \
@@ -14923,7 +14923,7 @@ REL_PUBLISH_LINE="$(grep -n -- '--draft=false' "$ROOT/.github/workflows/release.
 # the "**Verify**" bold text, not a hardcoded step number -- issue #262
 # renumbered this step (7 -> 9) when it inserted new steps earlier in the
 # list, and a number-anchored pattern would have silently stopped matching.
-RELEASING_STEP_VERIFY="$(awk '/^[0-9]+\. \*\*Verify\*\*/{p=1} p; /^## /{if (p) exit}' "$ROOT/RELEASING.md")"
+RELEASING_STEP_VERIFY="$(awk '/^[0-9]+\. \*\*Verify\*\*/{p=1} p; /^## /{if (p) exit}' "$ROOT/docs/legacy/RELEASING-0.x.md")"
 assert_contains "AC(g): the Verify step exists and was captured for this check" "$RELEASING_STEP_VERIFY" "Verify"
 assert_contains "AC(g): the Verify step now names scripts/assert-release-assets.sh" "$RELEASING_STEP_VERIFY" "assert-release-assets.sh"
 assert_contains "AC(g): the Verify step says the workflow asserts this automatically" "$RELEASING_STEP_VERIFY" "automatically"

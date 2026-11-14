@@ -1,27 +1,32 @@
 # Releasing
 
+> **0.x only.** This is the release runbook for fwf 0.x, the bash factory
+> (`fwf-legacy`, `VERSION`, `.github/workflows/release.yml`). It was the
+> repository-root `RELEASING.md` until #717. fwf 1.0 releases follow
+> [`../releasing.md`](../releasing.md).
+
 `fun-with-friends` versions follow [SemVer](https://semver.org/). The single
-source of truth for the version is the [`VERSION`](VERSION) file; a release is a
+source of truth for the version is the [`VERSION`](../../VERSION) file; a release is a
 git tag `vX.Y.Z` whose number matches it.
 
 Releases are cut from `main` and published automatically by
-[`.github/workflows/release.yml`](.github/workflows/release.yml): pushing a
+[`.github/workflows/release.yml`](../../.github/workflows/release.yml): pushing a
 matching tag first requires **every context in
-[`.github/branch-policy.json`](.github/branch-policy.json)'s `required_contexts`
+[`.github/branch-policy.json`](../../.github/branch-policy.json)'s `required_contexts`
 to be reported GREEN by `ci.yml` for that exact SHA** (issue #303 — a required
 context that has never reported is a refusal, exactly like a failing one; this
 polls for up to 20 minutes, matched to `ci.yml`'s own observed
 `functional suite (ubuntu-latest)` worst case plus scheduling margin, then
 fails closed rather than publishing on an incomplete picture — see
-[`bin/fwf-release-ci-gate.sh`](bin/fwf-release-ci-gate.sh)). Only then does it verify
+[`bin/fwf-release-ci-gate.sh`](../../bin/fwf-release-ci-gate.sh)). Only then does it verify
 `tag == VERSION`, lint (`shellcheck -S warning`), run the
-functional suite, build a tarball with [`scripts/package.sh`](scripts/package.sh),
+functional suite, build a tarball with [`scripts/package.sh`](../../scripts/package.sh),
 builds prebuilt `fwf-dash` binaries for every target in
-[`dash-targets.json`](dash-targets.json) — currently darwin-arm64 (this Mac) and
+[`dash-targets.json`](../../dash-targets.json) — currently darwin-arm64 (this Mac) and
 linux-x86_64 (devbox); every other platform builds from source — and creates a GitHub Release with the
 tarball, the dash binaries, and `fwf-dash-<ver>-checksums.txt` attached (plus
 auto-generated notes). `fwf dash` depends on those assets for prebuilt
-resolution — see [docs/dash.md](docs/dash.md).
+resolution — see [docs/dash.md](dash.md).
 
 ## Cut a release
 
@@ -71,7 +76,7 @@ two-way divergence the pre-publish guard below then has to (correctly) refuse.
    (A user-facing feature shipped as a patch understates the change and is a
    versioning bug — classify by the CHANGELOG, don't just increment the patch
    digit.)
-3. **Update [`CHANGELOG.md`](CHANGELOG.md)**: move items from `Unreleased` into a
+3. **Update [`CHANGELOG.md`](CHANGELOG-0.x.md)**: move items from `Unreleased` into a
    new `## [X.Y.Z] - YYYY-MM-DD` section, in the **same PR** as the version bump.
    **Every entry carries two commit refs — code and docs**: `- **Feature**
    (#NNN, code <sha>, docs <sha>) — …`. Same SHA when docs rode in the
