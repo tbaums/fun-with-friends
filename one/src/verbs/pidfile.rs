@@ -261,14 +261,17 @@ mod tests {
 
     /// #675: the operator's rules live in the repo, not out of band — and the
     /// repo is public, so the floor's own hosts and people stay out of them.
-    /// The two product rules here are the ones this module exists for.
+    /// The two product rules here are the ones this module exists for. Since
+    /// #717 the symptom-first playbooks live in troubleshooting.md, so the two
+    /// pages are read as one.
     #[test]
     fn the_operations_doc_carries_the_rules_and_names_nobody() {
-        let doc = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/operations.md"
-        ))
-        .unwrap();
+        let page = |name: &str| {
+            std::fs::read_to_string(format!("{}/../docs/{name}", env!("CARGO_MANIFEST_DIR")))
+                .unwrap()
+        };
+        let ops = page("operations.md");
+        let doc = format!("{ops}\n{}", page("troubleshooting.md"));
         assert!(!doc.contains("Content pending"), "still a stub");
         let lower = doc.to_lowercase();
         for private in ["jamie", "devbox", "pdt"] {
@@ -285,23 +288,28 @@ mod tests {
             "tmux new-session",
             "date",
             "gate-wt",
-            // #684: the venue that used to hang, and how the hang looked
-            "`fwf gate --venue systemd-run` fails fast",
+            // #684: the venue that used to hang, and how the hang looked; and
+            // #715: what the CLI flag really does with that value today
+            "--no-ask-password",
             "`systemd-run … true` child alive for minutes",
+            "`--venue systemd-run` ran with no memory cap",
             "refs/heads/impl1/*",
             "fwf ungate",
         ] {
             assert!(doc.contains(rule), "operations.md never mentions {rule:?}");
         }
-        // the hand-driving sequence, in the order the loop calls it
-        let by_hand = &doc[doc
+        // the hand-driving sequence, in the order the loop calls it: the
+        // gate runs on the merge sha, after the merge (`run.rs`)
+        let by_hand = &ops[ops
             .find("## Driving a floor by hand")
             .expect("no hand-driving section")..];
         let seq: Vec<usize> = [
             "fwf ungate",
-            "fwf gate",
+            "fwf slice",
             "fwf qa",
             "fwf merge",
+            "fwf gate",
+            "fwf promote",
             "fwf release-check",
         ]
         .iter()

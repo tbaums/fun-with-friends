@@ -21,7 +21,9 @@ mkdir -p "$DEST/bin" "$DEST/lib" "$DEST/profiles" "$DEST/prompts" "$DEST/eval" "
 # name inside the tarball is that mechanism's contract (#583 renamed the file in
 # the repo, not the release layout).
 cp fwf-legacy "$DEST/fwf"
-cp install.sh VERSION LICENSE README.md CHANGELOG.md RELEASING.md "$DEST/"
+cp install.sh VERSION LICENSE README.md CHANGELOG.md "$DEST/"
+# The 0.x runbook moved under docs/legacy/ (#717); the tarball keeps its old name.
+cp docs/legacy/RELEASING-0.x.md "$DEST/RELEASING.md"
 cp bin/config.sh bin/lib.sh "$DEST/bin/"
 cp bin/fwf-*.sh "$DEST/bin/"   # ALL engine scripts — a glob so a new bin/fwf-*.sh can't be forgotten
 cp lib/*.sh "$DEST/lib/"   # ALL lib scripts — a glob so a new lib/*.sh can't be forgotten (issue #94 lesson)

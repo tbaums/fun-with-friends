@@ -12,10 +12,12 @@ documentation lives at the repository root, not in this crate — see
 crate's own orientation and nothing else, so nothing is documented twice.
 
 `fwf` IS 1.0: this crate's binary is the default command. The v0.42 bash tool
-is `fwf-legacy` (same code, renamed). For one release the 1.0 binary also
-installs as `fwfd`, its old name, so existing scripts and notes keep working;
-the `fwfd/<suite>` check-run name and the `.fwfd/gate` state directory keep
-theirs too. Both go next release.
+is `fwf-legacy` (same code, renamed). `fwfd` is the binary's old name, and it
+has not gone away yet: `install.sh` still links the binary as `fwfd` beside
+`fwf` (`fwf self-upgrade` replaces only the `fwf` it runs as), gate check-runs
+are still named `fwfd/<suite>`, and recorded gate verdicts still live in
+`<workdir>/.fwfd/gate/`. Removing them has no release scheduled; new scripts
+should call `fwf`.
 
 ## Layout
 
@@ -49,6 +51,8 @@ fmt + clippy, the size ratchet, and the docs link check.
 |---|---|
 | to install and make a first run | [`docs/getting-started.md`](../docs/getting-started.md) |
 | every verb and what it refuses | [`docs/verbs.md`](../docs/verbs.md) |
+| every manifest key | [`docs/manifest.md`](../docs/manifest.md) |
+| an issue's path, label by label | [`docs/lifecycle.md`](../docs/lifecycle.md) |
 | the three Apps and their permissions | [`docs/github-apps.md`](../docs/github-apps.md) |
 | to cut a release | [`docs/releasing.md`](../docs/releasing.md) |
 | why the harness is shaped this way | [`docs/design.md`](../docs/design.md) |

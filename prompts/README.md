@@ -110,6 +110,10 @@ Given `{{SEAT}}`, `{{REPO}}`, `{{ISSUE}}`, `{{TITLE}}`, `{{BODY}}`,
 
 Must never: run `gh`, open the PR itself, or push to the base branch.
 
+The `dev` job also tells the seat that docs ship with the change: anything a
+user or operator can see that the change alters is updated in the
+repository's docs on the same branch (#717).
+
 ```json
 {"verdict":"implemented","branch":"<branch>","head":"<40-char sha>","summary":"<one sentence>"}
 {"verdict":"blocked","reason":"<why you could not complete it>"}

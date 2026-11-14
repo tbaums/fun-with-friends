@@ -36,7 +36,7 @@ Seats never hold a GitHub token. Their only remote is a local mirror. A seat tha
 
 Every job carries a **fence**: the commit the work must be built on. The supervisor realigns the seat's worktree to the fence before waking it, records the fence in the pull request, and checks it again at merge time. A review is only an approval if it was made at the head that is being merged. A merge is only attempted if the checks on that head have completed. When any of this is not true the supervisor refuses, records the refusal in the run record, and moves on. Refusals are cheap; silent wrong merges are not.
 
-Gates are the same idea applied to the branch. A commit on `staging` is gated by running the repository's own fast suite in a clean worktree and recording the result as a check-run. Promotion to `main` is a fast-forward that the supervisor only performs when the tip it is promoting has a recorded green gate for the suite the manifest names. Releases are cut from `main` by one script that refuses a dirty tree, a stale lock, or a version that already exists.
+Gates are the same idea applied to the branch. A commit on `staging` is gated by running the repository's own fast suite in a clean worktree and recording the result as a check-run. Promotion to `main` is a fast-forward, made by `fwf promote` at an operator's request and only when the tip it is promoting has a recorded green gate for the suite named on the command line. Releases are cut from `main` by one script that refuses a dirty tree, a stale lock, or a version that already exists.
 
 ## The run record is the only truth
 
@@ -44,7 +44,7 @@ Everything the supervisor does or observes is appended to one file, `run.jsonl`,
 
 ## The meter is a brake, not a dashboard
 
-The factory runs on a subscription with a session and a weekly ceiling. The supervisor reads the latest meter reading from a file the operator keeps fresh, and parks itself when the reading is stale or above the configured threshold. It does not try to be clever about cost; it tries to be impossible to run past the limit unattended. Cost per cycle is reported from the seat's own transcript as an upper bound, and the dash says so.
+The factory runs on a subscription with a session and a weekly ceiling. The supervisor reads the latest meter reading from a file the operator keeps fresh, and parks itself when the reading is stale or above the configured threshold. It does not try to be clever about cost; it tries to be impossible to run past the limit unattended. There is one gap: with no meter file at all there is no reading to obey, and the brake does not engage, so a floor that should brake needs that file before it starts. Cost per cycle is reported from the seat's own transcript as an upper bound, and the dash says so.
 
 ## What it deliberately does not do
 

@@ -22,11 +22,14 @@ a tag with no release behind it fails the job loudly instead of publishing
 something nobody vouched for. When it finishes:
 
 ```bash
-fwf release-check --repo tbaums/fun-with-friends --tag one-vX.Y.Z --expect 4
+fwf release-check --repo tbaums/fun-with-friends --tag vX.Y.Z --expect 4
 ```
 
 Four assets: two tarballs, two checksums. Until the workflow lands `--expect 4`
 under-counts, which is the honest reading, not a bug.
+
+Tags are `vX.Y.Z`, made from `one/Cargo.toml`'s version. The first three 1.0
+releases were tagged `one-v1.0.0` to `one-v1.0.2`, and later ones were not.
 
 ## Five imperatives
 
@@ -53,10 +56,12 @@ under-counts, which is the honest reading, not a bug.
 3. **A tag is not a release.** `release-check` is the proof, the script runs it,
    and `--expect 4` after the workflow lands is the number you quote when you
    tell anyone.
-4. **Never promote `main` without the operator**; `fwf run` promotes only to
-   `staging`'s successor named in the manifest, and the run record shows who.
+4. **Promotion is always an operator's act.** `fwf run` never moves `main` (or
+   any `release_branch`); only `fwf promote` does, and the run record shows the
+   `promote` event.
 5. **Roll back by re-installing the previous release**, never by force-pushing
-   `main` (`docs/CUTOVER.md`).
+   `main`: `fwf self-upgrade --to X.Y.Z` (any published version, older
+   included), or `FWF_VERSION=X.Y.Z ./install.sh`.
 
 ## When a cut fails halfway
 
@@ -78,3 +83,8 @@ unless that ref's `one/Cargo.toml` version matches the tag.
 `<bin>-<version>-<slug>.tar.gz` with `<asset>.sha256` beside it, slug
 `macos-arm64` or `linux-x86_64`. `install.sh` downloads and verifies exactly
 these on a machine without cargo, so the names are a contract, not a convention.
+
+The binary reads the seat prompts at run time from the `prompts/` directory of
+the tree it was built in, a path fixed at build time. A binary from a release
+asset therefore looks for them at the build machine's path. See
+[`troubleshooting.md`](troubleshooting.md).

@@ -8,10 +8,12 @@ Start at [`getting-started.md`](getting-started.md); the rest is reference.
 
 - [`getting-started.md`](getting-started.md) — install, first manifest, first run, reading the dash.
 - [`design.md`](design.md) — why the harness is built this way.
+- [`lifecycle.md`](lifecycle.md) — an issue's path from filing to `main`, and the labels that steer it.
 
 ## Reference
 
 - [`manifest.md`](manifest.md) — every key of `.fwf/fwf.toml`, with defaults and types.
+- [`configuration.md`](configuration.md) — environment variables, `~/.fwf/`, and a floor's directory layout.
 - [`verbs.md`](verbs.md) — every verb, its App identity, and what it refuses.
 - [`seats.md`](seats.md) — floors, mirrors, worktrees, and the boundary of a seat.
 - [`prompts.md`](prompts.md) — the job templates, verdict contract, placeholders and families.
@@ -20,17 +22,19 @@ Start at [`getting-started.md`](getting-started.md); the rest is reference.
 
 ## Running a floor
 
-- [`operations.md`](operations.md) — the meter, the run record, cost, the dash, the tmux layout.
+- [`operations.md`](operations.md) — the meter, the run record and its schema, cost, the dash, the tmux layout.
 - [`troubleshooting.md`](troubleshooting.md) — known gotchas and their fixes.
 - [`releasing.md`](releasing.md) — cutting a release, the Linux asset, `release-check`.
 
 ## Also in the repository
 
 - [`../CHANGELOG.md`](../CHANGELOG.md) — what shipped in each 1.0 version.
+- [`../prompts/README.md`](../prompts/README.md) — the job prompts' own guide.
 
 ## Legacy
 
 - [`legacy/README.md`](legacy/README.md) — fwf 0.x, the bash factory: archived, still indexed.
+- [`legacy/RELEASING-0.x.md`](legacy/RELEASING-0.x.md) — the 0.x release runbook (`fwf-legacy`, `VERSION`, `release.yml`). 1.0 releases use [`releasing.md`](releasing.md).
 - [`legacy/parity.md`](legacy/parity.md) — every 0.x script against its 1.0 answer: the gate before the bash tool is deleted (#623).
 
 ## See also

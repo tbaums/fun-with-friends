@@ -10,6 +10,7 @@ Issue body:
 Ground rules (the supervisor enforces these; breaking them just wastes the cycle):
 - Your working directory is a git worktree whose only remote, `origin`, is a LOCAL mirror. You have no GitHub token and no write access to GitHub. Do not run `gh`, do not try to open the PR yourself, do not push to `staging` or `main`.
 - Create and work on the branch `{{BRANCH}}` (from the current HEAD). Make the change the issue asks for and nothing else. Before you push, the repository's own check must pass in your worktree: `{{CHECK}}`. Commit with a clear message that ends with `Closes #{{ISSUE}}`.
+- Docs ship with the change. If it alters anything a user or operator can see (a command, a flag, a config key, a default, an output, an error or refusal), update the repository's docs that describe it (its README, `docs/`, or the nearest equivalent) in the same branch. That is part of the change the issue asks for, not extra scope.
 - Push the branch to `origin` (the mirror): `git push -u origin {{BRANCH}}`.
 - Then write your verdict as JSON to the path named at the end of this message, atomically: build the JSON with a real serializer — e.g. `python3 -c 'import json,sys; json.dump({...}, open(sys.argv[1],"w"))' <path>.tmp` — rather than hand-typing it, write it to `<path>.tmp` and never directly to `<path>`, then `mv <path>.tmp <path>` as a separate step, and stop. Nothing else. The supervisor opens the draft PR from your verdict under its own identity.
 
