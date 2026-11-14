@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.26 — 2026-11-14
+
+The 1.0 documentation, complete and checked against the code.
+
+- **Every page in `docs/` is written** (#717, PR #718). The seven "Content pending" stubs left by #609 now have content: `getting-started.md`, `manifest.md` (every key, with type, default and effect), `verbs.md` (every verb and flag, its App identity and refusals), `seats.md`, `gates-and-promotion.md`, `troubleshooting.md` and `prompts.md`. There are two new pages: `lifecycle.md` (an issue's path and its labels) and `configuration.md` (environment variables and the `~/.fwf` and floor layout). `operations.md` now documents the meter brake and the `run.jsonl` schema, and its playbooks moved to `troubleshooting.md`. **The meter brake fails open:** with no `~/.fwf-meter-log`, or no `weekly=` line in it, nothing parks the loop. The docs now say so; the behaviour is unchanged. Corrected: verbs execute and take no `--help`. `fwf gate --venue` accepts only `container` (#715). Tags are `vX.Y.Z`. The loop never promotes. The README links and placeholder list are fixed, and `github-apps.md` is neutral. The 0.x root `RELEASING.md` moved to `docs/legacy/RELEASING-0.x.md`. The `dev` impl job again tells the seat that docs ship with the change. No behaviour changes.
+
 ## 1.0.25 — 2026-11-14
 
 QA reviews against the spec, criterion by criterion.
