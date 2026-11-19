@@ -1,6 +1,12 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.27 — 2026-11-18
+
+The floor sees every open issue, not just the newest 30.
+
+- **The poll read only the first page of open issues** (#723, PR #725). `Poller::poll` fetched `issues?state=open` once, and GitHub returns 30 items a page by default, PRs included, so older allow-listed issues were never claimed. `pulls/{n}/reviews` had the same cap. Both reads now page with `per_page=100` until a short page, and each page keeps its own ETag, so an unchanged tracker still costs only 304s. Results are deduped (issues by `number`, reviews by `id`). **It fails closed:** if any page fails, the whole poll is an error (`Snapshot::unknown`). More than 50 pages is `PollError::Malformed`. The fake GitHub now pages `issues` and `pulls/{n}/reviews` the way GitHub does, sending `Link: rel="next"`. The unpaged reads in `merge.rs`, `rework.rs` and `checks.rs` are #724.
+
 ## 1.0.26 — 2026-11-14
 
 The 1.0 documentation, complete and checked against the code.
