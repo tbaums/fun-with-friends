@@ -48,13 +48,20 @@ impl/QA seat's pane command.
 - Exit 2 with no manifest or no `apps.toml`; exit 1 if any App is missing or
   cannot mint.
 
-### `fwf doctor [--manifest PATH]`
+### `fwf doctor [--manifest PATH] [--assets]`
 What this host can do: installed against latest release, the fallback record
 path, the embedded seat scripts, the floor, what every seat worktree and
 `gate-wt` commit as, and a token minted from every App in `apps.toml`. It warns
 when `impl` or `ops` lacks `workflows: write`. Read-only. Exit 1 when an App
 cannot mint or a worktree commits as the wrong identity. A missing manifest is
 reported, not a failure.
+
+`--assets` checks only what the binary carries, and needs no manifest, no Apps
+and no network. It writes the embedded prompts to `~/.fwf/prompts/` and lists
+each family's `impl`, `qa`, `gv`, `pm` and rework job after the `dev`
+fallback, with the file it resolved to and its size, then the embedded
+`seat-up.sh` and `seat-push-guard.sh`. Exit 0 only when every one is non-empty
+and uses no unknown placeholder. With `HOME` unset it exits 1 and says so.
 
 ### `fwf status [--manifest PATH]`
 One screen: record age and loop pid, seats, eligible and claimed issues, PRs

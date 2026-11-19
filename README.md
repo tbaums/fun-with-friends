@@ -47,9 +47,9 @@ git clone https://github.com/tbaums/fun-with-friends && cd fun-with-friends
 fwf version                  # prints fwf X.Y.Z
 ```
 
-Keep the checkout: the binary reads the seat prompts from it at run time. Give
-the seats a long-lived Claude login of their own (each pane gets its own
-`HOME`):
+The binary carries the seat prompts, so it does not need the checkout once
+built. Give the seats a long-lived Claude login of their own (each pane gets
+its own `HOME`):
 
 ```sh
 claude setup-token           # save what it prints to ~/.fwf/seat-token, mode 0600

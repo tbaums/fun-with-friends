@@ -56,7 +56,7 @@ pub const USAGE: &str = "usage:
   fwf release --seat N --role impl|qa [--by NAME] [--manifest PATH] [--log PATH]   free a STALLED seat now: record an attributed Idle so its id is assignable again for both roles (the loop does it by itself 20m after the stall); refuses if that seat is not STALLED
   fwf release-check --repo o/r --tag vX.Y.Z [--expect N]   refuse unless the tag has a release object with the expected asset count (T-22)
   fwf dash [--manifest PATH] [--log PATH] [--watch SECS] [--once] [--tab 1-5|seats|issues|prs|decisions|usage] [--no-color]   the board, folded from the run record only: live seats, the issue queue, the PR pipeline, decisions, usage; on a terminal it watches (default every 5s, taking 1-5/j/k/g/G/r/q), --watch SECS sets the interval, --once prints a single frame labelled as a snapshot, and a pipe gets that single frame without asking (T-27, #574, #626)
-  fwf doctor [--manifest PATH]   what the floor can do: each App's token minted narrow, what every seat worktree commits as, and installed vs latest release
+  fwf doctor [--manifest PATH] [--assets]   what the floor can do: each App's token minted narrow, what every seat worktree commits as, and installed vs latest release; --assets checks only the prompts and seat scripts the binary carries (no manifest, Apps or network)
   fwf self-upgrade [--to X.Y.Z] [--force]   replace this binary with the published release asset for this host (checksum verified, atomic); `up` refuses to start a floor on a stale fwf unless FWF_ALLOW_STALE=1
   fwf probe <role> <api-path> GET an API path with that App's token; prints the status
   fwf mirror-init --repo o/r [--floor DIR]   create/refresh the local bare mirror and print the seat remote URL

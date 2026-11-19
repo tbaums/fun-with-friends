@@ -31,12 +31,10 @@ fwf version
 `install.sh` builds the binary from `one/` when cargo is present, links it as
 `fwf` (and as `fwfd`, an old alias), and installs the 0.x tool as `fwf-legacy`.
 
-**Keep this checkout where it is.** The binary reads the seat job prompts at
-run time from the `prompts/` directory of the tree it was built in. Move or
-delete the checkout and every seat job fails with `No such file or directory`.
-`install.sh` with `FWF_VERSION=X.Y.Z` installs a release asset instead of
-building, and a release binary looks for its prompts at its build machine's
-path. Build from source for a floor.
+The binary carries the seat job prompts and writes them to `~/.fwf/prompts/`
+when it runs, so it does not need this checkout afterwards. `install.sh` with
+`FWF_VERSION=X.Y.Z` installs a release asset instead of building.
+`fwf doctor --assets` shows what the binary carries.
 
 ## 2. Register the GitHub Apps
 

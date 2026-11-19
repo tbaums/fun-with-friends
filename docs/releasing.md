@@ -84,7 +84,8 @@ unless that ref's `one/Cargo.toml` version matches the tag.
 `macos-arm64` or `linux-x86_64`. `install.sh` downloads and verifies exactly
 these on a machine without cargo, so the names are a contract, not a convention.
 
-The binary reads the seat prompts at run time from the `prompts/` directory of
-the tree it was built in, a path fixed at build time. A binary from a release
-asset therefore looks for them at the build machine's path. See
-[`troubleshooting.md`](troubleshooting.md).
+The binary carries the seat prompts and seat scripts. It writes them under
+`~/.fwf/` at run time and never reads the tree it was built in, so a release
+asset works on any host (#719). CI's `one/scripts/baked-paths-check.sh` fails a
+build whose binary names a path under its own checkout's `prompts` or
+`scripts`.

@@ -36,6 +36,7 @@ See [`seats.md`](seats.md).
   keys/              the three App private keys (*.pem, 0600)
   seat-token         optional: a long-lived Claude token for seat panes (0600)
   bin/               fwf-run, fwf-gate, fwf-qa: symlinks to the fwf binary
+  prompts/           the seat job prompts, written from the binary by each run
   run.jsonl          the fallback record for `why`/`dash` (FWF_RUN_LOG)
   floors/<repo>/     one floor per repository, unless the manifest sets floor_dir
 ~/.fwf-meter-log     the meter log the brake reads (note: beside ~/.fwf, not in it)
@@ -53,6 +54,9 @@ See [`seats.md`](seats.md).
   `fwf-qa` rather than three processes all called `fwf`. Each run re-points its
   link at the binary that is running. A failure here is a warning, never a
   stop.
+- **`prompts/`** is `<family>/<file>` for every prompt the binary carries,
+  rewritten once per process (#719). Edits there do not last: the next run
+  overwrites them and removes files the binary does not carry.
 - **`~/.fwf-meter-log`** is written by you, not by fwf. Its format and the
   brake are in [`operations.md`](operations.md#the-meter-and-its-brake).
 

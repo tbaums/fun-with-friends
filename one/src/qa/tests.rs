@@ -34,7 +34,7 @@ fn crit(criterion: &str, status: &str, evidence: &str) -> Criterion {
 /// The dev QA template, rendered the way `run` renders it.
 fn rendered(spec: &str) -> String {
     let template = std::fs::read_to_string(crate::prompts::path(
-        Path::new(crate::prompts::ROOT),
+        Path::new(crate::prompts::SOURCE),
         "dev",
         "qa",
     ))

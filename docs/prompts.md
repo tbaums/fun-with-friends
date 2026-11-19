@@ -20,9 +20,14 @@ back to `prompts/dev/`. The families are `dev`, `refactor`, `validate`,
 `ideation`, `consulting`, `defect-report` and `user-testing`. The README's
 table links each one.
 
-The prompts are plain files read at run time, not compiled in. The binary
-reads them from the `prompts/` directory of the source tree it was built in,
-so keep that checkout in place. See [`troubleshooting.md`](troubleshooting.md).
+The prompts are compiled into the binary. Once per process it writes them to
+`~/.fwf/prompts/<family>/<file>` and reads them from there, so neither a
+source build nor a release asset needs the checkout it was built from. That
+copy is the binary's, not yours: every run overwrites it, and removes any file
+the binary does not carry. To change a prompt, edit it under `prompts/` and
+rebuild. `fwf doctor --assets` lists every job a family resolves to, with its
+size, and fails if one is missing, empty or uses an unknown placeholder. See
+[`verbs.md`](verbs.md).
 
 ## Placeholders
 
