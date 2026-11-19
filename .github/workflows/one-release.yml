@@ -201,6 +201,14 @@ jobs:
           bash -n scripts/size-check.sh scripts/release-publish.sh scripts/release-verify.sh scripts/baked-paths-check.sh scripts/baked-paths-check-test.sh
           scripts/size-check.sh
 
+      # The seat tests drive real tmux panes and skip without it. ubuntu-latest
+      # ships tmux; macos-latest does not, and the floor runs on macOS.
+      - name: tmux for the seat tests (macOS)
+        if: matrix.slug == 'macos-arm64'
+        run: |
+          command -v tmux >/dev/null || brew install tmux
+          tmux -V
+
       # The only macOS test run fwf 1.0 has: one-ci.yml is ubuntu-only.
       - name: cargo test
         run: cargo test --quiet

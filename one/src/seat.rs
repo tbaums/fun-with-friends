@@ -744,6 +744,11 @@ mod tests {
 
     #[test]
     fn an_unmatched_window_name_is_absent_not_the_current_pane() {
+        // #727: the first macOS CI run had no tmux, and this test alone failed
+        if !tmux_available() {
+            eprintln!("skip: no tmux");
+            return;
+        }
         let fake = FakeSeat::spawn(Role::Impl, 9).unwrap();
         // tmux itself would resolve `session:no-such` to the current window.
         let cmd = pane_command(&format!("{}:no-such-window", fake.session)).unwrap();
