@@ -7,8 +7,9 @@ name: one release
 #
 #   meta     the tag is annotated, its message non-empty, and it equals
 #            v + one/Cargo.toml's version. Fails before any release exists.
-#   draft    creates a DRAFT release with the notes from the tag, or reuses
-#            the one release that tag already has. Never a second one.
+#   draft    `release-draft.sh` creates a DRAFT release whose notes are the tag
+#            message (`--notes-file`), or reuses the one release that tag
+#            already has. Never a second one.
 #   build    macos-latest (arm64) and ubuntu-latest (x86_64): cargo test, a
 #            locked release build with host paths remapped, the #719 baked-path
 #            and `doctor --assets` checks on the built binary, then the
@@ -131,24 +132,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.meta.outputs.sha }}
-      # `--notes-from-tag` reads the annotation from the local tag.
+      # The notes go in by `--notes-file`, from the tag message: gh refuses
+      # `--notes-from-tag` with `--repo` (#734). tests/release_draft.rs runs the
+      # script against a fake gh, and fails if this job stops calling it.
       - name: Create the draft, or reuse the one release this tag has
-        run: |
-          git fetch --no-tags --force origin "refs/tags/$TAG:refs/tags/$TAG"
-          ids="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
-            --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
-          n="$(printf '%s\n' "$ids" | grep -c . || true)"
-          case "$n" in
-            0)
-              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-                --notes-from-tag --title "fwf $VERSION"
-              echo "created a draft release for $TAG" ;;
-            1)
-              gh api "repos/$GITHUB_REPOSITORY/releases/$ids" \
-                --jq '"reusing release \(.id) for \(.tag_name), draft=\(.draft), \(.assets | length) assets"' ;;
-            *)
-              echo "::error::$TAG has $n releases; resolve that by hand before re-running"; exit 1 ;;
-          esac
+        run: scripts/release-draft.sh "$TAG" "$VERSION"
 
   build:
     name: ${{ matrix.slug }}

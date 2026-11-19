@@ -5,6 +5,8 @@
 
 **v1.0.27 was never published.** Its tag exists, but the new CI release workflow failed at the draft step (#734), so it has no release and no assets. 1.0.28 is the first release that carries everything listed under 1.0.27 below.
 
+- **The release workflow's draft step failed on every tag push** (#734). `one-release.yml` ran `gh release create … --repo … --notes-from-tag`, which gh refuses before any network call, so run 44468070939 stopped at `draft` and v1.0.27 has no release. Nothing ran that line before a real tag. The step now runs new `one/scripts/release-draft.sh <tag> <version>`. With no release for the tag, it checks the tag is annotated with a non-empty message, writes the message byte for byte to a temp file outside the checkout, and creates the draft with `--notes-file`. With one release it reuses it; with more it exits 1. New `one/tests/release_draft.rs` runs the script against a fake `gh` that refuses `--notes-from-tag` with `--repo` as gh does, and fails if `one-release.yml` calls `gh release create` itself or its draft job stops running the script. `one-ci.yml` now also runs on changes to `one-release.yml`. Docs: `releasing.md`, `troubleshooting.md` (the #719 fix ships in 1.0.28).
+
 ## 1.0.27 — 2026-11-18
 
 The floor sees every open issue, not just the newest 30, a release binary carries its seat prompts, and CI builds every release asset.
