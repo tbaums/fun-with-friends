@@ -304,7 +304,9 @@ jobs:
   publish:
     name: verify all four, then publish
     needs: [meta, build]
-    if: needs.meta.outputs.dry_run == 'false'
+    # Explicit, because the implicit success() also reads `draft`: skipped in a
+    # dry run, it would skip this job too (it did, in run 44447418922).
+    if: ${{ !cancelled() && needs.meta.outputs.dry_run == 'false' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -349,7 +351,7 @@ jobs:
   dry-run-verify:
     name: dry run — verify the four artifacts
     needs: [meta, build]
-    if: needs.meta.outputs.dry_run == 'true'
+    if: ${{ !cancelled() && needs.meta.outputs.dry_run == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
