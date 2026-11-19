@@ -295,7 +295,7 @@ fn install_sh_and_release_publish_sh_agree_with_asset_url_on_the_tag() {
     let publish = read(&root.join("scripts/release-publish.sh"));
     let install = read(&root.join("../install.sh"));
 
-    // the authority: `gh release create "$TAG"` tags exactly this
+    // the authority: `git tag -a "$TAG"` tags exactly this (#727)
     assert!(
         publish.contains(r#"TAG="v$VERSION""#),
         "release-publish.sh no longer tags v$VERSION; every downloader below follows it"

@@ -69,7 +69,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v5
-      - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/seat-push-guard.sh scripts/release-publish.sh scripts/baked-paths-check.sh scripts/baked-paths-check-test.sh
+      - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/seat-push-guard.sh scripts/release-publish.sh scripts/release-verify.sh scripts/baked-paths-check.sh scripts/baked-paths-check-test.sh
       - run: scripts/size-check.sh
 
   links:

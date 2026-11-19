@@ -1,32 +1,75 @@
 # Releasing fwf 1.0
 
-One command cuts a release. Everything that could be a habit is a refusal in it.
+Every release asset is built by GitHub CI. Nothing is built on a laptop and
+uploaded by hand (#727). The operator's part is one command that only tags:
 
 ```bash
 one/scripts/release-publish.sh notes.md
 ```
 
-It refuses a dirty tree, refuses a `Cargo.lock` that does not already record the
-version being cut, refuses a version already tagged here or on the remote, runs
-the gate (`cargo fmt --check`, `clippy -D warnings`, `cargo test`,
-`scripts/size-check.sh`), builds release, stages `<bin>-<version>-macos-arm64/`
-— the binary named by `Cargo.toml`'s first `[[bin]]`, plus `README.md`,
-`RELEASING.md`, `CHANGELOG.md` — tars it with a `.sha256`, and publishes with
-`gh release create`, which creates the tag and the release in one call. It
-finishes by proving the release object exists: `release-check … --expect 2`.
+## Tag → draft → verify → publish → `release-check`
 
-That tag push triggers `.github/workflows/one-release.yml`, which builds
-`x86_64-unknown-linux-gnu` on `ubuntu-latest` and uploads the
-`<bin>-<version>-linux-x86_64` pair onto the same release. It only ever uploads:
-a tag with no release behind it fails the job loudly instead of publishing
-something nobody vouched for. When it finishes:
+1. **Tag (the script, on your machine).** It refuses, in order: no notes file
+   or a notes file with nothing but whitespace; a dirty tree; a `Cargo.lock`
+   that does not already record the version being cut; `HEAD` that is not
+   `origin/main` (it fetches first); a version already tagged here or on
+   `origin`. Then it creates an annotated tag `v<version>` whose message is
+   the notes, verbatim (Markdown headings survive), pushes it, and prints the
+   CI run URL and the `release-check` command. If the push fails it deletes
+   the local tag, so a re-run starts clean. It does not run the gate, build,
+   or call `gh`, so it runs on any host with git and cargo.
+2. **Meta (CI).** The tag push runs `.github/workflows/one-release.yml`. It
+   fetches the tag object and fails unless the tag is annotated, its message
+   is non-empty, and it equals `v` + `one/Cargo.toml`'s version. This happens
+   before any release exists.
+3. **Draft (CI).** It creates a **draft** release titled `fwf <version>` with
+   the notes from the tag (`--notes-from-tag`), or reuses the one release that
+   tag already has. It never creates a second one.
+4. **Build (CI), two legs:** `macos-latest` → `macos-arm64` and
+   `ubuntu-latest` → `linux-x86_64`. Each leg runs `cargo test` (the macOS leg
+   is the only macOS test run 1.0 has), then `cargo build --release --locked`
+   with the cargo home, the toolchain sysroot and the checkout remapped by
+   `--remap-path-prefix`, so the binary does not carry the runner's paths. On
+   the built binary it checks the architecture, `codesign --verify` (macOS; the
+   linker's ad-hoc signature, as before), that `fwf version` prints the
+   version, `one/scripts/baked-paths-check.sh` (no path to the checkout's
+   `prompts`/`scripts`, and none under the runner's `$HOME`), and
+   `doctor --assets` from `/` with a fresh `HOME` and the checkout's
+   `prompts/` moved away. The Linux leg also runs `cargo fmt --check`,
+   `clippy -D warnings` and `scripts/size-check.sh`. Then it stages the
+   tarball and its `.sha256` and uploads them onto the draft.
+5. **Verify and publish (CI).** After both legs, it downloads every asset of
+   the draft into an empty directory and runs `one/scripts/release-verify.sh`:
+   exactly the four expected names, each checksum matching its tarball, and
+   each tarball holding a non-empty `fwf` plus `README.md`, `RELEASING.md` and
+   `CHANGELOG.md`. Only then does it publish (`gh release edit --draft=false`).
+   Any failure before this leaves a draft, which nobody installs from.
+6. **`release-check` (you).** It needs the ops App key, which CI does not have,
+   and it reads only published releases. When the run is green:
+
+   ```bash
+   fwf release-check --repo tbaums/fun-with-friends --tag vX.Y.Z --expect 4
+   ```
+
+   Four assets: two tarballs, two checksums, each uploaded by
+   `github-actions[bot]`.
+
+A slow macOS queue only delays the release: it stays a draft until both legs
+finish.
+
+## Dry run
+
+Prove the workflow on a branch without tagging or publishing anything:
 
 ```bash
-fwf release-check --repo tbaums/fun-with-friends --tag vX.Y.Z --expect 4
+gh workflow run one-release.yml --ref <branch> -f dry_run=true
 ```
 
-Four assets: two tarballs, two checksums. Until the workflow lands `--expect 4`
-under-counts, which is the honest reading, not a bug.
+`dry_run` defaults to `true`, so an accidental dispatch never publishes. A dry
+run builds and checks both legs exactly as a cut does, saves each
+`<bin>-<version>-<slug>` pair as a run artifact, and runs `release-verify.sh`
+on the four files. It creates no tag, no release and no upload. Dispatching
+needs `actions: write` on the repository.
 
 Tags are `vX.Y.Z`, made from `one/Cargo.toml`'s version. The first three 1.0
 releases were tagged `one-v1.0.0` to `one-v1.0.2`, and later ones were not.
@@ -47,15 +90,15 @@ releases were tagged `one-v1.0.0` to `one-v1.0.2`, and later ones were not.
    git add Cargo.toml Cargo.lock ../CHANGELOG.md && git commit
    ```
 
-   Then let the script tag it — never `git tag` by hand, or the tag and the
-   release can disagree about what shipped. A stale lock is how one-v1.0.2
-   shipped with two assets instead of four (#604): the local gate rewrote the
-   lock after the clean-tree check, the tag was cut at the commit without it,
-   and the runner's `cargo build --locked` refused. The script now refuses
-   first — before the gate, and again before it tags.
-3. **A tag is not a release.** `release-check` is the proof, the script runs it,
-   and `--expect 4` after the workflow lands is the number you quote when you
-   tell anyone.
+   Then let the script tag it — never `git tag` by hand: a lightweight tag or
+   one without notes fails at `meta`, and a tag at a commit that is not
+   `origin/main` ships something that was never promoted. A stale lock is how
+   one-v1.0.2 shipped with two assets instead of four (#604): the tag was cut
+   at a commit whose lock still said 1.0.1, and the runner's
+   `cargo build --locked` refused. The script refuses a stale lock before it
+   tags.
+3. **A tag is not a release.** `release-check --expect 4` after the workflow
+   publishes is the proof, and the number you quote when you tell anyone.
 4. **Promotion is always an operator's act.** `fwf run` never moves `main` (or
    any `release_branch`); only `fwf promote` does, and the run record shows the
    `promote` event.
@@ -65,18 +108,34 @@ releases were tagged `one-v1.0.0` to `one-v1.0.2`, and later ones were not.
 
 ## When a cut fails halfway
 
-Before `gh release create` there is nothing to clean up: no tag, no release, and
-nothing staged inside the repo (artifacts go to a temp dir the script prints).
-After it, the release is live — so a re-run refuses and points at it, which is
-right: finish it by uploading what is missing (`gh release upload`, or re-run
-`one-release.yml` from the Actions tab with the tag) rather than cutting the
-version twice.
+If the script refuses, nothing was cut: no tag, no release. If its push fails
+it deletes the local tag, so a re-run starts clean.
 
-If the tagged commit itself cannot build — one-v1.0.2's stale lock — re-run
-`one-release.yml` with the tag **and** a `ref` (the fixed commit, e.g. the
-branch that repaired the lock). It builds from that ref and uploads onto the
-existing tag's release; the tag itself never moves, and the job still refuses
-unless that ref's `one/Cargo.toml` version matches the tag.
+Once the tag is pushed, the script refuses that version again, which is right:
+never cut a version twice and never move a tag. A failed run leaves at most a
+**draft** release, which is not public and which `release-check` cannot see.
+Recover by re-running the workflow for the tag, not by tagging again:
+
+```bash
+gh workflow run one-release.yml -f tag=vX.Y.Z -f dry_run=false
+```
+
+It rebuilds both legs onto the tag's existing release (draft or published;
+`--clobber` replaces a partial upload), re-runs `release-verify.sh` on all
+four assets, and publishes. It never creates a second release for the tag; if
+there is somehow more than one, it stops and says so. A transient failure
+(a runner hiccup) can also just be re-run from the Actions tab.
+
+If the tagged commit itself cannot build — one-v1.0.2's stale lock — add a
+`ref` (the fixed commit, e.g. the branch that repaired the lock):
+
+```bash
+gh workflow run one-release.yml -f tag=vX.Y.Z -f ref=<fixed-commit> -f dry_run=false
+```
+
+It builds from that ref onto the existing tag's release; the tag itself never
+moves, and `meta` still refuses unless that ref's `one/Cargo.toml` version
+matches the tag.
 
 ## Asset names
 
@@ -88,4 +147,6 @@ The binary carries the seat prompts and seat scripts. It writes them under
 `~/.fwf/` at run time and never reads the tree it was built in, so a release
 asset works on any host (#719). CI's `one/scripts/baked-paths-check.sh` fails a
 build whose binary names a path under its own checkout's `prompts` or
-`scripts`.
+`scripts`, and the release legs pass it the runner's `$HOME` too, so a binary
+that still carries a toolchain, registry or checkout path is never uploaded
+(#727).
