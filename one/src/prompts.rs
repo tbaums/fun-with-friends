@@ -72,10 +72,15 @@ pub fn families() -> Vec<&'static str> {
 /// one edited by hand, is overwritten; a file the table does not name is
 /// removed, because the `dev` fallback reads what is on disk and a stale
 /// family override would otherwise still win.
+///
+/// The directory is fwf's alone, so a symlink anywhere in it — the directory
+/// itself, a family, a file — is refused before anything is written: writing or
+/// pruning through it would change files fwf does not own.
 pub fn materialise(home: &Path) -> io::Result<PathBuf> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let root = home.join(".fwf").join("prompts");
+    refuse_links(&root)?;
     for (name, body) in EMBEDDED {
         let dest = root.join(name);
         let dir = dest.parent().unwrap_or(&root);
@@ -89,12 +94,39 @@ pub fn materialise(home: &Path) -> io::Result<PathBuf> {
     Ok(root)
 }
 
+/// An error naming `path` if it, or anything under it, is a symlink. Nothing
+/// is followed; a path that does not exist yet is fine.
+fn refuse_links(path: &Path) -> io::Result<()> {
+    let kind = match std::fs::symlink_metadata(path) {
+        Ok(m) => m.file_type(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if kind.is_symlink() {
+        return Err(io::Error::other(format!(
+            "{} is a symlink; fwf writes its prompts only into a real directory it owns and never through a link — remove the link and run again",
+            path.display()
+        )));
+    }
+    if kind.is_dir() {
+        for e in std::fs::read_dir(path)? {
+            refuse_links(&e?.path())?;
+        }
+    }
+    Ok(())
+}
+
 /// Remove every file under `dir` the table does not name, one level of family
-/// directories deep. Another writer's temp file is in flight, not stale.
+/// directories deep. Another writer's temp file is in flight, not stale. File
+/// types come from the entry itself, never from a link's target.
 fn prune(root: &Path, dir: &Path) -> io::Result<()> {
     for e in std::fs::read_dir(dir)?.flatten() {
         let p = e.path();
-        if p.is_dir() {
+        let kind = e.file_type()?;
+        if kind.is_symlink() {
+            return refuse_links(&p);
+        }
+        if kind.is_dir() {
             if dir == root {
                 prune(root, &p)?;
             }
@@ -454,6 +486,65 @@ mod tests {
             "another process's temp file is not ours to remove"
         );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// QA on #729: a symlink under `~/.fwf/prompts` — a family directory, or
+    /// the directory itself — pointed the write and the prune at a folder fwf
+    /// does not own, and an unrelated file there was deleted. fwf refuses,
+    /// names the link, and writes and deletes nothing through it.
+    #[test]
+    fn materialise_refuses_a_symlink_and_touches_nothing_behind_it() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("fwfd-prompts-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep-me.txt"), "not fwf's").unwrap();
+        let only_keep_me = |why: &str| {
+            let names: Vec<String> = std::fs::read_dir(&outside)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, vec!["keep-me.txt".to_string()], "{why}");
+        };
+
+        // a family directory that is a link
+        let home = base.join("home-family");
+        std::fs::create_dir_all(home.join(".fwf/prompts")).unwrap();
+        symlink(&outside, home.join(".fwf/prompts/validate")).unwrap();
+        let err = materialise(&home).unwrap_err().to_string();
+        assert!(err.contains("validate") && err.contains("symlink"), "{err}");
+        only_keep_me("a linked family directory");
+
+        // the prompts directory itself is a link
+        let home = base.join("home-root");
+        std::fs::create_dir_all(home.join(".fwf")).unwrap();
+        symlink(&outside, home.join(".fwf/prompts")).unwrap();
+        let err = materialise(&home).unwrap_err().to_string();
+        assert!(
+            err.contains(".fwf/prompts") && err.contains("symlink"),
+            "{err}"
+        );
+        only_keep_me("a linked prompts directory");
+
+        // a link one level further down, to a file outside
+        let home = base.join("home-file");
+        materialise(&home).unwrap();
+        symlink(
+            outside.join("keep-me.txt"),
+            home.join(".fwf/prompts/dev/stale.md"),
+        )
+        .unwrap();
+        let err = materialise(&home).unwrap_err().to_string();
+        assert!(err.contains("stale.md") && err.contains("symlink"), "{err}");
+        only_keep_me("a linked file");
+        assert_eq!(
+            std::fs::read_to_string(outside.join("keep-me.txt")).unwrap(),
+            "not fwf's"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

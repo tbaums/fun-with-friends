@@ -56,7 +56,9 @@ See [`seats.md`](seats.md).
   stop.
 - **`prompts/`** is `<family>/<file>` for every prompt the binary carries,
   rewritten once per process (#719). Edits there do not last: the next run
-  overwrites them and removes files the binary does not carry.
+  overwrites them and removes files the binary does not carry. A symlink
+  anywhere in it, or `prompts/` itself as a link, is refused by name: fwf
+  writes nothing until the link is removed.
 - **`~/.fwf-meter-log`** is written by you, not by fwf. Its format and the
   brake are in [`operations.md`](operations.md#the-meter-and-its-brake).
 

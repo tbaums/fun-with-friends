@@ -30,6 +30,10 @@ jobs:
       - run: cargo test --quiet
       # #719: a binary must carry its prompts and scripts, not a path to this
       # checkout's copy of them (v1.0.26 baked /home/runner/work/…/prompts).
+      # First prove the checker can fail: fixtures that bake a path must exit 1
+      # under this runner's GNU grep, clean ones 0.
+      - name: baked-paths-check.sh catches its fixtures
+        run: scripts/baked-paths-check-test.sh
       - name: no checkout path baked into the binary
         run: |
           cargo build --quiet --bin fwf
@@ -65,7 +69,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v5
-      - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/seat-push-guard.sh scripts/release-publish.sh scripts/baked-paths-check.sh
+      - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/seat-push-guard.sh scripts/release-publish.sh scripts/baked-paths-check.sh scripts/baked-paths-check-test.sh
       - run: scripts/size-check.sh
 
   links:
