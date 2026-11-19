@@ -1,6 +1,10 @@
 # Changelog — fwf 1.0 (`one/`)
 
 
+## 1.0.28 — 2026-11-19
+
+**v1.0.27 was never published.** Its tag exists, but the new CI release workflow failed at the draft step (#734), so it has no release and no assets. 1.0.28 is the first release that carries everything listed under 1.0.27 below.
+
 ## 1.0.27 — 2026-11-18
 
 The floor sees every open issue, not just the newest 30, a release binary carries its seat prompts, and CI builds every release asset.
