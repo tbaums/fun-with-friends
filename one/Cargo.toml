@@ -29,7 +29,7 @@ toml = "1.1"
 # Rust backend — no cmake or C toolchain on the release build host — and
 # `use_pem` is a default feature that `default-features = false` would
 # otherwise drop, taking `EncodingKey::from_rsa_pem` with it.
-jsonwebtoken = { version = "11", default-features = false, features = [
+jsonwebtoken = { version = "12", default-features = false, features = [
     "rust_crypto",
     "use_pem",
 ] }
