@@ -15,9 +15,8 @@ its releases.
 | `FWF_APPS_TOML` | every verb that mints an App token | `~/.fwf/apps.toml` | Path to the App credentials file. |
 | `FWF_RUN_LOG` | `fwf why`, `fwf doctor`; `fwf dash` and `fwf release` when no manifest names a floor record that exists | `~/.fwf/run.jsonl` | The record those verbs read when they are not given `--log`. It does **not** move where the loop writes: `fwf run` always appends to `<floor>/run.jsonl`. |
 | `FWF_ALLOW_STALE` | `fwf up` | unset | `fwf up` refuses to start a floor when the installed fwf is older than the latest release. Any non-empty value other than `0` turns that refusal into a warning. |
-| `FWF_RELEASE_REPO` | `fwf up`, `fwf doctor`, `fwf self-upgrade`; `one/scripts/release-publish.sh` | `tbaums/fun-with-friends` | The repository whose releases are "latest", and where `self-upgrade` downloads from and `release-publish.sh` publishes to. Set it when you run a fork. |
+| `FWF_RELEASE_REPO` | `fwf up`, `fwf doctor`, `fwf self-upgrade`; `one/scripts/release-publish.sh` | `tbaums/fun-with-friends` | The repository whose releases are "latest", and where `self-upgrade` downloads from. `release-publish.sh` only prints it in the CI run URL and the `release-check` command; the tag goes to the checkout's `origin`. Set it when you run a fork. |
 | `FWF_VERSION` | `install.sh` only | unset | Install that published release instead of building the checkout, even where cargo exists, e.g. `FWF_VERSION=1.0.26 ./install.sh`. |
-| `FWF_RELEASE_DIR` | `one/scripts/release-publish.sh` | a fresh temp dir | Where the release script stages the tarball. |
 | `NO_COLOR` | `fwf dash` | unset | Any value turns colour off, as `--no-color` does. `TERM=dumb` does too. |
 | `USER` | `fwf ungate`, `fwf release` | `operator` | The name recorded as the actor when `--by` is not given. |
 

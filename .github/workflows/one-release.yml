@@ -1,112 +1,372 @@
-name: one release (linux asset)
+name: one release
 
-# The Linux half of a 1.0 cut (#584). `one/scripts/release-publish.sh` builds and
-# publishes the macos-arm64 pair and creates the release AND its tag in one `gh
-# release create`; that tag push lands here, and this job adds the linux-x86_64
-# pair to the release that already exists. It never creates a release: if the
-# tag arrived without one, that is a broken cut and this fails loudly.
+# Every fwf 1.0 release asset is built here, by CI; nothing is built on a
+# laptop and uploaded by hand (#727). `one/scripts/release-publish.sh` only
+# pushes an annotated tag `v<version>` whose message is the release notes. That
+# push runs this workflow:
 #
-# ubuntu-latest, like one-ci.yml. (The legacy tool's release.yml runs on a local
-# devbox for reasons particular to its own long suite; that rule is not this
-# crate's.)
+#   meta     the tag is annotated, its message non-empty, and it equals
+#            v + one/Cargo.toml's version. Fails before any release exists.
+#   draft    creates a DRAFT release with the notes from the tag, or reuses
+#            the one release that tag already has. Never a second one.
+#   build    macos-latest (arm64) and ubuntu-latest (x86_64): cargo test, a
+#            locked release build with host paths remapped, the #719 baked-path
+#            and `doctor --assets` checks on the built binary, then the
+#            tarball + .sha256 onto the draft. Linux also runs fmt, clippy and
+#            size-check, so the whole gate runs before anything is published.
+#   publish  downloads every asset of the draft, `release-verify.sh` checks all
+#            four, and only then the release is published. Any failure above
+#            leaves a draft; nothing is public until this job passes.
 #
-# Tags: `v1.*`, not the old `one-v*` (#582 follow-up, shipped in v1.0.4 — which
-# is why that cut got only its two macOS assets, #641). The legacy 0.x tool's
-# release.yml keeps `v*.*.*` minus `v1.*`, so the two never both fire: the major
-# version, not a prefix, is what says which product a tag belongs to. A future
-# `v2.*` line has to be added here and excluded there in the same change.
+# `workflow_dispatch`:
+#   dry_run=true (the default) builds and checks both legs from `ref` (or the
+#     branch dispatched on), saves the tarballs as run artifacts, and runs
+#     release-verify.sh on them. It creates no tag, no release, no upload.
+#   tag + dry_run=false is the recovery path (#604): rebuild onto that tag's
+#     existing release, from `ref` if its tagged commit cannot build, then
+#     re-verify and publish. The tag never moves.
+#
+# Tags: `v1.*` only. The legacy 0.x release.yml keeps `v*.*.*` minus `v1.*`, so
+# the two never both fire. A `v2.*` line is added here and excluded there in one
+# change.
 on:
   push:
     tags: ['v1.*']
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: build and check only; save artifacts, publish nothing
+        type: boolean
+        default: true
       tag:
-        description: the v1.x tag to upload onto
-        required: true
+        description: the v1.x tag to rebuild onto (required unless dry_run)
+        required: false
       ref:
         description: >-
-          commit or branch to build from (default: the tag). For re-running a
-          cut whose tagged commit cannot build — one-v1.0.2's stale Cargo.lock
-          (#604). The tag never moves; only the asset is rebuilt, and the
-          version check below still has to agree with it.
+          commit or branch to build from (default: the tag, or the branch this
+          run was dispatched on). For a cut whose tagged commit cannot build,
+          like one-v1.0.2's stale Cargo.lock (#604). The version check still
+          has to agree with the tag.
         required: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: one-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 defaults:
   run:
     working-directory: one
 
 jobs:
-  linux:
-    name: linux-x86_64 asset
+  meta:
+    name: check the tag
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+      TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+      BUILD_REF: ${{ inputs.ref || inputs.tag || github.sha }}
+    outputs:
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+      version: ${{ steps.meta.outputs.version }}
+      bin: ${{ steps.meta.outputs.bin }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.ref || env.TAG }}
+          ref: ${{ env.BUILD_REF }}
 
       # The binary's name and the version both come from Cargo.toml; the tag has
-      # to agree with the version, or the asset would be named for a release it
-      # does not belong to.
-      - name: Read Cargo.toml, check the tag agrees
+      # to agree with the version, or the assets would be named for a release
+      # they do not belong to.
+      - name: Read Cargo.toml, check the tag
         id: meta
         run: |
           version="$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' Cargo.toml | head -1)"
           bin="$(awk '/^\[\[bin\]\]/{inbin=1; next} inbin && /^name *=/{gsub(/.*= *"|"/,""); print; exit}' Cargo.toml)"
           [ -n "$version" ] || { echo "::error::no version in one/Cargo.toml"; exit 1; }
           [ -n "$bin" ] || { echo "::error::no [[bin]] name in one/Cargo.toml"; exit 1; }
-          [ "$TAG" = "v$version" ] || {
-            echo "::error::tag $TAG does not match one/Cargo.toml version $version"; exit 1; }
+          if [ "$DRY_RUN" = false ] && [ -z "$TAG" ]; then
+            echo "::error::a run that publishes needs a tag (dispatch with tag=v$version, or dry_run=true)"; exit 1
+          fi
+          if [ -n "$TAG" ]; then
+            [ "$TAG" = "v$version" ] || {
+              echo "::error::tag $TAG does not match one/Cargo.toml version $version"; exit 1; }
+          fi
+          if [ "$DRY_RUN" = false ]; then
+            # checkout's shallow fetch can leave an annotated tag lightweight;
+            # fetch the tag object itself before asking what it is.
+            git fetch --no-tags --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            kind="$(git cat-file -t "refs/tags/$TAG")"
+            [ "$kind" = tag ] || {
+              echo "::error::$TAG is a lightweight tag ($kind); release-publish.sh makes an annotated tag whose message is the notes"; exit 1; }
+            notes="$(git for-each-ref --format='%(contents)' "refs/tags/$TAG")"
+            printf '%s' "$notes" | grep -q '[^[:space:]]' || {
+              echo "::error::$TAG has an empty message; the tag message is the release notes"; exit 1; }
+          fi
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN tag=${TAG:-none} version=$version bin=$bin sha=$(git rev-parse HEAD)"
 
-      # Upload-only, by construction: the release must already be there.
-      - name: Refuse unless the release already exists
+  draft:
+    name: create or reuse the draft
+    needs: meta
+    if: needs.meta.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+      # `--notes-from-tag` reads the annotation from the local tag.
+      - name: Create the draft, or reuse the one release this tag has
         run: |
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null || {
-            echo "::error::no release for $TAG — it is published by one/scripts/release-publish.sh, which creates the tag and the release together. Publish it, then re-run this workflow."
-            exit 1; }
+          git fetch --no-tags --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          ids="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+          n="$(printf '%s\n' "$ids" | grep -c . || true)"
+          case "$n" in
+            0)
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+                --notes-from-tag --title "fwf $VERSION"
+              echo "created a draft release for $TAG" ;;
+            1)
+              gh api "repos/$GITHUB_REPOSITORY/releases/$ids" \
+                --jq '"reusing release \(.id) for \(.tag_name), draft=\(.draft), \(.assets | length) assets"' ;;
+            *)
+              echo "::error::$TAG has $n releases; resolve that by hand before re-running"; exit 1 ;;
+          esac
+
+  build:
+    name: ${{ matrix.slug }}
+    needs: [meta, draft]
+    # runs when the draft exists, or when there is none to make (dry run)
+    if: ${{ !cancelled() && needs.meta.result == 'success' && (needs.draft.result == 'success' || needs.draft.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            slug: macos-arm64
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: ubuntu-latest
+            slug: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ needs.meta.outputs.dry_run }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      BIN: ${{ needs.meta.outputs.bin }}
+      NAME: ${{ needs.meta.outputs.bin }}-${{ needs.meta.outputs.version }}-${{ matrix.slug }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+
+      - name: Runner is ${{ matrix.arch }}
+        run: |
+          [ "$(uname -m)" = "${{ matrix.arch }}" ] || {
+            echo "::error::${{ matrix.os }} is $(uname -m), not ${{ matrix.arch }}; the asset would be misnamed"; exit 1; }
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: one
 
-      - name: Build (release, locked)
+      # The rest of one-ci.yml's gate, once, on the leg whose runner it uses.
+      - name: fmt, clippy, size-check
+        if: matrix.slug == 'linux-x86_64'
         run: |
-          rustup target add x86_64-unknown-linux-gnu
-          cargo build --release --locked --target x86_64-unknown-linux-gnu
+          cargo fmt --check
+          cargo clippy --quiet --all-targets -- -D warnings
+          bash -n scripts/size-check.sh scripts/release-publish.sh scripts/release-verify.sh scripts/baked-paths-check.sh scripts/baked-paths-check-test.sh
+          scripts/size-check.sh
 
-      # Same layout as the macOS pair: the binary plus the three documents a
-      # release is useless without.
+      # The seat tests drive real tmux panes and skip without it. ubuntu-latest
+      # ships tmux; macos-latest does not, and the floor runs on macOS.
+      - name: tmux for the seat tests (macOS)
+        if: matrix.slug == 'macos-arm64'
+        run: |
+          command -v tmux >/dev/null || brew install tmux
+          tmux -V
+
+      # The only macOS test run fwf 1.0 has: one-ci.yml is ubuntu-only.
+      - name: cargo test
+        run: cargo test --quiet
+
+      - name: baked-paths-check.sh catches its fixtures
+        run: scripts/baked-paths-check-test.sh
+
+      # Host paths are remapped so the binary does not carry the runner's
+      # layout: the cargo registry and git checkouts, the toolchain (std's
+      # panic locations), and this checkout (#727, from #729's QA).
+      # Only this build: tests above run with default flags.
+      - name: Build (release, locked, host paths remapped)
+        run: |
+          rustup target add "${{ matrix.target }}"
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          sysroot="$(rustc --print sysroot)"
+          export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$sysroot=/rustc-sysroot --remap-path-prefix=$GITHUB_WORKSPACE=/fwf"
+          echo "RUSTFLAGS=$RUSTFLAGS"
+          cargo build --release --locked --target "${{ matrix.target }}"
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp "target/${{ matrix.target }}/release/$BIN" "$RUNNER_TEMP/bin/$BIN"
+
+      - name: The binary is ${{ matrix.slug }} and says ${{ needs.meta.outputs.version }}
+        run: |
+          b="$RUNNER_TEMP/bin/$BIN"
+          file "$b"
+          case "${{ matrix.slug }}" in
+            macos-arm64)
+              file "$b" | grep -q 'Mach-O 64-bit executable arm64' || { echo "::error::not an arm64 Mach-O"; exit 1; }
+              codesign --verify --verbose=2 "$b"
+              codesign -dv "$b" 2>&1 | grep -E 'Signature|flags' ;;
+            linux-x86_64)
+              file "$b" | grep -q 'ELF 64-bit LSB .*x86-64' || { echo "::error::not an x86-64 ELF"; exit 1; } ;;
+          esac
+          out="$("$b" version)"
+          echo "$out"
+          [ "$out" = "$BIN $VERSION" ] || { echo "::error::'$BIN version' says '$out', want '$BIN $VERSION'"; exit 1; }
+
+      # #719, on the binary that ships: no path to this checkout's prompts or
+      # scripts, and (#727) no path under the runner's home at all.
+      - name: no checkout or host path baked into the binary
+        run: scripts/baked-paths-check.sh "$RUNNER_TEMP/bin/$BIN" "$GITHUB_WORKSPACE" "$HOME"
+
+      # The same copy, run from / with a fresh HOME and the checkout's prompts/
+      # renamed away: every job must still resolve, from $HOME/.fwf/prompts.
+      - name: doctor --assets without the checkout's prompts
+        run: |
+          mv ../prompts ../prompts.moved-away
+          home=$(mktemp -d)
+          (cd / && HOME="$home" "$RUNNER_TEMP/bin/$BIN" doctor --assets)
+          for r in impl qa gv pm; do
+            cmp "$home/.fwf/prompts/dev/$r-job.md" "../prompts.moved-away/dev/$r-job.md"
+          done
+          mv ../prompts.moved-away ../prompts
+
+      # The binary plus the three documents a release is useless without. The
+      # runbook and changelog live at docs/releasing.md and the repo-root
+      # CHANGELOG.md (#609); the asset keeps its old filenames.
       - name: Stage the tarball and its checksum
-        id: stage
         run: |
-          name="${{ steps.meta.outputs.bin }}-${{ steps.meta.outputs.version }}-linux-x86_64"
           out="$RUNNER_TEMP/release"
-          mkdir -p "$out/$name"
-          cp "target/x86_64-unknown-linux-gnu/release/${{ steps.meta.outputs.bin }}" "$out/$name/"
-          # #609: runbook and changelog now live at docs/releasing.md and the
-          # repo-root CHANGELOG.md; the asset keeps its old filenames.
-          cp README.md "$out/$name/"
-          cp ../docs/releasing.md "$out/$name/RELEASING.md"
-          cp ../CHANGELOG.md "$out/$name/"
-          tar -C "$out" -czf "$out/$name.tar.gz" "$name"
-          ( cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
-          cat "$out/$name.tar.gz.sha256"
-          tar -tzf "$out/$name.tar.gz"
-          echo "tar=$out/$name.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "sum=$out/$name.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+          mkdir -p "$out/$NAME"
+          cp "$RUNNER_TEMP/bin/$BIN" "$out/$NAME/"
+          cp README.md "$out/$NAME/"
+          cp ../docs/releasing.md "$out/$NAME/RELEASING.md"
+          cp ../CHANGELOG.md "$out/$NAME/"
+          tar -C "$out" -czf "$out/$NAME.tar.gz" "$NAME"
+          if command -v sha256sum >/dev/null; then
+            ( cd "$out" && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
+          else
+            ( cd "$out" && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256" )
+          fi
+          cat "$out/$NAME.tar.gz.sha256"
+          tar -tzf "$out/$NAME.tar.gz"
 
-      - name: Upload onto the release
+      - name: Save the pair as a run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: |
+            ${{ runner.temp }}/release/${{ env.NAME }}.tar.gz
+            ${{ runner.temp }}/release/${{ env.NAME }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the pair onto the draft
+        if: env.DRY_RUN == 'false'
         run: |
           gh release upload "$TAG" \
-            "${{ steps.stage.outputs.tar }}" "${{ steps.stage.outputs.sum }}" \
+            "$RUNNER_TEMP/release/$NAME.tar.gz" "$RUNNER_TEMP/release/$NAME.tar.gz.sha256" \
             --repo "$GITHUB_REPOSITORY" --clobber
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name'
+
+  publish:
+    name: verify all four, then publish
+    needs: [meta, build]
+    # Explicit, because the implicit success() also reads `draft`: skipped in a
+    # dry run, it would skip this job too (it did, in run 44447418922).
+    if: ${{ !cancelled() && needs.meta.outputs.dry_run == 'false' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      BIN: ${{ needs.meta.outputs.bin }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+      # By release id and asset id: the release is still a draft, which the
+      # by-tag endpoints do not return.
+      - name: Download every asset of the release
+        run: |
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+          [ "$(printf '%s\n' "$id" | grep -c .)" = 1 ] || {
+            echo "::error::want exactly one release for $TAG, found: ${id:-none}"; exit 1; }
+          dir="$RUNNER_TEMP/verify"
+          mkdir "$dir"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets?per_page=100" --paginate \
+            --jq '.[] | "\(.id)\t\(.name)\t\(.uploader.login)/\(.uploader.type)"' > "$RUNNER_TEMP/assets.tsv"
+          cat "$RUNNER_TEMP/assets.tsv"
+          while IFS=$'\t' read -r aid name _; do
+            case "$name" in */*|.*|'') echo "::error::refusing asset name '$name'"; exit 1 ;; esac
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$aid" > "$dir/$name"
+          done < "$RUNNER_TEMP/assets.tsv"
+          ls -l "$dir"
+      - name: release-verify.sh
+        run: scripts/release-verify.sh "$RUNNER_TEMP/verify" "$BIN" "$VERSION"
+      - name: Publish
+        run: |
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,url,assets \
+            --jq '"draft=\(.isDraft) \(.url)", (.assets[] | "  \(.name)")'
+          echo "operator proof: fwf release-check --repo $GITHUB_REPOSITORY --tag $TAG --expect 4"
+
+  dry-run-verify:
+    name: dry run — verify the four artifacts
+    needs: [meta, build]
+    if: ${{ !cancelled() && needs.meta.outputs.dry_run == 'true' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      BIN: ${{ needs.meta.outputs.bin }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ needs.meta.outputs.bin }}-${{ needs.meta.outputs.version }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/verify
+      - name: release-verify.sh on the artifacts (nothing is published)
+        run: |
+          ls -l "$RUNNER_TEMP/verify"
+          scripts/release-verify.sh "$RUNNER_TEMP/verify" "$BIN" "$VERSION"

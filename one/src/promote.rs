@@ -626,12 +626,12 @@ mod tests {
         assert!(!ok, "a stale lock was released: {err}");
         assert!(err.contains("Cargo.lock is stale"), "{err}");
         assert!(err.contains("cargo update -w"), "{err}");
-        // nothing was cut: the refusal lands before the gate, the build and
-        // `gh release create`, so there is no tag to clean up
+        // nothing was cut: the refusal lands before the tag (#727: the script
+        // only tags now), so there is no tag to clean up
         assert_eq!(git(&["tag", "--list"]), "");
         // with the lock committed alongside the version the refusal is gone,
-        // and the run stops later on something about this machine rather than
-        // about this commit (the macos-arm64 host, or gh)
+        // and the run stops at a later refusal (this rig has no
+        // origin, so HEAD cannot be origin/main)
         std::fs::write(one.join("Cargo.lock"), lock("1.0.2")).unwrap();
         git(&["commit", "-qam", "commit the lock with the bump"]);
         let (_, err) = cut();

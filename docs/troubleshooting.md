@@ -185,12 +185,18 @@ sha and suite in `gate-wt/.fwfd/gate/`. Delete that file to run again.
 
 **`release-publish: Cargo.lock is stale`.** The version in `one/Cargo.toml`
 moved without the lock. Run `cargo update -w` in `one/` and commit the lock
-with the bump. A release whose lock disagrees fails the Linux build, which uses
-`--locked`, after the release already exists. See
-[`releasing.md`](releasing.md).
+with the bump. A tag whose lock disagrees fails both CI build legs, which use
+`--locked`. See [`releasing.md`](releasing.md).
+
+**`release-publish: HEAD … is not origin/main`.** Releases are tagged at
+`origin/main`, which only moves by `fwf promote`. Check out `main`, pull, and
+run the script again.
 
 **A tag exists but `release-check` says `NO release object`.** A tag is not a
-release. Cut releases with the script, never with `git tag`.
+release. Either `one-release.yml` is still running or it failed, leaving a
+draft that `release-check` cannot see. Open the run for the tag (the script
+prints its URL) and see [`releasing.md`](releasing.md#when-a-cut-fails-halfway).
+Cut releases with the script, never with `git tag`.
 
 ## See also
 

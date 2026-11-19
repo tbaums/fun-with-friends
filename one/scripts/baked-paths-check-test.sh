@@ -40,4 +40,29 @@ for f in clean-target clean-other-root clean-lookalike; do expect 0 "$f"; done
 rc=0
 "$check" "$tmp/up-prompts" >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 2 ]; then echo "ok   usage: exit 2"; else echo "FAIL usage: exit $rc, want 2"; fail=1; fi
+
+# #727: host prefixes. A release build passes the runner's HOME; any path
+# under it fails, wherever it sits in the binary. The prefix has a `.` and a
+# `+` so an unescaped one is caught by the lookalike, and the registry fixture
+# is padded past 4 MiB so a checker that scans only a prefix misses it.
+host=/home/run.ner+x
+expect_host() { # want, name, prefix...
+  local want=$1 name=$2 rc=0
+  shift 2
+  "$check" "$tmp/$name" "$root" "$@" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq "$want" ]; then echo "ok   $name ($*): exit $rc"
+  else echo "FAIL $name ($*): exit $rc, want $want"; fail=1; fi
+}
+fixture host-rustup "$host/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/panic.rs"
+{ head -c 4194304 /dev/zero; printf '\377%s\000' "$host/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/lib.rs"; } >"$tmp/host-registry-deep"
+fixture host-lookalike "/home/runXnerrx/.cargo/registry/src/x.rs"
+fixture host-remapped "/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ureq-2.12.1/src/lib.rs"
+expect_host 1 host-rustup "$host"
+expect_host 1 host-registry-deep "$host"
+expect_host 1 host-registry-deep /elsewhere "$host/"
+expect_host 0 host-lookalike "$host"
+expect_host 0 host-remapped "$host"
+# without a prefix the checker stays #719's: a host path is not a checkout path
+expect_host 0 host-rustup
+expect_host 2 host-rustup ""
 exit $fail
