@@ -4,7 +4,9 @@
 //! re-uses the cached body) and single-flighted (two concurrent polls of one
 //! URL make one request). A read that cannot complete is a typed
 //! [`PollError`] and the caller holds an [`Snapshot::unknown`] — never a
-//! partial, confident snapshot (#211).
+//! partial, confident snapshot (#211). The list reads (`issues?state=open`,
+//! `pulls/{n}/reviews`) are paged (#723): GitHub serves 30 items unless asked
+//! for more, and the oldest open issues were never seen.
 
 use crate::types::Fence;
 use serde_json::Value;
@@ -18,6 +20,11 @@ use std::sync::{Arc, Condvar, Mutex};
 pub const CLAIM_LABEL: &str = "claimed";
 /// Ref namespace of claim refs — `refs/claims/<n>`, as `mirror.rs` creates them.
 pub const CLAIM_REF_PREFIX: &str = "claims";
+/// Items per page of a paged read: GitHub's maximum `per_page`.
+pub const PAGE_SIZE: usize = 100;
+/// A paged read that would need more pages than this (5,000 items) is
+/// `Malformed`, never silently truncated.
+pub const MAX_PAGES: usize = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IssueView {
@@ -259,21 +266,53 @@ impl Poller {
         }
     }
 
+    /// Every item of a list endpoint: `<path>?…&per_page=100&page=1,2,…`,
+    /// each page through [`get`](Self::get) (so each page has its own ETag
+    /// and an unchanged list costs only 304s). Pages are concatenated and
+    /// deduped by `key` (first seen wins: an item that slid onto the next
+    /// page between reads appears once), and the read stops at the first
+    /// page shorter than [`PAGE_SIZE`]. Any page failing fails the read;
+    /// needing more than [`MAX_PAGES`] is `Malformed`.
+    pub fn get_paged(&self, path: &str, key: &str) -> Result<Vec<Value>, PollError> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let url = self.url(&format!("{path}{sep}per_page={PAGE_SIZE}&page={page}"));
+            let body = self.get(&url)?.ok_or_else(|| PollError::Status {
+                url: url.clone(),
+                code: 404,
+            })?;
+            let Value::Array(items) = body else {
+                return Err(PollError::Malformed {
+                    url,
+                    why: "expected an array".into(),
+                });
+            };
+            let short = items.len() < PAGE_SIZE;
+            for it in items {
+                if it.get(key).is_none_or(|k| seen.insert(k.to_string())) {
+                    out.push(it);
+                }
+            }
+            if short {
+                return Ok(out);
+            }
+        }
+        Err(PollError::Malformed {
+            url: self.url(path),
+            why: format!("more than {MAX_PAGES} pages of {PAGE_SIZE}"),
+        })
+    }
+
     /// Read everything the scheduler needs. Any failure is `Err`; the caller
     /// holds `Snapshot::unknown()` (`poll(..).unwrap_or_else(|_| Snapshot::unknown())`).
     pub fn poll(&self, now: u64) -> Result<Snapshot, PollError> {
         let list_url = self.url("issues?state=open");
-        let list = self.get(&list_url)?.ok_or_else(|| PollError::Status {
-            url: list_url.clone(),
-            code: 404,
-        })?;
-        let items = list.as_array().ok_or_else(|| PollError::Malformed {
-            url: list_url.clone(),
-            why: "expected an array".into(),
-        })?;
+        let items = self.get_paged("issues?state=open", "number")?;
         let mut issues = Vec::new();
         let mut prs = Vec::new();
-        for it in items {
+        for it in &items {
             let number = it["number"].as_u64().ok_or_else(|| PollError::Malformed {
                 url: list_url.clone(),
                 why: "item without number".into(),
@@ -327,17 +366,8 @@ impl Poller {
             url: pr_url.clone(),
             code: 404,
         })?;
-        let rv_url = self.url(&format!("pulls/{number}/reviews"));
-        let reviews = self.get(&rv_url)?.ok_or(PollError::Status {
-            url: rv_url.clone(),
-            code: 404,
-        })?;
-        let reviews = reviews
-            .as_array()
-            .ok_or_else(|| PollError::Malformed {
-                url: rv_url.clone(),
-                why: "expected an array".into(),
-            })?
+        let reviews = self
+            .get_paged(&format!("pulls/{number}/reviews"), "id")?
             .iter()
             .map(|r| {
                 (
@@ -444,7 +474,9 @@ mod tests {
         assert_eq!(s2.fetched_at, 11);
         assert_eq!(s2.issues[0].author_association, "OWNER");
         assert_eq!(
-            fake.request_count(&format!("/repos/{O}/{R}/issues?state=open")),
+            fake.request_count(&format!(
+                "/repos/{O}/{R}/issues?state=open&per_page=100&page=1"
+            )),
             2
         );
     }
@@ -557,5 +589,119 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(p.requests(), 1);
         assert!(p.inflight.lock().unwrap().is_empty());
+    }
+
+    // ---- paging (#723) ---------------------------------------------------
+
+    /// A transport serving `issues?state=open` pages from `page_len(n)`
+    /// (`None` = a 500 for that page), counting requests.
+    fn paged_transport(page_len: fn(u64) -> Option<u64>) -> (Transport, Arc<AtomicU64>) {
+        let calls = Arc::new(AtomicU64::new(0));
+        let c = calls.clone();
+        let t: Transport = Arc::new(move |url: &str, _inm| {
+            c.fetch_add(1, Ordering::SeqCst);
+            let page: u64 = url.rsplit("page=").next().unwrap().parse().unwrap();
+            let Some(len) = page_len(page) else {
+                return Ok(Raw {
+                    status: 500,
+                    etag: None,
+                    body: String::new(),
+                });
+            };
+            let start = (page - 1) * PAGE_SIZE as u64;
+            let items: Vec<Value> = (start + 1..=start + len)
+                .map(|n| json!({"number": n, "title": "t", "state": "open", "user": {"login": O}}))
+                .collect();
+            Ok(Raw {
+                status: 200,
+                etag: None,
+                body: Value::Array(items).to_string(),
+            })
+        });
+        (t, calls)
+    }
+
+    /// AC3: 205 open issues are 3 list pages and 205 distinct issues; an
+    /// unchanged second poll is a 304 on every page.
+    #[test]
+    fn poll_reads_every_page_and_an_unchanged_tracker_costs_only_304s() {
+        let fake = FakeGitHub::start();
+        let tok = fake.token("fwf-ops[bot]", &[]);
+        for i in 0..205 {
+            fake.seed_issue(O, R, &format!("i{i}"), O, &[]);
+        }
+        let p = Poller::new(fake.base_url(), &tok, O, R);
+        let s = p.poll(1).unwrap();
+        let distinct: std::collections::BTreeSet<u64> = s.issues.iter().map(|i| i.number).collect();
+        assert_eq!((s.issues.len(), distinct.len()), (205, 205));
+        assert_eq!(distinct.first().copied(), Some(1));
+        let page = |n: u64| {
+            fake.request_count(&format!(
+                "/repos/{O}/{R}/issues?state=open&per_page=100&page={n}"
+            ))
+        };
+        assert_eq!((page(1), page(2), page(3), page(4)), (1, 1, 1, 0));
+        assert_eq!(p.requests(), 3);
+        let s2 = p.poll(2).unwrap();
+        assert_eq!(s2.issues, s.issues);
+        assert_eq!((p.requests(), p.not_modified()), (6, 3));
+    }
+
+    /// AC4: a failing page fails the poll — never a partial snapshot.
+    #[test]
+    fn a_failed_page_fails_the_poll() {
+        let (t, calls) = paged_transport(|page| (page == 1).then_some(100));
+        let p = Poller::with_transport("http://x", O, R, t);
+        let err = p.poll(1).unwrap_err();
+        assert!(matches!(err, PollError::Status { code: 500, .. }), "{err}");
+        assert!(err.to_string().contains("page=2"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// An exact multiple of 100 costs one extra, empty page; more than 50
+    /// full pages is `Malformed`, not a silent truncation.
+    #[test]
+    fn exact_multiple_reads_an_empty_page_and_too_many_pages_is_malformed() {
+        let (t, calls) = paged_transport(|page| Some(if page <= 2 { 100 } else { 0 }));
+        let s = Poller::with_transport("http://x", O, R, t).poll(1).unwrap();
+        assert_eq!((s.issues.len(), calls.load(Ordering::SeqCst)), (200, 3));
+
+        let (t, calls) = paged_transport(|_| Some(100));
+        let err = Poller::with_transport("http://x", O, R, t)
+            .poll(1)
+            .unwrap_err();
+        assert!(matches!(err, PollError::Malformed { .. }), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), MAX_PAGES as u64);
+    }
+
+    /// AC5: a PR's 31st review is in `PrView.reviews`.
+    #[test]
+    fn pr_view_reads_every_page_of_reviews() {
+        let fake = FakeGitHub::start();
+        let alice = fake.token("alice", &[]);
+        fake.seed_ref(O, R, "heads/main", &FakeGitHub::sha("m"));
+        fake.seed_ref(O, R, "heads/feat", &FakeGitHub::sha("f"));
+        let mut r = ureq::post(format!("{}/repos/{O}/{R}/pulls", fake.base_url()))
+            .header("Authorization", format!("Bearer {alice}"))
+            .send(json!({"title":"t","head":"feat","base":"main"}).to_string())
+            .unwrap();
+        let pr = r.body_mut().read_json::<Value>().unwrap()["number"]
+            .as_u64()
+            .unwrap();
+        for i in 1..=31 {
+            let who = fake.token(&format!("reviewer-{i}"), &[]);
+            ureq::post(format!(
+                "{}/repos/{O}/{R}/pulls/{pr}/reviews",
+                fake.base_url()
+            ))
+            .header("Authorization", format!("Bearer {who}"))
+            .send(json!({"event":"COMMENT"}).to_string())
+            .unwrap();
+        }
+        let p = Poller::new(fake.base_url(), &alice, O, R);
+        let s = p.poll(1).unwrap();
+        let reviews = &s.prs[0].reviews;
+        assert_eq!(reviews.len(), 31);
+        assert_eq!(reviews[30].0, "reviewer-31");
     }
 }

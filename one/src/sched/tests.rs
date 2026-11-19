@@ -295,9 +295,9 @@ fn poll_then_plan_against_fake_github_with_304_and_label_change() {
         .unwrap()["number"]
         .as_u64()
         .unwrap();
-    let list = format!("/repos/{O}/{R}/issues?state=open");
+    let list = format!("/repos/{O}/{R}/issues?state=open&per_page=100&page=1");
     let pull = format!("/repos/{O}/{R}/pulls/{pr}");
-    let reviews = format!("/repos/{O}/{R}/pulls/{pr}/reviews");
+    let reviews = format!("/repos/{O}/{R}/pulls/{pr}/reviews?per_page=100&page=1");
     let seats = [
         seat(1, Role::Impl, SeatState::Idle),
         seat(2, Role::Impl, SeatState::Idle),
