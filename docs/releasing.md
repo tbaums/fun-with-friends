@@ -22,9 +22,13 @@ one/scripts/release-publish.sh notes.md
    fetches the tag object and fails unless the tag is annotated, its message
    is non-empty, and it equals `v` + `one/Cargo.toml`'s version. This happens
    before any release exists.
-3. **Draft (CI).** It creates a **draft** release titled `fwf <version>` with
-   the notes from the tag (`--notes-from-tag`), or reuses the one release that
-   tag already has. It never creates a second one.
+3. **Draft (CI).** `one/scripts/release-draft.sh` creates a **draft** release
+   titled `fwf <version>` whose notes are the tag message: it writes the
+   message to a temp file and passes it with `--notes-file` (gh refuses
+   `--notes-from-tag` with `--repo`, which is why v1.0.27 never got a release,
+   #734). If the tag already has one release it reuses it, notes untouched; it
+   never creates a second one. It fails on a lightweight tag or an empty
+   message.
 4. **Build (CI), two legs:** `macos-latest` → `macos-arm64` and
    `ubuntu-latest` → `linux-x86_64`. Each leg runs `cargo test` (the macOS leg
    is the only macOS test run 1.0 has), then `cargo build --release --locked`

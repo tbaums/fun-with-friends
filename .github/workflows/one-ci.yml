@@ -5,9 +5,9 @@ name: one CI
 on:
   push:
     branches: [main, staging, 'one/**']
-    paths: ['one/**', 'prompts/**', 'docs/**', 'scripts/link-check.sh', '.github/workflows/one-ci.yml']
+    paths: ['one/**', 'prompts/**', 'docs/**', 'scripts/link-check.sh', '.github/workflows/one-ci.yml', '.github/workflows/one-release.yml']
   pull_request:
-    paths: ['one/**', 'prompts/**', 'docs/**', 'scripts/link-check.sh', '.github/workflows/one-ci.yml']
+    paths: ['one/**', 'prompts/**', 'docs/**', 'scripts/link-check.sh', '.github/workflows/one-ci.yml', '.github/workflows/one-release.yml']
   workflow_dispatch:
 
 permissions:

@@ -69,14 +69,14 @@ left alone by `--up`, so a logged-out pane has to go first.
 not on the `PATH` tmux uses, or it stopped at a prompt. Attach to the session
 and look at the pane.
 
-**A seat job fails at once with `No such file or directory`.** Before 1.0.27
+**A seat job fails at once with `No such file or directory`.** Before 1.0.28
 the binary read the job prompts from the `prompts/` directory of the tree it
 was **built** in, so a release asset, or a build whose checkout had moved,
-could not find them (#719). Upgrade: `fwf self-upgrade`. From 1.0.27 the
-prompts are compiled in and written to `~/.fwf/prompts/` by each run, so the
-checkout is not needed. `fwf doctor --assets` lists every job and where it is
-read from; it fails if one is missing or empty, and names `HOME` if `HOME` is
-not set.
+could not find them (#719). Upgrade: `fwf self-upgrade`. The fix ships in
+1.0.28 (1.0.27 was never published, #734): the prompts are compiled in and
+written to `~/.fwf/prompts/` by each run, so the checkout is not needed.
+`fwf doctor --assets` lists every job and where it is read from; it fails if
+one is missing or empty, and names `HOME` if `HOME` is not set.
 
 **A worktree commits as the wrong person.** `fwf doctor` lists it as `WRONG`.
 Run `fwf seats --up`, which re-applies every seat's identity.

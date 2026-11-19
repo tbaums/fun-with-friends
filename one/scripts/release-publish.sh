@@ -29,7 +29,8 @@ NOTES="${1:-}"
 [ -f "$NOTES" ] || die "no notes file at $NOTES (a release needs notes)"
 NOTES="$(cd "$(dirname "$NOTES")" && pwd)/$(basename "$NOTES")"
 # The notes become the tag message, and CI makes the release body from it
-# (`--notes-from-tag`). Whitespace only is no notes.
+# (release-draft.sh, `--notes-file` from the tag message). Whitespace only is
+# no notes.
 grep -q '[^[:space:]]' "$NOTES" || die "the notes file $NOTES is empty; the tag message is the release notes"
 
 # The version and the binary's name both come from Cargo.toml — the binary was
