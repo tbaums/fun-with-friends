@@ -663,9 +663,9 @@ pub fn run_loop(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let floor = m.floor();
-    // One loop per floor, and one the operator can name (#675): two would
-    // both plan, both claim and both wake the same panes.
+    let (floor, prompts_dir) = (m.floor(), prompts::dir_or_exit());
+    // Prompts first, so a run without HOME leaves no pidfile (#719). One loop per
+    // floor, one the operator can name (#675): two would wake the same panes.
     match pidfile::claim(&floor, std::process::id()) {
         Ok(p) => println!("fwf run: pid {} ({})", std::process::id(), p.display()),
         Err(e) => {
@@ -692,7 +692,7 @@ pub fn run_loop(args: &[String]) -> ExitCode {
         job_timeout: Duration::from_secs(m.job_timeout_secs),
         stall_quiet: Duration::from_secs(m.stall_quiet_secs),
         once: args.iter().any(|a| a == "--once"),
-        prompts_dir: PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/prompts")),
+        prompts_dir,
         template: m.template.clone(),
         allow_issues: m.issues.clone(),
         skip_labels: m.skip_labels.clone(),

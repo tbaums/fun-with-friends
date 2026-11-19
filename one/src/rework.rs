@@ -623,7 +623,7 @@ mod tests {
             review: "the fence is not the base you pushed from".into(),
         };
         let template = std::fs::read_to_string(crate::prompts::rework_path(
-            Path::new(crate::prompts::ROOT),
+            Path::new(crate::prompts::SOURCE),
             "dev",
         ))
         .unwrap();

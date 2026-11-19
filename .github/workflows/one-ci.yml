@@ -28,6 +28,28 @@ jobs:
         with:
           workspaces: one
       - run: cargo test --quiet
+      # #719: a binary must carry its prompts and scripts, not a path to this
+      # checkout's copy of them (v1.0.26 baked /home/runner/work/…/prompts).
+      # First prove the checker can fail: fixtures that bake a path must exit 1
+      # under this runner's GNU grep, clean ones 0.
+      - name: baked-paths-check.sh catches its fixtures
+        run: scripts/baked-paths-check-test.sh
+      - name: no checkout path baked into the binary
+        run: |
+          cargo build --quiet --bin fwf
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp target/debug/fwf "$RUNNER_TEMP/bin/fwf"
+          scripts/baked-paths-check.sh "$RUNNER_TEMP/bin/fwf" "$GITHUB_WORKSPACE"
+      # The same copy, run from / with a fresh HOME and the checkout's prompts/
+      # renamed away: every job must still resolve, from $HOME/.fwf/prompts.
+      - name: doctor --assets without the checkout's prompts
+        run: |
+          mv ../prompts ../prompts.moved-away
+          home=$(mktemp -d)
+          (cd / && HOME="$home" "$RUNNER_TEMP/bin/fwf" doctor --assets)
+          for r in impl qa gv pm; do
+            cmp "$home/.fwf/prompts/dev/$r-job.md" "../prompts.moved-away/dev/$r-job.md"
+          done
 
   lint:
     name: fmt + clippy
@@ -47,7 +69,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v5
-      - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/seat-push-guard.sh scripts/release-publish.sh
+      - run: bash -n scripts/size-check.sh scripts/seat-up.sh scripts/seat-push-guard.sh scripts/release-publish.sh scripts/baked-paths-check.sh scripts/baked-paths-check-test.sh
       - run: scripts/size-check.sh
 
   links:

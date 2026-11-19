@@ -4,14 +4,174 @@
 //! falls back to `dev`. Every file may use only the placeholders the
 //! supervisor fills, checked by test so a typo never reaches a seat as
 //! literal `{{FOO}}`.
+//!
+//! #719: the prompts ride inside the binary, as the seat scripts do (#674).
+//! They used to be read from `CARGO_MANIFEST_DIR/../prompts`, a path `env!`
+//! fixes when the binary is *built*, so a release asset looked for them under
+//! `/home/runner/work/…` and every seat job on any other host failed with `No
+//! such file or directory`. Now every file under `prompts/` is compiled in and,
+//! once per process, written to `$HOME/.fwf/prompts/<family>/<file>`; the
+//! readers keep taking a path, so tests that inject their own template still do.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Repo-root `prompts/`: the job prompts are the product's content, not a
-/// crate detail (#605). Read from disk at runtime, not embedded at build time.
-/// `one/prompts` stays as a symlink here for one release; this points past it
-/// at the real directory so the two can never be read as different trees.
-pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts");
+/// The source tree's `prompts/`, for tests only: they check the files the table
+/// is built from. Nothing at run time may read it (#719).
+#[cfg(test)]
+pub const SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts");
+
+/// `(path under prompts/, contents)` for every prompt file, as of the build.
+/// A test fails when this and the files under `prompts/` differ in names or
+/// bytes, so a new prompt cannot be added without a line here.
+macro_rules! embed {
+    ($($name:literal),* $(,)?) => {
+        &[$(($name, include_str!(concat!("../../prompts/", $name)))),*]
+    };
+}
+pub const EMBEDDED: &[(&str, &str)] = embed![
+    "README.md",
+    "stop.txt",
+    "consulting/gv-job.md",
+    "consulting/impl-job.md",
+    "consulting/qa-job.md",
+    "defect-report/impl-job.md",
+    "defect-report/qa-job.md",
+    "dev/gv-job.md",
+    "dev/impl-job.md",
+    "dev/impl-rework.md",
+    "dev/pm-job.md",
+    "dev/qa-job.md",
+    "ideation/gv-job.md",
+    "ideation/impl-job.md",
+    "ideation/qa-job.md",
+    "refactor/impl-job.md",
+    "refactor/qa-job.md",
+    "user-testing/impl-job.md",
+    "user-testing/qa-job.md",
+    "validate/gv-job.md",
+    "validate/impl-job.md",
+    "validate/qa-job.md",
+];
+
+/// The template families the binary carries: every directory in the table.
+pub fn families() -> Vec<&'static str> {
+    let mut f: Vec<&str> = EMBEDDED
+        .iter()
+        .filter_map(|(name, _)| name.split_once('/').map(|(fam, _)| fam))
+        .collect();
+    f.sort_unstable();
+    f.dedup();
+    f
+}
+
+/// Write every embedded prompt to `<home>/.fwf/prompts/`, each through a temp
+/// file and a rename, so a reader never sees half a prompt and two processes
+/// writing at once both leave the same bytes. A copy an older binary left, or
+/// one edited by hand, is overwritten; a file the table does not name is
+/// removed, because the `dev` fallback reads what is on disk and a stale
+/// family override would otherwise still win.
+///
+/// The directory is fwf's alone, so a symlink anywhere in it — the directory
+/// itself, a family, a file — is refused before anything is written: writing or
+/// pruning through it would change files fwf does not own.
+pub fn materialise(home: &Path) -> io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let root = home.join(".fwf").join("prompts");
+    refuse_links(&root)?;
+    for (name, body) in EMBEDDED {
+        let dest = root.join(name);
+        let dir = dest.parent().unwrap_or(&root);
+        std::fs::create_dir_all(dir)?;
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".fwf-{}-{n}.tmp", std::process::id()));
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, &dest)?;
+    }
+    prune(&root, &root)?;
+    Ok(root)
+}
+
+/// An error naming `path` if it, or anything under it, is a symlink. Nothing
+/// is followed; a path that does not exist yet is fine.
+fn refuse_links(path: &Path) -> io::Result<()> {
+    let kind = match std::fs::symlink_metadata(path) {
+        Ok(m) => m.file_type(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if kind.is_symlink() {
+        return Err(io::Error::other(format!(
+            "{} is a symlink; fwf writes its prompts only into a real directory it owns and never through a link — remove the link and run again",
+            path.display()
+        )));
+    }
+    if kind.is_dir() {
+        for e in std::fs::read_dir(path)? {
+            refuse_links(&e?.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove every file under `dir` the table does not name, one level of family
+/// directories deep. Another writer's temp file is in flight, not stale. File
+/// types come from the entry itself, never from a link's target.
+fn prune(root: &Path, dir: &Path) -> io::Result<()> {
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let p = e.path();
+        let kind = e.file_type()?;
+        if kind.is_symlink() {
+            return refuse_links(&p);
+        }
+        if kind.is_dir() {
+            if dir == root {
+                prune(root, &p)?;
+            }
+            continue;
+        }
+        let file = e.file_name().to_string_lossy().into_owned();
+        let in_flight = file.starts_with(".fwf-") && file.ends_with(".tmp");
+        let rel = p.strip_prefix(root).unwrap_or(&p);
+        if !in_flight && !EMBEDDED.iter().any(|(name, _)| Path::new(name) == rel) {
+            std::fs::remove_file(&p)?;
+        }
+    }
+    Ok(())
+}
+
+/// `$HOME/.fwf/prompts`, written on first use and then reused for the life of
+/// the process. With `HOME` unset this is an error naming `HOME`; there is no
+/// fallback to a build path.
+pub fn dir() -> Result<&'static Path, String> {
+    static DIR: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| {
+                "HOME is not set; fwf writes its job prompts under $HOME/.fwf/prompts".to_string()
+            })?;
+        materialise(Path::new(&home))
+            .map_err(|e| format!("cannot write the job prompts under $HOME/.fwf/prompts: {e}"))
+    })
+    .as_deref()
+    .map_err(Clone::clone)
+}
+
+/// [`dir`] for a verb that cannot start without its prompts: it says why on
+/// stderr and exits 2 rather than wake a seat with a path that does not exist.
+pub fn dir_or_exit() -> PathBuf {
+    match dir() {
+        Ok(d) => d.to_path_buf(),
+        Err(e) => {
+            eprintln!("fwf: {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
 pub const PLACEHOLDERS: &[&str] = &[
     "{{SEAT}}",
     "{{REPO}}",
@@ -59,7 +219,7 @@ pub fn rework_path(root: &Path, family: &str) -> PathBuf {
 }
 
 pub fn job_path(family: &str, role: &str) -> PathBuf {
-    path(Path::new(ROOT), family, role)
+    path(&dir_or_exit(), family, role)
 }
 
 /// Placeholders used by a prompt text that are not in `PLACEHOLDERS`.
@@ -88,7 +248,7 @@ mod tests {
 
     #[test]
     fn every_family_resolves_every_role_and_uses_only_known_placeholders() {
-        let root = Path::new(ROOT);
+        let root = Path::new(SOURCE);
         let mut families: Vec<String> = std::fs::read_dir(root)
             .unwrap()
             .flatten()
@@ -167,7 +327,7 @@ mod tests {
     /// silently because nothing reads it. This reads it.
     #[test]
     fn guide_covers_every_role_and_placeholder() {
-        let p = Path::new(ROOT).join("README.md");
+        let p = Path::new(SOURCE).join("README.md");
         let text = std::fs::read_to_string(&p).unwrap();
         for r in ROLES {
             assert!(
@@ -220,12 +380,12 @@ mod tests {
     /// family whose prompt did not would have every approval refused.
     #[test]
     fn every_qa_job_carries_the_spec_and_asks_for_the_criteria() {
-        for e in std::fs::read_dir(ROOT).unwrap().flatten() {
+        for e in std::fs::read_dir(SOURCE).unwrap().flatten() {
             if !e.path().is_dir() {
                 continue;
             }
             let f = e.file_name().to_string_lossy().into_owned();
-            let p = path(Path::new(ROOT), &f, "qa");
+            let p = path(Path::new(SOURCE), &f, "qa");
             let text = std::fs::read_to_string(&p).unwrap();
             for needle in [
                 "{{SPEC}}",
@@ -240,17 +400,158 @@ mod tests {
 
     #[test]
     fn fallback_goes_to_dev_and_unknown_placeholders_are_named() {
-        let p = path(Path::new(ROOT), "refactor", "gv");
+        let p = path(Path::new(SOURCE), "refactor", "gv");
         assert!(p.ends_with("dev/gv-job.md"));
-        let p = path(Path::new(ROOT), "no-such-family", "impl");
+        let p = path(Path::new(SOURCE), "no-such-family", "impl");
         assert!(p.ends_with("dev/impl-job.md"));
         // no family overrides the rework job yet; every one resolves to dev's
-        let p = rework_path(Path::new(ROOT), "refactor");
+        let p = rework_path(Path::new(SOURCE), "refactor");
         assert!(p.ends_with("dev/impl-rework.md"), "{}", p.display());
         assert!(std::fs::read_to_string(&p).unwrap().contains("{{REVIEW}}"));
         assert_eq!(
             unknown_placeholders("a {{SEAT}} b {{NOPE}} c {{NOPE}} {{BASE}}"),
             vec!["{{NOPE}}".to_string()]
         );
+    }
+    /// #719: the table the binary carries is exactly the files under
+    /// `prompts/` — same names, same bytes. A prompt added on disk but not to
+    /// [`EMBEDDED`] would never reach a seat; one edited on disk would reach
+    /// it only after a rebuild, which this makes the same thing.
+    #[test]
+    fn the_embedded_table_is_the_prompts_directory_byte_for_byte() {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(root, &p, out);
+                } else {
+                    let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                    out.push((rel, std::fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut on_disk = Vec::new();
+        walk(Path::new(SOURCE), Path::new(SOURCE), &mut on_disk);
+        on_disk.sort();
+        let mut embedded: Vec<(String, Vec<u8>)> = EMBEDDED
+            .iter()
+            .map(|(n, b)| (n.to_string(), b.as_bytes().to_vec()))
+            .collect();
+        embedded.sort();
+        let names = |v: &[(String, Vec<u8>)]| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&embedded), names(&on_disk), "names differ");
+        for ((n, a), (_, b)) in embedded.iter().zip(&on_disk) {
+            assert!(a == b, "{n}: embedded bytes differ from prompts/{n}");
+        }
+    }
+
+    /// #719: written out under `<home>/.fwf/prompts`, read back byte for byte,
+    /// with the `dev` fallback working there as it does in the source tree. A
+    /// copy edited by hand is put back; a file the table does not name (a
+    /// stale family override) is removed, or it would shadow `dev`.
+    #[test]
+    fn materialise_writes_every_prompt_under_home_and_heals_what_it_finds() {
+        let home = std::env::temp_dir().join(format!("fwfd-prompts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let root = materialise(&home).unwrap();
+        assert_eq!(root, home.join(".fwf/prompts"));
+        for (name, body) in EMBEDDED {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                *body,
+                "{name}"
+            );
+        }
+        assert!(path(&root, "refactor", "gv").ends_with("dev/gv-job.md"));
+        assert!(rework_path(&root, "validate").ends_with("dev/impl-rework.md"));
+
+        std::fs::write(root.join("dev/impl-job.md"), "edited by hand").unwrap();
+        std::fs::write(root.join("refactor/gv-job.md"), "left by an older binary").unwrap();
+        let in_flight = root.join("dev/.fwf-1-0.tmp");
+        std::fs::write(&in_flight, "another writer").unwrap();
+        materialise(&home).unwrap();
+        let dev_impl = EMBEDDED
+            .iter()
+            .find(|(n, _)| *n == "dev/impl-job.md")
+            .unwrap()
+            .1;
+        assert_eq!(
+            std::fs::read_to_string(root.join("dev/impl-job.md")).unwrap(),
+            dev_impl
+        );
+        assert!(!root.join("refactor/gv-job.md").exists());
+        assert!(path(&root, "refactor", "gv").ends_with("dev/gv-job.md"));
+        assert!(
+            in_flight.exists(),
+            "another process's temp file is not ours to remove"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// QA on #729: a symlink under `~/.fwf/prompts` — a family directory, or
+    /// the directory itself — pointed the write and the prune at a folder fwf
+    /// does not own, and an unrelated file there was deleted. fwf refuses,
+    /// names the link, and writes and deletes nothing through it.
+    #[test]
+    fn materialise_refuses_a_symlink_and_touches_nothing_behind_it() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("fwfd-prompts-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep-me.txt"), "not fwf's").unwrap();
+        let only_keep_me = |why: &str| {
+            let names: Vec<String> = std::fs::read_dir(&outside)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, vec!["keep-me.txt".to_string()], "{why}");
+        };
+
+        // a family directory that is a link
+        let home = base.join("home-family");
+        std::fs::create_dir_all(home.join(".fwf/prompts")).unwrap();
+        symlink(&outside, home.join(".fwf/prompts/validate")).unwrap();
+        let err = materialise(&home).unwrap_err().to_string();
+        assert!(err.contains("validate") && err.contains("symlink"), "{err}");
+        only_keep_me("a linked family directory");
+
+        // the prompts directory itself is a link
+        let home = base.join("home-root");
+        std::fs::create_dir_all(home.join(".fwf")).unwrap();
+        symlink(&outside, home.join(".fwf/prompts")).unwrap();
+        let err = materialise(&home).unwrap_err().to_string();
+        assert!(
+            err.contains(".fwf/prompts") && err.contains("symlink"),
+            "{err}"
+        );
+        only_keep_me("a linked prompts directory");
+
+        // a link one level further down, to a file outside
+        let home = base.join("home-file");
+        materialise(&home).unwrap();
+        symlink(
+            outside.join("keep-me.txt"),
+            home.join(".fwf/prompts/dev/stale.md"),
+        )
+        .unwrap();
+        let err = materialise(&home).unwrap_err().to_string();
+        assert!(err.contains("stale.md") && err.contains("symlink"), "{err}");
+        only_keep_me("a linked file");
+        assert_eq!(
+            std::fs::read_to_string(outside.join("keep-me.txt")).unwrap(),
+            "not fwf's"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn families_are_the_table_s_directories() {
+        let f = families();
+        assert!(f.contains(&"dev") && f.contains(&"refactor"), "{f:?}");
+        assert!(f.len() >= 7, "{f:?}");
+        assert!(!f.contains(&"README.md"), "{f:?}");
     }
 }
