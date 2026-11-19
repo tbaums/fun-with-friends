@@ -26,6 +26,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod page;
 mod seed;
 
 /// Seconds since the Unix epoch, produced on demand by the injected clock.
@@ -374,12 +375,7 @@ impl State {
     // ------------------------------------------------------------ dispatch
 
     fn handle(&mut self, req: &Req) -> Resp {
-        let key = if req.query.is_empty() {
-            req.path.clone()
-        } else {
-            let q: Vec<String> = req.query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            format!("{}?{}", req.path, q.join("&"))
-        };
+        let key = page::count_key(&req.path, &req.query);
         *self.counts.entry(key).or_insert(0) += 1;
 
         let segs: Vec<String> = req
@@ -506,10 +502,11 @@ impl State {
                 let list: Vec<Value> = r
                     .issues
                     .values()
+                    .rev() // newest first, as GitHub lists them
                     .filter(|i| want == "all" || i.state == want)
                     .map(|i| self.issue_json(owner, repo, i))
                     .collect();
-                Resp::ok(Value::Array(list))
+                page::page(req, list)
             }
             ("GET", ["issues", n]) => match num(n).and_then(|n| self.issue(owner, repo, n)) {
                 Some(i) => Resp::ok(self.issue_json(owner, repo, &i)),
@@ -673,7 +670,7 @@ impl State {
             }
             ("GET", ["pulls", n, "reviews"]) => {
                 match num(n).and_then(|n| self.issue(owner, repo, n)) {
-                    Some(Issue { pull: Some(p), .. }) => Resp::ok(Value::Array(p.reviews)),
+                    Some(Issue { pull: Some(p), .. }) => page::page(req, p.reviews),
                     _ => Resp::err(404, "Not Found"),
                 }
             }
@@ -1049,10 +1046,11 @@ impl FakeGitHub {
         self.lock().writes.clone()
     }
 
-    /// Requests seen for exactly this path (+ query, if any), any method,
-    /// 304s included.
+    /// Requests seen for exactly this path (+ query in any order), any
+    /// method, 304s included.
     pub fn request_count(&self, path_and_query: &str) -> u64 {
-        self.lock().counts.get(path_and_query).copied().unwrap_or(0)
+        let key = page::count_key_of(path_and_query);
+        self.lock().counts.get(&key).copied().unwrap_or(0)
     }
 
     pub fn ref_sha(&self, owner: &str, repo: &str, name: &str) -> Option<String> {
@@ -1694,8 +1692,8 @@ mod tests {
             &[],
         );
         assert_eq!(issues.body.as_array().unwrap().len(), 2);
-        assert!(issues.body[1]["pull_request"].is_object());
-        assert!(issues.body[0]["pull_request"].is_null());
+        assert!(issues.body[0]["pull_request"].is_object()); // newest first
+        assert!(issues.body[1]["pull_request"].is_null());
         assert_eq!(
             get(&fake, &alice, &format!("/repos/{O}/{R}/pulls/1"), &[]).status,
             404,

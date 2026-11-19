@@ -439,6 +439,8 @@ pub fn plan(
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_paging;
+#[cfg(test)]
 mod tests_reviewers;
 #[cfg(test)]
 mod tests_seat_state;
